@@ -1,7 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Avalonia;
+using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using SkiaSharp;
 using Avalonia.Controls;
@@ -101,6 +103,7 @@ public class MainWindow : Window
     public MainWindow()
     {
         Title          = "Mayhem Tradewars Client v1.0";
+        Icon           = new WindowIcon(AssetLoader.Open(new Uri("avares://MTC/mtc.png")));
         Width          = 1100;
         Height         = 650;
         MinWidth       = 800;

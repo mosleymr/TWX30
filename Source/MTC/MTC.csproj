@@ -18,6 +18,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="mtc.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.*" />
     <PackageReference Include="Avalonia.Desktop" Version="11.*" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
