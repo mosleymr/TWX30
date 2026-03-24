@@ -77,6 +77,16 @@ Key classes:
 - **ScriptCmdImpl_Triggers.cs** — `SETTEXTTRIGGER`, `SETTEXTLINETRIGGER`, `SETTEXTOUTTRIGGER`, `SETDELAYTRIGGER`, `SETEVENTTRIGGER`, `KILLTRIGGER`, `KILLALLTRIGGERS`
 - **ScriptCmdImpl_VarPersistence.cs** — `LOADGLOBAL`, `SAVEGLOBAL`, `CLEARGLOBALS`
 
+### Script Variable Persistence (`Core/ScriptCmdImpl_VarPersistence.cs`)
+
+`_scriptVars` is a **static dictionary** (`Dictionary<string, Dictionary<string, string>>`) keyed by script name, surviving individual script restarts. This means variables saved with `SAVEGLOBAL` / `LOADGLOBAL` persist across runs in the same proxy session.
+
+Lifecycle cleanup:
+- `ClearVarsForScript(string scriptId)` — called from `Script.Dispose()` to clear one script's entries on `HALT`/`STOP`
+- `ClearAllScriptVars()` — called from `Network.StopAsync()` when the proxy shuts down to fully flush the static dict
+
+Both methods must be kept in sync with any refactoring of `_scriptVars`.
+
 ### AutoRecorder (`Core/AutoRecorder.cs`)
 
 Parses live game server output line-by-line to keep the sector database current.
@@ -111,6 +121,17 @@ GameServer  → [AutoRecorder] → [trigger firing] → LocalClient
 
 Telnet: RFC 854, handles WILL/WONT/DO/DONT; advertises terminal type "ANSI"; NAWS negotiation.
 
+### Menu System (`Core/Menu.cs`)
+
+`ModMenu` handles the in-proxy `**COMMAND**` mode UI: data display, script management, and user prompts.
+
+Key types:
+- `InputMode` enum — current interactive state: `None`, `MainMenu`, `DataMenu`, `ScriptMenu`, `DataResetConfirm`, `Input`, `Auth`
+- `HandleDataMenuAsync` — processes keystrokes in the data sub-menu
+- `ProcessCollectedInputAsync` — dispatches multi-char confirmation inputs (e.g., "YES" to reset)
+
+**Data menu 'R' (Reset sectors):** Prompts for "YES" confirmation, then calls `GlobalModules.Database.ResetSectors()`. Implemented via `InputMode.DataResetConfirm`.
+
 ### Database (`Core/Database.cs`)
 
 In-memory sector graph with persistence.
@@ -128,6 +149,8 @@ class Sector {
     string       Anomaly;
 }
 ```
+
+`ResetSectors()` — clears `_sectors`, `_planets`, `_maxSectorSeen`, repopulates with blank `SectorData`, and saves. Exposed on `ITWXDatabase` interface in `Core.cs`.
 
 ---
 
@@ -215,6 +238,17 @@ STARDOCK, ALPHACENTAURI, RYLOS
 - Logic: `&` (AND) `|` (OR) `^` (XOR) `~` (NOT)
 - Concatenation: `"Hello " & $name & "!"` (inside expressions)
 - Character literals: `#13` (CR), `#10` (LF), `#27` (ESC), `#32` (space)
+
+### Decimal Precision
+
+Pascal TWX defaults `DecimalPrecision = 0`, meaning **all numeric output is rounded to the nearest integer** unless a script calls `SETPRECISION N`.
+
+C# implementation:
+- `CmdParam._sigDigits` — byte field tracking display precision for that parameter
+- `Script.DecimalPrecision` — int property set by `SETPRECISION`; default 0
+- `CmdParam.Value` getter: when `_sigDigits == 0` and the value has a fractional part, formats as `Math.Round(_decValue, MidpointRounding.AwayFromZero).ToString()` — **not** the raw double
+- All arithmetic commands (`CmdAdd`, `CmdSubtract`, `CmdMultiply`, `CmdDivide`, `CmdModulus`) set `SigDigits = (byte)script.DecimalPrecision` on the result so `SETPRECISION` actually affects output
+- `_decValue` always retains full IEEE-754 precision; rounding only affects the string representation retrieved via `Value`
 
 ---
 
@@ -308,3 +342,32 @@ Long Range Scan                      ← HoloScan start
 - Array variables use a flat `List<VarParam>` internally; multi-dimensional indexing is computed arithmetically from dimensions.
 - The `.cts` file version must be bumped if the bytecode format changes (ScriptCmp.cs emit + ScriptDecompiler.cs read both need updates).
 - MTC uses Avalonia's dispatcher (`Dispatcher.UIThread.InvokeAsync`) for all terminal UI updates from network threads.
+
+### Script Lifecycle & Stop Order
+
+When stopping a script (`HALT`, `STOP`, or proxy shutdown), the correct sequence matters:
+
+1. `ModInterpreter.StopAll(cleanupTriggers: true)` — fires trigger cleanup on all running scripts
+2. `ScriptRef.ClearAllScriptVars()` — flushes the static `_scriptVars` dict
+3. `CloseConnections()` — tears down TCP
+
+`StopBot()` in `ModInterpreter` routes through `Stop(index)` rather than calling `Dispose()` directly, to ensure trigger cleanup callbacks run in the right order.
+
+`Script.Dispose()` calls `ScriptRef.ClearVarsForScript(ScriptName)` to clean that script's entries from the static dict even on individual halt.
+
+### Trigger Cleanup on Kill/Stop
+
+All triggers registered by a script must be cleaned up when that script stops. `KILLTRIGGER` and `KILLALLTRIGGERS` do this explicitly; `HALT`/`STOP`/proxy-shutdown must also call `KillAllTriggers()` on each script. Failure causes ghost triggers that fire on a dead script's label, throwing null-ref exceptions.
+
+### Menu System Confirmation Pattern
+
+For destructive menu operations (e.g., resetting all sector data), use the `InputMode.DataResetConfirm` pattern:
+1. Set `_inputMode = InputMode.DataResetConfirm` and send the prompt
+2. Accumulate keystrokes in `_collectedInput`
+3. In `ProcessCollectedInputAsync`, compare against `"YES"` (case-insensitive) and execute or cancel
+
+### AutoRecorder Warp Recording
+
+Warp data is captured automatically from live game output. `RecordLine` is called by the proxy for every non-blank server line. `_rxWarps` matches `"Warps to Sector(s) :"` and `ParseWarpsLine` replaces all warp slots for the current sector. No extra recording step is needed when entering a new sector.
+
+`_inWarpLane` must be cleared when a `Sector  : NNNN` header is seen — the warp lane traversal is complete at that point. Leaving it set causes subsequent sector lines to be silently swallowed as warp-lane output (historical bug, fixed).
