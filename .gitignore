@@ -11,11 +11,11 @@ obj/
 *.dll
 *.pdb
 *.dylib
-twxd
-twxd.deps.json
-twxd.runtimeconfig.json
-twxd_mm/
-runtimes/
+/twxd
+/twxd.deps.json
+/twxd.runtimeconfig.json
+/twxd_mm/
+/runtimes/
 
 # MTC publish output
 Source/MTC/publish/
