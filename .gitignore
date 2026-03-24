@@ -19,3 +19,5 @@ runtimes/
 
 # MTC publish output
 Source/MTC/publish/
+RELOG_LOOP_FIX.md
+CREDENTIAL_CHECK_FIX.md
