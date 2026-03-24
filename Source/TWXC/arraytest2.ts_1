@@ -1,5 +1,0 @@
-:start
-SETVAR $sector 100
-SETVAR $test SECTOR.WARPS[CURRENTSECTOR][$sector]
-ECHO $test
-HALT

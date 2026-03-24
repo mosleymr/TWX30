@@ -1,5 +1,0 @@
-:start
-ECHO "Line 1*Line 2"
-SETVAR %VAR_258
-ECHO %ERROR_VAR
-HALT

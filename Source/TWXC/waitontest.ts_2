@@ -1,9 +1,0 @@
-:start
-SETVAR %_concat1 "["
-CONCAT %_concat1 "CURRENTSECTOR"
-CONCAT %_concat1 "]"
-SETTEXTTRIGGER "WAITON1" :WAITON1 %_concat1
-PAUSE
-:WAITON1
-ECHO "Wait completed"
-HALT

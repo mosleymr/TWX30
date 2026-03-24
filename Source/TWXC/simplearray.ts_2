@@ -1,4 +1,0 @@
-SETVAR $i 5
-SETVAR $qss[$i] "test"
-ECHO $qss[$i]
-HALT
