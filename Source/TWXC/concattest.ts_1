@@ -1,0 +1,7 @@
+:start
+CONCAT #27 "[A"
+ECHO "Trigger set successfully"
+HALT
+:User_Access
+ECHO "UpArrow2 trigger activated"
+HALT

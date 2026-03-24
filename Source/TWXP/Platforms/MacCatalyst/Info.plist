@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Enable multi-window support so script Window commands can open separate OS windows.
+         MAUI provides its own internal scene delegate; no UISceneConfigurations block needed. -->
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <true/>
+</dict>
+</plist>

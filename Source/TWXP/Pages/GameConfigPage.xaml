@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:TWXP.ViewModels"
+             x:Class="TWXP.GameConfigPage"
+             Title="Game Configuration">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="15" WidthRequest="500" HorizontalOptions="Center">
+            
+            <!-- Game Name -->
+            <Label Text="Game Name" FontAttributes="Bold"/>
+            <Entry Text="{Binding Name}" Placeholder="Enter game name"/>
+
+            <!-- Game Settings -->
+            <Label Text="Game Settings" FontAttributes="Bold" FontSize="18" Margin="0,20,0,0"/>
+            
+            <Label Text="Host"/>
+            <Entry Text="{Binding Host}" Placeholder="localhost"/>
+            
+            <Label Text="Port"/>
+            <Entry Text="{Binding Port}" Keyboard="Numeric" Placeholder="23"/>
+            
+            <Label Text="Listen Port"/>
+            <Entry Text="{Binding ListenPort}" Keyboard="Numeric" Placeholder="2300"/>
+            
+            <Label Text="Sectors"/>
+            <Entry Text="{Binding Sectors}" Keyboard="Numeric" Placeholder="1000"/>
+
+            <Label Text="Script Directory"/>
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                <Entry Grid.Column="0"
+                       Text="{Binding ScriptDirectory}"
+                       Placeholder="scripts"/>
+                <Button Grid.Column="1"
+                        Text="Browse"
+                        Command="{Binding SelectScriptDirectoryCommand}"/>
+            </Grid>
+            
+            <HorizontalStackLayout Spacing="10" Margin="0,20,0,0">
+                <CheckBox IsChecked="{Binding AutoConnect}"/>
+                <Label Text="Auto-connect on startup" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <!-- Action Buttons -->
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="10" Margin="0,30,0,0">
+                <Button Grid.Column="0" 
+                        Text="Save"
+                        Command="{Binding SaveCommand}"/>
+                <Button Grid.Column="1"
+                        Text="Cancel"
+                        Clicked="OnCancelClicked"/>
+            </Grid>
+
+            <Button Text="Delete Game"
+                    Command="{Binding DeleteCommand}"
+                    BackgroundColor="{StaticResource Danger}"
+                    Margin="0,20,0,0"/>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

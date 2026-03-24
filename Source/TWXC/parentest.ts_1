@@ -1,0 +1,11 @@
+:start
+SETVAR %_temp1 #27
+CONCAT %_temp1 "[32mYou have a corporate memo from "
+CONCAT %_temp1 #27
+CONCAT %_temp1 "[1;36m"
+SETVAR %_temp2 #27
+CONCAT %_temp2 "[0;32m."
+CONCAT %_temp2 #13
+GETTEXT "CURRENTANSILINE" $user_name %_temp1 %_temp2
+ECHO "Command compiled successfully"
+HALT

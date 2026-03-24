@@ -1,0 +1,7 @@
+:start
+SETVAR $sector 100
+BRANCH "SECTOR.WARPS[CURRENTSECTOR][$sector] > 0" ::1
+ECHO "Has warp"
+::1
+::2
+HALT

@@ -1,0 +1,33 @@
+SETVAR $i 1
+::1
+BRANCH $i <= 33 ::2
+BRANCH $custom_keys[$i] <> "0" AND $custom_keys[$i] <> "" ::3
+BRANCH $custom_keys[$i] = #9 ::5
+SETVAR $qss[$i][$i] "TAB-TAB"
+GOTO ::6
+::5
+BRANCH $custom_keys[$i] = #13 ::7
+SETVAR $qss[$i][$i] "TAB-Enter"
+GOTO ::6
+::7
+BRANCH $custom_keys[$i] = #8 ::8
+SETVAR $qss[$i][$i] "TAB-Backspace"
+GOTO ::6
+::8
+BRANCH $custom_keys[$i] = #32 ::9
+SETVAR $qss[$i][$i] "TAB-Spacebar"
+GOTO ::6
+::9
+SETVAR $qss[$i][$i] "TAB-"
+CONCAT $qss[$i][$i] $custom_keys[$i][$i]
+::9
+::6
+GOTO ::4
+::3
+SETVAR $qss[$i][$i] "Undefined"
+::3
+::4
+ADD $i 1
+GOTO ::1
+::2
+HALT

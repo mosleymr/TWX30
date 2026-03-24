@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:TWXP.ViewModels"
+             xmlns:models="clr-namespace:TWXP.Models"
+             x:Class="TWXP.MainPage">
+
+    <!-- AbsoluteLayout is the root so script window panels can float freely on top -->
+    <AbsoluteLayout>
+
+        <!-- Main content fills the whole space -->
+        <Grid RowDefinitions="Auto,*" Padding="20"
+              AbsoluteLayout.LayoutBounds="0,0,1,1"
+              AbsoluteLayout.LayoutFlags="All">
+        
+        
+        <!-- Header -->
+        <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,20">
+            <Label Text="Active Games" 
+                   FontSize="24" 
+                   FontAttributes="Bold"
+                   VerticalOptions="Center"/>
+            
+            <Button Grid.Column="1"
+                    Text="Load Game"
+                    Command="{Binding LoadGameCommand}"
+                    Margin="0,0,10,0"
+                    HorizontalOptions="End"/>
+            
+            <Button Grid.Column="2"
+                    Text="Add Game"
+                    Command="{Binding AddGameCommand}"
+                    HorizontalOptions="End"/>
+        </Grid>
+
+        <!-- Games List -->
+        <ScrollView Grid.Row="1">
+            <CollectionView ItemsSource="{Binding Games}"
+                           SelectionMode="None">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="vm:GameConfigViewModel">
+                        <Border Margin="0,0,0,10"
+                                Padding="15"
+                                BackgroundColor="{AppThemeBinding Light={StaticResource Gray100}, Dark={StaticResource Gray900}}"
+                                Stroke="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray800}}"
+                                StrokeThickness="1">
+                            <Border.StrokeShape>
+                                <RoundRectangle CornerRadius="8"/>
+                            </Border.StrokeShape>
+
+                            <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+                                
+                                <!-- Game Name and Status -->
+                                <Grid Grid.Row="0" Grid.Column="0" ColumnDefinitions="Auto,*">
+                                    <Label Text="{Binding Name}"
+                                           FontSize="18"
+                                           FontAttributes="Bold"
+                                           VerticalOptions="Center"/>
+                                    
+                                    <Border Grid.Column="1"
+                                            Margin="10,0,0,0"
+                                            Padding="8,4"
+                                            BackgroundColor="{Binding StatusColor}"
+                                            HorizontalOptions="Start"
+                                            VerticalOptions="Center">
+                                        <Border.StrokeShape>
+                                            <RoundRectangle CornerRadius="4"/>
+                                        </Border.StrokeShape>
+                                        <Label Text="{Binding StatusText}"
+                                               TextColor="White"
+                                               FontSize="12"
+                                               FontAttributes="Bold"/>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Connection Info -->
+                                <StackLayout Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Margin="0,8,0,0">
+                                    <Label Text="Connection:" FontSize="12" TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray400}}"/>
+                                    <Label Text="{Binding Host}" FontSize="12" Margin="4,0,0,0"/>
+                                    <Label Text=":" FontSize="12"/>
+                                    <Label Text="{Binding Port}" FontSize="12"/>
+                                    <Label Text="|" FontSize="12" Margin="10,0"/>
+                                    <CheckBox IsChecked="{Binding AutoConnect}" IsEnabled="False" Scale="0.8" Margin="0,-4,0,0"/>
+                                    <Label Text="Auto-connect" FontSize="12" VerticalOptions="Center"/>
+                                </StackLayout>
+
+                                <!-- Control Buttons -->
+                                <HorizontalStackLayout Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Spacing="8" VerticalOptions="Center">
+                                    <Button Text="Start"
+                                            Command="{Binding StartCommand}"
+                                            IsEnabled="{Binding CanStart}"
+                                            WidthRequest="80"
+                                            HeightRequest="36"/>
+                                    <Button Text="Stop"
+                                            Command="{Binding StopCommand}"
+                                            IsEnabled="{Binding CanStop}"
+                                            WidthRequest="80"
+                                            HeightRequest="36"/>
+                                    <Button Text="Edit"
+                                            Command="{Binding EditCommand}"
+                                            WidthRequest="80"
+                                            HeightRequest="36"/>
+                                    <Button Text="Remove"
+                                            Command="{Binding RemoveCommand}"
+                                            WidthRequest="80"
+                                            HeightRequest="36"/>
+                                </HorizontalStackLayout>
+
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+                
+                <CollectionView.EmptyView>
+                    <StackLayout VerticalOptions="Center" HorizontalOptions="Center" Padding="40">
+                        <Label Text="No games configured"
+                               FontSize="18"
+                               TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray400}}"
+                               HorizontalOptions="Center"/>
+                        <Label Text="Click 'Add Game' to create your first game configuration"
+                               FontSize="14"
+                               TextColor="{AppThemeBinding Light={StaticResource Gray500}, Dark={StaticResource Gray500}}"
+                               HorizontalOptions="Center"
+                               Margin="0,8,0,0"/>
+                    </StackLayout>
+                </CollectionView.EmptyView>
+            </CollectionView>
+        </ScrollView>
+
+        <ActivityIndicator Grid.Row="1" 
+                          IsRunning="{Binding IsBusy}"
+                          IsVisible="{Binding IsBusy}"
+                          HorizontalOptions="Center"
+                          VerticalOptions="Center"/>
+        </Grid>
+
+        <!-- Script window panels float here as an overlay (populated at runtime).
+             InputTransparent=True so touches fall through to the game content below;
+             each ScriptWindowPanel sets InputTransparent=False on itself. -->
+        <AbsoluteLayout x:Name="ScriptWindowOverlay"
+                        AbsoluteLayout.LayoutBounds="0,0,1,1"
+                        AbsoluteLayout.LayoutFlags="All"
+                        InputTransparent="True"/>
+
+    </AbsoluteLayout>
+
+</ContentPage>

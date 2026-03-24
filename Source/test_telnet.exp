@@ -1,0 +1,58 @@
+#!/usr/bin/expect -f
+
+# Test script to verify character-by-character transmission with telnet
+
+set timeout 5
+
+# Start proxy in background
+spawn bash -c "cd /Users/mosleym/Code/twxproxy/TWX26/TWX30/Source/TestNetworkDB && dotnet run --project TestNetworkDB.csproj 'ExpectTest' localhost 2002 2602"
+
+# Wait for proxy to be ready
+sleep 2
+
+# Connect with telnet
+spawn telnet localhost 2602
+
+# Wait for connection
+expect {
+    "Escape character" {
+        send_user "\n=== Connected to proxy ===\n"
+    }
+    timeout {
+        send_user "\n=== Timeout waiting for connection ===\n"
+        exit 1
+    }
+}
+
+# Send $c character (should work immediately without CR)
+send "\$c"
+send_user "\n=== Sent \$c command ===\n"
+
+# Wait for connection message
+expect {
+    "Connected!" {
+        send_user "\n=== Server connection established ===\n"
+    }
+    timeout {
+        send_user "\n=== Timeout waiting for server connection ===\n"
+    }
+}
+
+# Send some text
+sleep 1
+send "hello\r"
+send_user "\n=== Sent hello ===\n"
+
+# Wait for echo
+expect {
+    "ECHO" {
+        send_user "\n=== Received echo from server ===\n"
+    }
+    timeout {
+        send_user "\n=== Timeout waiting for echo ===\n"
+    }
+}
+
+sleep 1
+send_user "\n=== Test complete ===\n"
+exit 0

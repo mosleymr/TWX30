@@ -1,0 +1,5 @@
+:start
+SETVAR $PLANET "Test#Value"
+STRIPTEXT $PLANET "#"
+ECHO $PLANET
+HALT

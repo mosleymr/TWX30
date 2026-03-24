@@ -1,0 +1,940 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Threading;
+using SkiaSharp;
+using Avalonia.Skia;
+using Avalonia.Rendering.SceneGraph;
+using Core = TWXProxy.Core;
+
+namespace MTC;
+
+/// <summary>
+/// Visual sector map window — similar to SWATH's Visual Map.
+/// Renders sectors as boxes with warp-line connections.
+/// Solid lines = two-way warps, dashed lines = one-way warps.
+/// </summary>
+public class MapWindow : Window
+{
+    // ── Layout constants ──────────────────────────────────────────────────
+    private const float BoxW    = 56f;   // sector box width
+    private const float BoxH    = 38f;   // sector box height
+    private const float GridX   = 110f;  // horizontal grid spacing
+    private const float GridY   = 80f;   // vertical grid spacing
+    private const int   MaxDepth = 3;    // BFS depth from center
+
+    // ── State ─────────────────────────────────────────────────────────────
+    private int  _centerSector;
+    private readonly Func<int>            _getCurrentSector;
+    private readonly Func<Core.ModDatabase?> _getDb;
+
+    // Computed layout: sector number → canvas position
+    private Dictionary<int, SKPoint> _positions = new();
+    private Dictionary<int, Core.SectorData?> _sectorCache = new();
+
+    // Nav history (browser-style back/forward)
+    private readonly List<int> _history      = new();
+    private int                _historyIndex = -1;
+
+    // Pan & zoom
+    private float   _zoom      = 1.0f;
+    private SKPoint _pan       = new(0, 0);
+    private bool    _dragging;
+    private Point   _dragStart;
+    private SKPoint _panStart;
+
+    // UI controls
+    private readonly MapCanvas  _canvas;
+    private readonly TextBlock  _titleLabel;
+    private readonly TextBox    _sectorBox;
+    private          Button     _backBtn    = new();
+    private          Button     _fwdBtn     = new();
+    private          Slider     _zoomSlider = new();
+    private readonly DispatcherTimer _refreshTimer;
+
+    // ── Colors (SkiaSharp) ────────────────────────────────────────────────
+    private static readonly SKColor ColBg         = new(0x0a, 0x0a, 0x18);
+    private static readonly SKColor ColBoxExp      = new(0x00, 0xc8, 0xc8); // teal — explored
+    private static readonly SKColor ColBoxDensity  = new(0x40, 0x80, 0x80); // dim teal — density only
+    private static readonly SKColor ColBoxUnknown  = new(0x50, 0x50, 0x55); // gray — unknown
+    private static readonly SKColor ColBoxCurrent  = new(0x22, 0xcc, 0x55); // green — current
+    private static readonly SKColor ColBoxText     = new(0x00, 0x00, 0x00);
+    private static readonly SKColor ColBoxTextUnk  = new(0xdd, 0xdd, 0xdd);
+    private static readonly SKColor ColLineTwo     = new(0xff, 0xff, 0xff); // solid two-way
+    private static readonly SKColor ColLineOne     = new(0x88, 0x88, 0x88); // dashed one-way
+    private static readonly SKColor ColStarBg      = new(0xff, 0xff, 0xff);
+    private static readonly SKColor ColPort        = new(0x00, 0xff, 0x00);
+
+    private static readonly float[] DashIntervals  = { 6f, 5f };
+
+    // ── Star field (random, fixed seed per window) ────────────────────────
+    private readonly (float X, float Y, byte A)[] _stars;
+
+    public MapWindow(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
+    {
+        _getCurrentSector = getCurrentSector;
+        _getDb            = getDb;
+        _centerSector     = getCurrentSector();
+        if (_centerSector <= 0) _centerSector = 1;
+
+        Title          = "Visual Map";
+        Width          = 1100;
+        Height         = 760;
+        MinWidth       = 600;
+        MinHeight      = 400;
+        Background     = new SolidColorBrush(Color.FromRgb(0x0a, 0x0a, 0x18));
+
+        // Generate a fixed star field
+        var rng = new Random(42);
+        _stars = new (float, float, byte)[250];
+        for (int i = 0; i < _stars.Length; i++)
+            _stars[i] = ((float)(rng.NextDouble() * 4000 - 2000),
+                          (float)(rng.NextDouble() * 4000 - 2000),
+                          (byte)(80 + rng.Next(176)));
+
+        // ── Title label ───────────────────────────────────────────────────
+        _titleLabel = new TextBlock
+        {
+            Text              = "Visual Map",
+            Foreground        = Brushes.White,
+            FontSize          = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(6, 0, 12, 0),
+        };
+
+        _backBtn = new Button { Content = "\u25c4", Width = 28, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _backBtn.Click += (_, _) => NavBack();
+        ToolTip.SetTip(_backBtn, "Back");
+
+        _fwdBtn = new Button { Content = "\u25ba", Width = 28, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _fwdBtn.Click += (_, _) => NavForward();
+        ToolTip.SetTip(_fwdBtn, "Forward");
+
+        var centerBtn  = new Button { Content = "Go",      Padding = new Thickness(10, 2), VerticalAlignment = VerticalAlignment.Center };
+        centerBtn.Click  += (_, _) => GoToSector();
+
+        var currentBtn = new Button { Content = "Current", Padding = new Thickness(10, 2), VerticalAlignment = VerticalAlignment.Center };
+        currentBtn.Click += (_, _) => NavigateTo(Math.Max(1, _getCurrentSector()));
+
+        var refreshBtn = new Button { Content = "\u21bb",  Width = 28, Padding = new Thickness(4, 2), VerticalAlignment = VerticalAlignment.Center };
+        refreshBtn.Click += (_, _) => Rebuild();
+        ToolTip.SetTip(refreshBtn, "Refresh");
+
+        _zoomSlider = new Slider
+        {
+            Minimum           = 0,
+            Maximum           = 100,
+            Value             = ZoomToSlider(_zoom),
+            Width             = 120,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _zoomSlider.ValueChanged += (_, e) =>
+        {
+            _zoom = SliderToZoom((float)e.NewValue);
+            _canvas.InvalidateVisual();
+        };
+
+        _sectorBox = new TextBox
+        {
+            Width                    = 70,
+            FontSize                 = 12,
+            Watermark                = "sector #",
+            VerticalAlignment        = VerticalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        _sectorBox.KeyDown += OnSectorBoxKeyDown;
+
+        var sectorLabelNav = new TextBlock
+        {
+            Text              = "Sector:",
+            Foreground        = Brushes.Silver,
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(10, 0, 4, 0),
+        };
+        var zoomLabel = new TextBlock
+        {
+            Text              = "Zoom:",
+            Foreground        = Brushes.Silver,
+            FontSize          = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(10, 0, 4, 0),
+        };
+
+        var toolbar = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x1e, 0x1e, 0x2e)),
+            Padding    = new Thickness(4, 5),   // vertical padding lets controls breathe at their natural height
+            Child      = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing     = 4,
+                Children    =
+                {
+                    _backBtn, _fwdBtn,
+                    new Border { Width = 4 },
+                    _titleLabel,
+                    sectorLabelNav, _sectorBox, centerBtn, currentBtn, refreshBtn,
+                    zoomLabel, _zoomSlider,
+                },
+            },
+        };
+
+        // Legend
+        var legend = BuildLegend();
+
+        // ── Canvas ────────────────────────────────────────────────────────
+        _canvas = new MapCanvas(this);
+        _canvas.PointerWheelChanged += OnWheel;
+        _canvas.PointerPressed      += OnPointerPressed;
+        _canvas.PointerMoved        += OnPointerMoved;
+        _canvas.PointerReleased     += OnPointerReleased;
+        _canvas.DoubleTapped        += OnDoubleTapped;
+
+        var layout = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0a, 0x18)) };
+        DockPanel.SetDock(toolbar, Dock.Top);
+        DockPanel.SetDock(legend,  Dock.Bottom);
+        layout.Children.Add(toolbar);
+        layout.Children.Add(legend);
+        layout.Children.Add(_canvas);
+
+        Content = layout;
+
+        // Auto-refresh every 2 s:
+        //   • If the player has moved to a new sector → NavigateTo (full re-center + rebuild)
+        //   • Otherwise → RefreshData (re-read DB, redraw, no layout recalc)
+        _refreshTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background,
+            (_, _) =>
+            {
+                int cur = _getCurrentSector();
+                if (cur > 0 && cur != _centerSector)
+                    NavigateTo(cur);
+                else
+                    RefreshData();
+            });
+        Opened  += (_, _) => _refreshTimer.Start();
+        Closing += (_, _) => _refreshTimer.Stop();
+
+        NavigateTo(_centerSector);
+    }
+
+    // ── Legend bar ────────────────────────────────────────────────────────
+
+    private Control BuildLegend()
+    {
+        static Border Swatch(Color c) => new Border
+        {
+            Width = 18, Height = 12, Background = new SolidColorBrush(c),
+            Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        static TextBlock Lbl(string t) => new TextBlock
+        {
+            Text = t, Foreground = Brushes.Silver, FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 12, 0),
+        };
+
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Background  = new SolidColorBrush(Color.FromRgb(0x14, 0x14, 0x20)),
+            Margin      = new Thickness(0),
+            Height      = 24,
+            Children    =
+            {
+                new Border { Width = 8 },
+                Swatch(Color.FromRgb(0x22, 0xcc, 0x55)), Lbl("Current"),
+                Swatch(Color.FromRgb(0x00, 0xc8, 0xc8)), Lbl("Explored"),
+                Swatch(Color.FromRgb(0x40, 0x80, 0x80)), Lbl("Density only"),
+                Swatch(Color.FromRgb(0x50, 0x50, 0x55)), Lbl("Unknown"),
+            },
+        };
+
+        // Solid line swatch
+        var solidLine = new Border
+        {
+            Width = 22, Height = 2,
+            Background = new SolidColorBrush(Colors.White),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
+        };
+        panel.Children.Add(solidLine);
+        panel.Children.Add(Lbl("Two-way"));
+
+        // Dashed line swatch — approximate with three small borders
+        var dashPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+        foreach (var (w, bg) in new (int, IBrush)[] { (5, Brushes.Gray), (3, Brushes.Transparent), (5, Brushes.Gray), (3, Brushes.Transparent), (5, Brushes.Gray) })
+            dashPanel.Children.Add(new Border { Width = w, Height = 2, Background = bg });
+        panel.Children.Add(dashPanel);
+        panel.Children.Add(Lbl("One-way"));
+
+        return panel;
+    }
+
+    // ── Navigation history ─────────────────────────────────────────────────
+
+    private void NavigateTo(int sector)
+    {
+        if (sector <= 0) return;
+        // Truncate forward history when navigating to a new sector
+        if (_historyIndex < _history.Count - 1)
+            _history.RemoveRange(_historyIndex + 1, _history.Count - _historyIndex - 1);
+        // Don't push duplicate consecutive entry
+        if (_history.Count == 0 || _history[_historyIndex] != sector)
+        {
+            _history.Add(sector);
+            _historyIndex = _history.Count - 1;
+        }
+        _centerSector = sector;
+        _pan = new SKPoint(0, 0);
+        Rebuild();
+    }
+
+    private void NavBack()
+    {
+        if (_historyIndex <= 0) return;
+        _historyIndex--;
+        _centerSector = _history[_historyIndex];
+        _pan = new SKPoint(0, 0);
+        Rebuild();
+    }
+
+    private void NavForward()
+    {
+        if (_historyIndex >= _history.Count - 1) return;
+        _historyIndex++;
+        _centerSector = _history[_historyIndex];
+        _pan = new SKPoint(0, 0);
+        Rebuild();
+    }
+
+    private void UpdateNavButtons()
+    {
+        _backBtn.IsEnabled = _historyIndex > 0;
+        _fwdBtn.IsEnabled  = _historyIndex < _history.Count - 1;
+    }
+
+    // ── Zoom helpers ───────────────────────────────────────────────────────
+
+    // Slider 0→100 maps logarithmically: 0 = 0.2×, 50 ≈ 0.9×, 100 = 4.0×
+    private static float SliderToZoom(float v)
+        => 0.2f * (float)Math.Pow(20.0, v / 100.0);
+
+    private static float ZoomToSlider(float z)
+        => (float)(Math.Log(z / 0.2) / Math.Log(20.0) * 100.0);
+
+    // ── Rebuild layout ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Full rebuild: BFS from current center, recompute force-directed layout, redraw.
+    /// Call when the center sector changes (player moved) or on explicit Refresh.
+    /// </summary>
+    public void Rebuild()
+    {
+        _positions.Clear();
+        _sectorCache.Clear();
+
+        var db = _getDb();
+        if (db == null) { _canvas.InvalidateVisual(); return; }
+
+        // BFS from center sector, collect sectors up to MaxDepth hops
+        var visited  = new Dictionary<int, int>(); // sector → depth
+        var queue    = new Queue<int>();
+        if (_centerSector > 0)
+        {
+            visited[_centerSector] = 0;
+            queue.Enqueue(_centerSector);
+        }
+
+        while (queue.Count > 0)
+        {
+            int sn = queue.Dequeue();
+            int d  = visited[sn];
+            var sd = db.GetSector(sn);
+            _sectorCache[sn] = sd;
+            if (d >= MaxDepth || sd == null) continue;
+
+            foreach (var w in sd.Warp.Where(w => w > 0))
+            {
+                if (!visited.ContainsKey(w))
+                {
+                    visited[w] = d + 1;
+                    queue.Enqueue(w);
+                }
+            }
+            // Also include WarpsIn neighbors so we can draw back-arrows
+            foreach (var w in sd.WarpsIn.Where(w => w > 0))
+            {
+                if (!visited.ContainsKey(w) && d + 1 <= MaxDepth)
+                {
+                    visited[w] = d + 1;
+                    queue.Enqueue(w);
+                }
+            }
+        }
+
+        // Cache any missing sectors
+        foreach (var sn in visited.Keys.Where(s => !_sectorCache.ContainsKey(s)))
+            _sectorCache[sn] = db.GetSector(sn);
+
+        // ── Layout: BFS tree with simple force-relaxation ─────────────────
+        ComputePositions(visited);
+
+        // Debug: log all visible sectors and their DB status
+        if (Core.GlobalModules.DebugMode)
+        {
+            Core.GlobalModules.DebugLog($"[MapWindow.Rebuild] center={_centerSector} positions={_positions.Count}\n");
+            foreach (var sn in _positions.Keys.OrderBy(x => x))
+            {
+                var s = db.GetSector(sn);
+                if (s == null)
+                    Core.GlobalModules.DebugLog($"  sector {sn}: NOT IN DB\n");
+                else
+                    Core.GlobalModules.DebugLog($"  sector {sn}: explored={s.Explored} port={(s.SectorPort == null ? "null" : $"{s.SectorPort.Name} cls={s.SectorPort.ClassIndex}")}\n");
+            }
+        }
+
+        _titleLabel.Text = $"Visual Map  –  Center: Sector {_centerSector}";
+        UpdateNavButtons();
+        _canvas.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Lightweight refresh: re-read sector data from the DB for all currently
+    /// visible sectors, then redraw without recomputing the layout.
+    /// Call when the player is still in the same sector but new data may have
+    /// arrived (holo scan, sector display, etc.).
+    /// </summary>
+    private void RefreshData()
+    {
+        var db = _getDb();
+        if (db == null) { _canvas.InvalidateVisual(); return; }
+        foreach (var sn in _positions.Keys.ToList())
+            _sectorCache[sn] = db.GetSector(sn);
+        _canvas.InvalidateVisual();
+    }
+
+    // ── Position computation ──────────────────────────────────────────────
+
+    private void ComputePositions(Dictionary<int, int> visited)
+    {
+        // Assign an angle slice to each child sector from its parent.
+        // Root goes to (0,0). Level-1 sectors are spread evenly around it.
+        // Deeper sectors fan out from their parent's direction.
+
+        var assigned = new Dictionary<int, SKPoint>();
+        var parentOf = new Dictionary<int, int>();
+
+        var bfsOrder = new Queue<int>();
+        bfsOrder.Enqueue(_centerSector);
+        assigned[_centerSector] = new SKPoint(0, 0);
+
+        var db = _getDb();
+        // Build reverse-BFS parent map first (BFS from center)
+        var seenBFS = new HashSet<int> { _centerSector };
+        var bfsQ2   = new Queue<int>();
+        bfsQ2.Enqueue(_centerSector);
+        while (bfsQ2.Count > 0)
+        {
+            int sn = bfsQ2.Dequeue();
+            var sd = db?.GetSector(sn);
+            if (sd == null) continue;
+            foreach (var w in sd.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !seenBFS.Contains(w)))
+            {
+                seenBFS.Add(w);
+                parentOf[w] = sn;
+                bfsQ2.Enqueue(w);
+            }
+        }
+
+        // Group children by parent and assign positions layer by layer
+        // children that have no explicit parent (only WarpsIn) get placed near their partner
+        var childrenOf = new Dictionary<int, List<int>>();
+        foreach (var (child, parent) in parentOf)
+        {
+            if (!childrenOf.ContainsKey(parent)) childrenOf[parent] = new();
+            childrenOf[parent].Add(child);
+        }
+
+        // BFS placement
+        var placeQ = new Queue<int>();
+        placeQ.Enqueue(_centerSector);
+        var placed = new HashSet<int> { _centerSector };
+
+        while (placeQ.Count > 0)
+        {
+            int sn = placeQ.Dequeue();
+            if (!childrenOf.ContainsKey(sn)) continue;
+
+            var children = childrenOf[sn];
+            int n = children.Count;
+            SKPoint parentPos = assigned[sn];
+
+            // Pick default parent-to-origin direction (away from center if not root)
+            float baseAngle = parentOf.TryGetValue(sn, out int par)
+                ? AngleBetween(assigned[par], parentPos)
+                : (float)Math.PI / 2; // start pointing down for root
+
+            // Spread children in a fan around the outgoing direction
+            float spreadTotal = n == 1 ? 0 : (float)Math.PI * (n <= 3 ? 1.4f : 1.8f);
+            float angleStep   = n > 1 ? spreadTotal / (n - 1) : 0;
+            float startAngle  = baseAngle - spreadTotal / 2;
+
+            for (int i = 0; i < n; i++)
+            {
+                int child = children[i];
+                if (placed.Contains(child)) continue;
+
+                float angle = n == 1 ? baseAngle : startAngle + i * angleStep;
+                float dx    = (float)Math.Cos(angle) * GridX;
+                float dy    = (float)Math.Sin(angle) * GridY;
+                SKPoint pos = new(parentPos.X + dx, parentPos.Y + dy);
+
+                // Avoid overlap: nudge if too close to an existing node
+                pos = ResolveOverlap(pos, assigned);
+
+                assigned[child] = pos;
+                placed.Add(child);
+                placeQ.Enqueue(child);
+            }
+        }
+
+        // Place any remaining (WarpsIn-only) sectors near their first known warp partner
+        foreach (var sn in visited.Keys.Where(s => !assigned.ContainsKey(s)))
+        {
+            var sd = db?.GetSector(sn);
+            if (sd == null) continue;
+            var partner = sd.Warp.FirstOrDefault(w => w > 0 && assigned.ContainsKey(w));
+            if (partner > 0)
+            {
+                SKPoint basePos = assigned[partner];
+                var pos = ResolveOverlap(new SKPoint(basePos.X + GridX * 0.8f, basePos.Y + GridY * 0.5f), assigned);
+                assigned[sn] = pos;
+            }
+        }
+
+        // ── Force-directed refinement ─────────────────────────────────────
+        // Pull connected sectors together and push unconnected ones apart so
+        // the layout distributes more evenly and crossing lines are reduced.
+        var db2     = _getDb();
+        var fdEdges = new List<(int A, int B)>();
+        var seenFd  = new HashSet<(int, int)>();
+        foreach (var sn in assigned.Keys)
+        {
+            var sd = db2?.GetSector(sn);
+            if (sd == null) continue;
+            foreach (var w in sd.Warp.Where(w => w > 0 && assigned.ContainsKey(w)))
+            {
+                int ea = Math.Min(sn, w), eb = Math.Max(sn, w);
+                if (seenFd.Add((ea, eb))) fdEdges.Add((ea, eb));
+            }
+        }
+        ForceDirectedRelax(assigned, fdEdges, _centerSector);
+
+        _positions = assigned;
+    }
+
+    private static SKPoint ResolveOverlap(SKPoint candidate, Dictionary<int, SKPoint> existing)
+    {
+        const float MinDist = 70f;
+        int tries = 0;
+        float offset = 0;
+        float angle  = 0;
+        while (existing.Values.Any(p => Dist(p, candidate) < MinDist) && tries < 32)
+        {
+            offset += MinDist * 0.5f;
+            angle  += 0.9f;
+            candidate = new SKPoint(
+                candidate.X + (float)Math.Cos(angle) * offset,
+                candidate.Y + (float)Math.Sin(angle) * offset);
+            tries++;
+        }
+        return candidate;
+    }
+
+    private static float Dist(SKPoint a, SKPoint b)
+    {
+        float dx = a.X - b.X, dy = a.Y - b.Y;
+        return (float)Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private static float AngleBetween(SKPoint from, SKPoint to)
+        => (float)Math.Atan2(to.Y - from.Y, to.X - from.X);
+
+    /// <summary>Point on the sector box edge in the direction from
+    /// <paramref name="center"/> toward <paramref name="toward"/>.</summary>
+    private static SKPoint BoxEdgePoint(SKPoint center, SKPoint toward)
+    {
+        float dx = toward.X - center.X;
+        float dy = toward.Y - center.Y;
+        float adx = Math.Abs(dx), ady = Math.Abs(dy);
+        if (adx < 0.001f && ady < 0.001f) return center;
+        float tx = adx > 0.001f ? (BoxW / 2f) / adx : float.MaxValue;
+        float ty = ady > 0.001f ? (BoxH / 2f) / ady : float.MaxValue;
+        float t  = Math.Min(tx, ty);
+        return new SKPoint(center.X + dx * t, center.Y + dy * t);
+    }
+
+    /// <summary>Fruchterman–Reingold force-directed relaxation.
+    /// Repels all node pairs, attracts connected pairs, cools each iteration.</summary>
+    private static void ForceDirectedRelax(
+        Dictionary<int, SKPoint> pos,
+        List<(int A, int B)> edges,
+        int pinnedSector)
+    {
+        const float K    = 120f;  // ideal edge length
+        float       temp = 70f;
+        var         nodes = pos.Keys.ToList();
+
+        for (int iter = 0; iter < 80; iter++)
+        {
+            var disp = nodes.ToDictionary(n => n, _ => new SKPoint(0, 0));
+
+            // Repulsive forces between every pair of nodes
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                for (int j = i + 1; j < nodes.Count; j++)
+                {
+                    int   u  = nodes[i], v = nodes[j];
+                    float dx = pos[u].X - pos[v].X;
+                    float dy = pos[u].Y - pos[v].Y;
+                    float d  = MathF.Sqrt(dx * dx + dy * dy);
+                    if (d < 1f) { d = 1f; dx = 1f; dy = 0f; }
+                    float f  = K * K / d;
+                    disp[u] = new SKPoint(disp[u].X + dx / d * f, disp[u].Y + dy / d * f);
+                    disp[v] = new SKPoint(disp[v].X - dx / d * f, disp[v].Y - dy / d * f);
+                }
+            }
+
+            // Attractive spring forces along warp edges
+            foreach (var (a, b) in edges)
+            {
+                if (!pos.ContainsKey(a) || !pos.ContainsKey(b)) continue;
+                float dx = pos[a].X - pos[b].X;
+                float dy = pos[a].Y - pos[b].Y;
+                float d  = MathF.Sqrt(dx * dx + dy * dy);
+                if (d < 1f) continue;
+                float f  = d * d / K;
+                disp[a] = new SKPoint(disp[a].X - dx / d * f, disp[a].Y - dy / d * f);
+                disp[b] = new SKPoint(disp[b].X + dx / d * f, disp[b].Y + dy / d * f);
+            }
+
+            // Apply movements capped by temperature; gently pull center toward origin
+            foreach (var n in nodes)
+            {
+                float dx = disp[n].X;
+                float dy = disp[n].Y;
+                if (n == pinnedSector)
+                {
+                    dx -= pos[n].X * 0.3f;
+                    dy -= pos[n].Y * 0.3f;
+                }
+                float dm = MathF.Sqrt(dx * dx + dy * dy);
+                if (dm > 0.001f)
+                {
+                    float scale = MathF.Min(dm, temp) / dm;
+                    pos[n] = new SKPoint(pos[n].X + dx * scale, pos[n].Y + dy * scale);
+                }
+            }
+
+            temp *= 0.93f;
+        }
+    }
+
+    // ── Rendering (called from MapCanvas) ────────────────────────────────
+
+    internal void Draw(SKCanvas sk, float canvasW, float canvasH)
+    {
+        // Draw background rect (not sk.Clear which bypasses the clip layer and
+        // would overdraw toolbar/legend rendered by Avalonia above this control).
+        using var bgPaint = new SKPaint { Color = ColBg, Style = SKPaintStyle.Fill };
+        sk.DrawRect(0, 0, canvasW, canvasH, bgPaint);
+        bgPaint.Dispose();
+
+        // Transform: canvas center + pan + zoom
+        float cx = canvasW / 2 + _pan.X;
+        float cy = canvasH / 2 + _pan.Y;
+        sk.Save();
+        sk.Translate(cx, cy);
+        sk.Scale(_zoom);
+
+        // Stars
+        using var starPaint = new SKPaint { IsAntialias = false };
+        foreach (var star in _stars)
+        {
+            starPaint.Color = ColStarBg.WithAlpha(star.A);
+            sk.DrawCircle(star.X, star.Y, 1.0f, starPaint);
+        }
+
+        if (_positions.Count == 0) { sk.Restore(); return; }
+
+        // ── Draw warp lines first (under boxes) ───────────────────────────
+        using var linePaintTwo = new SKPaint
+        {
+            IsAntialias = true, StrokeWidth = 2f,
+            Color = ColLineTwo, Style = SKPaintStyle.Stroke,
+        };
+        using var linePaintOne = new SKPaint
+        {
+            IsAntialias = true, StrokeWidth = 1.5f,
+            Color = ColLineOne, Style = SKPaintStyle.Stroke,
+            PathEffect = SKPathEffect.CreateDash(DashIntervals, 0),
+        };
+
+        var drawnEdges = new HashSet<(int, int)>();
+        foreach (var (sn, pos) in _positions)
+        {
+            if (!_sectorCache.TryGetValue(sn, out var sd) || sd == null) continue;
+            foreach (var w in sd.Warp.Where(w => w > 0 && _positions.ContainsKey(w)))
+            {
+                // Check two-way: target also has a warp back to us
+                _sectorCache.TryGetValue(w, out var target);
+                bool twoWay = target != null && target.Warp.Contains((ushort)sn);
+
+                // Only draw each edge once
+                int a = Math.Min(sn, w), b = Math.Max(sn, w);
+                if (twoWay && drawnEdges.Contains((a, b))) continue;
+                drawnEdges.Add((a, b));
+
+                // Route lines from box edge to box edge for cleaner visuals
+                SKPoint pA = BoxEdgePoint(pos,          _positions[w]);
+                SKPoint pB = BoxEdgePoint(_positions[w], pos);
+
+                if (twoWay)
+                    sk.DrawLine(pA.X, pA.Y, pB.X, pB.Y, linePaintTwo);
+                else
+                    DrawArrow(sk, pA, pB, linePaintOne);
+            }
+        }
+
+        // ── Draw sector boxes ──────────────────────────────────────────────
+        using var boxPaint   = new SKPaint { IsAntialias = false, Style = SKPaintStyle.Fill };
+        using var borderPaint= new SKPaint { IsAntialias = true,  Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f };
+        using var textPaint  = new SKPaint { IsAntialias = true, TextSize = 11f, Typeface = SKTypeface.Default };
+        using var smallPaint = new SKPaint { IsAntialias = true, TextSize = 9f,  Typeface = SKTypeface.Default };
+
+        int currentSect = _getCurrentSector();
+
+        foreach (var (sn, pos) in _positions)
+        {
+            _sectorCache.TryGetValue(sn, out var sd);
+            bool isCurrent = sn == currentSect;
+
+            SKColor fillColor = isCurrent ? ColBoxCurrent :
+                sd?.Explored == Core.ExploreType.Yes     ? ColBoxExp :
+                sd?.Explored == Core.ExploreType.Density ? ColBoxDensity :
+                ColBoxUnknown;
+
+            float x = pos.X - BoxW / 2;
+            float y = pos.Y - BoxH / 2;
+            var   r = new SKRect(x, y, x + BoxW, y + BoxH);
+
+            boxPaint.Color = fillColor;
+            sk.DrawRect(r, boxPaint);
+
+            borderPaint.Color = isCurrent
+                ? new SKColor(0x00, 0x99, 0x33)
+                : sd?.Explored == Core.ExploreType.Yes
+                    ? new SKColor(0x00, 0x99, 0x99)
+                    : new SKColor(0x44, 0x44, 0x55);
+            borderPaint.PathEffect = null;
+            sk.DrawRect(r, borderPaint);
+
+            // Sector number
+            bool darkBg = fillColor == ColBoxUnknown;
+            textPaint.Color = darkBg ? ColBoxTextUnk : ColBoxText;
+            string numStr = sn.ToString();
+            float tw = textPaint.MeasureText(numStr);
+            sk.DrawText(numStr, pos.X - tw / 2, y + 13f, textPaint);
+
+            // Port/content icons — show port label whenever we have port data (regardless
+            // of ExploreType), and show general sector info for any explored sector.
+            if (sd != null && (sd.SectorPort != null || sd.Explored > Core.ExploreType.No))
+            {
+                // Use dark (black) text when background is light: explored teal or current green
+                bool darkText = isCurrent || sd.Explored == Core.ExploreType.Yes;
+                DrawSectorIcons(sk, sd, pos, y + 24f, smallPaint, darkText);
+            }
+            else if (sd != null)
+            {
+                // Sector IS in DB but has no port and no exploration data → gray "?"
+                smallPaint.Color = new SKColor(0x88, 0x88, 0x88);
+                sk.DrawText("?", pos.X - 4f, y + 28f, smallPaint);
+            }
+            else
+            {
+                // Sector NOT in DB at all → red "?" so we can distinguish
+                smallPaint.Color = new SKColor(0xff, 0x44, 0x44);
+                sk.DrawText("?", pos.X - 4f, y + 28f, smallPaint);
+            }
+        }
+
+        sk.Restore();
+    }
+
+    private static void DrawSectorIcons(SKCanvas sk, Core.SectorData sd, SKPoint pos, float y, SKPaint smallPaint, bool darkText)
+    {
+        string label;
+        SKColor labelColor;
+
+        if (sd.SectorPort != null && !sd.SectorPort.Dead)
+        {
+            // Build SBB/BSS/etc. label: Fuel/Organics/Equipment order, B=port buys, S=port sells
+            char f = sd.SectorPort.BuyProduct.TryGetValue(Core.ProductType.FuelOre,   out bool bf) && bf ? 'B' : 'S';
+            char o = sd.SectorPort.BuyProduct.TryGetValue(Core.ProductType.Organics,  out bool bo) && bo ? 'B' : 'S';
+            char e = sd.SectorPort.BuyProduct.TryGetValue(Core.ProductType.Equipment, out bool be) && be ? 'B' : 'S';
+            label = new string(new[] { f, o, e });
+            if (sd.NavHaz > 0)
+                label += $" {sd.NavHaz}%";
+            labelColor = darkText ? SKColors.Black : new SKColor(0x00, 0xee, 0x44);
+        }
+        else if (sd.NavHaz > 0)
+        {
+            label      = $"{sd.NavHaz}%";
+            labelColor = darkText ? SKColors.Black : new SKColor(0xff, 0x99, 0x00);
+        }
+        else
+        {
+            label      = "—";
+            labelColor = darkText ? new SKColor(0x33, 0x33, 0x33) : new SKColor(0x77, 0x77, 0x77);
+        }
+
+        smallPaint.Color = labelColor;
+        float tw = smallPaint.MeasureText(label);
+        sk.DrawText(label, pos.X - tw / 2, y, smallPaint);
+    }
+
+    private static void DrawArrow(SKCanvas sk, SKPoint from, SKPoint to, SKPaint paint)
+    {
+        sk.DrawLine(from.X, from.Y, to.X, to.Y, paint);
+
+        // Small arrowhead at target end
+        float angle = AngleBetween(from, to);
+        float ax     = to.X - (float)Math.Cos(angle) * 9f;
+        float ay     = to.Y - (float)Math.Sin(angle) * 9f;
+        float wing   = 0.4f;
+        float wx1    = ax + (float)Math.Cos(angle - Math.PI / 2 + wing) * 5f;
+        float wy1    = ay + (float)Math.Sin(angle - Math.PI / 2 + wing) * 5f;
+        float wx2    = ax + (float)Math.Cos(angle + Math.PI / 2 - wing) * 5f;
+        float wy2    = ay + (float)Math.Sin(angle + Math.PI / 2 - wing) * 5f;
+
+        using var arrowPaint = paint.Clone();
+        arrowPaint.PathEffect = null;
+        arrowPaint.Style = SKPaintStyle.Stroke;
+        sk.DrawLine(to.X, to.Y, wx1, wy1, arrowPaint);
+        sk.DrawLine(to.X, to.Y, wx2, wy2, arrowPaint);
+    }
+
+    // ── Input handlers ────────────────────────────────────────────────────
+
+    private void OnWheel(object? sender, PointerWheelEventArgs e)
+    {
+        float factor = e.Delta.Y > 0 ? 1.15f : 1f / 1.15f;
+        _zoom = Math.Clamp(_zoom * factor, 0.15f, 6f);
+        _canvas.InvalidateVisual();
+    }
+
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(_canvas).Properties.IsLeftButtonPressed)
+        {
+            _dragging  = true;
+            _dragStart = e.GetPosition(_canvas);
+            _panStart  = _pan;
+        }
+    }
+
+    private void OnPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_dragging) return;
+        var pos  = e.GetPosition(_canvas);
+        var diff = pos - _dragStart;
+        _pan = new SKPoint(_panStart.X + (float)diff.X, _panStart.Y + (float)diff.Y);
+        _canvas.InvalidateVisual();
+    }
+
+    private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
+        => _dragging = false;
+
+    private void OnDoubleTapped(object? sender, TappedEventArgs e)
+    {
+        // Find the sector under the tap
+        var tapPos = e.GetPosition(_canvas);
+        float cx = (float)(_canvas.Bounds.Width  / 2) + _pan.X;
+        float cy = (float)(_canvas.Bounds.Height / 2) + _pan.Y;
+
+        // Map screen coords back to world coords
+        float wx = ((float)tapPos.X - cx) / _zoom;
+        float wy = ((float)tapPos.Y - cy) / _zoom;
+
+        int closest = 0;
+        float minD  = float.MaxValue;
+        foreach (var (sn, pos) in _positions)
+        {
+            float d = Dist(pos, new SKPoint(wx, wy));
+            if (d < minD) { minD = d; closest = sn; }
+        }
+
+        if (closest > 0 && minD < BoxW)
+            NavigateTo(closest);
+    }
+
+    private void OnSectorBoxKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Return || e.Key == Key.Enter)
+            GoToSector();
+    }
+
+    private void GoToSector()
+    {
+        if (int.TryParse(_sectorBox.Text?.Trim(), out int sn) && sn > 0)
+        {
+            _sectorBox.Text = string.Empty;
+            NavigateTo(sn);
+        }
+    }
+
+    // ── MapCanvas inner class ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Custom Avalonia control that delegates SkiaSharp drawing to MapWindow.
+    /// Uses the ICustomDrawOperation pattern to access the raw SKCanvas.
+    /// </summary>
+    private class MapCanvas : Control
+    {
+        private readonly MapWindow _owner;
+        public MapCanvas(MapWindow owner) => _owner = owner;
+
+        public override void Render(DrawingContext context)
+        {
+            var bounds = new Rect(0, 0, Bounds.Width, Bounds.Height);
+            context.Custom(new MapDrawOp(bounds, _owner));
+        }
+
+        private class MapDrawOp : ICustomDrawOperation
+        {
+            private readonly Rect      _bounds;
+            private readonly MapWindow _owner;
+            public MapDrawOp(Rect bounds, MapWindow owner) { _bounds = bounds; _owner = owner; }
+            public Rect Bounds => _bounds;
+            public bool HitTest(Point p) => _bounds.Contains(p);
+            public bool Equals(ICustomDrawOperation? other) => false;
+            public void Dispose() { }
+
+            public void Render(ImmediateDrawingContext ctx)
+            {
+                var feature = ctx.TryGetFeature(typeof(ISkiaSharpApiLeaseFeature)) as ISkiaSharpApiLeaseFeature;
+                if (feature == null) return;
+                using var lease = feature.Lease();
+                _owner.Draw(lease.SkCanvas, (float)_bounds.Width, (float)_bounds.Height);
+            }
+        }
+    }
+}

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MTC</RootNamespace>
+    <AssemblyName>MTC</AssemblyName>
+    <Version>1.0.0</Version>
+    <Authors>Matt Mosley (reaper)</Authors>
+    <Company>TWXProxy</Company>
+    <Product>Mayhem Tradewars Client</Product>
+    <Description>Cross-platform terminal emulation client for Trade Wars 2002</Description>
+    <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
+    <!-- Avalonia requires this to suppress WinExe warning on non-Windows -->
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.*" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.*" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+    <PackageReference Include="SkiaSharp" Version="2.88.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../TWXProxy.csproj" />
+  </ItemGroup>
+
+</Project>

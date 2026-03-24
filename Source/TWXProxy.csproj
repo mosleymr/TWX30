@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>TWXProxy.Core</RootNamespace>
+    <AssemblyName>TWXProxy</AssemblyName>
+    <Version>3.0.0</Version>
+    <Authors>Remco Mulder, David O. McCartney (MicroBlaster), Matt Mosley (reaper)</Authors>
+    <Company>TWXProxy</Company>
+    <Product>TWXProxy</Product>
+    <Description>Trade Wars 2002 Proxy</Description>
+    <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <!-- Suppress NU1510 for System.Text.Encoding.CodePages - needed for Database.cs Windows-1252 encoding -->
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="TestDatabase/**" />
+    <Compile Remove="TestNetwork/**" />
+    <Compile Remove="TestNetworkDB/**" />
+    <Compile Remove="TestScriptLoader/**" />
+    <Compile Remove="TestCompiler/**" />
+    <Compile Remove="MockServer/**" />
+    <Compile Remove="TWXP/**" />
+    <Compile Remove="TWXC/**" />
+    <Compile Remove="TWXD/**" />
+    <Compile Remove="MTC/**" />
+  </ItemGroup>
+
+</Project>

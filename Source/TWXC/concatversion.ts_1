@@ -1,0 +1,9 @@
+:start
+SETVAR $major_version 1
+SETVAR $minor_version 2
+SETVAR $mbot_version $major_version
+CONCAT $mbot_version "."
+CONCAT $mbot_version $minor_version
+SAVEVAR $mbot_version
+ECHO $mbot_version
+HALT
