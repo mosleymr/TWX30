@@ -120,10 +120,11 @@ namespace TWXProxy.Core
                         }
                         else
                         {
-                            // SigDigits == 0 means Pascal DecimalPrecision == 0 (the default):
-                            // display as nearest integer, matching Pascal TWX behavior.
+                            // SigDigits == 0 means Pascal DecimalPrecision == 0 (the default).
+                            // Pascal uses Trunc() which truncates toward zero (not rounding).
+                            // e.g. 3.9 → "3", -3.9 → "-3"  (matches Pascal IntToStr(Trunc(x)))
                             // _decValue retains full precision for subsequent arithmetic.
-                            _strValue = Math.Round(_decValue, MidpointRounding.AwayFromZero).ToString();
+                            _strValue = ((long)Math.Truncate(_decValue)).ToString();
                         }
                         _numChanged = false;
                     }
@@ -496,6 +497,13 @@ namespace TWXProxy.Core
             AddCommand("STOPTIMER", 1, 1, CmdStopTimer, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("MODULUS", 2, 2, CmdModulus, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
             AddCommand("CONCAT", 2, -1, CmdConcat, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
+
+            // TWX 2.7 commands (missing from original port)
+            AddCommand("GETDATETIME", 1, 1, CmdGetDateTime, new[] { ParamKind.Variable }, ParamKind.Value);
+            AddCommand("DATETIMEDIFF", 3, 4, CmdDateTimeDiff, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
+            AddCommand("DATETIMETOSTR", 2, 3, CmdDateTimeToStr, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
+            AddCommand("CENTER", 2, 3, CmdCenter, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
+            AddCommand("REPEAT", 2, 3, CmdRepeat, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
         }
 
         private void BuildSysConstList()
@@ -866,6 +874,41 @@ namespace TWXProxy.Core
             AddSysConstant("LIBSILENT", (indexes) => "0");
             AddSysConstant("LIBMULTILINE", (indexes) => "0");
             AddSysConstant("LIBMSG", (indexes) => string.Empty);
+
+            // Short-form aliases for player status (TWX27 compat): both TURNS and CURRENTTURNS map to the same getter
+            AddSysConstant("TURNS", (indexes) => "0");
+            AddSysConstant("CREDITS", (indexes) => "0");
+            AddSysConstant("FIGHTERS", (indexes) => "0");
+            AddSysConstant("SHIELDS", (indexes) => "0");
+            AddSysConstant("TOTALHOLDS", (indexes) => "0");
+            AddSysConstant("OREHOLDS", (indexes) => "0");
+            AddSysConstant("ORGHOLDS", (indexes) => "0");
+            AddSysConstant("EQUHOLDS", (indexes) => "0");
+            AddSysConstant("COLHOLDS", (indexes) => "0");
+            AddSysConstant("EMPTYHOLDS", (indexes) => "0");
+            AddSysConstant("PHOTONS", (indexes) => "0");
+            AddSysConstant("ARMIDS", (indexes) => "0");
+            AddSysConstant("LIMPETS", (indexes) => "0");
+            AddSysConstant("GENTORPS", (indexes) => "0");
+            AddSysConstant("TWARPTYPE", (indexes) => "0");
+            AddSysConstant("CLOAKS", (indexes) => "0");
+            AddSysConstant("BEACONS", (indexes) => "0");
+            AddSysConstant("ATOMICS", (indexes) => "0");
+            AddSysConstant("CORBOMITE", (indexes) => "0");
+            AddSysConstant("EPROBES", (indexes) => "0");
+            AddSysConstant("MINEDISR", (indexes) => "0");
+            AddSysConstant("PSYCHICPROBE", (indexes) => "No");
+            AddSysConstant("PLANETSCANNER", (indexes) => "No");
+            AddSysConstant("SCANTYPE", (indexes) => "None");
+            AddSysConstant("ALIGNMENT", (indexes) => "0");
+            AddSysConstant("EXPERIENCE", (indexes) => "0");
+            AddSysConstant("CORP", (indexes) => "0");
+            AddSysConstant("SHIPNUMBER", (indexes) => "0");
+            AddSysConstant("SHIPCLASS", (indexes) => "0");
+            AddSysConstant("ANSIQUICKSTATS", (indexes) => string.Empty);
+            AddSysConstant("QUICKSTATS", (indexes) => string.Empty);
+            AddSysConstant("QS", (indexes) => string.Empty);
+            AddSysConstant("QSTAT", (indexes) => string.Empty);
         }
         
         #region Text Processing Helpers

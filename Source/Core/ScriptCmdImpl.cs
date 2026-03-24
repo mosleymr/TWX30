@@ -2935,6 +2935,134 @@ namespace TWXProxy.Core
             return CmdAction.None;
         }
 
+        private static CmdAction CmdGetDateTime(object script, CmdParam[] parameters)
+        {
+            // CMD: getdatetime var
+            // Returns Unix timestamp (seconds since 1970-01-01 UTC) as a string,
+            // matching Pascal TWX27 DateTimeToUnix(Now) behavior
+            parameters[0].Value = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdDateTimeDiff(object script, CmdParam[] parameters)
+        {
+            // CMD: datetimediff var <startUnix> <endUnix> [DatePart]
+            // DatePart: "Days", "Hours", "Mins", "Secs" — or omitted for "DD:HH:MM:SS"
+            if (!long.TryParse(parameters[1].Value, out long start)) start = 0;
+            if (!long.TryParse(parameters[2].Value, out long end)) end = 0;
+
+            long diff = Math.Abs(end - start);
+            long days  = diff / 86400; diff %= 86400;
+            long hours = diff / 3600;  diff %= 3600;
+            long mins  = diff / 60;
+            long secs  = diff % 60;
+
+            if (parameters.Length > 3)
+            {
+                parameters[0].Value = parameters[3].Value switch
+                {
+                    "Days"  => days.ToString(),
+                    "Hours" => hours.ToString(),
+                    "Mins"  => mins.ToString(),
+                    "Secs"  => secs.ToString(),
+                    _ => $"{days:D2}:{hours:D2}:{mins:D2}:{secs:D2}"
+                };
+            }
+            else
+                parameters[0].Value = $"{days:D2}:{hours:D2}:{mins:D2}:{secs:D2}";
+
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdDateTimeToStr(object script, CmdParam[] parameters)
+        {
+            // CMD: datetimetostr var <unixtime> [format]
+            // Converts Unix timestamp to local date/time string using optional format specifier
+            if (!long.TryParse(parameters[1].Value, out long unixTime)) unixTime = 0;
+            var dt = DateTimeOffset.FromUnixTimeSeconds(unixTime).LocalDateTime;
+            parameters[0].Value = parameters.Length > 2
+                ? dt.ToString(parameters[2].Value, System.Globalization.CultureInfo.CurrentCulture)
+                : dt.ToString();
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdCenter(object script, CmdParam[] parameters)
+        {
+            // CMD: center var <width> [padstr]
+            // Centers the current value of var within width characters.
+            // Matching Pascal: j = Floor((len+2)/2), k = Floor(width/2),
+            // pad is built by repeating padstr (k-j+1) times on each side.
+            string s = parameters[0].Value;
+            int width = (int)Math.Floor(parameters[1].DecValue);
+            string padStr = parameters.Length > 2 ? parameters[2].Value : " ";
+            if (padStr.Length == 0) padStr = " ";
+
+            int j = (s.Length + 2) / 2;  // integer division, matches Pascal Floor
+            int k = width / 2;            // integer division, matches Pascal Floor
+
+            var padBuilder = new System.Text.StringBuilder();
+            for (int i = 0; i <= k - j; i++)
+                padBuilder.Append(padStr);
+            string pad = padBuilder.ToString();
+
+            string result = pad + s + pad;
+            if (result.Length < width)
+                result += padStr;
+
+            parameters[0].Value = result;
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdRepeat(object script, CmdParam[] parameters)
+        {
+            // CMD: repeat var <count> [pattern]
+            // Single-char pattern: builds a string of that char repeated count times.
+            // Multi-char pattern: builds a palindrome of length count by cycling through
+            // pattern chars, matching Pascal TWX27 algorithm exactly.
+            int count = (int)Math.Truncate(parameters[1].DecValue);
+            string pattern = parameters.Length > 2 ? parameters[2].Value : " ";
+            if (pattern.Length == 0) pattern = " ";
+
+            string result;
+            if (count <= 0)
+            {
+                result = string.Empty;
+            }
+            else if (pattern.Length == 1)
+            {
+                result = new string(pattern[0], count);
+            }
+            else
+            {
+                // Multi-char palindrome: Pascal builds L (left half) and R (reversed right half)
+                // by cycling through pattern chars, mirroring them.
+                // Loop runs Trunc(count/2 - 1) + 1 = Trunc((count-2)/2) + 1 iterations
+                string L = string.Empty;
+                string R = string.Empty;
+                int c = 0; // 0-based index into pattern
+                int iterations = (int)Math.Truncate(count / 2.0 - 1) + 1;
+
+                for (int i = 0; i < iterations; i++)
+                {
+                    char ch = pattern[c % pattern.Length];
+                    L += ch;
+                    R = ch + R;
+                    c++;
+                }
+
+                string combined = L + R;
+                if (combined.Length < count)
+                {
+                    char ch = pattern[c % pattern.Length];
+                    combined = L + ch + R;
+                }
+                result = combined;
+            }
+
+            parameters[0].Value = result;
+            return CmdAction.None;
+        }
+
         #endregion
     }
 }
