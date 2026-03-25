@@ -25,9 +25,9 @@ public class MapWindow : Window
     // ── Layout constants ──────────────────────────────────────────────────
     private const float BoxW    = 56f;   // sector box width
     private const float BoxH    = 38f;   // sector box height
-    private const float GridX   = 110f;  // horizontal grid spacing
-    private const float GridY   = 80f;   // vertical grid spacing
-    private const int   MaxDepth = 3;    // BFS depth from center
+    private const float GridX   = 90f;   // horizontal grid cell size
+    private const float GridY   = 66f;   // vertical grid cell size
+    private const int   MaxDepth = 4;    // BFS depth from center
 
     // ── State ─────────────────────────────────────────────────────────────
     private int  _centerSector;
@@ -425,138 +425,121 @@ public class MapWindow : Window
 
     private void ComputePositions(Dictionary<int, int> visited)
     {
-        // Assign an angle slice to each child sector from its parent.
-        // Root goes to (0,0). Level-1 sectors are spread evenly around it.
-        // Deeper sectors fan out from their parent's direction.
+        // ── Grid layout ───────────────────────────────────────────────────
+        // Place each sector at an integer (col, row) grid cell.
+        // The center sector occupies (0, 0).  Its warp neighbours are
+        // placed in the 8 surrounding cells (cardinal + diagonal) ordered
+        // by angle so the layout preserves compass orientation.  Deeper
+        // sectors continue to expand outward.
+        //
+        // Preferred slots around a parent at (pc, pr) are the 8 neighbours
+        // sorted by how well their direction matches the parent-to-grandparent
+        // direction so the tree grows "away" from its parent naturally.
 
-        var assigned = new Dictionary<int, SKPoint>();
-        var parentOf = new Dictionary<int, int>();
+        var cellOf    = new Dictionary<int, (int c, int r)>();
+        var usedCells = new HashSet<(int, int)>();
 
-        var bfsOrder = new Queue<int>();
-        bfsOrder.Enqueue(_centerSector);
-        assigned[_centerSector] = new SKPoint(0, 0);
+        cellOf[_centerSector]                 = (0, 0);
+        usedCells.Add((0, 0));
 
-        var db = _getDb();
-        // Build reverse-BFS parent map first (BFS from center)
-        var seenBFS = new HashSet<int> { _centerSector };
-        var bfsQ2   = new Queue<int>();
-        bfsQ2.Enqueue(_centerSector);
-        while (bfsQ2.Count > 0)
+        // 8 candidate offsets, ordered by angle (E, SE, S, SW, W, NW, N, NE)
+        var  allOffsets = new (int dc, int dr)[]
         {
-            int sn = bfsQ2.Dequeue();
-            var sd = db?.GetSector(sn);
-            if (sd == null) continue;
-            foreach (var w in sd.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !seenBFS.Contains(w)))
-            {
-                seenBFS.Add(w);
-                parentOf[w] = sn;
-                bfsQ2.Enqueue(w);
-            }
-        }
+            ( 1,  0), ( 1,  1), ( 0,  1), (-1,  1),
+            (-1,  0), (-1, -1), ( 0, -1), ( 1, -1),
+        };
 
-        // Group children by parent and assign positions layer by layer
-        // children that have no explicit parent (only WarpsIn) get placed near their partner
-        var childrenOf = new Dictionary<int, List<int>>();
-        foreach (var (child, parent) in parentOf)
-        {
-            if (!childrenOf.ContainsKey(parent)) childrenOf[parent] = new();
-            childrenOf[parent].Add(child);
-        }
-
-        // BFS placement
+        var db     = _getDb();
         var placeQ = new Queue<int>();
         placeQ.Enqueue(_centerSector);
         var placed = new HashSet<int> { _centerSector };
 
+        // Build BFS parent map built from warp-out edges
+        var parentOf = new Dictionary<int, int>();
+        {
+            var bfsQ = new Queue<int>();
+            var seen = new HashSet<int> { _centerSector };
+            bfsQ.Enqueue(_centerSector);
+            while (bfsQ.Count > 0)
+            {
+                int sn = bfsQ.Dequeue();
+                var sd = db?.GetSector(sn);
+                if (sd == null) continue;
+                foreach (var w in sd.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !seen.Contains(w)))
+                {
+                    seen.Add(w);
+                    parentOf[w] = sn;
+                    bfsQ.Enqueue(w);
+                }
+            }
+        }
+
         while (placeQ.Count > 0)
         {
             int sn = placeQ.Dequeue();
-            if (!childrenOf.ContainsKey(sn)) continue;
-
-            var children = childrenOf[sn];
-            int n = children.Count;
-            SKPoint parentPos = assigned[sn];
-
-            // Pick default parent-to-origin direction (away from center if not root)
-            float baseAngle = parentOf.TryGetValue(sn, out int par)
-                ? AngleBetween(assigned[par], parentPos)
-                : (float)Math.PI / 2; // start pointing down for root
-
-            // Spread children in a fan around the outgoing direction
-            float spreadTotal = n == 1 ? 0 : (float)Math.PI * (n <= 3 ? 1.4f : 1.8f);
-            float angleStep   = n > 1 ? spreadTotal / (n - 1) : 0;
-            float startAngle  = baseAngle - spreadTotal / 2;
-
-            for (int i = 0; i < n; i++)
-            {
-                int child = children[i];
-                if (placed.Contains(child)) continue;
-
-                float angle = n == 1 ? baseAngle : startAngle + i * angleStep;
-                float dx    = (float)Math.Cos(angle) * GridX;
-                float dy    = (float)Math.Sin(angle) * GridY;
-                SKPoint pos = new(parentPos.X + dx, parentPos.Y + dy);
-
-                // Avoid overlap: nudge if too close to an existing node
-                pos = ResolveOverlap(pos, assigned);
-
-                assigned[child] = pos;
-                placed.Add(child);
-                placeQ.Enqueue(child);
-            }
-        }
-
-        // Place any remaining (WarpsIn-only) sectors near their first known warp partner
-        foreach (var sn in visited.Keys.Where(s => !assigned.ContainsKey(s)))
-        {
             var sd = db?.GetSector(sn);
             if (sd == null) continue;
-            var partner = sd.Warp.FirstOrDefault(w => w > 0 && assigned.ContainsKey(w));
-            if (partner > 0)
+
+            (int pc, int pr) = cellOf[sn];
+
+            // Preferred outgoing direction: away from parent (or East if root)
+            int tdc = 1, tdr = 0;
+            if (parentOf.TryGetValue(sn, out int par) && cellOf.TryGetValue(par, out var parCell))
             {
-                SKPoint basePos = assigned[partner];
-                var pos = ResolveOverlap(new SKPoint(basePos.X + GridX * 0.8f, basePos.Y + GridY * 0.5f), assigned);
-                assigned[sn] = pos;
+                tdc = pc - parCell.c;
+                tdr = pr - parCell.r;
+            }
+
+            // Normalise to unit direction
+            float dlen = MathF.Sqrt(tdc * tdc + tdr * tdr);
+            float tdcf = dlen > 0 ? tdc / dlen : 1f;
+            float tdrf = dlen > 0 ? tdr / dlen : 0f;
+
+            // Sort candidate offsets by similarity to preferred direction
+            var sorted = allOffsets
+                .OrderBy(o =>
+                {
+                    float olen = MathF.Sqrt(o.dc * o.dc + o.dr * o.dr);
+                    float dot  = olen > 0 ? (o.dc / olen * tdcf + o.dr / olen * tdrf) : 0f;
+                    return -dot; // most-similar first (highest dot product)
+                })
+                .ToList();
+
+            // Assign each unplaced warp neighbour the best free cell
+            var neighbours = sd.Warp
+                .Where(w => w > 0 && visited.ContainsKey(w) && !placed.Contains(w))
+                .ToList();
+
+            foreach (var w in neighbours)
+            {
+                // Find closest free cell in sorted preference order, expanding
+                // ring distance if the near slots are all taken
+                bool assigned = false;
+                for (int ring = 1; ring <= 6 && !assigned; ring++)
+                {
+                    foreach (var (odc, odr) in sorted)
+                    {
+                        var cell = (pc + odc * ring, pr + odr * ring);
+                        if (!usedCells.Contains(cell))
+                        {
+                            cellOf[w] = cell;
+                            usedCells.Add(cell);
+                            placed.Add(w);
+                            placeQ.Enqueue(w);
+                            assigned = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
-        // ── Force-directed refinement ─────────────────────────────────────
-        // Pull connected sectors together and push unconnected ones apart so
-        // the layout distributes more evenly and crossing lines are reduced.
-        var db2     = _getDb();
-        var fdEdges = new List<(int A, int B)>();
-        var seenFd  = new HashSet<(int, int)>();
-        foreach (var sn in assigned.Keys)
-        {
-            var sd = db2?.GetSector(sn);
-            if (sd == null) continue;
-            foreach (var w in sd.Warp.Where(w => w > 0 && assigned.ContainsKey(w)))
-            {
-                int ea = Math.Min(sn, w), eb = Math.Max(sn, w);
-                if (seenFd.Add((ea, eb))) fdEdges.Add((ea, eb));
-            }
-        }
-        ForceDirectedRelax(assigned, fdEdges, _centerSector);
+        // ── Convert grid cells to pixel positions ─────────────────────────
+        var result = new Dictionary<int, SKPoint>();
+        foreach (var (sn, (c, r)) in cellOf)
+            result[sn] = new SKPoint(c * GridX, r * GridY);
 
-        _positions = assigned;
-    }
-
-    private static SKPoint ResolveOverlap(SKPoint candidate, Dictionary<int, SKPoint> existing)
-    {
-        const float MinDist = 70f;
-        int tries = 0;
-        float offset = 0;
-        float angle  = 0;
-        while (existing.Values.Any(p => Dist(p, candidate) < MinDist) && tries < 32)
-        {
-            offset += MinDist * 0.5f;
-            angle  += 0.9f;
-            candidate = new SKPoint(
-                candidate.X + (float)Math.Cos(angle) * offset,
-                candidate.Y + (float)Math.Sin(angle) * offset);
-            tries++;
-        }
-        return candidate;
+        _positions = result;
     }
 
     private static float Dist(SKPoint a, SKPoint b)
@@ -580,72 +563,6 @@ public class MapWindow : Window
         float ty = ady > 0.001f ? (BoxH / 2f) / ady : float.MaxValue;
         float t  = Math.Min(tx, ty);
         return new SKPoint(center.X + dx * t, center.Y + dy * t);
-    }
-
-    /// <summary>Fruchterman–Reingold force-directed relaxation.
-    /// Repels all node pairs, attracts connected pairs, cools each iteration.</summary>
-    private static void ForceDirectedRelax(
-        Dictionary<int, SKPoint> pos,
-        List<(int A, int B)> edges,
-        int pinnedSector)
-    {
-        const float K    = 120f;  // ideal edge length
-        float       temp = 70f;
-        var         nodes = pos.Keys.ToList();
-
-        for (int iter = 0; iter < 80; iter++)
-        {
-            var disp = nodes.ToDictionary(n => n, _ => new SKPoint(0, 0));
-
-            // Repulsive forces between every pair of nodes
-            for (int i = 0; i < nodes.Count; i++)
-            {
-                for (int j = i + 1; j < nodes.Count; j++)
-                {
-                    int   u  = nodes[i], v = nodes[j];
-                    float dx = pos[u].X - pos[v].X;
-                    float dy = pos[u].Y - pos[v].Y;
-                    float d  = MathF.Sqrt(dx * dx + dy * dy);
-                    if (d < 1f) { d = 1f; dx = 1f; dy = 0f; }
-                    float f  = K * K / d;
-                    disp[u] = new SKPoint(disp[u].X + dx / d * f, disp[u].Y + dy / d * f);
-                    disp[v] = new SKPoint(disp[v].X - dx / d * f, disp[v].Y - dy / d * f);
-                }
-            }
-
-            // Attractive spring forces along warp edges
-            foreach (var (a, b) in edges)
-            {
-                if (!pos.ContainsKey(a) || !pos.ContainsKey(b)) continue;
-                float dx = pos[a].X - pos[b].X;
-                float dy = pos[a].Y - pos[b].Y;
-                float d  = MathF.Sqrt(dx * dx + dy * dy);
-                if (d < 1f) continue;
-                float f  = d * d / K;
-                disp[a] = new SKPoint(disp[a].X - dx / d * f, disp[a].Y - dy / d * f);
-                disp[b] = new SKPoint(disp[b].X + dx / d * f, disp[b].Y + dy / d * f);
-            }
-
-            // Apply movements capped by temperature; gently pull center toward origin
-            foreach (var n in nodes)
-            {
-                float dx = disp[n].X;
-                float dy = disp[n].Y;
-                if (n == pinnedSector)
-                {
-                    dx -= pos[n].X * 0.3f;
-                    dy -= pos[n].Y * 0.3f;
-                }
-                float dm = MathF.Sqrt(dx * dx + dy * dy);
-                if (dm > 0.001f)
-                {
-                    float scale = MathF.Min(dm, temp) / dm;
-                    pos[n] = new SKPoint(pos[n].X + dx * scale, pos[n].Y + dy * scale);
-                }
-            }
-
-            temp *= 0.93f;
-        }
     }
 
     // ── Rendering (called from MapCanvas) ────────────────────────────────
