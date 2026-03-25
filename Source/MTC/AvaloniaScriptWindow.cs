@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -22,7 +23,9 @@ internal class ScriptPopupWindow : Window
 
     private static readonly IBrush BgWin  = new SolidColorBrush(Color.FromRgb(0x08, 0x0c, 0x18));
     private static readonly IBrush FgText = new SolidColorBrush(Color.FromRgb(0xd8, 0xe8, 0xff));
-    private static readonly IBrush FgMute = new SolidColorBrush(Color.FromRgb(0x78, 0x88, 0xaa));
+
+    // Strip ANSI/VT100 escape sequences from script window content
+    private static readonly Regex AnsiEscape = new(@"\x1b\[[0-9;]*[A-Za-z]", RegexOptions.Compiled);
 
     public ScriptPopupWindow(string name, string title, int width, int height, bool onTop)
     {
@@ -54,21 +57,34 @@ internal class ScriptPopupWindow : Window
     /// <summary>
     /// Replace all displayed lines. Content uses '*' as the line separator
     /// (the TWX script convention: "line1*line2*line3").
-    /// Leading/trailing '*' produce blank lines and are preserved.
+    /// Leading/trailing '*' and consecutive '**' produce blank lines which
+    /// are rendered as small spacers rather than full-height empty rows.
+    /// ANSI escape sequences are stripped before display.
     /// </summary>
     public void SetContent(string rawContent)
     {
-        var parts = rawContent.Split('*');
+        // Strip ANSI escape sequences the script may have embedded
+        var clean = AnsiEscape.Replace(rawContent, string.Empty);
+        var parts = clean.Split('*');
+
         _lines.Children.Clear();
         foreach (var part in parts)
         {
-            _lines.Children.Add(new TextBlock
+            if (string.IsNullOrEmpty(part))
             {
-                Text       = part,
-                Foreground = string.IsNullOrWhiteSpace(part) ? FgMute : FgText,
-                TextWrapping = TextWrapping.NoWrap,
-                Margin     = new Thickness(0, 1, 0, 1),
-            });
+                // Blank separator — render as a small spacer, not a full line-height gap
+                _lines.Children.Add(new Border { Height = 4 });
+            }
+            else
+            {
+                _lines.Children.Add(new TextBlock
+                {
+                    Text         = part,
+                    Foreground   = FgText,
+                    TextWrapping = TextWrapping.NoWrap,
+                    Margin       = new Thickness(0, 0, 0, 0),
+                });
+            }
         }
         _scroll.ScrollToEnd();
     }
