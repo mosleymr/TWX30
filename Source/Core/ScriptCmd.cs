@@ -522,7 +522,7 @@ namespace TWXProxy.Core
             AddSysConstant("CONNECTED", (indexes) => GetConnected()); // 16
             AddSysConstant("CURRENTANSILINE", (indexes) => GetCurrentAnsiLine()); // 17
             AddSysConstant("CURRENTLINE", (indexes) => GetCurrentLine()); // 18
-            AddSysConstant("DATE", (indexes) => DateTime.Now.ToShortDateString()); // 19
+            AddSysConstant("DATE", (indexes) => DateTime.Now.ToString("MM/dd/yyyy")); // 19
             AddSysConstant("FALSE", (indexes) => "0"); // 20
             AddSysConstant("GAME", (indexes) => GetGame()); // 21
             AddSysConstant("GAMENAME", (indexes) => GetGameName()); // 22
@@ -736,7 +736,7 @@ namespace TWXProxy.Core
             // 61-64: Universe info
             AddSysConstant("SECTORS", (indexes) => GetSectors()); // 61
             AddSysConstant("STARDOCK", (indexes) => GetStarDock()); // 62
-            AddSysConstant("TIME", (indexes) => DateTime.Now.ToShortTimeString()); // 63
+            AddSysConstant("TIME", (indexes) => DateTime.Now.ToString("HH:mm:ss")); // 63
             AddSysConstant("TRUE", (indexes) => "1"); // 64
             
             // 65-67: Added in 2.04
