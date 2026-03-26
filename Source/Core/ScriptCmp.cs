@@ -350,9 +350,7 @@ namespace TWXProxy.Core
         private string _scriptDirectory = string.Empty;
         private byte[] _code = Array.Empty<byte>();
         private int _ifLabelCount;
-#pragma warning disable CS0169 // Field is never used
-        private int _sysVarCount;
-#pragma warning restore CS0169
+        private int _sysVarCount; // Resets per source line; temp vars reuse names for deduplication
         private int _waitOnCount;
         private int _lineCount;
         private int _cmdCount;
@@ -593,6 +591,11 @@ namespace TWXProxy.Core
 
         private void CompileParamLine(string line, int lineNumber, byte scriptID)
         {
+            // Reset per-line temp-var counters so names like $$_t1, %_concat1, %_temp1
+            // are reused across source lines and deduplicated in FParamList — matching Pascal.
+            _sysVarCount = 0;
+            _tempVarCounter = 0;
+
             // Ignore lines that start with # (comment lines)
             line = line.TrimStart();
             if (line.StartsWith('#'))
@@ -862,10 +865,9 @@ namespace TWXProxy.Core
         {
             expr = expr.Trim();
             
-            // Create result temp variable
-            string resultVar = $"$$__math{++_ifLabelCount}";
-            var resultParam = new VarParam { Name = resultVar, Value = "0" };
-            _paramList.Add(resultParam);
+            // Create result temp variable (FindOrCreateVariable deduplicates across lines)
+            string resultVar = $"$$_t{++_sysVarCount}";
+            FindOrCreateVariable(resultVar);
             
             // Parse and compile expression
             CompileArithmeticRecursive(expr.Trim(), resultVar, lineNumber, scriptID);
@@ -1004,9 +1006,8 @@ namespace TWXProxy.Core
             // If it contains operators, it needs compilation
             if (ContainsArithmeticOperators(value))
             {
-                string tempVar = $"$$__math{++_ifLabelCount}";
-                var tempParam = new VarParam { Name = tempVar, Value = "0" };
-                _paramList.Add(tempParam);
+                string tempVar = $"$$_t{++_sysVarCount}";
+                FindOrCreateVariable(tempVar);
                 CompileArithmeticRecursive(value, tempVar, lineNumber, scriptID);
                 return tempVar;
             }
@@ -1304,9 +1305,8 @@ namespace TWXProxy.Core
                 string rightVar = CompileCondition(rightCondition, lineNumber, scriptID);
                 
                 // Create temp variable for combined result, initialized to left result
-                string tempVarName = $"$$__cond{++_ifLabelCount}";
-                var tempVar = new VarParam { Name = tempVarName, Value = "0" };
-                _paramList.Add(tempVar);
+                string tempVarName = $"$$_t{++_sysVarCount}";
+                FindOrCreateVariable(tempVarName);
                 
                 // Copy left result to temp var
                 RecurseCmd(new[] { "SETVAR", tempVarName, leftVar }, lineNumber, scriptID);
@@ -1343,9 +1343,8 @@ namespace TWXProxy.Core
                         string innerRight = condition.Substring(logicalOpIndex + logicalOp.Length).Trim();
                         string innerLeftVar  = CompileCondition(innerLeft,  lineNumber, scriptID);
                         string innerRightVar = CompileCondition(innerRight, lineNumber, scriptID);
-                        string innerTempName = $"$$__cond{++_ifLabelCount}";
-                        var innerTempVar = new VarParam { Name = innerTempName, Value = "0" };
-                        _paramList.Add(innerTempVar);
+                        string innerTempName = $"$$_t{++_sysVarCount}";
+                        FindOrCreateVariable(innerTempName);
                         RecurseCmd(new[] { "SETVAR",   innerTempName, innerLeftVar  }, lineNumber, scriptID);
                         RecurseCmd(new[] { logicalCmd, innerTempName, innerRightVar }, lineNumber, scriptID);
                         return innerTempName;
@@ -1376,9 +1375,8 @@ namespace TWXProxy.Core
             {
                 // No operator found - treat as boolean test (non-zero = true)
                 // Create temp var and use ISNOTEQUAL to test != 0
-                string tempVarName = $"$$__cond{++_ifLabelCount}";
-                var tempVar = new VarParam { Name = tempVarName, Value = "0" };
-                _paramList.Add(tempVar);
+                string tempVarName = $"$$_t{++_sysVarCount}";
+                FindOrCreateVariable(tempVarName);
                 
                 RecurseCmd(new[] { "ISNOTEQUAL", tempVarName, condition.Trim(), "\"0\"" }, lineNumber, scriptID);
                 return tempVarName;
@@ -1395,10 +1393,9 @@ namespace TWXProxy.Core
             if (IdentifyParam(right) == ScriptConstants.PARAM_CONST && !right.StartsWith("\""))
                 right = $"\"{right}\"";
             
-            // Create temporary variable for result
-            string tempVarName2 = $"$$__cond{++_ifLabelCount}";
-            var tempVar2 = new VarParam { Name = tempVarName2, Value = "0" };
-            _paramList.Add(tempVar2);
+            // Create temporary variable for result (FindOrCreateVariable deduplicates across lines)
+            string tempVarName2 = $"$$_t{++_sysVarCount}";
+            FindOrCreateVariable(tempVarName2);
             
             // Compile comparison command
             // ISEQUAL/ISGREATER/etc. take 3 params: result var, left operand, right operand
