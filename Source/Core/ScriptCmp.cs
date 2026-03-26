@@ -1995,17 +1995,26 @@ namespace TWXProxy.Core
             using (var fs = new FileStream(filename, FileMode.Create, FileAccess.Write))
             using (var writer = new BinaryWriter(fs))
             {
-                // Write header
-                writer.Write(Encoding.ASCII.GetBytes("TWX SCRIPT\0"));
-                writer.Write((ushort)ScriptConstants.CompiledScriptVersion);
+                // Write 24-byte Pascal TScriptFileHeader (matches ReadScriptFileHeader layout):
+                //   offset  0    : ShortString length byte (10)
+                //   offset  1-10 : "TWX SCRIPT" (10 chars, no null terminator)
+                //   offset 11    : 1 alignment pad byte
+                //   offset 12-13 : Version (uint16)
+                //   offset 14-15 : 2 alignment pad bytes
+                //   offset 16-19 : DescSize (int32)
+                //   offset 20-23 : CodeSize (int32)
+                byte[] descBytes = Encoding.ASCII.GetBytes(string.Join("\r\n", _description));
+                writer.Write((byte)10);                                        // ShortString length
+                writer.Write(Encoding.ASCII.GetBytes("TWX SCRIPT"));           // 10 chars
+                writer.Write((byte)0);                                         // offset 11 pad
+                writer.Write((ushort)ScriptConstants.CompiledScriptVersion);   // offset 12-13
+                writer.Write((byte)0);                                         // offset 14 pad
+                writer.Write((byte)0);                                         // offset 15 pad
+                writer.Write(descBytes.Length);                                // offset 16-19 DescSize
+                writer.Write(_codeSize);                                       // offset 20-23 CodeSize
 
-                // Write description
-                string desc = string.Join("\r\n", _description);
-                writer.Write(desc.Length);
-                writer.Write(Encoding.ASCII.GetBytes(desc));
-
-                // Write code size and code
-                writer.Write(_codeSize);
+                // Write description then code (reader reads them in this order after the header)
+                writer.Write(descBytes);
                 writer.Write(_code);
 
                 // Write parameters
