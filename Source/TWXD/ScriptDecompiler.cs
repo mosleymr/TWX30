@@ -766,8 +766,16 @@ namespace TWXD
             if (string.IsNullOrEmpty(value))
                 return true;
 
-            // Variable, program-var, char-literal, or label reference — no quotes
-            if (value[0] == '$' || value[0] == '%' || value[0] == '#' || value[0] == ':')
+            // Variable or program-var — no quotes
+            if (value[0] == '$' || value[0] == '%')
+                return false;
+
+            // Char literal: #13, #32, etc. — no quotes only if followed by digits
+            if (value[0] == '#' && value.Length > 1 && value.Substring(1).All(char.IsDigit))
+                return false;
+
+            // Label reference — no quotes only if there's a name after the colon
+            if (value[0] == ':' && value.Length > 1)
                 return false;
 
             // Starts with a space — must quote
