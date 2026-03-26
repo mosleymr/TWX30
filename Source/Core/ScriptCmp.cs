@@ -1559,17 +1559,21 @@ namespace TWXProxy.Core
                     throw new Exception($"Unknown command: {cmdName}");
             }
 
-            // Write command bytecode
-            byte[] cmdCode = new byte[2];
-            cmdCode[0] = ScriptConstants.PARAM_CMD;
-            cmdCode[1] = (byte)(cmdID >= 0 ? cmdID : 255);
-            AppendCode(cmdCode);
+            // Write command header in Pascal format: [ScriptID:1][LineNumber:2][CmdID:2]
+            ushort lineWord = (ushort)lineNumber;
+            ushort cmdWord = (ushort)(cmdID >= 0 ? cmdID : 255);
+            AppendCode(new[] { scriptID });
+            AppendCode(BitConverter.GetBytes(lineWord));
+            AppendCode(BitConverter.GetBytes(cmdWord));
 
             // Compile parameters
             for (int i = 1; i < paramLine.Count; i++)
             {
                 CompileParameter(paramLine[i], lineNumber, scriptID);
             }
+
+            // Null-terminate the parameter list (Pascal format)
+            AppendCode(new byte[] { 0 });
 
             _cmdCount++;
         }

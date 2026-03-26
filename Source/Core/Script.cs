@@ -1973,10 +1973,9 @@ namespace TWXProxy.Core
 
             try
             {
-                // Version 4 and earlier use different bytecode format:
+                // All Pascal TWX versions (2–6) use the same bytecode format:
                 // ScriptID:Byte|LineNumber:Word|CmdID:Word|Params|0:Byte
-                // Version 5+ use: PARAM_CMD:Byte|CmdID:Byte|Params
-                bool isOldFormat = _cmp.Version <= 4;
+                bool isOldFormat = true;
                 
                 // Execute bytecode until we hit a pause, stop, or end
                 while (_codePos < code.Length)
