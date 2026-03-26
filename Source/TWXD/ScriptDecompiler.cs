@@ -758,6 +758,9 @@ namespace TWXD
             return result.ToString();
         }
 
+        private static readonly HashSet<string> _sysConstNames =
+            new HashSet<string>(OriginalSysConstNames, StringComparer.OrdinalIgnoreCase);
+
         private bool NeedsQuotes(string value)
         {
             if (string.IsNullOrEmpty(value))
@@ -767,14 +770,29 @@ namespace TWXD
             if (value[0] == '$' || value[0] == '%' || value[0] == '#' || value[0] == ':')
                 return false;
 
-            // Pure number — no quotes
-            if (double.TryParse(value, out _))
+            // Starts with a space — must quote
+            if (value[0] == ' ')
+                return true;
+
+            // Positive integer (not a float, not negative) — no quotes, matching reference decompiler.
+            // Negative integers are quoted (e.g. "-1") so the leading minus isn't mistaken for subtraction.
+            if (int.TryParse(value, out int iv))
+                return iv < 0;
+
+            // System constant name passed as a string literal (e.g. TRUE, FALSE, CONNECTED) — no quotes.
+            // These appear in conditions like IF $X = TRUE where no quotes are needed.
+            if (_sysConstNames.Contains(value))
                 return false;
 
-            // Everything else is a string constant — always quote it.
-            // (Quoted forms like LOGGING "OFF" compile identically to LOGGING OFF, so
-            //  adding quotes to keyword-args like ON/OFF is harmless and ensures that
-            //  string literals like "Y", "C", "NO", "YES" are correctly reproduced.)
+            // Array-indexed sysconst base name (e.g. "SECTOR.WARPS[x]") — no quotes if base is known.
+            if (value.Contains('[') && value.Contains(']'))
+            {
+                string baseName = value.Substring(0, value.IndexOf('['));
+                if (_sysConstNames.Contains(baseName))
+                    return false;
+            }
+
+            // Everything else (strings, single letters like "Y"/"N", keyword args like "OFF") — quote.
             return true;
         }
     }
