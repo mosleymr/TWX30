@@ -144,6 +144,7 @@ namespace TWXD
                 }
 
                 var branchLabels = new HashSet<string>();
+                var elseifConsumedLabels = new HashSet<string>(); // ConLabels removed by ELSEIF but expected again at END position
                 var tempVars = new Dictionary<string, string>(); // Track $$1, $$2, etc.
                 var seenLabels = new HashSet<string>(); // Track which labels we've already processed
                 int indent = 0;
@@ -215,6 +216,17 @@ namespace TWXD
                                     indent--;
                                     output.WriteLine($"{Indent(indent)}end");
                                     branchend = true; // next label at this position is EndLabel, skip it
+                                    lastWasLoopLabel = false;
+                                }
+                                else if (elseifConsumedLabels.Contains(labelName))
+                                {
+                                    // This is an outer ConLabel that was folded into an elseif and
+                                    // removed from branchLabels. Pascal emits ConLabel at BOTH the
+                                    // else-start AND the end position, so it reappears here.
+                                    // Silently consume it and set branchend so its companion EndLabel
+                                    // (outer EndLabel at the same bytecode position) is also consumed.
+                                    elseifConsumedLabels.Remove(labelName);
+                                    branchend = true;
                                     lastWasLoopLabel = false;
                                 }
                                 else if (branchend)
@@ -409,6 +421,11 @@ namespace TWXD
                             if (!string.IsNullOrEmpty(pendingElseLabel))
                             {
                                 branchLabels.Remove(pendingElseLabel);
+                                // Pascal emits ConLabel at both the else-start AND the end
+                                // position. We removed it from branchLabels so it won't
+                                // trigger a spurious 'end', but we must still consume it
+                                // when it reappears at the end position (outer END macro).
+                                elseifConsumedLabels.Add(pendingElseLabel);
                                 pendingElseLabel = "";
                             }
                             branchLabels.Add(fullLabel);
