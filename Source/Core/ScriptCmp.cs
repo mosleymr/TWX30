@@ -533,7 +533,7 @@ namespace TWXProxy.Core
 
         private bool IsOperator(char c)
         {
-            return "+-*/<>=&|!^".Contains(c) ||
+            return "+-*/%<>=&|!^".Contains(c) ||
                    c == ScriptConstants.OP_GREATEREQUAL ||
                    c == ScriptConstants.OP_LESSEREQUAL ||
                    c == ScriptConstants.OP_AND ||
@@ -589,43 +589,152 @@ namespace TWXProxy.Core
             }
         }
 
+        // ── Pascal preprocessing ────────────────────────────────────────────────────
+        // Replaces AND/OR/XOR word tokens (outside quotes) with single sentinel chars.
+        // Called with a trailing space already appended (as Pascal does).
+        private static string ConvertOps(string line)
+        {
+            bool inQuote = false;
+            var result = new StringBuilder();
+            var token = new StringBuilder();
+            foreach (char c in line)
+            {
+                if (c == '"') inQuote = !inQuote;
+                if (c == ' ')
+                {
+                    if (!inQuote)
+                    {
+                        string up = token.ToString().ToUpperInvariant();
+                        if      (up == "AND") token.Clear().Append(ScriptConstants.OP_AND);
+                        else if (up == "OR")  token.Clear().Append(ScriptConstants.OP_OR);
+                        else if (up == "XOR") token.Clear().Append(ScriptConstants.OP_XOR);
+                    }
+                    result.Append(token).Append(' ');
+                    token.Clear();
+                }
+                else token.Append(c);
+            }
+            return result.ToString();
+        }
+
+        // Replaces >=, <=, <> with single sentinel chars (outside quotes).
+        private static string ConvertConditions(string line)
+        {
+            bool inQuote = false;
+            var result = new StringBuilder();
+            char last = '\0';
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '"')
+                {
+                    inQuote = !inQuote;
+                    result.Append(c);
+                }
+                else if (c == '=' && !inQuote)
+                {
+                    if      (last == '>') result.Append(ScriptConstants.OP_GREATEREQUAL);
+                    else if (last == '<') result.Append(ScriptConstants.OP_LESSEREQUAL);
+                    else                  result.Append('=');
+                }
+                else if ((c != '>' && c != '<') || inQuote)
+                {
+                    if ((last == '>' || last == '<') && !inQuote)
+                        result.Append(last); // flush deferred > or <
+                    result.Append(c);
+                }
+                else if (last == '<' && c == '>')
+                {
+                    result.Append(ScriptConstants.OP_NOTEQUAL);
+                    c = '\0'; // squash so last doesn't become '>'
+                }
+                // else: c is standalone '>' or '<' not yet resolved — defer via last
+                last = c;
+            }
+            return result.ToString();
+        }
+
         private void CompileParamLine(string line, int lineNumber, byte scriptID)
         {
-            // Reset per-line temp-var counters so names like $$_t1, %_concat1, %_temp1
-            // are reused across source lines and deduplicated in FParamList — matching Pascal.
+            // Reset per-line temp-var counter (matching Pascal's SysVarCount := 0 per source line).
             _sysVarCount = 0;
-            _tempVarCounter = 0;
 
-            // Ignore lines that start with # (comment lines)
             line = line.TrimStart();
-            if (line.StartsWith('#'))
+            if (line.Length == 0 || line[0] == '#')
                 return;
 
-            // Process parenthesized compound expressions before parsing
-            line = ProcessParenthesizedExpressions(line, lineNumber, scriptID);
-            
-            // Process arithmetic expressions in parameters
-            line = ProcessArithmeticExpressions(line, lineNumber, scriptID);
+            // Pascal preprocessing: convert AND/OR/XOR word tokens and >=/<=/<> to single
+            // sentinel chars so the operator-linking tokenizer can accumulate them into tokens.
+            // Append trailing space as Pascal does (ConvertOps relies on it to flush last word).
+            string processed = ConvertConditions(ConvertOps(line + " "));
 
-            // Parse the line into parameters
-            var paramLine = ParseLine(line);
+            // ── Operator-linking tokenizer (matches Pascal's CompileFromStrings loop) ──────
+            // Operator chars are accumulated INTO the current token via the Linked flag.
+            // Whitespace does NOT split the current token when Linked is true.
+            // This means $a OR $b → after ConvertOps → $a OP_OR $b → one token "$aOP_OR$b".
+            var paramLine = new List<string>();
+            var sb = new StringBuilder();
+            bool inQuote = false;
+            bool linked = false;
+            char last = ' ';
 
-            // Call the overload that processes the parsed line
+            for (int i = 0; i < processed.Length; i++)
+            {
+                char c = processed[i];
+
+                // # at the very start of a fresh first token = comment line
+                if (c == '#' && sb.Length == 0 && paramLine.Count == 0)
+                    break;
+
+                // // inline comment — remove the first '/' from the token buffer and stop
+                if (c == '/' && last == '/' && !inQuote)
+                {
+                    if (sb.Length > 0) sb.Remove(sb.Length - 1, 1);
+                    linked = false;
+                    break;
+                }
+
+                if (!inQuote && IsOperator(c))
+                {
+                    if (linked)
+                        throw new Exception($"Operation syntax error at line {lineNumber}");
+                    linked = true;
+                    sb.Append(c);
+                }
+                else if ((c != ' ' && c != '\t') || inQuote)
+                {
+                    // Flush completed token when whitespace precedes a non-linked, non-quoted char
+                    if ((last == ' ' || last == '\t') && !linked && !inQuote && sb.Length > 0)
+                    {
+                        paramLine.Add(sb.ToString());
+                        sb.Clear();
+                    }
+                    sb.Append(c);
+                    if (c == '"') inQuote = !inQuote;
+                    linked = false;
+                }
+
+                last = c;
+            }
+
+            if (sb.Length > 0)
+                paramLine.Add(sb.ToString());
+
             CompileParamLine(paramLine, lineNumber, scriptID);
         }
 
         private void CompileParamLine(List<string> paramLine, int lineNumber, byte scriptID)
-        {            if (paramLine.Count == 0)
-                return; // Empty line
+        {
+            if (paramLine.Count == 0)
+                return;
 
             string firstParam = paramLine[0];
 
-            // Check for label
+            // Label declaration
             if (firstParam.StartsWith(':'))
             {
                 if (paramLine.Count > 1)
                     throw new Exception("Unnecessary parameters after label declaration");
-
                 if (firstParam.Length < 2)
                     throw new Exception("Bad label name");
 
@@ -637,586 +746,207 @@ namespace TWXProxy.Core
                 return;
             }
 
-            // Check for & concatenation operator (convert to CONCAT command)
-            // Handle chained concatenations: SETVAR/CONCAT var val1 & val2 & val3
-            if (paramLine.Count > 2 && (paramLine[0].ToUpperInvariant() == "SETVAR" || paramLine[0].ToUpperInvariant() == "CONCAT"))
-            {
-                // Find all & operators
-                var parts = new List<string>();
-                int startIdx = paramLine[0].ToUpperInvariant() == "SETVAR" ? 2 : 1; // Skip command and variable for SETVAR
-                
-                for (int i = startIdx; i < paramLine.Count; i++)
-                {
-                    if (paramLine[i] == "&")
-                        continue; // Skip & operators
-                    parts.Add(paramLine[i]);
-                }
-
-                // If we found & operators (parts count differs from original)
-                if (parts.Count > 1 && parts.Count < (paramLine.Count - startIdx))
-                {
-                    string varName = paramLine[1];
-
-                    if (paramLine[0].ToUpperInvariant() == "SETVAR")
-                    {
-                        // Pascal compiles `setVar $a $b&$c` as MERGETEXT which reads all
-                        // inputs before writing. Doing SETVAR $a=$b then CONCAT $a+=$c
-                        // aliases the destination into the source when $c == $a, giving
-                        // 'CC' instead of 'CargoMaster'. Fix: build into a temp var first.
-                        string tempVar = $"%_concat{++_tempVarCounter}";
-                        RecurseCmd(new[] { "SETVAR", tempVar, parts[0] }, lineNumber, scriptID);
-                        for (int i = 1; i < parts.Count; i++)
-                            RecurseCmd(new[] { "CONCAT", tempVar, parts[i] }, lineNumber, scriptID);
-                        RecurseCmd(new[] { "SETVAR", varName, tempVar }, lineNumber, scriptID);
-                    }
-                    else
-                    {
-                        // CONCAT: first part uses CONCAT directly, rest chain on top
-                        RecurseCmd(new[] { "CONCAT", varName, parts[0] }, lineNumber, scriptID);
-                        for (int i = 1; i < parts.Count; i++)
-                            RecurseCmd(new[] { "CONCAT", varName, parts[i] }, lineNumber, scriptID);
-                    }
-                    
-                    return;
-                }
-            }
-            // For other commands with & operators, collapse them into a temp variable
-            else if (paramLine.Count > 2)
-            {
-                bool hasAmpersand = false;
-                for (int i = 1; i < paramLine.Count; i++)
-                {
-                    if (paramLine[i] == "&")
-                    {
-                        hasAmpersand = true;
-                        break;
-                    }
-                }
-
-                if (hasAmpersand)
-                {
-                    // Find the parameter with & operator (usually the last one)
-                    int firstAmpPos = -1;
-                    for (int i = 1; i < paramLine.Count; i++)
-                    {
-                        if (paramLine[i] == "&")
-                        {
-                            firstAmpPos = i;
-                            break;
-                        }
-                    }
-                    
-                    // Create a temp variable and build the concatenated value
-                    string tempVar = $"%_concat{++_tempVarCounter}";
-                    var parts = new List<string>();
-
-                    // Collect only the parts that form the & chain (stop when the chain breaks).
-                    // This prevents parameters that follow the concat expression (like cutText's
-                    // dest, start, len) from being incorrectly pulled into the concat temp.
-                    int chainEnd = firstAmpPos - 1; // start at the left operand
-                    while (chainEnd < paramLine.Count)
-                    {
-                        parts.Add(paramLine[chainEnd]); // add the operand
-                        chainEnd++;
-                        if (chainEnd < paramLine.Count && paramLine[chainEnd] == "&")
-                            chainEnd++; // skip the & and continue to next operand
-                        else
-                            break; // no & follows = end of chain
-                    }
-                    // chainEnd now points to the first parameter after the concat chain
-
-                    // Build concatenation commands
-                    RecurseCmd(new[] { "SETVAR", tempVar, parts[0] }, lineNumber, scriptID);
-                    for (int i = 1; i < parts.Count; i++)
-                    {
-                        RecurseCmd(new[] { "CONCAT", tempVar, parts[i] }, lineNumber, scriptID);
-                    }
-
-                    // Replace paramLine: keep command + params before concat, concat result,
-                    // and any params that follow the concat chain (e.g. cutText dest/start/len).
-                    var newParamLine = new List<string> { paramLine[0] };
-                    for (int i = 1; i < firstAmpPos - 1; i++)
-                    {
-                        newParamLine.Add(paramLine[i]);
-                    }
-                    newParamLine.Add(tempVar);
-                    for (int i = chainEnd; i < paramLine.Count; i++)
-                    {
-                        newParamLine.Add(paramLine[i]);
-                    }
-                    paramLine = newParamLine;
-                }
-            }
-
-            // Check for macro commands (IF, WHILE, ELSE, END, etc.)
+            // Macro commands (IF, WHILE, ELSE, ELSEIF, END, INCLUDE, WAITON)
             if (HandleMacroCommand(paramLine, lineNumber, scriptID))
                 return;
 
-            // Regular command - compile it
+            // Regular command — expressions in each token are compiled by CompileParam
             CompileCommand(paramLine, lineNumber, scriptID);
         }
 
-        private int _tempVarCounter = 0;
 
-        private string ProcessArithmeticExpressions(string line, int lineNumber, byte scriptID)
+
+
+        // ── Operator group constants for BreakDown (matching Pascal precedence) ─────────────
+        // Group1 = lowest priority (split first) — comparisons, logical, concat
+        // Group2 = medium priority — additive
+        // Group3 = highest priority (split last) — multiplicative
+        private static readonly string OpsGroup1 =
+            "=<>&" + ScriptConstants.OP_GREATEREQUAL + ScriptConstants.OP_LESSEREQUAL
+                   + ScriptConstants.OP_AND + ScriptConstants.OP_OR + ScriptConstants.OP_XOR
+                   + ScriptConstants.OP_NOTEQUAL;
+        private const string OpsGroup2 = "+-";
+        private const string OpsGroup3 = "*/%";
+
+        // ── Binary expression tree node ──────────────────────────────────────────────────────
+        private sealed class ExprNode
         {
-            // Process arithmetic expressions like:  setVar $spaces (20 - ($spaces / 2)) - 1
-            // Convert to temp variables and arithmetic commands
-            
-            // Look for patterns with arithmetic operators outside quotes
-            bool inQuote = false;
-            bool hasArithmeticOp = false;
-            
-            for (int i = 0; i < line.Length; i++)
-            {
-                if (line[i] == '"')
-                    inQuote = !inQuote;
-                else if (!inQuote && (line[i] == '+' || line[i] == '-' || line[i] == '*' || line[i] == '/'))
-                {
-                    // Check if it's part of an expression (not just a negative number)
-                    if (line[i] == '-' && i > 0 && char.IsWhiteSpace(line[i - 1]) && i + 1 < line.Length && char.IsDigit(line[i + 1]))
-                        continue; // Skip negative numbers
-                    hasArithmeticOp = true;
-                    break;
-                }
-            }
-            
-            if (!hasArithmeticOp)
-                return line; // No arithmetic operators found
-            
-            // Parse line to find arithmetic expressions
-            var words = new List<string>();
-            var currentWord = new System.Text.StringBuilder();
-            inQuote = false;
-            
-            for (int i = 0; i < line.Length; i++)
-            {
-                char c = line[i];
-                if (c == '"')
-                {
-                    inQuote = !inQuote;
-                    currentWord.Append(c);
-                }
-                else if (!inQuote && char.IsWhiteSpace(c))
-                {
-                    if (currentWord.Length > 0)
-                    {
-                        words.Add(currentWord.ToString());
-                        currentWord.Clear();
-                    }
-                }
-                else
-                {
-                    currentWord.Append(c);
-                }
-            }
-            if (currentWord.Length > 0)
-                words.Add(currentWord.ToString());
-            
-            // If first word is setVar, process the expression after the variable name
-            if (words.Count > 2 && words[0].ToLowerInvariant() == "setvar")
-            {
-                string variable = words[1];
-                string expression = string.Join(" ", words.Skip(2));
-                
-                // Check if expression contains operators
-                if (ContainsArithmeticOperators(expression))
-                {
-                    try
-                    {
-                        // Compile expression to temp variable
-                        string tempVar = CompileArithmeticExpressionToCommands(expression, lineNumber, scriptID);
-                        
-                        // Return modified line
-                        return $"setVar {variable} {tempVar}";
-                    }
-                    catch
-                    {
-                        // If compilation fails, return original line
-                        return line;
-                    }
-                }
-            }
-            
-            return line;
+            public char      Op        { get; set; } = ScriptConstants.OP_NONE;
+            public string?   LeafValue { get; set; }
+            public ExprNode? Left      { get; set; }
+            public ExprNode? Right     { get; set; }
         }
-        
-        private bool ContainsArithmeticOperators(string expr)
+
+        /// <summary>
+        /// Splits <paramref name="eq"/> on the first character in <paramref name="ops"/>
+        /// found at bracket-depth 0, outside quotes.  Returns false when no match is found.
+        /// </summary>
+        private static bool SplitOperator(string eq, string ops,
+            out string v1, out string v2, out char op)
         {
-            bool inQuote = false;
-            for (int i = 0; i < expr.Length; i++)
+            v1 = v2 = "";
+            op = ScriptConstants.OP_NONE;
+            bool inQ = false;
+            int depth = 0;
+            for (int i = 0; i < eq.Length; i++)
             {
-                if (expr[i] == '"')
-                    inQuote = !inQuote;
-                else if (!inQuote && i > 0 && i < expr.Length - 1)
+                char c = eq[i];
+                if (c == '"') { inQ = !inQ; continue; }
+                if (inQ) continue;
+                if (c == '(') { depth++; continue; }
+                if (c == ')') { depth--; continue; }
+                if (depth > 0) continue;
+                if (ops.IndexOf(c) >= 0)
                 {
-                    // Check for operators with surrounding context
-                    if ((expr[i] == '+' || expr[i] == '*' || expr[i] == '/') ||
-                        (expr[i] == '-' && !char.IsDigit(expr[i - 1])))
-                    {
-                        return true;
-                    }
+                    if (i == 0)
+                        throw new Exception($"SplitOperator: operator '{(int)c}' at position 0 in \"{eq}\"");
+                    if (i == eq.Length - 1)
+                        throw new Exception($"SplitOperator: operator '{(int)c}' at end of \"{eq}\"");
+                    v1 = eq.Substring(0, i);
+                    v2 = eq.Substring(i + 1);
+                    op = c;
+                    return true;
                 }
             }
             return false;
         }
-        
-        private string CompileArithmeticExpressionToCommands(string expr, int lineNumber, byte scriptID)
+
+        /// <summary>
+        /// Recursively decomposes an expression string into an operator-precedence binary tree,
+        /// matching Pascal's <c>BreakDown</c> function.
+        /// </summary>
+        private static ExprNode BreakDown(string eq)
         {
-            expr = expr.Trim();
-            
-            // Create result temp variable (FindOrCreateVariable deduplicates across lines)
-            string resultVar = $"$$_t{++_sysVarCount}";
-            FindOrCreateVariable(resultVar);
-            
-            // Parse and compile expression
-            CompileArithmeticRecursive(expr.Trim(), resultVar, lineNumber, scriptID);
-            
-            return resultVar;
-        }
-        
-        private void CompileArithmeticRecursive(string expr, string targetVar, int lineNumber, byte scriptID)
-        {
-            // Remove outer parentheses
-            while (expr.StartsWith("(") && expr.EndsWith(")"))
+            eq = eq.Trim();
+            // Strip matched outer parentheses (while the whole expression is wrapped)
+            while (eq.StartsWith("(") && eq.EndsWith(")"))
             {
                 int depth = 0;
-                bool innerMatch = false;
-                for (int i = 1; i < expr.Length - 1; i++)
+                bool isOuter = true;
+                for (int i = 0; i < eq.Length; i++)
                 {
-                    if (expr[i] == '(') depth++;
-                    else if (expr[i] == ')') depth--;
-                    if (depth < 0)
-                    {
-                        innerMatch = true;
-                        break;
-                    }
+                    if (eq[i] == '(') depth++;
+                    else if (eq[i] == ')') depth--;
+                    if (depth == 0 && i < eq.Length - 1) { isOuter = false; break; }
                 }
-                if (!innerMatch)
-                    expr = expr.Substring(1, expr.Length - 2).Trim();
-                else
-                    break;
+                if (!isOuter) break;
+                eq = eq.Substring(1, eq.Length - 2).Trim();
             }
-            
-            // Find lowest precedence operator (+ or - outside parentheses)
-            int opPos = FindOperator(expr, new[] { '+', '-' });
-            char opChar = '\0';
-            
-            if (opPos >= 0)
-                opChar = expr[opPos];
+
+            if (SplitOperator(eq, OpsGroup1, out string v1, out string v2, out char opFound) ||
+                SplitOperator(eq, OpsGroup2, out v1, out v2, out opFound) ||
+                SplitOperator(eq, OpsGroup3, out v1, out v2, out opFound))
+            {
+                return new ExprNode { Op = opFound, Left = BreakDown(v1), Right = BreakDown(v2) };
+            }
+
+            return new ExprNode { Op = ScriptConstants.OP_NONE, LeafValue = eq };
+        }
+
+        /// <summary>
+        /// Recursively emits opcodes for the expression tree rooted at <paramref name="node"/>.
+        /// Returns the name of the variable or literal that holds the result.
+        /// Matches Pascal's <c>CompileTree</c>.
+        /// </summary>
+        private string CompileTree(ExprNode node, int lineNumber, byte scriptID)
+        {
+            if (node.Op == ScriptConstants.OP_NONE)
+                return node.LeafValue!;
+
+            string v1 = CompileTree(node.Left!,  lineNumber, scriptID);
+            string v2 = CompileTree(node.Right!, lineNumber, scriptID);
+            _sysVarCount++;
+            string result = "$$" + _sysVarCount;
+            FindOrCreateVariable(result);
+
+            char op = node.Op;
+            if (op == '&')
+            {
+                // String concatenation -> MERGETEXT src1 src2 dest
+                RecurseCmd(new[] { "MERGETEXT", v1, v2, result }, lineNumber, scriptID);
+            }
+            else if (op == '=')
+                RecurseCmd(new[] { "ISEQUAL",        result, v1, v2 }, lineNumber, scriptID);
+            else if (op == '>')
+                RecurseCmd(new[] { "ISGREATER",      result, v1, v2 }, lineNumber, scriptID);
+            else if (op == '<')
+                RecurseCmd(new[] { "ISLESSER",       result, v1, v2 }, lineNumber, scriptID);
+            else if (op == ScriptConstants.OP_GREATEREQUAL)
+                RecurseCmd(new[] { "ISGREATEREQUAL", result, v1, v2 }, lineNumber, scriptID);
+            else if (op == ScriptConstants.OP_LESSEREQUAL)
+                RecurseCmd(new[] { "ISLESSEREQUAL",  result, v1, v2 }, lineNumber, scriptID);
+            else if (op == ScriptConstants.OP_NOTEQUAL)
+                RecurseCmd(new[] { "ISNOTEQUAL",     result, v1, v2 }, lineNumber, scriptID);
+            else if (op == ScriptConstants.OP_AND)
+            {
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "AND",    result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == ScriptConstants.OP_OR)
+            {
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "OR",     result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == ScriptConstants.OP_XOR)
+            {
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "XOR",    result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == '+')
+            {
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ADD",    result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == '-')
+            {
+                RecurseCmd(new[] { "SETVAR",   result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "SUBTRACT", result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == '*')
+            {
+                RecurseCmd(new[] { "SETVAR",   result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "MULTIPLY", result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == '/')
+            {
+                RecurseCmd(new[] { "SETVAR",  result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "DIVIDE",  result, v2 }, lineNumber, scriptID);
+            }
+            else if (op == '%')
+            {
+                RecurseCmd(new[] { "SETVAR",  result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "MODULUS", result, v2 }, lineNumber, scriptID);
+            }
             else
             {
-                // Try * or /
-                opPos = FindOperator(expr, new[] { '*', '/' });
-                if (opPos >= 0)
-                    opChar = expr[opPos];
+                throw new Exception($"CompileTree: unknown operator code {(int)op}");
             }
-            
-            if(opPos > 0)
-            {
-                // Split and compile into two-address form:
-                //   SETVAR targetVar left     (targetVar = left)
-                //   OP     targetVar right    (targetVar op= right)
-                // This matches the 2-param signature of ADD/SUBTRACT/MULTIPLY/DIVIDE.
-                string left = expr.Substring(0, opPos).Trim();
-                string right = expr.Substring(opPos + 1).Trim();
-                
-                string leftVar = GetOrCreateTempVar(left, lineNumber, scriptID);
-                string rightVar = GetOrCreateTempVar(right, lineNumber, scriptID);
-                
-                string cmd = opChar switch
-                {
-                    '+' => "ADD",
-                    '-' => "SUBTRACT",
-                    '*' => "MULTIPLY",
-                    '/' => "DIVIDE",
-                    _ => throw new Exception($"Unknown operator: {opChar}")
-                };
-                
-                // Copy left into targetVar, then apply op with right
-                RecurseCmd(new[] { "SETVAR", targetVar, leftVar }, lineNumber, scriptID);
-                RecurseCmd(new[] { cmd, targetVar, rightVar }, lineNumber, scriptID);
-            }
-            else
-            {
-                // No operator - simple assignment
-                RecurseCmd(new[] { "SETVAR", targetVar, expr }, lineNumber, scriptID);
-            }
-        }
-        
-        private int FindOperator(string expr, char[] operators)
-        {
-            int depth = 0;
-            // Scan right-to-left for correct precedence
-            for (int i = expr.Length - 1; i >= 0; i--)
-            {
-                if (expr[i] == ')') depth++;
-                else if (expr[i] == '(') depth--;
-                else if (depth == 0 && operators.Contains(expr[i]))
-                {
-                    // Check if it's unary minus
-                    if (expr[i] == '-' && i == 0)
-                        continue;
-                    return i;
-                }
-            }
-            return -1;
-        }
-
-        private int FindLogicalOperator(string condition, out string operatorFound, out string commandName)
-        {
-            // Find 'and' or 'or' at depth 0 (outside parentheses)
-            // Returns the position of the operator, or -1 if not found
-            operatorFound = "";
-            commandName = "";
-            
-            int depth = 0;
-            // Scan from left to right (no precedence between AND/OR, just left-to-right)
-            for (int i = 0; i < condition.Length; i++)
-            {
-                if (condition[i] == '(') depth++;
-                else if (condition[i] == ')') depth--;
-                else if (depth == 0 && i + 3 <= condition.Length)
-                {
-                    // Check for 'and' or 'or' as whole words
-                    string substr = condition.Substring(i, Math.Min(4, condition.Length - i)).ToLowerInvariant();
-                    if ((substr.StartsWith("and ") || (substr == "and" && i + 3 == condition.Length)) &&
-                        (i == 0 || !char.IsLetterOrDigit(condition[i - 1])))
-                    {
-                        operatorFound = condition.Substring(i, 3);
-                        commandName = "AND";
-                        return i;
-                    }
-                    if (substr.Length >= 3 && (substr.StartsWith("or ") || (substr.Substring(0, 2) == "or" && i + 2 == condition.Length)) &&
-                        (i == 0 || !char.IsLetterOrDigit(condition[i - 1])))
-                    {
-                        operatorFound = condition.Substring(i, 2);
-                        commandName = "OR";
-                        return i;
-                    }
-                }
-            }
-            return -1;
-        }
-        
-        private string GetOrCreateTempVar(string value, int lineNumber, byte scriptID)
-        {
-            value = value.Trim();
-            
-            // If it contains operators, it needs compilation
-            if (ContainsArithmeticOperators(value))
-            {
-                string tempVar = $"$$_t{++_sysVarCount}";
-                FindOrCreateVariable(tempVar);
-                CompileArithmeticRecursive(value, tempVar, lineNumber, scriptID);
-                return tempVar;
-            }
-            
-            // Simple value - return as is
-            return value;
-        }
-
-        private string ProcessParenthesizedExpressions(string line, int lineNumber, byte scriptID)
-        {
-            // Find and process all parenthesized expressions
-            while (true)
-            {
-                int openParen = -1;
-                int closeParen = -1;
-                bool inQuote = false;
-
-                // Find innermost parenthesized expression (not inside quotes)
-                for (int i = 0; i < line.Length; i++)
-                {
-                    if (line[i] == '"')
-                        inQuote = !inQuote;
-                    else if (!inQuote && line[i] == '(')
-                        openParen = i;
-                    else if (!inQuote && line[i] == ')' && openParen >= 0)
-                    {
-                        closeParen = i;
-                        break;
-                    }
-                }
-
-                if (openParen < 0 || closeParen < 0)
-                    break; // No more parenthesized expressions
-
-                // Extract the expression inside parentheses
-                string expr = line.Substring(openParen + 1, closeParen - openParen - 1).Trim();
-
-                // Check if expression contains & operator (concatenation)
-                if (expr.Contains('&'))
-                {
-                    // Parse the expression to check whether & is the leading operator.
-                    // e.g. "val1 & val2 & val3"  → tokens[1] == "&" → pure concat → use temp var.
-                    // e.g. "$char = #27&\"[A\"" → tokens[1] == "=" → & is inside an operand →
-                    // just strip the parens; RecurseCmd's own & handling will build the concat.
-                    var tokens = ParseExpression(expr);
-
-                    bool isConcatExpr = (tokens.Count >= 3 && tokens[1] == "&")
-                                     || (tokens.Count == 1);
-
-                    if (isConcatExpr)
-                    {
-                        // Pure concatenation expression — materialise into a temp variable.
-                        string tempVar = $"%_temp{++_tempVarCounter}";
-
-                        if (tokens.Count >= 3)
-                        {
-                            RecurseCmd(new[] { "SETVAR", tempVar, tokens[0] }, lineNumber, scriptID);
-                            RecurseCmd(new[] { "CONCAT", tempVar, tokens[2] }, lineNumber, scriptID);
-
-                            for (int i = 3; i < tokens.Count; i += 2)
-                            {
-                                if (i < tokens.Count && tokens[i] == "&" && i + 1 < tokens.Count)
-                                    RecurseCmd(new[] { "CONCAT", tempVar, tokens[i + 1] }, lineNumber, scriptID);
-                            }
-                        }
-                        else // tokens.Count == 1
-                        {
-                            RecurseCmd(new[] { "SETVAR", tempVar, tokens[0] }, lineNumber, scriptID);
-                        }
-
-                        line = line.Substring(0, openParen) + tempVar + line.Substring(closeParen + 1);
-                    }
-                    else
-                    {
-                        // & appears inside a sub-expression (e.g. comparison RHS "#27&\"[A\"").
-                        // Drop the parens only — RecurseCmd's & chain logic handles the concat.
-                        line = line.Substring(0, openParen) + expr + line.Substring(closeParen + 1);
-                    }
-                }
-                else if (ContainsArithmeticOperators(expr))
-                {
-                    // Arithmetic expression inside parens: compile to a temp var so that
-                    // tokens like ($param + 1) don't bleed into the surrounding command
-                    // parameters as raw operators.  e.g. getWord $line $v ($param + 1)
-                    // must not become getWord $line $v $param + 1  (5 tokens).
-                    string tempVar = CompileArithmeticExpressionToCommands(expr, lineNumber, scriptID);
-                    line = line.Substring(0, openParen) + tempVar + line.Substring(closeParen + 1);
-                }
-                else
-                {
-                    // No operators — but if the expression contains logical AND/OR it is
-                    // a grouping expression for a compound boolean condition.  Stripping
-                    // those parens would destroy the explicit precedence the script author
-                    // intended (e.g. "(A OR B) AND C" → "A OR B AND C" which evaluates as
-                    // "A OR (B AND C)" due to AND-before-OR precedence).  Stop PPE here
-                    // so that CompileCondition can see the parens and split correctly.
-                    if (FindLogicalOperator(expr, out _, out _) >= 0)
-                        break;
-
-                    // No logical operators — safe to remove the parentheses.
-                    line = line.Substring(0, openParen) + expr + line.Substring(closeParen + 1);
-                }
-            }
-
-            return line;
-        }
-
-        private List<string> ParseExpression(string expr)
-        {
-            // Parse an expression and split on & operator (outside of quotes)
-            var tokens = new List<string>();
-            bool inQuote = false;
-            var currentToken = new System.Text.StringBuilder();
-
-            for (int i = 0; i < expr.Length; i++)
-            {
-                char c = expr[i];
-
-                if (c == '"')
-                {
-                    inQuote = !inQuote;
-                    currentToken.Append(c);
-                }
-                else if (!inQuote && c == '&')
-                {
-                    // Split on & operator
-                    if (currentToken.Length > 0)
-                    {
-                        tokens.Add(currentToken.ToString().Trim());
-                        currentToken.Clear();
-                    }
-                    tokens.Add("&");
-                }
-                else if (!inQuote && char.IsWhiteSpace(c))
-                {
-                    // Skip whitespace outside quotes (unless it's part of a token)
-                    if (currentToken.Length > 0)
-                    {
-                        currentToken.Append(c);
-                    }
-                }
-                else
-                {
-                    currentToken.Append(c);
-                }
-            }
-
-            if (currentToken.Length > 0)
-                tokens.Add(currentToken.ToString().Trim());
-
-            return tokens;
-        }
-
-        private List<string> ParseLine(string line)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(line))
-                return result;
-
-            // Remove comments
-            int commentPos = line.IndexOf("//");
-            if (commentPos >= 0)
-                line = line.Substring(0, commentPos);
-
-            line = line.Trim();
-            if (string.IsNullOrEmpty(line))
-                return result;
-
-            // Parse parameters (handle quoted strings and operators)
-            bool inQuote = false;
-            var currentParam = new System.Text.StringBuilder();
-
-            for (int i = 0; i < line.Length; i++)
-            {
-                char c = line[i];
-
-                if (c == '"')
-                {
-                    inQuote = !inQuote;
-                    currentParam.Append(c);
-                }
-                else if (char.IsWhiteSpace(c) && !inQuote)
-                {
-                    if (currentParam.Length > 0)
-                    {
-                        result.Add(currentParam.ToString());
-                        currentParam.Clear();
-                    }
-                }
-                else if (!inQuote && c == '&')
-                {
-                    // Split on & operator
-                    if (currentParam.Length > 0)
-                    {
-                        result.Add(currentParam.ToString());
-                        currentParam.Clear();
-                    }
-                    result.Add("&");
-                }
-                else
-                {
-                    currentParam.Append(c);
-                }
-            }
-
-            if (currentParam.Length > 0)
-                result.Add(currentParam.ToString());
 
             return result;
+        }
+
+        /// <summary>
+        /// Compiles <paramref name="param"/> through the expression tree and returns the
+        /// variable name or literal that holds its value.  If it is already a leaf
+        /// (no operators), it is returned as-is.  Matches Pascal's inline use of
+        /// BreakDown + CompileTree before the final CompileParameter call.
+        /// </summary>
+        private string CompileParamToVar(string param, int lineNumber, byte scriptID)
+        {
+            ExprNode root = BreakDown(param.Trim());
+            if (root.Op == ScriptConstants.OP_NONE)
+                return root.LeafValue!;
+            return CompileTree(root, lineNumber, scriptID);
+        }
+
+        /// <summary>
+        /// Full Pascal-style parameter compile: run through BreakDown/CompileTree then
+        /// emit <see cref="CompileParameter"/> for the resulting variable or literal.
+        /// </summary>
+        private void CompileParam(string param, int lineNumber, byte scriptID)
+        {
+            string result = CompileParamToVar(param, lineNumber, scriptID);
+            CompileParameter(result, lineNumber, scriptID);
         }
 
         private bool HandleMacroCommand(List<string> paramLine, int lineNumber, byte scriptID)
@@ -1255,7 +985,7 @@ namespace TWXProxy.Core
                     return true;
 
                 default:
-                    return false; // Not a macro
+                    return false;
             }
         }
 
@@ -1276,132 +1006,12 @@ namespace TWXProxy.Core
 
             _ifStack.Push(conStruct);
             RecurseCmd(new[] { conStruct.ConLabel }, lineNumber, scriptID);
-            
+
             // Compile the condition to a temporary variable
-            string tempVar = CompileCondition(condition, lineNumber, scriptID);
-            
+            string tempVar = CompileParamToVar(condition, lineNumber, scriptID);
+
             // BRANCH to EndLabel if condition is false
             RecurseCmd(new[] { "BRANCH", tempVar, conStruct.EndLabel }, lineNumber, scriptID);
-        }
-
-        private string CompileCondition(string condition, int lineNumber, byte scriptID)
-        {
-            // Parse condition like "($var = value)" or "($var > 10)"
-            // Or compound conditions like "($a > 0) and ($b < 10)"
-            // Returns the name of the temporary variable holding the result
-            
-            condition = condition.Trim();
-            
-            // First, check for logical operators (and/or) at depth 0
-            int logicalOpIndex = FindLogicalOperator(condition, out string logicalOp, out string logicalCmd);
-            if (logicalOpIndex >= 0)
-            {
-                // Split on logical operator and compile each side
-                string leftCondition = condition.Substring(0, logicalOpIndex).Trim();
-                string rightCondition = condition.Substring(logicalOpIndex + logicalOp.Length).Trim();
-                
-                // Compile left and right conditions recursively
-                string leftVar = CompileCondition(leftCondition, lineNumber, scriptID);
-                string rightVar = CompileCondition(rightCondition, lineNumber, scriptID);
-                
-                // Create temp variable for combined result, initialized to left result
-                string tempVarName = $"$$_t{++_sysVarCount}";
-                FindOrCreateVariable(tempVarName);
-                
-                // Copy left result to temp var
-                RecurseCmd(new[] { "SETVAR", tempVarName, leftVar }, lineNumber, scriptID);
-                
-                // Combine with right result using AND/OR command
-                RecurseCmd(new[] { logicalCmd, tempVarName, rightVar }, lineNumber, scriptID);
-                
-                return tempVarName;
-            }
-            
-            // Remove outer parentheses if present (only for simple comparisons)
-            if (condition.StartsWith("(") && condition.EndsWith(")"))
-            {
-                int depth = 0;
-                bool isSimple = true;
-                for (int i = 0; i < condition.Length; i++)
-                {
-                    if (condition[i] == '(') depth++;
-                    else if (condition[i] == ')') depth--;
-                    if (depth == 0 && i < condition.Length - 1) { isSimple = false; break; }
-                }
-                if (isSimple)
-                {
-                    condition = condition.Substring(1, condition.Length - 2).Trim();
-
-                    // After stripping the outer parens the inner content may itself be a
-                    // compound logical expression (e.g. "A OR B" from "(A OR B)") that
-                    // must be split on the logical operator rather than treated as a bare
-                    // comparison.  Re-check now so that explicit grouping is honoured.
-                    logicalOpIndex = FindLogicalOperator(condition, out logicalOp, out logicalCmd);
-                    if (logicalOpIndex >= 0)
-                    {
-                        string innerLeft  = condition.Substring(0, logicalOpIndex).Trim();
-                        string innerRight = condition.Substring(logicalOpIndex + logicalOp.Length).Trim();
-                        string innerLeftVar  = CompileCondition(innerLeft,  lineNumber, scriptID);
-                        string innerRightVar = CompileCondition(innerRight, lineNumber, scriptID);
-                        string innerTempName = $"$$_t{++_sysVarCount}";
-                        FindOrCreateVariable(innerTempName);
-                        RecurseCmd(new[] { "SETVAR",   innerTempName, innerLeftVar  }, lineNumber, scriptID);
-                        RecurseCmd(new[] { logicalCmd, innerTempName, innerRightVar }, lineNumber, scriptID);
-                        return innerTempName;
-                    }
-                }
-            }
-            
-            // Find comparison operator
-            string[] operators = { "<>", "<=", ">=", "=", "<", ">", "!=", "==", "<>" };
-            string[] commands = { "ISNOTEQUAL", "ISLESSEREQUAL", "ISGREATEREQUAL", "ISEQUAL", "ISLESSER", "ISGREATER", "ISNOTEQUAL", "ISEQUAL", "ISNOTEQUAL" };
-            
-            string op = "";
-            string cmd = "";
-            int opIndex = -1;
-            
-            for (int i = 0; i < operators.Length; i++)
-            {
-                opIndex = condition.IndexOf(operators[i]);
-                if (opIndex >= 0)
-                {
-                    op = operators[i];
-                    cmd = commands[i];
-                    break;
-                }
-            }
-            
-            if (opIndex < 0)
-            {
-                // No operator found - treat as boolean test (non-zero = true)
-                // Create temp var and use ISNOTEQUAL to test != 0
-                string tempVarName = $"$$_t{++_sysVarCount}";
-                FindOrCreateVariable(tempVarName);
-                
-                RecurseCmd(new[] { "ISNOTEQUAL", tempVarName, condition.Trim(), "\"0\"" }, lineNumber, scriptID);
-                return tempVarName;
-            }
-            
-            // Split on operator
-            string left = condition.Substring(0, opIndex).Trim();
-            string right = condition.Substring(opIndex + op.Length).Trim();
-            
-            // Quote only plain literals (PARAM_CONST) - leave sysconsts, variables,
-            // progvars, and chars unquoted so they compile correctly.
-            if (IdentifyParam(left) == ScriptConstants.PARAM_CONST && !left.StartsWith("\""))
-                left = $"\"{left}\"";
-            if (IdentifyParam(right) == ScriptConstants.PARAM_CONST && !right.StartsWith("\""))
-                right = $"\"{right}\"";
-            
-            // Create temporary variable for result (FindOrCreateVariable deduplicates across lines)
-            string tempVarName2 = $"$$_t{++_sysVarCount}";
-            FindOrCreateVariable(tempVarName2);
-            
-            // Compile comparison command
-            // ISEQUAL/ISGREATER/etc. take 3 params: result var, left operand, right operand
-            RecurseCmd(new[] { cmd, tempVarName2, left, right }, lineNumber, scriptID);
-            
-            return tempVarName2;
         }
 
         private void HandleIf(List<string> paramLine, int lineNumber, byte scriptID)
@@ -1421,10 +1031,10 @@ namespace TWXProxy.Core
             };
 
             _ifStack.Push(conStruct);
-            
+
             // Compile the condition to a temporary variable
-            string tempVar = CompileCondition(condition, lineNumber, scriptID);
-            
+            string tempVar = CompileParamToVar(condition, lineNumber, scriptID);
+
             // BRANCH to ConLabel if condition is false (tempVar != "1")
             RecurseCmd(new[] { "BRANCH", tempVar, conStruct.ConLabel }, lineNumber, scriptID);
         }
@@ -1472,10 +1082,10 @@ namespace TWXProxy.Core
             RecurseCmd(new[] { "GOTO", conStruct.EndLabel }, lineNumber, scriptID);
             RecurseCmd(new[] { conStruct.ConLabel }, lineNumber, scriptID);
             conStruct.ConLabel = "::" + (++_ifLabelCount);
-            
+
             // Compile the condition to a temporary variable
-            string tempVar = CompileCondition(condition, lineNumber, scriptID);
-            
+            string tempVar = CompileParamToVar(condition, lineNumber, scriptID);
+
             // BRANCH to new ConLabel if condition is false
             RecurseCmd(new[] { "BRANCH", tempVar, conStruct.ConLabel }, lineNumber, scriptID);
         }
@@ -1563,10 +1173,10 @@ namespace TWXProxy.Core
             AppendCode(BitConverter.GetBytes(lineWord));
             AppendCode(BitConverter.GetBytes(cmdWord));
 
-            // Compile parameters
+            // Compile parameters — each token is run through the expression tree compiler
             for (int i = 1; i < paramLine.Count; i++)
             {
-                CompileParameter(paramLine[i], lineNumber, scriptID);
+                CompileParam(paramLine[i], lineNumber, scriptID);
             }
 
             // Null-terminate the parameter list (Pascal format)
@@ -1602,6 +1212,12 @@ namespace TWXProxy.Core
                         labelName = _includeScriptList[scriptID - 1] + "~" + labelName;
                     }
                     value = ":" + labelName;
+                }
+                else
+                {
+                    // Bare identifier (trigger name, numeric literal, etc.) — match Pascal's
+                    // implicit ToUpperCase behaviour for unquoted string constants.
+                    value = value.ToUpperInvariant();
                 }
 
                 var newParam = new CmdParam { Value = value };
@@ -1641,7 +1257,7 @@ namespace TWXProxy.Core
                 AppendCode(BitConverter.GetBytes(id));
 
                 // Write array indexes (pass scriptID so variable names inside indexes are extended)
-                WriteArrayIndexes(convertedParam, scriptID);
+                WriteArrayIndexes(convertedParam, lineNumber, scriptID);
             }
             else if (paramType == ScriptConstants.PARAM_PROGVAR)
             {
@@ -1669,7 +1285,7 @@ namespace TWXProxy.Core
                 AppendCode(BitConverter.GetBytes(id));
 
                 // Write array indexes (pass scriptID so variable names inside indexes are extended)
-                WriteArrayIndexes(convertedParam, scriptID);
+                WriteArrayIndexes(convertedParam, lineNumber, scriptID);
             }
             else if (paramType == ScriptConstants.PARAM_SYSCONST)
             {
@@ -1704,7 +1320,7 @@ namespace TWXProxy.Core
                 AppendCode(BitConverter.GetBytes((ushort)constID));
 
                 // Write array indexes
-                WriteArrayIndexes(param, scriptID);
+                WriteArrayIndexes(param, lineNumber, scriptID);
             }
             else if (paramType == ScriptConstants.PARAM_CHAR)
             {
@@ -1815,7 +1431,7 @@ namespace TWXProxy.Core
             return indexes;
         }
 
-        private void WriteArrayIndexes(string param, byte scriptID = 0)
+        private void WriteArrayIndexes(string param, int lineNumber, byte scriptID = 0)
         {
             // Parse and write array indexes from parameter
             var indexes = ExtractArrayIndexes(param);
@@ -1833,8 +1449,12 @@ namespace TWXProxy.Core
             // Write each index: type byte + data (format matches TWX decompiler ReadIndexValues)
             foreach (string indexExpr in indexes)
             {
+                // Pre-compile any expression in the index (e.g. ($emptyShipCount+1) → $$1).
+                // For simple variable/constant leaves this is a no-op.
+                string compiledIndex = CompileParamToVar(indexExpr, lineNumber, scriptID);
+
                 // Each index can be a variable, constant, or sysconst
-                byte indexType = IdentifyParam(indexExpr);
+                byte indexType = IdentifyParam(compiledIndex);
                 
                 // Write type byte first
                 AppendCode(new[] { indexType });
@@ -1842,7 +1462,7 @@ namespace TWXProxy.Core
                 if (indexType == ScriptConstants.PARAM_VAR || indexType == ScriptConstants.PARAM_PROGVAR)
                 {
                     // Variable index – extend name for include scripts
-                    string indexVarName = indexExpr;
+                    string indexVarName = compiledIndex;
                     int idxBracketPos = indexVarName.IndexOf('[');
                     if (idxBracketPos > 0)
                         indexVarName = indexVarName.Substring(0, idxBracketPos);
@@ -1857,12 +1477,12 @@ namespace TWXProxy.Core
 
                     int indexId = FindOrCreateVariable(indexVarName);
                     AppendCode(BitConverter.GetBytes(indexId));
-                    WriteArrayIndexes(indexExpr, scriptID); // Recursive for nested arrays
+                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID); // Recursive for nested arrays
                 }
                 else if (indexType == ScriptConstants.PARAM_SYSCONST)
                 {
                     // System constant - write 16-bit ID + recursively write its indexes
-                    string constName = indexExpr;
+                    string constName = compiledIndex;
                     int indexLevel = 0;
                     StringBuilder baseName = new StringBuilder();
                     foreach (char c in constName)
@@ -1879,15 +1499,15 @@ namespace TWXProxy.Core
                     }
                     
                     if (indexId < 0)
-                        throw new Exception($"Unknown system constant in array index: {indexExpr}");
+                        throw new Exception($"Unknown system constant in array index: {compiledIndex}");
                     
                     AppendCode(BitConverter.GetBytes((ushort)indexId));
-                    WriteArrayIndexes(indexExpr, scriptID); // Recursive for nested arrays
+                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID); // Recursive for nested arrays
                 }
                 else if  (indexType == ScriptConstants.PARAM_CONST)
                 {
                     // Constant index - write 32-bit parameter ID
-                    string value = indexExpr;
+                    string value = compiledIndex;
                     if (value.StartsWith('"') && value.EndsWith('"'))
                         value = value.Substring(1, value.Length - 2);
                     
@@ -1899,9 +1519,9 @@ namespace TWXProxy.Core
                 else if (indexType == ScriptConstants.PARAM_CHAR)
                 {
                     // Character index - write 1 byte
-                    if (indexExpr.StartsWith('#'))
+                    if (compiledIndex.StartsWith('#'))
                     {
-                        byte charCode = byte.Parse(indexExpr.Substring(1));
+                        byte charCode = byte.Parse(compiledIndex.Substring(1));
                         AppendCode(new[] { charCode });
                     }
                 }
