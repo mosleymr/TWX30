@@ -69,16 +69,28 @@ Current version = 6.
 - **All temp variable sites must use `FindOrCreateVariable()`, not `_paramList.Add()` directly**, so that names like `$$_t1` used on every source line resolve to the same parameter slot instead of creating a new entry each time
 
 **Per-line temp var counters (reset each source line):**
-- `_sysVarCount` — resets to 0 at start of `CompileParamLine(string line, ...)` (the per-line entry point). Used for `$$_tN` (condition/arithmetic temp vars)
-- `_tempVarCounter` — also resets to 0 per source line. Used for `%_concatN` / `%_tempN` (concatenation intermediate vars)
+- `_sysVarCount` — resets to 0 at start of `CompileParamLine(string line, ...)` (the per-line entry point). Used for `$$N` temp vars in `CompileTree`
 - `_ifLabelCount` — **never** resets; provides globally-unique branch label names (`::N`). Do NOT use for temp var names.
 - Matching Pascal: `SysVarCount := 0` at `ScriptCmp.pas` line 1767 (per-line reset); Pascal names temp vars `$$1`, `$$2`... which deduplicate via `FindOrCreate`
 
-**Result of correct deduplication on `momtest.ts` (11,657 lines):**
+**New Pascal-style expression tree compiler (as of commit 25aeca1):**
+- `CompileParamLine(string)` — operator-linking tokenizer: after `ConvertOps`+`ConvertConditions`, operator chars have `linked=true` and accumulate INTO the current token. `$a >= $b` → after pre-processing → one token `$a<OP_GE>$b` → `BreakDown` handles it.
+- `BreakDown(string)` — static; strips outer parens, splits on operator precedence groups:
+  - Group1 = `=<>&` + sentinel chars (comparisons/logical/concat — lowest priority, split first)
+  - Group2 = `+-` (additive)
+  - Group3 = `*/%` (multiplicative — highest priority, split last)
+- `CompileTree(ExprNode, lineNumber, scriptID)` — emits opcodes for the expression tree; uses `$$N` temp vars
+- `CompileParam(string, lineNumber, scriptID)` — calls BreakDown+CompileTree then `CompileParameter`; used in `CompileCommand` loop
+- `CompileParamToVar(string, lineNumber, scriptID)` — like CompileParam but returns the result var name; used in `HandleWhile`/`HandleIf`/`HandleElseIf`
+- `WriteArrayIndexes` — runs each array index through `CompileParamToVar` so `$arr[($i+1)]` compiles the index to opcodes instead of storing `($i+1)` as PARAM_CONST
+- PARAM_CONST bare identifiers (trigger names etc.) are uppercased to match Pascal's implicit ToUpperCase behaviour
+
+**Result of unified expression-tree compiler on `momtest.ts` (11,657 lines):**
 ```
-Before fix: 645,618 B  (17,932 params — 2,811 unique temp vars)
-After fix:  565,198 B  (14,261 params — 36 temp vars)
-Pascal orig: 566,594 B (13,882 params)
+Old pipeline: 645,618 B  (17,932 params — expression fragments as PARAM_CONST)
+New compiler: 567,653 B  (13,896 params)
+Pascal orig:  566,594 B  (13,882 params)
+Delta: 0.19% vs Pascal
 ```
 
 ### Parameters (`Core/ScriptCmd.cs`)
