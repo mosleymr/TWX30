@@ -379,7 +379,7 @@ namespace TWXD
                         {
                             string exp1 = ExpandTempVars(src1, tempVars);
                             string exp2 = ExpandTempVars(src2, tempVars);
-                            tempVars[dest] = $"{exp1} {exp2}";
+                            tempVars[dest] = $"{exp1}&{exp2}";
                             skipOutput = true;
                         }
                     }
