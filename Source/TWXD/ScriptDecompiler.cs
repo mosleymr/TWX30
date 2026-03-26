@@ -147,9 +147,11 @@ namespace TWXD
                 var tempVars = new Dictionary<string, string>(); // Track $$1, $$2, etc.
                 var seenLabels = new HashSet<string>(); // Track which labels we've already processed
                 int indent = 0;
-                bool pendingElse = false;    // GOTO to forward internal label seen — else/elseif incoming
-                string? pendingElseEnd = null; // The GOTO target label — becomes the "end" label
-                bool lineelse = false;         // else-start label passed; write else/elseif before next cmd
+                bool pendingElse = false;    // forward GOTO to internal numeric label was just seen
+                bool lineelse = false;       // else-start label passed; next BRANCH → elseif, next real cmd → else
+                bool lastWasLoopLabel = false; // WHILE-start internal label seen; next BRANCH → while
+                bool branchend = false;      // just emitted 'end'; next internal numeric label is EndLabel, skip it
+                string pendingElseLabel = ""; // the ConLabel consumed by pendingElse; ELSEIF must remove it from branchLabels
                 
                 _codePos = 0;
                 
@@ -177,55 +179,61 @@ namespace TWXD
                         if (label.Location == commandStart)
                         {
                             string labelName = label.Name;
-                            seenLabels.Add(labelName); // Track that we've seen this label
-                            
-                            // Check if this is an internal numeric label (e.g., ":2", ":10")
-                            bool isNumericLabel = labelName.StartsWith(":") && labelName.Length > 1 && 
+                            seenLabels.Add(labelName);
+
+                            // Internal numeric label (branch targets, loop markers, end labels)
+                            bool isNumericLabel = labelName.StartsWith(":") && labelName.Length > 1 &&
                                                   labelName.Substring(1).All(char.IsDigit);
-                            
-                            // If this label is a branch target, handle else/end
-                            if (branchLabels.Contains(labelName))
+
+                            if (isNumericLabel)
                             {
-                                branchLabels.Remove(labelName);
-                                
                                 if (pendingElse)
                                 {
-                                    // This label is the START of the else body (BRANCH target when
-                                    // a GOTO over the else was seen). Don't write end yet — defer
-                                    // the else output until we know whether the next command is
-                                    // BRANCH (→ elseif) or something else (→ else). The real end
-                                    // label is pendingElseEnd (the GOTO destination).
+                                    // A forward GOTO to this label was seen → else/elseif body starts here.
+                                    // pendingElse always takes priority over branchend/branchLabels so
+                                    // that a while 'end' at the same position doesn't shadow the else-start.
+                                    // DO NOT remove this label from branchLabels — for ELSE it will be
+                                    // encountered again at the HandleEnd position where it emits 'end'.
+                                    // For ELSEIF, the BRANCH handler will clean it up from branchLabels.
                                     pendingElse = false;
                                     lineelse = true;
-                                    if (pendingElseEnd != null)
-                                    {
-                                        branchLabels.Add(pendingElseEnd);
-                                        pendingElseEnd = null;
-                                    }
+                                    pendingElseLabel = labelName;
+                                    lastWasLoopLabel = false;
                                 }
-                                else
+                                else if (branchLabels.Contains(labelName))
                                 {
-                                    // If lineelse is still set here it means else body was empty
+                                    // ConLabel reached at HandleEnd position — close this block.
+                                    branchLabels.Remove(labelName);
                                     if (lineelse)
                                     {
                                         indent--;
                                         output.WriteLine($"{Indent(indent)}else");
                                         indent++;
                                         lineelse = false;
+                                        pendingElseLabel = "";
                                     }
                                     indent--;
                                     output.WriteLine($"{Indent(indent)}end");
+                                    branchend = true; // next label at this position is EndLabel, skip it
+                                    lastWasLoopLabel = false;
+                                }
+                                else if (branchend)
+                                {
+                                    // This is the EndLabel that pairs with the ConLabel that just
+                                    // emitted 'end'. Silently consume it.
+                                    branchend = false;
+                                    lastWasLoopLabel = false;
+                                }
+                                else
+                                {
+                                    // Not a branch-close or else-start: this is a WHILE loop start.
+                                    lastWasLoopLabel = true;
                                 }
                             }
-                            // Skip internal numeric labels
-                            else if (isNumericLabel)
-                            {
-                                // Don't write numeric labels to output
-                                continue;
-                            }
-                            // Write user-defined labels with : prefix
                             else
                             {
+                                // User-defined label
+                                branchend = false;
                                 output.WriteLine($":{labelName}");
                             }
                         }
@@ -242,16 +250,6 @@ namespace TWXD
                         cmdName = $"UNKNOWN_{cmdID}";
                     }
 
-                    // If an else is pending and this command is not BRANCH (which handles elseif
-                    // itself), emit the else line now — before the first command of the else body.
-                    if (lineelse && cmdName != "BRANCH")
-                    {
-                        indent--;
-                        output.WriteLine($"{Indent(indent)}else");
-                        indent++;
-                        lineelse = false;
-                    }
-                    
                     var parts = new List<string> { cmdName };
                     
                     // Read parameters until PARAM_CMD (0) marker
@@ -390,6 +388,7 @@ namespace TWXD
                     {
                         string condition = parts[1];
                         string label = parts[2].Trim('"', ':');
+                        string fullLabel = ":" + label;
                         
                         // Expand temporary variables
                         condition = ExpandTempVars(condition, tempVars);
@@ -397,18 +396,36 @@ namespace TWXD
                         // Clear condition temp vars so they don't pollute subsequent instructions
                         tempVars.Clear();
                         
-                        branchLabels.Add(":" + label);
+                        bool isWhileLoop = lastWasLoopLabel;
+                        lastWasLoopLabel = false;
                         
                         if (lineelse)
                         {
-                            // This BRANCH is at the else-start position → elseif
+                            // ELSEIF: the false-jump target goes into branchLabels so it emits
+                            // 'end' when reached at HandleEnd position.
+                            // The old ConLabel (pendingElseLabel) was left in branchLabels by
+                            // the pendingElse handler, but HandleEnd for ELSEIF uses the NEW
+                            // ConLabel, not the old one. Remove the stale old ConLabel now.
+                            if (!string.IsNullOrEmpty(pendingElseLabel))
+                            {
+                                branchLabels.Remove(pendingElseLabel);
+                                pendingElseLabel = "";
+                            }
+                            branchLabels.Add(fullLabel);
                             indent--;
                             output.WriteLine($"{Indent(indent)}elseif {condition}");
                             indent++;
                             lineelse = false;
                         }
+                        else if (isWhileLoop)
+                        {
+                            branchLabels.Add(fullLabel);
+                            output.WriteLine($"{Indent(indent)}while {condition}");
+                            indent++;
+                        }
                         else
                         {
+                            branchLabels.Add(fullLabel);
                             output.WriteLine($"{Indent(indent)}if {condition}");
                             indent++;
                         }
@@ -430,17 +447,15 @@ namespace TWXD
                         {
                             if (isBackwardJump)
                             {
-                                // Backward jump to internal label = loop, just suppress it
+                                // Backward jump to internal label = while loop back, suppress
                                 skipOutput = true;
                                 pendingElse = false;
-                                pendingElseEnd = null;
                                 lineelse = false;
                             }
                             else
                             {
-                                // Forward jump to internal label = else clause coming
+                                // Forward jump to internal label = else/elseif body coming
                                 pendingElse = true;
-                                pendingElseEnd = fullLabel; // save for use as the "end" label
                                 skipOutput = true;
                             }
                         }
@@ -455,6 +470,22 @@ namespace TWXD
                     // Write regular command
                     if (!skipOutput)
                     {
+                        // If else is pending, emit it now before the first real command of the else body.
+                        // This is done here (after skipOutput check) so that temp-var condition
+                        // commands compiled for ELSEIF don't trigger a premature `else` output.
+                        if (lineelse)
+                        {
+                            // ELSE case: the old ConLabel (pendingElseLabel) stays in branchLabels
+                            // because HandleEnd for ELSE emits it a 2nd time to close the block.
+                            // Just clear the saved label; do NOT remove it from branchLabels.
+                            pendingElseLabel = "";
+                            indent--;
+                            output.WriteLine($"{Indent(indent)}else");
+                            indent++;
+                            lineelse = false;
+                        }
+                        lastWasLoopLabel = false; // a real command ran — not immediately after loop label
+
                         // Expand temp vars in parameters
                         for (int i = 1; i < parts.Count; i++)
                         {
@@ -569,6 +600,21 @@ namespace TWXD
                             // Check if name already has $ prefix
                             if (!name.StartsWith("$"))
                                 name = "$" + name;
+
+                            // Pascal source uses $ARRAY[$IDX].FIELD notation, but the compiler
+                            // stores the variable as name="ARRAY.FIELD" with index [$IDX].  
+                            // Reconstruct the original notation: move indexes before the first dot.
+                            if (!string.IsNullOrEmpty(indexes))
+                            {
+                                int dotPos = name.IndexOf('.', 1); // skip leading '$'
+                                if (dotPos > 0)
+                                {
+                                    string basePart = name.Substring(0, dotPos); // "$ARRAY"
+                                    string suffix   = name.Substring(dotPos);    // ".FIELD"
+                                    return basePart + indexes + suffix;
+                                }
+                            }
+
                             return name + indexes;
                         }
                         return $"$VAR_{paramIndex}{indexes}";
@@ -717,37 +763,18 @@ namespace TWXD
             if (string.IsNullOrEmpty(value))
                 return true;
 
-            // Check if it starts with special characters (but not if it's ONLY that character)
-            if (value.Length > 1)
-            {
-                if (value[0] == '$' || value[0] == '%' || value[0] == '#' || value[0] == ':')
-                    return false;
-            }
+            // Variable, program-var, char-literal, or label reference — no quotes
+            if (value[0] == '$' || value[0] == '%' || value[0] == '#' || value[0] == ':')
+                return false;
 
-            // If it's a number, no quotes needed
+            // Pure number — no quotes
             if (double.TryParse(value, out _))
                 return false;
 
-            // Check if it contains spaces or special TWX characters (after escaping)
-            if (value.Contains(' ') || value.Contains('*'))
-                return true;
-
-            // Check if it's a command name (all uppercase letters)
-            bool isCommand = true;
-            foreach (char c in value)
-            {
-                if (!char.IsUpper(c) && !char.IsDigit(c))
-                {
-                    isCommand = false;
-                    break;
-                }
-            }
-
-            // Commands and uppercase constants don't need quotes
-            if (isCommand && _scriptRef.FindCmd(value) >= 0)
-                return false;
-
-            // Everything else needs quotes to be safe
+            // Everything else is a string constant — always quote it.
+            // (Quoted forms like LOGGING "OFF" compile identically to LOGGING OFF, so
+            //  adding quotes to keyword-args like ON/OFF is harmless and ensures that
+            //  string literals like "Y", "C", "NO", "YES" are correctly reproduced.)
             return true;
         }
     }
