@@ -39,16 +39,47 @@ Source/
 
 Pipeline: tokenize `.ts` → parse → code-gen → emit `.cts` binary.
 
-**Binary format (`.cts`):**
+**Binary format (`.cts`) — 24-byte Pascal header, then sections in order:**
 ```
-Header (19 bytes): "TWX Proxy" + version:uint16 + DescSize:int32 + CodeSize:int32
+Header (24 bytes — Pascal TScriptFileHeader, default Win32 alignment):
+  offset  0    : ShortString length byte (10 = 0x0A)
+  offset  1-10 : "TWX SCRIPT" (10 ASCII chars, no null)
+  offset 11    : 1 alignment pad byte
+  offset 12-13 : Version (uint16, little-endian)
+  offset 14-15 : 2 alignment pad bytes
+  offset 16-19 : DescSize (int32, little-endian)
+  offset 20-23 : CodeSize (int32, little-endian)
 Description block (DescSize bytes)
-Parameter count:int32 + Parameters
-Label count:int32 + Labels
-Include count:int32 + Includes
-Compiled code (CodeSize bytes)
+Code block     (CodeSize bytes)
+Parameters     (repeated until terminator byte 0x00):
+  type byte (1=TCmdParam/const, 2=TVarParam/var)
+  value: int32 length + XOR-113 encrypted bytes
+  name (type=2 vars only): int32 length + XOR-113 encrypted bytes
+Terminator     (0x00)
+Includes       (repeated until int32 length == 0):
+  int32 length + raw ASCII name bytes
+Labels         (until EOF):
+  int32 location + int32 length + raw ASCII name bytes
 ```
 Current version = 6.
+
+**Param list (`_paramList`) and deduplication:**
+- `List<CmdParam> _paramList` — global table for the whole script file
+- `FindOrCreateVariable(string varName)` — case-insensitive linear search; returns existing index or appends new `VarParam`
+- **All temp variable sites must use `FindOrCreateVariable()`, not `_paramList.Add()` directly**, so that names like `$$_t1` used on every source line resolve to the same parameter slot instead of creating a new entry each time
+
+**Per-line temp var counters (reset each source line):**
+- `_sysVarCount` — resets to 0 at start of `CompileParamLine(string line, ...)` (the per-line entry point). Used for `$$_tN` (condition/arithmetic temp vars)
+- `_tempVarCounter` — also resets to 0 per source line. Used for `%_concatN` / `%_tempN` (concatenation intermediate vars)
+- `_ifLabelCount` — **never** resets; provides globally-unique branch label names (`::N`). Do NOT use for temp var names.
+- Matching Pascal: `SysVarCount := 0` at `ScriptCmp.pas` line 1767 (per-line reset); Pascal names temp vars `$$1`, `$$2`... which deduplicate via `FindOrCreate`
+
+**Result of correct deduplication on `momtest.ts` (11,657 lines):**
+```
+Before fix: 645,618 B  (17,932 params — 2,811 unique temp vars)
+After fix:  565,198 B  (14,261 params — 36 temp vars)
+Pascal orig: 566,594 B (13,882 params)
+```
 
 ### Parameters (`Core/ScriptCmd.cs`)
 
@@ -277,12 +308,48 @@ Connection modes:
 ## TWXD Decompiler (`Source/TWXD/`)
 
 `ScriptDecompiler.cs` reverses `.cts` → `.ts`:
-1. Read header + version
-2. Load parameter table, label table, include list
+1. Read 24-byte Pascal header (`ReadScriptFileHeader` from `ScriptCmp.cs`)
+2. Load description, code block, parameter table, include list, label table
 3. Parse bytecode: command ID → name lookup → format parameters
 4. Emit readable `.ts` source
 
 `OriginalCommandNames[]` — 153 entries mapping command byte → name string.
+
+**Key decompiler design decisions (bugs fixed):**
+
+**ELSEIF / ConLabel tracking:** Pascal emits a `ConLabel` at two positions for ELSEIF: once at the else-start and again at the END position. When `ELSEIF` processing removes `ConLabel_outer` from `branchLabels`, it reappears at end position unmatched — which made the decompiler think the next `if` was a `while`. Fix: `HashSet<string> elseifConsumedLabels` tracks and silently consumes the reappearing outer ConLabel.
+
+**MERGETEXT decompilation:** The decompiler builds a SETVAR expression by joining parts. Must use `&` as separator — **not** a space — to produce valid `.ts` source: `tempVars[dest] = $"{exp1}&{exp2}"`.
+
+**`NeedsQuotes()` quoting rules:**
+- `#N` (character literal) — only unquoted when `#` is followed immediately by digits; standalone `#` must be quoted
+- `:label` — only unquoted when `Length > 1`; bare `:` must be quoted
+- String with embedded spaces, operators, or special chars → quote it
+- Already-quoted strings (`"..."`) → leave alone
+
+---
+
+## Build & Install
+
+Publish self-contained single-file binaries for macOS arm64:
+```sh
+# Compiler
+dotnet publish Source/TWXC/TWXC.csproj -c Release -r osx-arm64 \
+  --self-contained true -p:PublishSingleFile=true \
+  -o Source/TWXC/publish/osx-arm64
+sudo cp Source/TWXC/publish/osx-arm64/TWXC /usr/local/bin/twxc
+
+# Decompiler
+dotnet publish Source/TWXD/TWXD.csproj -c Release -r osx-arm64 \
+  --self-contained true -p:PublishSingleFile=true \
+  -o Source/TWXD/publish/osx-arm64
+sudo cp Source/TWXD/publish/osx-arm64/TWXD /usr/local/bin/twxd
+
+# MTC terminal client
+./build-mtc.sh    # produces Source/MTC/publish/osx-arm64/MTC
+```
+
+Verify after install: `twxc ~/twx/scripts/somescript.ts` and check `.cts` output size.
 
 ---
 
@@ -371,3 +438,50 @@ For destructive menu operations (e.g., resetting all sector data), use the `Inpu
 Warp data is captured automatically from live game output. `RecordLine` is called by the proxy for every non-blank server line. `_rxWarps` matches `"Warps to Sector(s) :"` and `ParseWarpsLine` replaces all warp slots for the current sector. No extra recording step is needed when entering a new sector.
 
 `_inWarpLane` must be cleared when a `Sector  : NNNN` header is seen — the warp lane traversal is complete at that point. Leaving it set causes subsequent sector lines to be silently swallowed as warp-lane output (historical bug, fixed).
+
+---
+
+## Compiler & Decompiler Round-Trip Verification
+
+The gold standard test: decompile a Pascal-compiled `.cts`, recompile with `twxc`, and verify the output file size is within ~2% of the Pascal original. Larger deviations indicate a structural bloat bug.
+
+Quick CTS file analysis with Python (sizes, param counts):
+```python
+import struct
+
+def parse_params(data, offset):
+    params = []
+    while offset < len(data):
+        ptype = data[offset]; offset += 1
+        if ptype == 0: break
+        length = struct.unpack_from('<i', data, offset)[0]; offset += 4
+        val = data[offset:offset+length]; offset += length
+        if ptype == 2:
+            length2 = struct.unpack_from('<i', data, offset)[0]; offset += 4
+            name = data[offset:offset+length2]; offset += length2
+            params.append(('var', name, val))
+        else:
+            params.append(('const', val, None))
+    return params, offset
+
+with open('script.cts', 'rb') as f: data = f.read()
+desc_size = struct.unpack_from('<i', data, 16)[0]
+code_size = struct.unpack_from('<i', data, 20)[0]
+offset = 24 + desc_size + code_size
+params, after = parse_params(data, offset)
+nvars = sum(1 for p in params if p[0]=='var')
+nconsts = sum(1 for p in params if p[0]=='const')
+xk = 0x51  # XOR key 113
+for p in params[:10]:  # decode first 10
+    val = bytes(b ^ xk for b in p[1]).decode('latin-1')
+    name = bytes(b ^ xk for b in p[2]).decode('latin-1') if p[2] else ''
+    print(f'{p[0]}: {name!r} = {val[:40]!r}')
+```
+
+Decryption: all param strings are XOR-encrypted with key **113** (0x71). To read names/values: `bytes(b ^ 113 for b in encrypted_bytes).decode('latin-1')`.
+
+Temp var naming conventions (for diagnosing bloat):
+- `$$_t1`, `$$_t2` … — condition/arithmetic temporaries (per-line, deduplicated)
+- `%_concat1`, `%_temp1` … — concatenation intermediates (per-line, deduplicated)
+- `$$1`, `$$2` … — Pascal's equivalent temp names in `.cts.orig` files
+- Any `$$__condN` or `$$__mathN` names → old pre-fix naming; indicates stale binary
