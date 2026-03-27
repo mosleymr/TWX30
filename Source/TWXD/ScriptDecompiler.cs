@@ -33,62 +33,6 @@ namespace TWXD
 {
     public class ScriptDecompiler
     {
-        // Original TWX command order (from Pascal TWX 2.x)
-        private static readonly string[] OriginalCommandNames = new[]
-        {
-            "ADD", "ADDMENU", "AND", "BRANCH", "CLIENTMESSAGE", "CLOSEMENU", "CONNECT",
-            "CUTTEXT", "DELETE", "DISCONNECT", "DIVIDE", "ECHO", "FILEEXISTS", "GETCHARCODE",
-            "GETCONSOLEINPUT", "GETCOURSE", "GETDATE", "GETDISTANCE", "GETINPUT", "GETLENGTH",
-            "GETMENUVALUE", "GETOUTTEXT", "GETRND", "GETSECTOR", "GETSECTORPARAMETER", "GETTEXT",
-            "GETTIME", "GOSUB", "GOTO", "GETWORD", "GETWORDPOS", "HALT", "ISEQUAL", "ISGREATER",
-            "ISGREATEREQUAL", "ISLESSER", "ISLESSEREQUAL", "ISNOTEQUAL", "ISNUMBER", "KILLWINDOW",
-            "KILLALLTRIGGERS", "KILLTRIGGER", "LOAD", "LOADVAR", "LOGGING", "LOWERCASE", "MERGETEXT",
-            "MULTIPLY", "OPENMENU", "OR", "PAUSE", "PROCESSIN", "PROCESSOUT", "READ", "RENAME",
-            "REPLACETEXT", "REQRECORDING", "RETURN", "ROUND", "SAVEVAR", "SEND", "SETARRAY",
-            "SETDELAYTRIGGER", "SETEVENTTRIGGER", "SETMENUHELP", "SETMENUVALUE", "SETMENUOPTIONS",
-            "SETPRECISION", "SETPROGVAR", "SETSECTORPARAMETER", "SETTEXTLINETRIGGER", "SETTEXTOUTTRIGGER",
-            "SETTEXTTRIGGER", "SETVAR", "SETWINDOWCONTENTS", "SOUND", "STOP", "STRIPTEXT", "SUBTRACT",
-            "SYS_CHECK", "SYS_FAIL", "SYS_KILL", "SYS_NOAUTH", "SYS_NOP", "SYS_SHOWMSG", "SYSTEMSCRIPT",
-            "UPPERCASE", "XOR", "WAITFOR", "WINDOW", "WRITE", "GETTIMER", "READTOARRAY", "CLEARALLAVOIDS",
-            "CLEARAVOID", "GETALLCOURSES", "GETFILELIST", "GETNEARESTWARPS", "GETSCRIPTVERSION",
-            "LISTACTIVESCRIPTS", "LISTAVOIDS", "LISTSECTORPARAMETERS", "SETAVOID", "CUTLENGTHS", "FORMAT",
-            "GETDIRLIST", "GETWORDCOUNT", "MAKEDIR", "PADLEFT", "PADRIGHT", "REMOVEDIR", "SETMENUKEY",
-            "SPLITTEXT", "TRIM", "TRUNCATE", "GETDEAFCLIENTS", "SILENCECLIENTS", "SAVEGLOBAL", "LOADGLOBAL",
-            "CLEARGLOBALS",
-            // TWX30 additions (IDs 120+)
-            "WAITON", "ECHOEX", "DIAGLOG", "DIAGMODE", "DIREXISTS", "SORT", "FIND", "FINDALL",
-            "STRIPANSI", "STOPALL", "LABELEXISTS", "REQVERSION", "LISTGLOBALS", "ADDQUICKTEXT",
-            "CLEARQUICKTEXT", "SAVEHELP", "COPYDATABASE", "CREATEDATABASE", "DELETEDATABASE",
-            "EDITDATABASE", "LISTDATABASES", "OPENDATABASE", "CLOSEDATABASE", "RESETDATABASE",
-            "SWITCHBOT", "GETBOTLIST", "SETDEAFCLIENTS", "OPENINSTANCE", "CLOSEINSTANCE", "LIBCMD",
-            "SETAUTOTRIGGER", "SETAUTOTEXTTRIGGER", "STARTTIMER", "STOPTIMER", "MODULUS", "CONCAT",
-            // TWX27 commands missing from original port (IDs 156+)
-            "GETDATETIME", "DATETIMEDIFF", "DATETIMETOSTR", "CENTER", "REPEAT",
-        };
-
-        // Original TWX sysconst order (from Pascal TWX 2.x)
-        private static readonly string[] OriginalSysConstNames = new[]
-        {
-            "ANSI_0", "ANSI_1", "ANSI_2", "ANSI_3", "ANSI_4", "ANSI_5", "ANSI_6", "ANSI_7",
-            "ANSI_8", "ANSI_9", "ANSI_10", "ANSI_11", "ANSI_12", "ANSI_13", "ANSI_14", "ANSI_15",
-            "CONNECTED", "CURRENTANSILINE", "CURRENTLINE", "DATE", "FALSE", "GAME", "GAMENAME",
-            "LICENSENAME", "LOGINNAME", "PASSWORD", "PORT.CLASS", "PORT.BUYFUEL", "PORT.BUYORG",
-            "PORT.BUYEQUIP", "PORT.EXISTS", "PORT.FUEL", "PORT.NAME", "PORT.ORG", "PORT.EQUIP",
-            "PORT.PERCENTFUEL", "PORT.PERCENTORG", "PORT.PERCENTEQUIP", "SECTOR.ANOMOLY",
-            "SECTOR.BACKDOORCOUNT", "SECTOR.BACKDOORS", "SECTOR.DENSITY", "SECTOR.EXPLORED",
-            "SECTOR.FIGS.OWNER", "SECTOR.FIGS.QUANTITY", "SECTOR.LIMPETS.OWNER",
-            "SECTOR.LIMPETS.QUANTITY", "SECTOR.MINES.OWNER", "SECTOR.MINES.QUANTITY",
-            "SECTOR.NAVHAZ", "SECTOR.PLANETCOUNT", "SECTOR.PLANETS", "SECTOR.SHIPCOUNT",
-            "SECTOR.SHIPS", "SECTOR.TRADERCOUNT", "SECTOR.TRADERS", "SECTOR.UPDATED",
-            "SECTOR.WARPCOUNT", "SECTOR.WARPS", "SECTOR.WARPSIN", "SECTOR.WARPINCOUNT",
-            "SECTORS", "STARDOCK", "TIME", "TRUE",
-            // Added in 2.04
-            "ALPHACENTAURI", "CURRENTSECTOR", "RYLOS",
-            // Added in 2.04a
-            "PORT.BUILDTIME", "PORT.UPDATED", "RAWPACKET", "SECTOR.BEACON",
-            "SECTOR.CONSTELLATION", "SECTOR.FIGS.TYPE", "SECTOR.ANOMALY"
-        };
-        
         private ScriptRef _scriptRef;
         private byte[] _code = Array.Empty<byte>();
         private List<CmdParam> _paramList = new List<CmdParam>();
@@ -253,14 +197,9 @@ namespace TWXD
                     
                     // Get command name
                     string cmdName;
-                    if (cmdID >= 0 && cmdID < OriginalCommandNames.Length)
-                    {
-                        cmdName = OriginalCommandNames[cmdID];
-                    }
-                    else
-                    {
+                    cmdName = _scriptRef.GetCommandName(cmdID);
+                    if (string.IsNullOrEmpty(cmdName))
                         cmdName = $"UNKNOWN_{cmdID}";
-                    }
 
                     var parts = new List<string> { cmdName };
                     
@@ -701,14 +640,9 @@ namespace TWXD
 
                         // Use original TWX sysconst order
                         string constName;
-                        if (constID >= 0 && constID < OriginalSysConstNames.Length)
-                        {
-                            constName = OriginalSysConstNames[constID];
-                        }
-                        else
-                        {
+                        constName = _scriptRef.GetSysConstName(constID);
+                        if (string.IsNullOrEmpty(constName))
                             constName = $"SYSCONST_{constID}";
-                        }
                         
                         return constName + indexes;
                     }
@@ -775,9 +709,6 @@ namespace TWXD
             return result.ToString();
         }
 
-        private static readonly HashSet<string> _sysConstNames =
-            new HashSet<string>(OriginalSysConstNames, StringComparer.OrdinalIgnoreCase);
-
         private bool NeedsQuotes(string value)
         {
             if (string.IsNullOrEmpty(value))
@@ -806,14 +737,14 @@ namespace TWXD
 
             // System constant name passed as a string literal (e.g. TRUE, FALSE, CONNECTED) — no quotes.
             // These appear in conditions like IF $X = TRUE where no quotes are needed.
-            if (_sysConstNames.Contains(value))
+            if (_scriptRef.FindSysConst(value) >= 0)
                 return false;
 
             // Array-indexed sysconst base name (e.g. "SECTOR.WARPS[x]") — no quotes if base is known.
             if (value.Contains('[') && value.Contains(']'))
             {
                 string baseName = value.Substring(0, value.IndexOf('['));
-                if (_sysConstNames.Contains(baseName))
+                if (_scriptRef.FindSysConst(baseName) >= 0)
                     return false;
             }
 

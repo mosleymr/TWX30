@@ -299,13 +299,22 @@ namespace TWXProxy.Core
 
         public int FindCmd(string name)
         {
-            string upperName = name.ToUpperInvariant();
+            string upperName = ResolveCommandAlias(name.ToUpperInvariant());
             for (int i = 0; i < _cmdList.Count; i++)
             {
                 if (_cmdList[i].Name == upperName)
                     return i;
             }
             return -1;
+        }
+
+        private static string ResolveCommandAlias(string upperName)
+        {
+            return upperName switch
+            {
+                "SILENCECLIENTS" => "SETDEAFCLIENTS",
+                _ => upperName
+            };
         }
 
         public string GetCommandName(int id)
@@ -453,57 +462,56 @@ namespace TWXProxy.Core
             AddCommand("SPLITTEXT", 2, 3, CmdSplitText, new[] { ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 112
             AddCommand("TRIM", 1, 1, CmdTrim, new[] { ParamKind.Variable }, ParamKind.Value); // 113
             AddCommand("TRUNCATE", 1, 1, CmdTruncate, new[] { ParamKind.Variable }, ParamKind.Value); // 114
-            // Commands added in 2.06
+            // Commands added in 2.06 / TWX27+ (must remain in Pascal order)
             AddCommand("GETDEAFCLIENTS", 1, 1, CmdGetDeafClients, new[] { ParamKind.Variable }, ParamKind.Value); // 115
-            AddCommand("SILENCECLIENTS", 0, 1, CmdSetDeafClients, Array.Empty<ParamKind>(), ParamKind.Value); // 116 (note: SILENCECLIENTS is an alias)
+            AddCommand("SETDEAFCLIENTS", 0, 1, CmdSetDeafClients, Array.Empty<ParamKind>(), ParamKind.Value); // 116
             AddCommand("SAVEGLOBAL", 1, 1, CmdSaveGlobal, Array.Empty<ParamKind>(), ParamKind.Value); // 117
             AddCommand("LOADGLOBAL", 1, 1, CmdLoadGlobal, Array.Empty<ParamKind>(), ParamKind.Value); // 118
             AddCommand("CLEARGLOBALS", 0, 0, CmdClearGlobals, Array.Empty<ParamKind>(), ParamKind.Value); // 119
-            
-            // Extended commands (not in Pascal TWX, can be added in any order)
-            AddCommand("WAITON", 1, 1, CmdWaitOn, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("ECHOEX", 1, -1, CmdEchoEx, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("DIAGLOG", 1, -1, CmdDiagLog, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("DIAGMODE", 1, 1, CmdDiagMode, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("DIREXISTS", 2, 2, CmdDirExists, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("SORT", 2, 2, CmdSort, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("FIND", 3, 4, CmdFind, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("FINDALL", 3, 3, CmdFindAll, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("STRIPANSI", 2, 2, CmdStripANSI, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("STOPALL", 0, 1, CmdStopAll, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("LABELEXISTS", 2, 2, CmdLabelExists, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("REQVERSION", 1, 1, CmdReqVersion, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("LISTGLOBALS", 2, 2, CmdListGlobals, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("ADDQUICKTEXT", 2, 2, CmdAddQuickText, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("CLEARQUICKTEXT", 0, 1, CmdClearQuickText, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("SAVEHELP", 2, 5, CmdSaveHelp, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("COPYDATABASE", 2, 2, CmdCopyDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("CREATEDATABASE", 2, -1, CmdCreateDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("DELETEDATABASE", 1, 2, CmdDeleteDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("EDITDATABASE", 1, -1, CmdEditDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("LISTDATABASES", 1, 1, CmdListDatabases, new[] { ParamKind.Variable }, ParamKind.Value);
-            AddCommand("OPENDATABASE", 1, 1, CmdOpenDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("CLOSEDATABASE", 0, 0, CmdCloseDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("RESETDATABASE", 1, 2, CmdResetDatabase, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("SWITCHBOT", 0, 2, CmdSwitchBot, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("GETBOTLIST", 1, 1, CmdGetBotList, new[] { ParamKind.Variable }, ParamKind.Value);
-            AddCommand("SETDEAFCLIENTS", 0, 1, CmdSetDeafClients, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("OPENINSTANCE", 0, -1, CmdOpenInstance, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("CLOSEINSTANCE", 1, 1, CmdCloseInstance, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("LIBCMD", 1, -1, CmdLibCmd, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("SETAUTOTRIGGER", 3, 4, CmdSetAutoTrigger, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("SETAUTOTEXTTRIGGER", 3, 4, CmdSetAutoTrigger, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("STARTTIMER", 1, 1, CmdStartTimer, Array.Empty<ParamKind>(), ParamKind.Value);  
-            AddCommand("STOPTIMER", 1, 1, CmdStopTimer, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("MODULUS", 2, 2, CmdModulus, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
-            AddCommand("CONCAT", 2, -1, CmdConcat, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
+            AddCommand("SWITCHBOT", 0, 2, CmdSwitchBot, Array.Empty<ParamKind>(), ParamKind.Value); // 120
+            AddCommand("STRIPANSI", 2, 2, CmdStripANSI, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 121
+            AddCommand("ADDQUICKTEXT", 2, 2, CmdAddQuickText, Array.Empty<ParamKind>(), ParamKind.Value); // 122
+            AddCommand("CLEARQUICKTEXT", 0, 1, CmdClearQuickText, Array.Empty<ParamKind>(), ParamKind.Value); // 123
+            AddCommand("GETBOTLIST", 1, 1, CmdGetBotList, new[] { ParamKind.Variable }, ParamKind.Value); // 124
+            AddCommand("SETAUTOTRIGGER", 3, 4, CmdSetAutoTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 125
+            AddCommand("SETAUTOTEXTTRIGGER", 3, 4, CmdSetAutoTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 126
+            AddCommand("REQVERSION", 1, 1, CmdReqVersion, Array.Empty<ParamKind>(), ParamKind.Value); // 127
+            AddCommand("SORT", 2, 2, CmdSort, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 128
+            AddCommand("FIND", 3, 4, CmdFind, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 129
+            AddCommand("FINDALL", 3, 3, CmdFindAll, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 130
+            AddCommand("MODULUS", 2, 2, CmdModulus, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 131
+            AddCommand("DIREXISTS", 2, 2, CmdDirExists, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 132
+            AddCommand("LABELEXISTS", 2, 2, CmdLabelExists, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 133
+            AddCommand("OPENINSTANCE", 0, -1, CmdOpenInstance, Array.Empty<ParamKind>(), ParamKind.Value); // 134
+            AddCommand("CLOSEINSTANCE", 1, 1, CmdCloseInstance, Array.Empty<ParamKind>(), ParamKind.Value); // 135
+            AddCommand("COPYDATABASE", 2, 2, CmdCopyDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 136
+            AddCommand("CREATEDATABASE", 2, -1, CmdCreateDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 137
+            AddCommand("DELETEDATABASE", 1, 2, CmdDeleteDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 138
+            AddCommand("EDITDATABASE", 1, -1, CmdEditDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 139
+            AddCommand("LISTDATABASES", 1, 1, CmdListDatabases, new[] { ParamKind.Variable }, ParamKind.Value); // 140
+            AddCommand("OPENDATABASE", 1, 1, CmdOpenDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 141
+            AddCommand("CLOSEDATABASE", 0, 0, CmdCloseDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 142
+            AddCommand("RESETDATABASE", 1, 2, CmdResetDatabase, Array.Empty<ParamKind>(), ParamKind.Value); // 143
+            AddCommand("STARTTIMER", 1, 1, CmdStartTimer, Array.Empty<ParamKind>(), ParamKind.Value); // 144
+            AddCommand("STOPTIMER", 1, 1, CmdStopTimer, Array.Empty<ParamKind>(), ParamKind.Value); // 145
+            AddCommand("STOPALL", 0, 1, CmdStopAll, Array.Empty<ParamKind>(), ParamKind.Value); // 146
+            AddCommand("CONCAT", 2, -1, CmdConcat, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 147
+            AddCommand("SAVEHELP", 2, 5, CmdSaveHelp, Array.Empty<ParamKind>(), ParamKind.Value); // 148
+            AddCommand("LISTGLOBALS", 2, 2, CmdListGlobals, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 149
+            AddCommand("ECHOEX", 1, -1, CmdEchoEx, Array.Empty<ParamKind>(), ParamKind.Value); // 150
+            AddCommand("LIBCMD", 1, -1, CmdLibCmd, Array.Empty<ParamKind>(), ParamKind.Value); // 151
 
-            // TWX 2.7 commands (missing from original port)
+            // TWX 2.7 commands
             AddCommand("GETDATETIME", 1, 1, CmdGetDateTime, new[] { ParamKind.Variable }, ParamKind.Value);
             AddCommand("DATETIMEDIFF", 3, 4, CmdDateTimeDiff, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
             AddCommand("DATETIMETOSTR", 2, 3, CmdDateTimeToStr, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
             AddCommand("CENTER", 2, 3, CmdCenter, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value);
             AddCommand("REPEAT", 2, 3, CmdRepeat, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
+
+            // C#-only extensions live after the Pascal/TWX27 IDs so they do not disturb .cts compatibility.
+            AddCommand("WAITON", 1, 1, CmdWaitOn, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("DIAGLOG", 1, -1, CmdDiagLog, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("DIAGMODE", 1, 1, CmdDiagMode, Array.Empty<ParamKind>(), ParamKind.Value);
         }
 
         private void BuildSysConstList()
@@ -773,109 +781,6 @@ namespace TWXProxy.Core
                 return s?.Anomaly == true ? "1" : "0";
             });
             
-            // Extended sysconsts (not in Pascal TWX, can be added in any order)
-            AddSysConstant("GAMEDATA", (indexes) => GetGameData());
-            AddSysConstant("SECTOR.DEADEND", (indexes) => {
-                // A dead-end sector has exactly 1 warp
-                var s = GetSectorByIndex(indexes);
-                if (s == null) return "0";
-                var warpCount = s.Warp.Count(w => w != 0);
-                if (warpCount == 0) warpCount = s.WarpCount;
-                return warpCount == 1 ? "1" : "0";
-            });
-            
-            // Current player stats
-            AddSysConstant("CURRENTTURNS", (indexes) => "0");
-            AddSysConstant("CURRENTCREDITS", (indexes) => "0");
-            AddSysConstant("CURRENTFIGHTERS", (indexes) => "0");
-            AddSysConstant("CURRENTSHIELDS", (indexes) => "0");
-            AddSysConstant("CURRENTTOTALHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTOREHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTORGHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTEQUHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTCOLHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTEMPTYHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTPHOTONS", (indexes) => "0");
-            AddSysConstant("CURRENTARMIDS", (indexes) => "0");
-            AddSysConstant("CURRENTLIMPETS", (indexes) => "0");
-            AddSysConstant("CURRENTGENTORPS", (indexes) => "0");
-            AddSysConstant("CURRENTTWARPTYPE", (indexes) => "0");
-            AddSysConstant("CURRENTCLOAKS", (indexes) => "0");
-            AddSysConstant("CURRENTBEACONS", (indexes) => "0");
-            AddSysConstant("CURRENTATOMICS", (indexes) => "0");
-            AddSysConstant("CURRENTCORBOMITE", (indexes) => "0");
-            AddSysConstant("CURRENTEPROBES", (indexes) => "0");
-            AddSysConstant("CURRENTMINEDISR", (indexes) => "0");
-            AddSysConstant("CURRENTPSYCHICPROBE", (indexes) => "No");
-            AddSysConstant("CURRENTPLANETSCANNER", (indexes) => "No");
-            AddSysConstant("CURRENTSCANTYPE", (indexes) => "None");
-            AddSysConstant("CURRENTALIGNMENT", (indexes) => "0");
-            AddSysConstant("CURRENTEXPERIENCE", (indexes) => "0");
-            AddSysConstant("CURRENTCORP", (indexes) => "0");
-            AddSysConstant("CURRENTSHIPNUMBER", (indexes) => "0");
-            AddSysConstant("CURRENTSHIPCLASS", (indexes) => "0");
-            AddSysConstant("CURRENTANSIQUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQSTAT", (indexes) => string.Empty);
-            
-            // Bot management
-            AddSysConstant("BOTLIST", (indexes) => 
-            {
-                var server = GlobalModules.TWXServer;
-                if (server != null)
-                {
-                    var bots = server.GetBotList();
-                    return string.Join(",", bots);
-                }
-                return string.Empty;
-            });
-            AddSysConstant("ACTIVEBOT", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
-            AddSysConstant("ACTIVEBOTS", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
-            AddSysConstant("ACTIVEBOTDIR", (indexes) => 
-            {
-                var server = GlobalModules.TWXServer;
-                if (server != null)
-                {
-                    var bot = server.GetActiveBot();
-                    if (bot is Script scriptObj)
-                    {
-                        return scriptObj.ProgramDir;
-                    }
-                }
-                return string.Empty;
-            });
-            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => 
-            {
-                var server = GlobalModules.TWXServer;
-                if (server != null)
-                {
-                    var bot = server.GetActiveBot();
-                    if (bot is Script scriptObj)
-                    {
-                        return scriptObj.ScriptName;
-                    }
-                }
-                return string.Empty;
-            });
-            AddSysConstant("ACTIVEBOTNAME", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
-            
-            // Version info
-            AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
-            AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
-            AddSysConstant("TWGSVER", (indexes) => string.Empty);
-            AddSysConstant("TW2002VER", (indexes) => string.Empty);
-            
-            // Library parameters (internal)
-            AddSysConstant("LIBPARM", (indexes) => string.Empty);
-            AddSysConstant("LIBPARMS", (indexes) => string.Empty);
-            AddSysConstant("LIBPARMCOUNT", (indexes) => "0");
-            AddSysConstant("LIBSUBSPACE", (indexes) => "0");
-            AddSysConstant("LIBSILENT", (indexes) => "0");
-            AddSysConstant("LIBMULTILINE", (indexes) => "0");
-            AddSysConstant("LIBMSG", (indexes) => string.Empty);
-
-            // Short-form aliases for player status (TWX27 compat): both TURNS and CURRENTTURNS map to the same getter
             AddSysConstant("TURNS", (indexes) => "0");
             AddSysConstant("CREDITS", (indexes) => "0");
             AddSysConstant("FIGHTERS", (indexes) => "0");
@@ -909,6 +814,97 @@ namespace TWXProxy.Core
             AddSysConstant("QUICKSTATS", (indexes) => string.Empty);
             AddSysConstant("QS", (indexes) => string.Empty);
             AddSysConstant("QSTAT", (indexes) => string.Empty);
+            AddSysConstant("GAMEDATA", (indexes) => GetGameData());
+            AddSysConstant("BOTLIST", (indexes) =>
+            {
+                var server = GlobalModules.TWXServer;
+                if (server != null)
+                {
+                    var bots = server.GetBotList();
+                    return string.Join(",", bots);
+                }
+                return string.Empty;
+            });
+            AddSysConstant("ACTIVEBOT", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
+            AddSysConstant("ACTIVEBOTS", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
+            AddSysConstant("ACTIVEBOTDIR", (indexes) =>
+            {
+                var server = GlobalModules.TWXServer;
+                if (server != null)
+                {
+                    var bot = server.GetActiveBot();
+                    if (bot is Script scriptObj)
+                    {
+                        return scriptObj.ProgramDir;
+                    }
+                }
+                return string.Empty;
+            });
+            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) =>
+            {
+                var server = GlobalModules.TWXServer;
+                if (server != null)
+                {
+                    var bot = server.GetActiveBot();
+                    if (bot is Script scriptObj)
+                    {
+                        return scriptObj.ScriptName;
+                    }
+                }
+                return string.Empty;
+            });
+            AddSysConstant("ACTIVEBOTNAME", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
+            AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
+            AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
+            AddSysConstant("TWGSVER", (indexes) => string.Empty);
+            AddSysConstant("TW2002VER", (indexes) => string.Empty);
+            AddSysConstant("SECTOR.DEADEND", (indexes) => {
+                var s = GetSectorByIndex(indexes);
+                if (s == null) return "0";
+                var warpCount = s.Warp.Count(w => w != 0);
+                if (warpCount == 0) warpCount = s.WarpCount;
+                return warpCount == 1 ? "1" : "0";
+            });
+            AddSysConstant("CURRENTTURNS", (indexes) => "0");
+            AddSysConstant("CURRENTCREDITS", (indexes) => "0");
+            AddSysConstant("CURRENTFIGHTERS", (indexes) => "0");
+            AddSysConstant("CURRENTSHIELDS", (indexes) => "0");
+            AddSysConstant("CURRENTTOTALHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTOREHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTORGHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTEQUHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTCOLHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTEMPTYHOLDS", (indexes) => "0");
+            AddSysConstant("CURRENTPHOTONS", (indexes) => "0");
+            AddSysConstant("CURRENTARMIDS", (indexes) => "0");
+            AddSysConstant("CURRENTLIMPETS", (indexes) => "0");
+            AddSysConstant("CURRENTGENTORPS", (indexes) => "0");
+            AddSysConstant("CURRENTTWARPTYPE", (indexes) => "0");
+            AddSysConstant("CURRENTCLOAKS", (indexes) => "0");
+            AddSysConstant("CURRENTBEACONS", (indexes) => "0");
+            AddSysConstant("CURRENTATOMICS", (indexes) => "0");
+            AddSysConstant("CURRENTCORBOMITE", (indexes) => "0");
+            AddSysConstant("CURRENTEPROBES", (indexes) => "0");
+            AddSysConstant("CURRENTMINEDISR", (indexes) => "0");
+            AddSysConstant("CURRENTPSYCHICPROBE", (indexes) => "No");
+            AddSysConstant("CURRENTPLANETSCANNER", (indexes) => "No");
+            AddSysConstant("CURRENTSCANTYPE", (indexes) => "None");
+            AddSysConstant("CURRENTALIGNMENT", (indexes) => "0");
+            AddSysConstant("CURRENTEXPERIENCE", (indexes) => "0");
+            AddSysConstant("CURRENTCORP", (indexes) => "0");
+            AddSysConstant("CURRENTSHIPNUMBER", (indexes) => "0");
+            AddSysConstant("CURRENTSHIPCLASS", (indexes) => "0");
+            AddSysConstant("CURRENTANSIQUICKSTATS", (indexes) => string.Empty);
+            AddSysConstant("CURRENTQUICKSTATS", (indexes) => string.Empty);
+            AddSysConstant("CURRENTQS", (indexes) => string.Empty);
+            AddSysConstant("CURRENTQSTAT", (indexes) => string.Empty);
+            AddSysConstant("LIBPARM", (indexes) => string.Empty);
+            AddSysConstant("LIBPARMS", (indexes) => string.Empty);
+            AddSysConstant("LIBPARMCOUNT", (indexes) => "0");
+            AddSysConstant("LIBSUBSPACE", (indexes) => "0");
+            AddSysConstant("LIBSILENT", (indexes) => "0");
+            AddSysConstant("LIBMULTILINE", (indexes) => "0");
+            AddSysConstant("LIBMSG", (indexes) => string.Empty);
         }
         
         #region Text Processing Helpers

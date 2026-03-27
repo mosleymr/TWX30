@@ -456,8 +456,8 @@ namespace TWXProxy.Core
                 
             if (!name.Contains('~'))
             {
-                if (scriptID > 0 && scriptID <= _includeScriptList.Count)
-                    name = _includeScriptList[scriptID - 1] + "~" + name;
+                if (scriptID > 0 && scriptID < _includeScriptList.Count)
+                    name = _includeScriptList[scriptID] + "~" + name;
             }
             else
             {
@@ -550,31 +550,37 @@ namespace TWXProxy.Core
         public void CompileFromFile(string filename, string descFile)
         {
             _scriptFile = filename;
+            _ifLabelCount = 0;
+            _waitOnCount = 0;
+            _lineCount = 0;
+            _cmdCount = 0;
+            _includeScriptList.Clear();
 
             // Read script file
-            var scriptText = new List<string>(File.ReadAllLines(filename));
+            var scriptText = new List<string>(File.ReadAllLines(filename, Encoding.Latin1));
 
             // Read description file if provided
             if (!string.IsNullOrEmpty(descFile) && File.Exists(descFile))
             {
-                _description.AddRange(File.ReadAllLines(descFile));
+                _description.AddRange(File.ReadAllLines(descFile, Encoding.Latin1));
             }
 
-            CompileFromStrings(scriptText, filename);
+            CompileFromStrings(scriptText, Path.GetFileName(filename));
         }
 
         public void CompileFromStrings(List<string> scriptText, string scriptName)
         {
             _scriptFile = scriptName;
-            _lineCount = 0;
-            _cmdCount = 0;
+            string includeName = Path.GetFileName(scriptName).ToUpperInvariant();
+            byte scriptID = (byte)_includeScriptList.Count;
+            _includeScriptList.Add(includeName);
 
             foreach (var line in scriptText)
             {
                 _lineCount++;
                 try
                 {
-                    CompileParamLine(line, _lineCount, 0);
+                    CompileParamLine(line, _lineCount, scriptID);
                 }
                 catch (Exception ex)
                 {
@@ -709,7 +715,7 @@ namespace TWXProxy.Core
                         paramLine.Add(sb.ToString());
                         sb.Clear();
                     }
-                    sb.Append(c);
+                    sb.Append(inQuote ? c : char.ToUpperInvariant(c));
                     if (c == '"') inQuote = !inQuote;
                     linked = false;
                 }
@@ -739,8 +745,8 @@ namespace TWXProxy.Core
                     throw new Exception("Bad label name");
 
                 string labelName = firstParam.Substring(1);
-                if (!labelName.Contains('~') && scriptID > 0 && scriptID <= _includeScriptList.Count)
-                    labelName = _includeScriptList[scriptID - 1] + "~" + labelName;
+                if (!labelName.Contains('~') && scriptID > 0 && scriptID < _includeScriptList.Count)
+                    labelName = _includeScriptList[scriptID] + "~" + labelName;
 
                 BuildLabel(labelName, _codeSize);
                 return;
@@ -850,14 +856,14 @@ namespace TWXProxy.Core
         /// </summary>
         private string CompileTree(ExprNode node, int lineNumber, byte scriptID)
         {
+            _sysVarCount++;
+            string result = "$$" + _sysVarCount;
+
             if (node.Op == ScriptConstants.OP_NONE)
                 return node.LeafValue!;
 
             string v1 = CompileTree(node.Left!,  lineNumber, scriptID);
             string v2 = CompileTree(node.Right!, lineNumber, scriptID);
-            _sysVarCount++;
-            string result = "$$" + _sysVarCount;
-            FindOrCreateVariable(result);
 
             char op = node.Op;
             if (op == '&')
@@ -946,7 +952,13 @@ namespace TWXProxy.Core
         private void CompileParam(string param, int lineNumber, byte scriptID)
         {
             string result = CompileParamToVar(param, lineNumber, scriptID);
-            CompileParameter(result, lineNumber, scriptID);
+            CompileParameter(result, lineNumber, scriptID, null);
+        }
+
+        private void CompileParam(string param, int lineNumber, byte scriptID, List<byte> cmdCode)
+        {
+            string result = CompileParamToVar(param, lineNumber, scriptID);
+            CompileParameter(result, lineNumber, scriptID, cmdCode);
         }
 
         private bool HandleMacroCommand(List<string> paramLine, int lineNumber, byte scriptID)
@@ -1165,31 +1177,51 @@ namespace TWXProxy.Core
                     throw new Exception($"Unknown command: {cmdName}");
             }
 
-            // Write command header in Pascal format: [ScriptID:1][LineNumber:2][CmdID:2]
+            // Build the command in a local buffer first. Recursive expression compilation
+            // emits temp opcodes directly into the global stream, and Pascal appends the
+            // parent command only after those helper opcodes have been written.
+            var cmdCode = new List<byte>();
             ushort lineWord = (ushort)lineNumber;
             ushort cmdWord = (ushort)(cmdID >= 0 ? cmdID : 255);
-            AppendCode(new[] { scriptID });
-            AppendCode(BitConverter.GetBytes(lineWord));
-            AppendCode(BitConverter.GetBytes(cmdWord));
+            cmdCode.Add(scriptID);
+            cmdCode.AddRange(BitConverter.GetBytes(lineWord));
+            cmdCode.AddRange(BitConverter.GetBytes(cmdWord));
 
             // Compile parameters — each token is run through the expression tree compiler
             for (int i = 1; i < paramLine.Count; i++)
             {
-                CompileParam(paramLine[i], lineNumber, scriptID);
+                CompileParam(paramLine[i], lineNumber, scriptID, cmdCode);
             }
 
             // Null-terminate the parameter list (Pascal format)
-            AppendCode(new byte[] { 0 });
+            cmdCode.Add(0);
+            AppendCode(cmdCode.ToArray());
 
             _cmdCount++;
         }
 
-        private void CompileParameter(string param, int lineNumber, byte scriptID)
+        private void WriteCodeByte(List<byte>? cmdCode, byte value)
+        {
+            if (cmdCode != null)
+                cmdCode.Add(value);
+            else
+                AppendCode(new[] { value });
+        }
+
+        private void WriteCodeBytes(List<byte>? cmdCode, byte[] bytes)
+        {
+            if (cmdCode != null)
+                cmdCode.AddRange(bytes);
+            else
+                AppendCode(bytes);
+        }
+
+        private void CompileParameter(string param, int lineNumber, byte scriptID, List<byte>? cmdCode)
         {
             byte paramType = IdentifyParam(param);
 
             // Write parameter type
-            AppendCode(new[] { paramType });
+            WriteCodeByte(cmdCode, paramType);
 
             // Handle different parameter types
             if (paramType == ScriptConstants.PARAM_CONST)
@@ -1206,9 +1238,9 @@ namespace TWXProxy.Core
                 {
                     // Strip the colon, apply include prefix if needed, then restore colon
                     string labelName = value.Substring(1);
-                    if (!labelName.Contains('~') && scriptID > 0 && scriptID <= _includeScriptList.Count)
+                    if (!labelName.Contains('~') && scriptID > 0 && scriptID < _includeScriptList.Count)
                     {
-                        labelName = _includeScriptList[scriptID - 1] + "~" + labelName;
+                        labelName = _includeScriptList[scriptID] + "~" + labelName;
                     }
                     value = ":" + labelName;
                 }
@@ -1224,7 +1256,7 @@ namespace TWXProxy.Core
                 _paramList.Add(newParam);
 
                 // Write 32-bit parameter ID
-                AppendCode(BitConverter.GetBytes(id));
+                WriteCodeBytes(cmdCode, BitConverter.GetBytes(id));
                 
                 // NOTE: PARAM_CONST does NOT have array indexes in TWX bytecode format
                 // Only PARAM_VAR, PARAM_PROGVAR, and PARAM_SYSCONST have array index bytes
@@ -1244,19 +1276,19 @@ namespace TWXProxy.Core
                     varName = varName.Substring(0, bracketPos);
 
                 // Extend name for included scripts (skip system variables starting with $$)
-                if (scriptID > 0 && scriptID <= _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("$$"))
+                if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("$$"))
                 {
-                    varName = "$" + _includeScriptList[scriptID - 1] + "~" + varName.Substring(1);
+                    varName = "$" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
                 }
 
                 // Find or create variable
                 int id = FindOrCreateVariable(varName);
 
                 // Write 32-bit variable ID
-                AppendCode(BitConverter.GetBytes(id));
+                WriteCodeBytes(cmdCode, BitConverter.GetBytes(id));
 
                 // Write array indexes (pass scriptID so variable names inside indexes are extended)
-                WriteArrayIndexes(convertedParam, lineNumber, scriptID);
+                WriteArrayIndexes(convertedParam, lineNumber, scriptID, cmdCode);
             }
             else if (paramType == ScriptConstants.PARAM_PROGVAR)
             {
@@ -1272,19 +1304,19 @@ namespace TWXProxy.Core
                     varName = varName.Substring(0, bracketPos);
 
                 // Extend name for included scripts (skip system variables starting with %%)
-                if (scriptID > 0 && scriptID <= _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("%%"))
+                if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("%%"))
                 {
-                    varName = "%" + _includeScriptList[scriptID - 1] + "~" + varName.Substring(1);
+                    varName = "%" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
                 }
 
                 // Find or create variable
                 int id = FindOrCreateVariable(varName);
 
                 // Write 32-bit variable ID
-                AppendCode(BitConverter.GetBytes(id));
+                WriteCodeBytes(cmdCode, BitConverter.GetBytes(id));
 
                 // Write array indexes (pass scriptID so variable names inside indexes are extended)
-                WriteArrayIndexes(convertedParam, lineNumber, scriptID);
+                WriteArrayIndexes(convertedParam, lineNumber, scriptID, cmdCode);
             }
             else if (paramType == ScriptConstants.PARAM_SYSCONST)
             {
@@ -1316,10 +1348,10 @@ namespace TWXProxy.Core
                     throw new Exception($"Unknown system constant: {baseConstName}");
 
                 // Write 16-bit system constant ID
-                AppendCode(BitConverter.GetBytes((ushort)constID));
+                WriteCodeBytes(cmdCode, BitConverter.GetBytes((ushort)constID));
 
                 // Write array indexes
-                WriteArrayIndexes(param, lineNumber, scriptID);
+                WriteArrayIndexes(param, lineNumber, scriptID, cmdCode);
             }
             else if (paramType == ScriptConstants.PARAM_CHAR)
             {
@@ -1330,7 +1362,7 @@ namespace TWXProxy.Core
 
                 // Write 1 byte character code directly (NOT a parameter ID!)
                 // Format: PARAM_CHAR type byte + 1 byte char code
-                AppendCode(new[] { (byte)charCode });
+                WriteCodeByte(cmdCode, (byte)charCode);
             }
         }
 
@@ -1430,7 +1462,7 @@ namespace TWXProxy.Core
             return indexes;
         }
 
-        private void WriteArrayIndexes(string param, int lineNumber, byte scriptID = 0)
+        private void WriteArrayIndexes(string param, int lineNumber, byte scriptID = 0, List<byte>? cmdCode = null)
         {
             // Parse and write array indexes from parameter
             var indexes = ExtractArrayIndexes(param);
@@ -1438,12 +1470,12 @@ namespace TWXProxy.Core
             if (indexes.Count == 0)
             {
                 // No indexes
-                AppendCode(new byte[] { 0 });
+                WriteCodeByte(cmdCode, 0);
                 return;
             }
 
             // Write index count
-            AppendCode(new byte[] { (byte)indexes.Count });
+            WriteCodeByte(cmdCode, (byte)indexes.Count);
 
             // Write each index: type byte + data (format matches TWX decompiler ReadIndexValues)
             foreach (string indexExpr in indexes)
@@ -1456,7 +1488,7 @@ namespace TWXProxy.Core
                 byte indexType = IdentifyParam(compiledIndex);
                 
                 // Write type byte first
-                AppendCode(new[] { indexType });
+                WriteCodeByte(cmdCode, indexType);
 
                 if (indexType == ScriptConstants.PARAM_VAR || indexType == ScriptConstants.PARAM_PROGVAR)
                 {
@@ -1466,17 +1498,17 @@ namespace TWXProxy.Core
                     if (idxBracketPos > 0)
                         indexVarName = indexVarName.Substring(0, idxBracketPos);
 
-                    if (scriptID > 0 && scriptID <= _includeScriptList.Count && !indexVarName.Contains('~'))
+                    if (scriptID > 0 && scriptID < _includeScriptList.Count && !indexVarName.Contains('~'))
                     {
                         if (indexVarName.StartsWith("$") && !indexVarName.StartsWith("$$"))
-                            indexVarName = "$" + _includeScriptList[scriptID - 1] + "~" + indexVarName.Substring(1);
+                            indexVarName = "$" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
                         else if (indexVarName.StartsWith("%") && !indexVarName.StartsWith("%%"))
-                            indexVarName = "%" + _includeScriptList[scriptID - 1] + "~" + indexVarName.Substring(1);
+                            indexVarName = "%" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
                     }
 
                     int indexId = FindOrCreateVariable(indexVarName);
-                    AppendCode(BitConverter.GetBytes(indexId));
-                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID); // Recursive for nested arrays
+                    WriteCodeBytes(cmdCode, BitConverter.GetBytes(indexId));
+                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID, cmdCode); // Recursive for nested arrays
                 }
                 else if (indexType == ScriptConstants.PARAM_SYSCONST)
                 {
@@ -1500,8 +1532,8 @@ namespace TWXProxy.Core
                     if (indexId < 0)
                         throw new Exception($"Unknown system constant in array index: {compiledIndex}");
                     
-                    AppendCode(BitConverter.GetBytes((ushort)indexId));
-                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID); // Recursive for nested arrays
+                    WriteCodeBytes(cmdCode, BitConverter.GetBytes((ushort)indexId));
+                    WriteArrayIndexes(compiledIndex, lineNumber, scriptID, cmdCode); // Recursive for nested arrays
                 }
                 else if  (indexType == ScriptConstants.PARAM_CONST)
                 {
@@ -1513,7 +1545,7 @@ namespace TWXProxy.Core
                     var newParam = new CmdParam { Value = value };
                     int indexId = _paramList.Count;
                     _paramList.Add(newParam);
-                    AppendCode(BitConverter.GetBytes(indexId));
+                    WriteCodeBytes(cmdCode, BitConverter.GetBytes(indexId));
                 }
                 else if (indexType == ScriptConstants.PARAM_CHAR)
                 {
@@ -1521,7 +1553,7 @@ namespace TWXProxy.Core
                     if (compiledIndex.StartsWith('#'))
                     {
                         byte charCode = byte.Parse(compiledIndex.Substring(1));
-                        AppendCode(new[] { charCode });
+                        WriteCodeByte(cmdCode, charCode);
                     }
                 }
             }
@@ -1554,7 +1586,7 @@ namespace TWXProxy.Core
             if (!File.Exists(fullPath))
                 throw new FileNotFoundException($"Include file not found: {filename} (searched: {fullPath})");
 
-            var scriptText = new List<string>(File.ReadAllLines(fullPath));
+            var scriptText = new List<string>(File.ReadAllLines(fullPath, Encoding.Latin1));
             
             // Get the actual filename from the filesystem (preserves correct case)
             // This is important because include statements may use different case than the actual file
@@ -1580,30 +1612,18 @@ namespace TWXProxy.Core
                 }
             }
             
-            string includeName = Path.GetFileNameWithoutExtension(actualFileName);
-            _includeScriptList.Add(includeName);
-            
-            // Compile the included script with scriptID = index + 1 (0 is main script)
-            // For first include at index 0, scriptID = 1
-            byte scriptID = (byte)_includeScriptList.Count;
-            
-            int savedLineCount = _lineCount;
-            _lineCount = 0;
-            
-            foreach (var line in scriptText)
+            string includeName = Path.GetFileNameWithoutExtension(actualFileName).ToUpperInvariant();
+            if (_includeScriptList.Contains(includeName))
+                return;
+
+            try
             {
-                _lineCount++;
-                try
-                {
-                    CompileParamLine(line, _lineCount, scriptID);
-                }
-                catch (Exception ex)
-                {
-                    throw new Exception($"Error in include '{includeName}' line {_lineCount}: {ex.Message}", ex);
-                }
+                CompileFromStrings(scriptText, includeName);
             }
-            
-            _lineCount = savedLineCount;
+            catch (Exception ex)
+            {
+                throw new Exception($"Error in include '{includeName}': {ex.Message}", ex);
+            }
         }
 
         #endregion
