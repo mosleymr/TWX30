@@ -980,7 +980,6 @@ namespace TWXProxy.Core
                     return true;
 
                 case "WAITON":
-                case "WAITFOR":
                     HandleWaitOn(paramLine, lineNumber, scriptID);
                     return true;
 
