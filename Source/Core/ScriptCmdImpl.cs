@@ -737,14 +737,20 @@ namespace TWXProxy.Core
         private static CmdAction CmdGoto(object script, CmdParam[] parameters)
         {
             // CMD: goto <label>
-            // Handled by Script.cs - GotoLabel method
+            if (script is Script scriptObj)
+                scriptObj.GotoLabel(parameters[0].Value);
             return CmdAction.None;
         }
 
         private static CmdAction CmdGosub(object script, CmdParam[] parameters)
         {
             // CMD: gosub <label>
-            // Handled by Script.cs - GotoLabel/PushStack method
+            if (script is Script scriptObj)
+            {
+                string labelName = parameters[0].Value;
+                if (!string.IsNullOrWhiteSpace(labelName) && labelName != "0")
+                    scriptObj.Gosub(labelName);
+            }
             return CmdAction.None;
         }
 
@@ -759,7 +765,13 @@ namespace TWXProxy.Core
         {
             // CMD: branch <value> <label>
             // if <value> != 1, goto <label>
-            // Handled by Script.cs in Execute loop
+            if (script is Script scriptObj)
+            {
+                bool shouldBranch = !(parameters[0].DecValue == 1 || Math.Round(parameters[0].DecValue) == 1);
+                GlobalModules.DebugLog($"[BRANCH] cond='{parameters[0].Value}' target='{parameters[1].Value}' willJump={shouldBranch} subDepth={scriptObj.SubStackDepth}\n");
+                if (shouldBranch)
+                    scriptObj.GotoLabel(parameters[1].Value);
+            }
             return CmdAction.None;
         }
 
@@ -1728,53 +1740,21 @@ namespace TWXProxy.Core
         private static CmdAction CmdOpenMenu(object script, CmdParam[] parameters)
         {
             // CMD: openmenu <menu> [pause]
-            // Opens or redisplays a menu by name
             try
             {
-                string menuName = parameters[0].Value.ToUpper();
-                GlobalModules.DebugLog($"[OpenMenu] Opening menu '{menuName}'...\n");
-                
                 if (GlobalModules.TWXMenu is MenuManager menuMgr)
                 {
-                    // Check if this menu is already open (on the stack)
-                    if (menuMgr.IsMenuOnStack(menuName))
-                    {
-                        GlobalModules.DebugLog($"[OpenMenu] Menu '{menuName}' already open - just redisplaying\n");
-                        // Menu is already open - redisplay it
-                        menuMgr.RedisplayCurrentMenu();
-                        
-                        // If we're in a menu handler (SubStackDepth > 0), this openMenu acts as
-                        // an implicit return - the handler ends here
-                        if (script is Script s && s.SubStackDepth > 0)
-                        {
-                            GlobalModules.DebugLog($"[OpenMenu] In handler context (depth={s.SubStackDepth}), simulating RETURN\n");
-                            s.Return(); // Pop the GosubFromMenu return address
-                            s.PausedReason = PauseReason.OpenMenu;
-                            return CmdAction.Pause; // Pause to wait for next menu input
-                        }
-                        
-                        return CmdAction.None; // Not in handler, just redisplay
-                    }
-                    else
-                    {
-                        GlobalModules.DebugLog($"[OpenMenu] Menu '{menuName}' not open - opening new\n");
-                        // Open new menu
-                        menuMgr.OpenMenu(menuName, 0);
-                        
-                        // If second parameter is "0", don't pause
-                        if (parameters.Length > 1 && parameters[1].Value == "0")
-                        {
-                            return CmdAction.None;
-                        }
-                        else
-                        {
-                            if (script is Script s)
-                            {
-                                s.PausedReason = PauseReason.OpenMenu;
-                            }
-                            return CmdAction.Pause;
-                        }
-                    }
+                    string menuName = parameters[0].Value.ToUpperInvariant();
+                    GlobalModules.DebugLog($"[OpenMenu] Opening menu '{menuName}'...\n");
+                    menuMgr.OpenMenu(menuName, 0);
+
+                    if (parameters.Length > 1 && parameters[1].Value == "0")
+                        return CmdAction.None;
+
+                    if (script is Script s)
+                        s.PausedReason = PauseReason.OpenMenu;
+
+                    return CmdAction.Pause;
                 }
                 
                 return CmdAction.None;

@@ -2240,54 +2240,8 @@ namespace TWXProxy.Core
                         continue;
                     }
                     
-                    // Handle control flow commands before executing
-                    if (cmd.Name == "GOTO" && _cmdParams.Count > 0)
-                    {
-                        string labelName = _cmdParams[0].Value;
-                        // Strip leading colon if present
-                        if (labelName.StartsWith(':'))
-                            labelName = labelName.Substring(1);
-                        GotoLabel(labelName);
-                        continue;
-                    }
-                    else if (cmd.Name == "GOSUB" && _cmdParams.Count > 0)
-                    {
-                        string labelName = _cmdParams[0].Value;
-                        
-                        if (GlobalModules.VerboseDebugMode)
-                            GlobalModules.DebugLog($"[GOSUB] Evaluating GOSUB command, param count={_cmdParams.Count}, param[0].Value='{labelName}'\n");
-                        
-                        // Skip GOSUB if label is empty, '0', or whitespace (matches TWX 2.x behavior)
-                        if (string.IsNullOrWhiteSpace(labelName) || labelName == "0")
-                        {
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[GOSUB] Skipping GOSUB with empty/zero label: '{labelName}'\n");
-                            continue;
-                        }
-                        
-                        // Strip leading colon if present
-                        if (labelName.StartsWith(':'))
-                            labelName = labelName.Substring(1);
-                        Gosub(labelName);
-                        continue;
-                    }
-                    else if (cmd.Name == "BRANCH" && _cmdParams.Count >= 2)
-                    {
-                        // BRANCH: if param[0] != 1, goto param[1]
-                        string value = _cmdParams[0].Value;
-                        string branchTarget = _cmdParams[1].Value;
-                        GlobalModules.DebugLog($"[BRANCH] cond='{value}' target='{branchTarget}' willJump={value != "1"} subDepth={_subStack.Count}\n");
-                        if (value != "1")
-                        {
-                            string labelName = branchTarget;
-                            // Strip leading colon if present
-                            if (labelName.StartsWith(':'))
-                                labelName = labelName.Substring(1);
-                            GotoLabel(labelName);
-                            continue;
-                        }
-                    }
-                    else if (cmd.Name == "RETURN")
+                    // Handle RETURN before dispatch - stack/flow is maintained by Script itself.
+                    if (cmd.Name == "RETURN")
                     {
                         if (GlobalModules.VerboseDebugMode)
                             GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count})\n");
@@ -2380,35 +2334,48 @@ namespace TWXProxy.Core
             }
         }
 
+        private string NormalizeLabelLookup(string label)
+        {
+            if (_cmp == null)
+                return label;
+
+            string normalized = label ?? string.Empty;
+
+            if (normalized.StartsWith(':'))
+            {
+                if (normalized.Length < 2)
+                    throw new ScriptException($"Bad goto label '{label}'");
+
+                normalized = normalized.Substring(1);
+            }
+            else if (string.IsNullOrEmpty(normalized))
+            {
+                throw new ScriptException($"Bad goto label '{label}'");
+            }
+
+            normalized = normalized.ToUpperInvariant();
+            _cmp.ExtendName(ref normalized, _execScriptID);
+            return normalized;
+        }
+
         public void GotoLabel(string label)
         {
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[GotoLabel] Attempting to goto label '{label}'\n");
-            
+
             if (_cmp == null)
                 throw new Exception("No script loaded");
 
-            // Find label in label list - O(1) dict lookup
-            int labelPos = _cmp.FindLabel(label);
+            string normalized = NormalizeLabelLookup(label);
+            int labelPos = _cmp.FindLabel(normalized);
             if (labelPos < 0)
             {
-                string qualified = _cmp.QualifyLabelReference(label, _execScriptID);
-                if (!string.Equals(qualified, label, StringComparison.Ordinal))
-                {
-                    labelPos = _cmp.FindLabel(qualified);
-                    if (labelPos >= 0)
-                        label = qualified;
-                }
-            }
-
-            if (labelPos < 0)
-            {
-                GlobalModules.DebugLog($"[GotoLabel] ERROR: Label '{label}' not found in script\n");
+                GlobalModules.DebugLog($"[GotoLabel] ERROR: Label '{label}' normalized='{normalized}' execScriptID={_execScriptID} not found in script\n");
                 throw new ScriptException($"Label '{label}' not found");
             }
 
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[GotoLabel] Found label '{label}' at position {labelPos}\n");
+                GlobalModules.DebugLog($"[GotoLabel] Found label '{normalized}' at position {labelPos}\n");
             _codePos = labelPos;
         }
 
@@ -2417,7 +2384,15 @@ namespace TWXProxy.Core
             if (_cmp == null)
                 return false;
 
-            return _cmp.FindLabel(label) >= 0;
+            try
+            {
+                string normalized = NormalizeLabelLookup(label);
+                return _cmp.FindLabel(normalized) >= 0;
+            }
+            catch (ScriptException)
+            {
+                return false;
+            }
         }
 
         public void Gosub(string labelName)

@@ -702,21 +702,24 @@ namespace TWXProxy.Core
                                     {
                                         // Full-line GETINPUT (blocking, non-keypress): echo chars locally
                                         // so the user can see what they type before pressing Enter.
-                                        if (b == 8 || b == 127) // Backspace or DEL
+                                        if (_localStream != null)
                                         {
-                                            // Echo backspace sequence: BS + SPACE + BS
-                                            await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
-                                            await _localStream.FlushAsync(token);
-                                        }
-                                        else if (b != 13 && b != 10) // Don't echo CR/LF yet
-                                        {
-                                            await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
-                                            await _localStream.FlushAsync(token);
-                                        }
-                                        else if (b == 13) // CR - echo newline
-                                        {
-                                            await _localStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
-                                            await _localStream.FlushAsync(token);
+                                            if (b == 8 || b == 127) // Backspace or DEL
+                                            {
+                                                // Echo backspace sequence: BS + SPACE + BS
+                                                await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
+                                                await _localStream.FlushAsync(token);
+                                            }
+                                            else if (b != 13 && b != 10) // Don't echo CR/LF yet
+                                            {
+                                                await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
+                                                await _localStream.FlushAsync(token);
+                                            }
+                                            else if (b == 13) // CR - echo newline
+                                            {
+                                                await _localStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
+                                                await _localStream.FlushAsync(token);
+                                            }
                                         }
                                     }
                                     else if (textOutConsumed)
@@ -725,15 +728,18 @@ namespace TWXProxy.Core
                                         // menu).  In the original Pascal TWX, the Telnet client's local echo
                                         // made the character visible immediately; in TWXP (no Telnet client)
                                         // we must echo it back explicitly so the user sees what they type.
-                                        if (b >= 32 && b <= 126) // printable ASCII
+                                        if (_localStream != null)
                                         {
-                                            await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
-                                            await _localStream.FlushAsync(token);
-                                        }
-                                        else if (b == 8 || b == 127) // Backspace/DEL
-                                        {
-                                            await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
-                                            await _localStream.FlushAsync(token);
+                                            if (b >= 32 && b <= 126) // printable ASCII
+                                            {
+                                                await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
+                                                await _localStream.FlushAsync(token);
+                                            }
+                                            else if (b == 8 || b == 127) // Backspace/DEL
+                                            {
+                                                await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
+                                                await _localStream.FlushAsync(token);
+                                            }
                                         }
                                     }
                                 
