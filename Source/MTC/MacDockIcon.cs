@@ -27,7 +27,7 @@ static class MacDockIcon
     private static extern void SendVoid(IntPtr obj, IntPtr sel, IntPtr arg);
 
     /// <summary>
-    /// Loads mtc.png from Avalonia assets and sets it as the application dock icon.
+    /// Loads mtc2.png from Avalonia assets and sets it as the application dock icon.
     /// Must be called after Avalonia framework initialization is complete.
     /// </summary>
     public static void SetFromAsset()
@@ -36,7 +36,7 @@ static class MacDockIcon
         {
             // Write the embedded PNG to a temp file so NSImage can load it by path.
             var tmpPath = Path.Combine(Path.GetTempPath(), "mtc_dock_icon.png");
-            using (var src = AssetLoader.Open(new Uri("avares://MTC/mtc.png")))
+            using (var src = AssetLoader.Open(new Uri("avares://MTC/mtc2.png")))
             using (var dst = File.Create(tmpPath))
                 src.CopyTo(dst);
 

@@ -1221,7 +1221,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdWaitFor(object script, CmdParam[] parameters)
         {
             // CMD: waitfor <text>
-            // Pauses script execution until the specified text is received from the server
+            // Pascal behavior: store wait text, mark wait active, and return Pause.
             if (script is Script scriptObj)
             {
                 scriptObj.WaitText = parameters[0].Value;
@@ -1232,16 +1232,9 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdWaitOn(object script, CmdParam[] parameters)
         {
-            // CMD: waiton <text>
-            // Alias for WAITFOR - pauses script execution until the specified text is received from the server
-            GlobalModules.DebugLog($"[WAITON] Waiting for text: '{parameters[0].Value}'\n");
-            if (script is Script scriptObj)
-            {
-                scriptObj.WaitText = parameters[0].Value;
-                scriptObj.WaitForActive = true;
-                GlobalModules.DebugLog($"[WAITON] WaitForActive set to true, WaitText='{scriptObj.WaitText}'\n");
-            }
-            return CmdAction.Pause;
+            // Extended compatibility command in C#; Pascal handles WAITON at compile-time as a macro.
+            // Route through WAITFOR logic so runtime behavior cannot diverge.
+            return CmdWaitFor(script, parameters);
         }
 
         private static CmdAction CmdGetInput(object script, CmdParam[] parameters)

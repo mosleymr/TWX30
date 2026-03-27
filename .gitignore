@@ -19,6 +19,8 @@ obj/
 
 # MTC publish output
 Source/MTC/publish/
+Source/TWXC/publish/
+Source/TWXD/publish/
 
 # Local-only notes
 RELOG_LOOP_FIX.md

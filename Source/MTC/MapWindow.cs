@@ -575,6 +575,9 @@ public class MapWindow : Window
         sk.DrawRect(0, 0, canvasW, canvasH, bgPaint);
         bgPaint.Dispose();
 
+        // Clip to canvas bounds so nothing bleeds into toolbar/legend regions.
+        sk.ClipRect(new SKRect(0, 0, canvasW, canvasH));
+
         // Transform: canvas center + pan + zoom
         float cx = canvasW / 2 + _pan.X;
         float cy = canvasH / 2 + _pan.Y;

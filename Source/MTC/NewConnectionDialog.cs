@@ -26,8 +26,8 @@ public class NewConnectionDialog : Window
     {
         Title                 = "Connection Settings";
         Width                 = 500;
-        Height                = 300;
         SizeToContent         = SizeToContent.Height;
+        MinHeight             = 200;
         CanResize             = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background            = BgPanel;

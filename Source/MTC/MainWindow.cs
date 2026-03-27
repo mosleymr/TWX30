@@ -43,6 +43,7 @@ public class MainWindow : Window
     };
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
+    private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
     private Menu            _menuBar       = new();
@@ -103,7 +104,7 @@ public class MainWindow : Window
     public MainWindow()
     {
         Title          = "Mayhem Tradewars Client v1.0";
-        Icon           = new WindowIcon(AssetLoader.Open(new Uri("avares://MTC/mtc.png")));
+        Icon           = new WindowIcon(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
         Width          = 1100;
         Height         = 650;
         MinWidth       = 800;
@@ -225,6 +226,12 @@ public class MainWindow : Window
         var fileNew    = new MenuItem { Header = "_New Connection…" };
         fileNew.Click += (_, _) => _ = OnNewConnectionAsync();
 
+        var fileNewWin    = new MenuItem { Header = "New _Window" };
+        fileNewWin.Click += (_, _) => new MainWindow().Show();
+
+        var fileEdit = _fileEdit;
+        _fileEdit.Click += (_, _) => _ = OnEditConnectionAsync();
+
         var fileOpen    = new MenuItem { Header = "_Open…" };
         fileOpen.Click += (_, _) => _ = OnOpenConnectionAsync();
 
@@ -249,7 +256,8 @@ public class MainWindow : Window
         var fileMenu = new MenuItem
         {
             Header = "_File",
-            Items  = { fileNew, fileOpen, _recentMenu, fileSave, fileSaveAs,
+            Items  = { fileNew, fileEdit, fileOpen, _recentMenu, fileSave, fileSaveAs,
+                       new Separator(), fileNewWin,
                        new Separator(), fileConnect, fileDisconnect,
                        new Separator(), filePrefs,
                        new Separator(), fileQuit },
@@ -784,6 +792,7 @@ public class MainWindow : Window
     /// <summary>Call after a profile is applied (game selected) to enable Connect.</summary>
     private void OnGameSelected()
     {
+        _fileEdit.IsEnabled       = true;
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
     }
@@ -1602,6 +1611,24 @@ public class MainWindow : Window
     }
 
     /// <summary>File > New Connection: dialog → save picker → save XML → apply (no connect).</summary>
+    private async Task OnEditConnectionAsync()
+    {
+        var dlg = new NewConnectionDialog(BuildProfileFromState());
+        if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
+
+        ApplyProfile(dlg.Result);
+
+        // Auto-save in place if a profile file is already loaded.
+        if (!string.IsNullOrEmpty(_currentProfilePath))
+        {
+            try { dlg.Result.SaveXml(_currentProfilePath); }
+            catch { /* best-effort */ }
+        }
+
+        _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
+        _buffer.Dirty = true;
+    }
+
     private async Task OnNewConnectionAsync()
     {
         var dlg = new NewConnectionDialog();
