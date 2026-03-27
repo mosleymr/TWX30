@@ -33,6 +33,8 @@ namespace TWXD
 {
     public class ScriptDecompiler
     {
+        public bool CompactWhitespace { get; set; }
+
         private sealed class ScriptSegment
         {
             public ScriptSegment(byte scriptID, int start, int end, string includeName)
@@ -121,6 +123,8 @@ namespace TWXD
                 {
                     DecompileSegment(new ScriptSegment(0, 0, _codeSize, GetScriptName(0)), filename, true, null);
                     NormalizeElseWhileChains(filename);
+                    if (CompactWhitespace)
+                        NormalizeWhitespace(filename);
                     generatedFiles.Add(filename);
                     return generatedFiles;
                 }
@@ -131,17 +135,18 @@ namespace TWXD
                     var segment = mainSegment ?? segments[0];
                     DecompileSegment(segment, filename, true, null);
                     NormalizeElseWhileChains(filename);
+                    if (CompactWhitespace)
+                        NormalizeWhitespace(filename);
                     generatedFiles.Add(filename);
                     return generatedFiles;
                 }
 
                 string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? Directory.GetCurrentDirectory();
-                int indexWidth = Math.Max(2, Math.Max(1, _includeScriptList.Count - 1).ToString().Length);
                 var includeLines = new List<string>();
 
                 foreach (var segment in segments.Where(segment => segment.ScriptID > 0))
                 {
-                    string relativePath = BuildIncludeRelativePath(segment.ScriptID, indexWidth);
+                    string relativePath = BuildIncludeRelativePath(segment.ScriptID);
                     string fullPath = Path.Combine(outputDirectory, relativePath);
                     string? includeDirectory = Path.GetDirectoryName(fullPath);
                     if (!string.IsNullOrEmpty(includeDirectory))
@@ -149,12 +154,16 @@ namespace TWXD
 
                     DecompileSegment(segment, fullPath, false, null);
                     NormalizeElseWhileChains(fullPath);
+                    if (CompactWhitespace)
+                        NormalizeWhitespace(fullPath);
                     generatedFiles.Add(fullPath);
                     includeLines.Add($"include \"{relativePath}\"");
                 }
 
                 DecompileSegment(mainSegment, filename, true, includeLines);
                 NormalizeElseWhileChains(filename);
+                if (CompactWhitespace)
+                    NormalizeWhitespace(filename);
                 generatedFiles.Insert(0, filename);
                 return generatedFiles;
             }
@@ -858,6 +867,42 @@ namespace TWXD
                 File.WriteAllLines(filename, lines, Encoding.Latin1);
         }
 
+        private static void NormalizeWhitespace(string filename)
+        {
+            var originalLines = File.ReadAllLines(filename, Encoding.Latin1);
+            var lines = new List<string>(originalLines.Length);
+            bool seenContent = false;
+            bool previousBlank = false;
+
+            foreach (string line in originalLines)
+            {
+                bool isBlank = string.IsNullOrWhiteSpace(line);
+
+                if (!seenContent)
+                {
+                    if (isBlank)
+                        continue;
+
+                    seenContent = true;
+                }
+
+                if (isBlank)
+                {
+                    if (previousBlank)
+                        continue;
+
+                    previousBlank = true;
+                    lines.Add(string.Empty);
+                    continue;
+                }
+
+                previousBlank = false;
+                lines.Add(line);
+            }
+
+            File.WriteAllLines(filename, lines, Encoding.Latin1);
+        }
+
         private string GetScriptName(byte scriptID)
         {
             if (scriptID < _includeScriptList.Count)
@@ -866,13 +911,12 @@ namespace TWXD
             return $"SCRIPT_{scriptID}";
         }
 
-        private string BuildIncludeRelativePath(byte scriptID, int indexWidth)
+        private string BuildIncludeRelativePath(byte scriptID)
         {
             string includeName = GetScriptName(scriptID);
             string includeBaseName = Path.GetFileNameWithoutExtension(includeName);
             string safeBaseName = SanitizePathSegment(includeBaseName);
-            string folderName = $"{scriptID.ToString().PadLeft(indexWidth, '0')}_{safeBaseName}";
-            return Path.Combine("include", folderName, safeBaseName + ".ts");
+            return Path.Combine("include", safeBaseName + ".ts");
         }
 
         private static string SanitizePathSegment(string value)

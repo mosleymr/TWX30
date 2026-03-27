@@ -79,10 +79,25 @@ public sealed class SessionLogger : IDisposable
         {
             if (_writer == null) return;
             string clean = RxAnsi.Replace(text, string.Empty);
+            clean = StripControls(clean);
             // Normalise CR LF / bare CR to LF so the log has consistent line endings.
             clean = clean.Replace("\r\n", "\n").Replace("\r", "\n");
             _writer.Write(clean);
         }
+    }
+
+    private static string StripControls(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+
+        var sb = new StringBuilder(s.Length);
+        foreach (char c in s)
+        {
+            // Keep normal printable text plus CR/LF/TAB. Drop C0/C1 control bytes.
+            if (c == '\r' || c == '\n' || c == '\t' || !char.IsControl(c))
+                sb.Append(c);
+        }
+        return sb.ToString();
     }
 
 }

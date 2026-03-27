@@ -1102,7 +1102,6 @@ public class MainWindow : Window
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
-                    _sessionLog.LogFromServer(System.Text.Encoding.Latin1.GetString(chunk));
                     Dispatcher.UIThread.Post(() =>
                     {
                         _parser.Feed(chunk, chunk.Length);
@@ -1125,6 +1124,9 @@ public class MainWindow : Window
 
         gi.ServerDataReceived += (_, e) =>
         {
+            // Session log captures only true server-originated text in embedded mode.
+            _sessionLog.LogFromServer(e.Text);
+
             serverLineBuf.Append(e.Text);
             string buffered = serverLineBuf.ToString();
             int searchPos = 0;

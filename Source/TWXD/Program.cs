@@ -58,17 +58,37 @@ namespace TWXD
                 Console.WriteLine($"TWXD - TWX Proxy decompilation utility v{Constants.ProgramVersion}");
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
-                Console.WriteLine("Usage: TWXD script.cts");
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] script.cts");
                 Console.WriteLine();
                 Console.WriteLine("script.cts - Filename of the compiled script to be decompiled.");
                 Console.WriteLine();
                 Console.WriteLine("The decompiler will create a .ts file with the decompiled script.");
                 Console.WriteLine("If the .ts file exists, it will use .ts_1, .ts_2, etc.");
+                Console.WriteLine("--compact-whitespace - Remove leading blank lines and collapse repeated blank lines.");
                 Console.WriteLine();
                 return;
             }
 
-            string inputFile = args[0];
+            bool compactWhitespace = false;
+            var positionalArgs = new List<string>();
+            foreach (string arg in args)
+            {
+                if (string.Equals(arg, "--compact-whitespace", StringComparison.OrdinalIgnoreCase))
+                {
+                    compactWhitespace = true;
+                    continue;
+                }
+
+                positionalArgs.Add(arg);
+            }
+
+            if (positionalArgs.Count != 1)
+            {
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] script.cts");
+                return;
+            }
+
+            string inputFile = positionalArgs[0];
             if (!File.Exists(inputFile))
             {
                 Console.WriteLine($"Error: File '{inputFile}' not found.");
@@ -88,6 +108,7 @@ namespace TWXD
             {
                 var scriptRef = new ScriptRef();
                 var decompiler = new ScriptDecompiler(scriptRef);
+                decompiler.CompactWhitespace = compactWhitespace;
                 
                 decompiler.LoadFromFile(inputFile);
                 var generatedFiles = decompiler.DecompileToFile(outputFile);

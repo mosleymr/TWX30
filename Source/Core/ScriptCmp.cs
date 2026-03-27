@@ -470,7 +470,8 @@ namespace TWXProxy.Core
             if (string.IsNullOrEmpty(scriptNamespace))
                 return name;
 
-            string qualified = scriptNamespace + "~" + labelName;
+            bool isInternalNumericLabel = hasColon && labelName.All(char.IsDigit);
+            string qualified = scriptNamespace + "~" + (isInternalNumericLabel ? ":" : string.Empty) + labelName;
             return hasColon ? ":" + qualified : qualified;
         }
 
