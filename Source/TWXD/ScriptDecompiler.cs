@@ -33,6 +33,25 @@ namespace TWXD
 {
     public class ScriptDecompiler
     {
+        private static readonly HashSet<string> BareScriptConsts = new(StringComparer.Ordinal)
+        {
+            "ANSI_0", "ANSI_1", "ANSI_2", "ANSI_3", "ANSI_4", "ANSI_5", "ANSI_6", "ANSI_7",
+            "ANSI_8", "ANSI_9", "ANSI_10", "ANSI_11", "ANSI_12", "ANSI_13", "ANSI_14", "ANSI_15",
+            "CONNECTED", "CURRENTANSILINE", "CURRENTLINE", "DATE", "FALSE", "GAME", "GAMENAME",
+            "LICENSENAME", "LOGINNAME", "PASSWORD", "PORT.CLASS", "PORT.BUYFUEL", "PORT.BUYORG",
+            "PORT.BUYEQUIP", "PORT.EXISTS", "PORT.FUEL", "PORT.NAME", "PORT.ORG", "PORT.EQUIP",
+            "PORT.PERCENTFUEL", "PORT.PERCENTORG", "PORT.PERCENTEQUIP", "SECTOR.ANOMOLY",
+            "SECTOR.BACKDOORCOUNT", "SECTOR.BACKDOORS", "SECTOR.DENSITY", "SECTOR.EXPLORED",
+            "SECTOR.FIGS.OWNER", "SECTOR.FIGS.QUANTITY", "SECTOR.LIMPETS.OWNER",
+            "SECTOR.LIMPETS.QUANTITY", "SECTOR.MINES.OWNER", "SECTOR.MINES.QUANTITY",
+            "SECTOR.NAVHAZ", "SECTOR.PLANETCOUNT", "SECTOR.PLANETS", "SECTOR.SHIPCOUNT",
+            "SECTOR.SHIPS", "SECTOR.TRADERCOUNT", "SECTOR.TRADERS", "SECTOR.UPDATED",
+            "SECTOR.WARPCOUNT", "SECTOR.WARPS", "SECTOR.WARPSIN", "SECTOR.WARPINCOUNT",
+            "SECTORS", "STARDOCK", "TIME", "TRUE", "ALPHACENTAURI", "CURRENTSECTOR", "RYLOS",
+            "PORT.BUILDTIME", "PORT.UPDATED", "RAWPACKET", "SECTOR.BEACON",
+            "SECTOR.CONSTELLATION", "SECTOR.FIGS.TYPE", "SECTOR.ANOMALY", "EOF"
+        };
+
         private ScriptRef _scriptRef;
         private byte[] _code = Array.Empty<byte>();
         private List<CmdParam> _paramList = new List<CmdParam>();
@@ -75,31 +94,114 @@ namespace TWXD
 
         public void DecompileToFile(string filename)
         {
-            using (var output = new StreamWriter(filename))
+            using (var output = new StreamWriter(filename, false, Encoding.Latin1))
             {
+                int outputLine = 0;
+
+                void WriteTrackedLine(string text = "")
+                {
+                    output.WriteLine(text);
+                    outputLine++;
+                }
+
+                void PadToLine(int targetLine)
+                {
+                    while (targetLine > 0 && outputLine + 1 < targetLine)
+                        WriteTrackedLine();
+                }
+
                 // Add description as comments
                 if (!string.IsNullOrEmpty(_description))
                 {
                     foreach (var line in _description.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
                     {
-                        output.WriteLine($"# {line}");
+                        WriteTrackedLine($"# {line}");
                     }
-                    output.WriteLine();
+                    WriteTrackedLine();
                 }
 
-                var branchLabels = new HashSet<string>();
-                var elseifConsumedLabels = new HashSet<string>(); // ConLabels removed by ELSEIF but expected again at END position
-                var tempVars = new Dictionary<string, string>(); // Track $$1, $$2, etc.
-                var seenLabels = new HashSet<string>(); // Track which labels we've already processed
+                var branchLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var whileLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var waitOnLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var tempVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 int indent = 0;
-                bool pendingElse = false;    // forward GOTO to internal numeric label was just seen
-                bool lineelse = false;       // else-start label passed; next BRANCH → elseif, next real cmd → else
-                bool lastWasLoopLabel = false; // WHILE-start internal label seen; next BRANCH → while
-                bool branchend = false;      // just emitted 'end'; next internal numeric label is EndLabel, skip it
-                string pendingElseLabel = ""; // the ConLabel consumed by pendingElse; ELSEIF must remove it from branchLabels
+                bool lineGoto = false;
+                bool lineElse = false;
+                int pendingElseLine = -1;
+                bool whileLoop = false;
+                bool branchEnd = false;
+                bool waitOn = false;
+                int lastLine = -1;
+                byte lastScript = byte.MaxValue;
+
+                void ProcessLabelsAt(int location)
+                {
+                    foreach (var label in _labelList)
+                    {
+                        if (label.Location != location)
+                            continue;
+
+                        string labelName = label.Name;
+                        bool isNumericLabel = labelName.StartsWith(":") && labelName.Length > 1 &&
+                                              labelName.Substring(1).All(char.IsDigit);
+
+                        if ((waitOn && labelName.Contains("WAITON", StringComparison.OrdinalIgnoreCase)) ||
+                            waitOnLabels.Contains(labelName))
+                        {
+                            continue;
+                        }
+
+                        if (!isNumericLabel)
+                        {
+                            branchEnd = false;
+                            if (lineElse)
+                            {
+                                PadToLine(pendingElseLine);
+                                indent--;
+                                WriteTrackedLine($"{Indent(indent)}else");
+                                indent++;
+                                lineElse = false;
+                                pendingElseLine = -1;
+                            }
+                            WriteTrackedLine($"{Indent(indent)}:{labelName}");
+                        }
+                        else if (lineGoto && !whileLabels.Contains(labelName))
+                        {
+                            lineGoto = false;
+                            lineElse = true;
+                        }
+                        else if (branchLabels.Contains(labelName))
+                        {
+                            branchLabels.Remove(labelName);
+                            branchEnd = true;
+
+                            if (lineElse)
+                            {
+                                indent--;
+                                WriteTrackedLine($"{Indent(indent)}else");
+                                indent++;
+                                lineElse = false;
+                            }
+
+                            indent--;
+                            WriteTrackedLine($"{Indent(indent)}end");
+                        }
+                        else if (branchEnd)
+                        {
+                            branchEnd = false;
+                        }
+                        else
+                        {
+                            whileLabels.Add(labelName);
+                            branchEnd = false;
+                            whileLoop = true;
+                        }
+                    }
+                }
                 
                 _codePos = 0;
-                
+                ProcessLabelsAt(0);
+
                 while (_codePos < _codeSize)
                 {
                     int commandStart = _codePos;
@@ -117,84 +219,27 @@ namespace TWXD
                     if (_codePos + 2 > _codeSize) break;
                     ushort cmdID = BitConverter.ToUInt16(_code, _codePos);
                     _codePos += 2;
-                    
-                    // Check for labels at this bytecode position
-                    foreach (var label in _labelList)
-                    {
-                        if (label.Location == commandStart)
+
+                        if (lastLine != -1 && (lineNum != lastLine || scriptID != lastScript))
                         {
-                            string labelName = label.Name;
-                            seenLabels.Add(labelName);
-
-                            // Internal numeric label (branch targets, loop markers, end labels)
-                            bool isNumericLabel = labelName.StartsWith(":") && labelName.Length > 1 &&
-                                                  labelName.Substring(1).All(char.IsDigit);
-
-                            if (isNumericLabel)
+                            if (lineElse)
                             {
-                                if (pendingElse)
-                                {
-                                    // A forward GOTO to this label was seen → else/elseif body starts here.
-                                    // pendingElse always takes priority over branchend/branchLabels so
-                                    // that a while 'end' at the same position doesn't shadow the else-start.
-                                    // DO NOT remove this label from branchLabels — for ELSE it will be
-                                    // encountered again at the HandleEnd position where it emits 'end'.
-                                    // For ELSEIF, the BRANCH handler will clean it up from branchLabels.
-                                    pendingElse = false;
-                                    lineelse = true;
-                                    pendingElseLabel = labelName;
-                                    lastWasLoopLabel = false;
-                                }
-                                else if (branchLabels.Contains(labelName))
-                                {
-                                    // ConLabel reached at HandleEnd position — close this block.
-                                    branchLabels.Remove(labelName);
-                                    if (lineelse)
-                                    {
-                                        indent--;
-                                        output.WriteLine($"{Indent(indent)}else");
-                                        indent++;
-                                        lineelse = false;
-                                        pendingElseLabel = "";
-                                    }
-                                    indent--;
-                                    output.WriteLine($"{Indent(indent)}end");
-                                    branchend = true; // next label at this position is EndLabel, skip it
-                                    lastWasLoopLabel = false;
-                                }
-                                else if (elseifConsumedLabels.Contains(labelName))
-                                {
-                                    // This is an outer ConLabel that was folded into an elseif and
-                                    // removed from branchLabels. Pascal emits ConLabel at BOTH the
-                                    // else-start AND the end position, so it reappears here.
-                                    // Silently consume it and set branchend so its companion EndLabel
-                                    // (outer EndLabel at the same bytecode position) is also consumed.
-                                    elseifConsumedLabels.Remove(labelName);
-                                    branchend = true;
-                                    lastWasLoopLabel = false;
-                                }
-                                else if (branchend)
-                                {
-                                    // This is the EndLabel that pairs with the ConLabel that just
-                                    // emitted 'end'. Silently consume it.
-                                    branchend = false;
-                                    lastWasLoopLabel = false;
-                                }
-                                else
-                                {
-                                    // Not a branch-close or else-start: this is a WHILE loop start.
-                                    lastWasLoopLabel = true;
-                                }
-                            }
-                            else
-                            {
-                                // User-defined label
-                                branchend = false;
-                                output.WriteLine($":{labelName}");
-                            }
+                            PadToLine(pendingElseLine);
+                            indent--;
+                            WriteTrackedLine($"{Indent(indent)}else");
+                            indent++;
+                            lineElse = false;
+                            pendingElseLine = -1;
                         }
+
+                        lineGoto = false;
+                        branchEnd = false;
+                        waitOn = false;
                     }
-                    
+
+                    lastLine = lineNum;
+                    lastScript = scriptID;
+
                     // Get command name
                     string cmdName;
                     cmdName = _scriptRef.GetCommandName(cmdID);
@@ -247,7 +292,7 @@ namespace TWXD
                             };
                             
                             // Store for later expansion
-                            if (target.StartsWith("$$"))
+                            if (target.StartsWith("$$", StringComparison.Ordinal))
                             {
                                 string expandedLeft = ExpandTempVars(left, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
@@ -256,14 +301,13 @@ namespace TWXD
                             }
                         }
                     }
-                    // Arithmetic operators
+                    // Arithmetic operators: ADD/SUBTRACT/etc are 2-param accumulator ops.
                     else if (cmdName == "ADD" || cmdName == "SUBTRACT" || cmdName == "MULTIPLY" || cmdName == "DIVIDE")
                     {
-                        if (paramCount >= 3)
+                        if (paramCount >= 2)
                         {
                             string target = parts[1];
-                            string left = parts[2];
-                            string right = parts[3];
+                            string right = parts[2];
                             
                             string op = cmdName switch
                             {
@@ -274,9 +318,9 @@ namespace TWXD
                                 _ => " ? "
                             };
                             
-                            if (target.StartsWith("$$"))
+                            if (target.StartsWith("$$", StringComparison.Ordinal))
                             {
-                                string expandedLeft = ExpandTempVars(left, tempVars);
+                                string expandedLeft = ExpandTempVars(target, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
                                 tempVars[target] = $"({expandedLeft}{op}{expandedRight})";
                                 skipOutput = true;
@@ -285,7 +329,6 @@ namespace TWXD
                     }
                     // Boolean operators: AND/OR are 2-param accumulator instructions.
                     // Compiled as: SETVAR $$cond $$left  then  OR $$cond $$right
-                    // So parts[1]=target/accumulator (already holds left), parts[2]=right.
                     else if (cmdName == "AND" || cmdName == "OR")
                     {
                         if (paramCount >= 2)
@@ -293,13 +336,24 @@ namespace TWXD
                             string target = parts[1];
                             string right = parts[2];
                             
-                            string op = cmdName == "AND" ? " and " : " or ";
-                            
-                            if (target.StartsWith("$$"))
+                            if (target.StartsWith("$$", StringComparison.Ordinal))
                             {
                                 string expandedLeft = ExpandTempVars(target, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
-                                tempVars[target] = $"({expandedLeft}{op}{expandedRight})";
+
+                                if (cmdName == "AND")
+                                {
+                                    if (expandedLeft.Contains(" or ", StringComparison.Ordinal))
+                                        expandedLeft = $"({expandedLeft})";
+                                    if (expandedRight.Contains(" or ", StringComparison.Ordinal))
+                                        expandedRight = $"({expandedRight})";
+                                    tempVars[target] = $"({expandedLeft} and {expandedRight})";
+                                }
+                                else
+                                {
+                                    tempVars[target] = $"{expandedLeft} or {expandedRight}";
+                                }
+
                                 skipOutput = true;
                             }
                         }
@@ -310,23 +364,20 @@ namespace TWXD
                         string target = parts[1];
                         string value = parts[2];
                         
-                        if (target.StartsWith("$$"))
+                        if (target.StartsWith("$$", StringComparison.Ordinal))
                         {
                             tempVars[target] = ExpandTempVars(value, tempVars);
                             skipOutput = true;
                         }
                     }
                     // MERGETEXT: dest = src1 + src2
-                    // When dest is a $$N temp var, accumulate into tempVars so the
-                    // consuming SEND/ECHO/etc expands it inline.  For real-var dests
-                    // fall through to regular output (with $$N params already expanded).
                     else if (cmdName == "MERGETEXT" && paramCount >= 3)
                     {
                         string src1 = parts[1];
                         string src2 = parts[2];
                         string dest = parts[3];
 
-                        if (dest.StartsWith("$$"))
+                        if (dest.StartsWith("$$", StringComparison.Ordinal))
                         {
                             string exp1 = ExpandTempVars(src1, tempVars);
                             string exp2 = ExpandTempVars(src2, tempVars);
@@ -337,88 +388,88 @@ namespace TWXD
                     // BRANCH
                     else if (cmdName == "BRANCH" && paramCount >= 2)
                     {
-                        string condition = parts[1];
-                        string label = parts[2].Trim('"', ':');
-                        string fullLabel = ":" + label;
-                        
-                        // Expand temporary variables
-                        condition = ExpandTempVars(condition, tempVars);
-                        
-                        // Clear condition temp vars so they don't pollute subsequent instructions
+                        string condition = ExpandTempVars(parts[1], tempVars);
+                        string label = NormalizeLabelReference(parts[2]);
+
                         tempVars.Clear();
-                        
-                        bool isWhileLoop = lastWasLoopLabel;
-                        lastWasLoopLabel = false;
-                        
-                        if (lineelse)
+                        branchLabels.Add(label);
+
+                        if (lineElse)
                         {
-                            // ELSEIF: the false-jump target goes into branchLabels so it emits
-                            // 'end' when reached at HandleEnd position.
-                            // The old ConLabel (pendingElseLabel) was left in branchLabels by
-                            // the pendingElse handler, but HandleEnd for ELSEIF uses the NEW
-                            // ConLabel, not the old one. Remove the stale old ConLabel now.
-                            if (!string.IsNullOrEmpty(pendingElseLabel))
-                            {
-                                branchLabels.Remove(pendingElseLabel);
-                                // Pascal emits ConLabel at both the else-start AND the end
-                                // position. We removed it from branchLabels so it won't
-                                // trigger a spurious 'end', but we must still consume it
-                                // when it reappears at the end position (outer END macro).
-                                elseifConsumedLabels.Add(pendingElseLabel);
-                                pendingElseLabel = "";
-                            }
-                            branchLabels.Add(fullLabel);
+                            PadToLine(lineNum);
                             indent--;
-                            output.WriteLine($"{Indent(indent)}elseif {condition}");
+                            WriteTrackedLine($"{Indent(indent)}elseif {FormatCondition(condition)}");
                             indent++;
-                            lineelse = false;
+                            lineElse = false;
+                            pendingElseLine = -1;
                         }
-                        else if (isWhileLoop)
+                        else if (whileLoop)
                         {
-                            branchLabels.Add(fullLabel);
-                            output.WriteLine($"{Indent(indent)}while {condition}");
+                            PadToLine(lineNum);
+                            WriteTrackedLine($"{Indent(indent)}while {FormatCondition(condition)}");
                             indent++;
+                            whileLoop = false;
                         }
                         else
                         {
-                            branchLabels.Add(fullLabel);
-                            output.WriteLine($"{Indent(indent)}if {condition}");
+                            PadToLine(lineNum);
+                            WriteTrackedLine($"{Indent(indent)}if {FormatCondition(condition)}");
                             indent++;
                         }
+
                         skipOutput = true;
                     }
-                    // GOTO
-                    else if (cmdName == "GOTO" && paramCount >= 1)
+                    // GOTO / GOSUB
+                    else if ((cmdName == "GOTO" || cmdName == "GOSUB") && paramCount >= 1)
                     {
-                        string label = parts[1].Trim('"', ':');
-                        string fullLabel = ":" + label; // Labels are stored with : prefix
-                        
-                        // Check if it's an internal numeric label (all digits)
-                        bool isInternalLabel = label.Length > 0 && label.All(char.IsDigit);
-                        
-                        // Check if this is a backward jump (loop)
-                        bool isBackwardJump = seenLabels.Contains(fullLabel);
-                        
-                        if (isInternalLabel)
+                        string labelExpr = ExpandTempVars(parts[1], tempVars);
+                        labelExpr = Unquote(labelExpr);
+                        if (labelExpr.StartsWith("::", StringComparison.Ordinal))
+                            labelExpr = labelExpr.Substring(1);
+
+                        bool isInternalLabel = IsInternalNumericLabel(labelExpr);
+
+                        if (cmdName == "GOTO" && isInternalLabel)
                         {
-                            if (isBackwardJump)
-                            {
-                                // Backward jump to internal label = while loop back, suppress
-                                skipOutput = true;
-                                pendingElse = false;
-                                lineelse = false;
-                            }
+                            if (whileLabels.Contains(labelExpr))
+                                whileLabels.Remove(labelExpr);
                             else
                             {
-                                // Forward jump to internal label = else/elseif body coming
-                                pendingElse = true;
-                                skipOutput = true;
+                                lineGoto = true;
+                                pendingElseLine = lineNum;
                             }
+
+                            skipOutput = true;
                         }
                         else
                         {
-                            // User goto — emit with : prefix
-                            output.WriteLine($"{Indent(indent)}goto :{label}");
+                            if (!labelExpr.Contains('&', StringComparison.Ordinal) &&
+                                !labelExpr.StartsWith("$", StringComparison.Ordinal) &&
+                                !labelExpr.StartsWith("%", StringComparison.Ordinal) &&
+                                !labelExpr.StartsWith(":", StringComparison.Ordinal))
+                            {
+                                labelExpr = ":" + labelExpr;
+                            }
+
+                            PadToLine(lineNum);
+                            WriteTrackedLine($"{Indent(indent)}{cmdName.ToLowerInvariant()} {labelExpr}");
+                            skipOutput = true;
+                        }
+                    }
+                    else if (IsTriggerCommand(cmdName) && paramCount >= 2)
+                    {
+                        parts[1] = Unquote(parts[1]);
+                        parts[2] = NormalizeLabelReference(parts[2]);
+
+                        if (parts[1].Contains("WAITON", StringComparison.OrdinalIgnoreCase) &&
+                            parts[2].Contains("WAITON", StringComparison.OrdinalIgnoreCase) &&
+                            parts.Count >= 4)
+                        {
+                            waitOn = true;
+                            waitOnLabels.Add(parts[2]);
+                            string waitText = ExpandTempVars(parts[3], tempVars);
+                            PadToLine(lineNum);
+                            WriteTrackedLine($"{Indent(indent)}waiton {waitText}");
                             skipOutput = true;
                         }
                     }
@@ -426,64 +477,120 @@ namespace TWXD
                     // Write regular command
                     if (!skipOutput)
                     {
-                        // If else is pending, emit it now before the first real command of the else body.
-                        // This is done here (after skipOutput check) so that temp-var condition
-                        // commands compiled for ELSEIF don't trigger a premature `else` output.
-                        if (lineelse)
+                        if (waitOn && cmdName == "PAUSE")
                         {
-                            // ELSE case: the old ConLabel (pendingElseLabel) stays in branchLabels
-                            // because HandleEnd for ELSE emits it a 2nd time to close the block.
-                            // Just clear the saved label; do NOT remove it from branchLabels.
-                            pendingElseLabel = "";
-                            indent--;
-                            output.WriteLine($"{Indent(indent)}else");
-                            indent++;
-                            lineelse = false;
                         }
-                        lastWasLoopLabel = false; // a real command ran — not immediately after loop label
+                        else
+                        {
+                            // If else is still pending and a real command appears on this line,
+                            // emit it now before the first command in the else body.
+                            if (lineElse)
+                            {
+                                PadToLine(pendingElseLine);
+                                indent--;
+                                WriteTrackedLine($"{Indent(indent)}else");
+                                indent++;
+                                lineElse = false;
+                                pendingElseLine = -1;
+                            }
 
-                        // Expand temp vars in parameters
-                        for (int i = 1; i < parts.Count; i++)
-                        {
-                            parts[i] = ExpandTempVars(parts[i], tempVars);
-                        }
+                            // Expand temp vars in parameters
+                            for (int i = 1; i < parts.Count; i++)
+                            {
+                                parts[i] = ExpandTempVars(parts[i], tempVars);
+                            }
 
-                        // Trigger name (parts[1]) is always an unquoted identifier
-                        if (parts.Count >= 2 && (
-                            cmdName == "KILLTRIGGER" ||
-                            cmdName == "SETTEXTTRIGGER" ||
-                            cmdName == "SETTEXTOUTTRIGGER" ||
-                            cmdName == "SETTEXTLINETRIGGER" ||
-                            cmdName == "SETEVENTTRIGGER" ||
-                            cmdName == "SETDELAYTRIGGER"))
-                        {
-                            parts[1] = parts[1].Trim('"');
-                        }
+                            if (cmdName == "KILLTRIGGER" && parts.Count >= 2)
+                            {
+                                parts[1] = Unquote(parts[1]);
+                            }
+                            else if (IsTriggerCommand(cmdName) && parts.Count >= 3)
+                            {
+                                parts[1] = Unquote(parts[1]);
+                                parts[2] = NormalizeLabelReference(parts[2]);
+                            }
+
+                            if (cmdName == "GETCONSOLEINPUT" && parts.Count >= 3 && parts[2] == "\"SINGLEKEY\"")
+                            {
+                                parts[2] = "SINGLEKEY";
+                            }
+
+                            if (cmdName == "OPENMENU" && parts.Count >= 2 &&
+                                parts[1].StartsWith("\"TWX_", StringComparison.Ordinal) &&
+                                parts[1].EndsWith("\"", StringComparison.Ordinal))
+                            {
+                                parts[1] = Unquote(parts[1]);
+                            }
                         
-                        output.WriteLine($"{Indent(indent)}{string.Join(" ", parts)}");
+                            parts[0] = cmdName.ToLowerInvariant();
+                            PadToLine(lineNum);
+                            WriteTrackedLine($"{Indent(indent)}{string.Join(" ", parts)}");
+                        }
                     }
+
+                    ProcessLabelsAt(_codePos);
                 }
-                
+
+                if (lineElse)
+                {
+                    PadToLine(pendingElseLine);
+                    indent--;
+                    WriteTrackedLine($"{Indent(indent)}else");
+                    indent++;
+                    pendingElseLine = -1;
+                }
+
                 // Close any remaining open blocks
                 while (indent > 0)
                 {
                     indent--;
-                    output.WriteLine($"{Indent(indent)}end");
+                    WriteTrackedLine($"{Indent(indent)}end");
                 }
             }
         }
         
         private string ExpandTempVars(string text, Dictionary<string, string> tempVars)
         {
-            // Replace $$1, $$2, etc. with their stored values
-            foreach (var kvp in tempVars)
+            if (string.IsNullOrEmpty(text) || !text.Contains("$$", StringComparison.Ordinal))
+                return text;
+
+            string expanded = text;
+
+            for (int pass = 0; pass < 32; pass++)
             {
-                if (text.Contains(kvp.Key))
+                var sb = new StringBuilder();
+                bool changed = false;
+
+                for (int i = 0; i < expanded.Length; i++)
                 {
-                    text = text.Replace(kvp.Key, kvp.Value);
+                    if (expanded[i] == '$' && i + 2 < expanded.Length && expanded[i + 1] == '$' &&
+                        char.IsDigit(expanded[i + 2]))
+                    {
+                        int j = i + 2;
+                        while (j < expanded.Length && char.IsDigit(expanded[j]))
+                            j++;
+
+                        string key = expanded.Substring(i, j - i);
+                        if (tempVars.TryGetValue(key, out string? replacement))
+                        {
+                            sb.Append(replacement);
+                            i = j - 1;
+                            changed = true;
+                            continue;
+                        }
+                    }
+
+                    sb.Append(expanded[i]);
                 }
+
+                string next = sb.ToString();
+                if (!changed || next == expanded)
+                    return next;
+
+                expanded = next;
             }
-            return text;
+
+            return expanded;
         }
         
         private string Indent(int level)
@@ -709,21 +816,75 @@ namespace TWXD
             return result.ToString();
         }
 
+        private static bool IsTriggerCommand(string cmdName)
+        {
+            return cmdName == "SETTEXTTRIGGER" ||
+                   cmdName == "SETTEXTOUTTRIGGER" ||
+                   cmdName == "SETTEXTLINETRIGGER" ||
+                   cmdName == "SETEVENTTRIGGER" ||
+                   cmdName == "SETDELAYTRIGGER";
+        }
+
+        private static string Unquote(string input)
+        {
+            if (input.Length >= 2 && input[0] == '"' && input[input.Length - 1] == '"')
+                return input.Substring(1, input.Length - 2);
+            return input;
+        }
+
+        private static bool IsInternalNumericLabel(string label)
+        {
+            return label.StartsWith(":", StringComparison.Ordinal) &&
+                   label.Length > 1 &&
+                   label.Substring(1).All(char.IsDigit);
+        }
+
+        private static bool IsBareLabelReference(string value)
+        {
+            return value.StartsWith(":", StringComparison.Ordinal) &&
+                   value.Length > 1 &&
+                   !char.IsWhiteSpace(value[1]) &&
+                   value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0;
+        }
+
+        private static string NormalizeLabelReference(string label)
+        {
+            string value = Unquote(label);
+            if (value.StartsWith("::", StringComparison.Ordinal))
+                value = value.Substring(1);
+            if (!value.StartsWith(":", StringComparison.Ordinal))
+                value = ":" + value;
+            return value;
+        }
+
+        private static string FormatCondition(string condition)
+        {
+            if (string.IsNullOrEmpty(condition))
+                return condition;
+
+            if (!condition.StartsWith("(", StringComparison.Ordinal))
+                return $"({condition})";
+
+            if (condition.Contains(" or ", StringComparison.Ordinal) &&
+                !condition.Contains(" and ", StringComparison.Ordinal))
+                return $"({condition})";
+
+            return condition;
+        }
+
         private bool NeedsQuotes(string value)
         {
             if (string.IsNullOrEmpty(value))
                 return true;
 
             // Variable or program-var — no quotes
-            if (value[0] == '$' || value[0] == '%')
+            if ((value[0] == '$' || value[0] == '%') &&
+                value.Length > 1 &&
+                (char.IsLetterOrDigit(value[1]) || value[1] == '$' || value[1] == '_'))
                 return false;
 
             // Char literal: #13, #32, etc. — no quotes only if followed by digits
             if (value[0] == '#' && value.Length > 1 && value.Substring(1).All(char.IsDigit))
-                return false;
-
-            // Label reference — no quotes only if there's a name after the colon
-            if (value[0] == ':' && value.Length > 1)
                 return false;
 
             // Starts with a space — must quote
@@ -737,14 +898,14 @@ namespace TWXD
 
             // System constant name passed as a string literal (e.g. TRUE, FALSE, CONNECTED) — no quotes.
             // These appear in conditions like IF $X = TRUE where no quotes are needed.
-            if (_scriptRef.FindSysConst(value) >= 0)
+            if (BareScriptConsts.Contains(value))
                 return false;
 
             // Array-indexed sysconst base name (e.g. "SECTOR.WARPS[x]") — no quotes if base is known.
             if (value.Contains('[') && value.Contains(']'))
             {
                 string baseName = value.Substring(0, value.IndexOf('['));
-                if (_scriptRef.FindSysConst(baseName) >= 0)
+                if (BareScriptConsts.Contains(baseName))
                     return false;
             }
 
