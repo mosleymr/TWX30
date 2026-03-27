@@ -550,6 +550,7 @@ namespace TWXProxy.Core
         public void CompileFromFile(string filename, string descFile)
         {
             _scriptFile = filename;
+            _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
             _ifLabelCount = 0;
             _waitOnCount = 0;
             _lineCount = 0;
@@ -574,17 +575,19 @@ namespace TWXProxy.Core
             string includeName = Path.GetFileName(scriptName).ToUpperInvariant();
             byte scriptID = (byte)_includeScriptList.Count;
             _includeScriptList.Add(includeName);
+            int localLineCount = 0;
 
             foreach (var line in scriptText)
             {
                 _lineCount++;
+                localLineCount++;
                 try
                 {
-                    CompileParamLine(line, _lineCount, scriptID);
+                    CompileParamLine(line, localLineCount, scriptID);
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception($"Error on line {_lineCount}: {ex.Message}", ex);
+                    throw new Exception($"Error on line {localLineCount}: {ex.Message}", ex);
                 }
             }
 
@@ -1613,8 +1616,9 @@ namespace TWXProxy.Core
             }
             
             string includeName = Path.GetFileNameWithoutExtension(actualFileName).ToUpperInvariant();
-            if (_includeScriptList.Contains(includeName))
-                return;
+            string previousScriptDirectory = _scriptDirectory;
+            string previousScriptFile = _scriptFile;
+            _scriptDirectory = directory ?? previousScriptDirectory;
 
             try
             {
@@ -1623,6 +1627,11 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 throw new Exception($"Error in include '{includeName}': {ex.Message}", ex);
+            }
+            finally
+            {
+                _scriptDirectory = previousScriptDirectory;
+                _scriptFile = previousScriptFile;
             }
         }
 

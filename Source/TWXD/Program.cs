@@ -90,11 +90,15 @@ namespace TWXD
                 var decompiler = new ScriptDecompiler(scriptRef);
                 
                 decompiler.LoadFromFile(inputFile);
-                decompiler.DecompileToFile(outputFile);
+                var generatedFiles = decompiler.DecompileToFile(outputFile);
 
                 Console.WriteLine("Decompilation successful.");
                 Console.WriteLine();
                 Console.WriteLine($"Output file: {outputFile}");
+                if (generatedFiles.Count > 1)
+                {
+                    Console.WriteLine($"Extracted include files: {generatedFiles.Count - 1}");
+                }
             }
             catch (Exception ex)
             {

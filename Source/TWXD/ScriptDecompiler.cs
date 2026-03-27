@@ -33,6 +33,22 @@ namespace TWXD
 {
     public class ScriptDecompiler
     {
+        private sealed class ScriptSegment
+        {
+            public ScriptSegment(byte scriptID, int start, int end, string includeName)
+            {
+                ScriptID = scriptID;
+                Start = start;
+                End = end;
+                IncludeName = includeName;
+            }
+
+            public byte ScriptID { get; }
+            public int Start { get; }
+            public int End { get; }
+            public string IncludeName { get; }
+        }
+
         private static readonly HashSet<string> BareScriptConsts = new(StringComparer.Ordinal)
         {
             "ANSI_0", "ANSI_1", "ANSI_2", "ANSI_3", "ANSI_4", "ANSI_5", "ANSI_6", "ANSI_7",
@@ -92,7 +108,70 @@ namespace TWXD
             return result.ToString();
         }
 
-        public void DecompileToFile(string filename)
+        public IReadOnlyList<string> DecompileToFile(string filename)
+        {
+            var generatedFiles = new List<string>();
+
+            try
+            {
+                var segments = GetScriptSegments();
+                if (segments.Count == 0)
+                {
+                    DecompileSegment(new ScriptSegment(0, 0, _codeSize, GetScriptName(0)), filename, true, null);
+                    generatedFiles.Add(filename);
+                    return generatedFiles;
+                }
+
+                ScriptSegment? mainSegment = segments.FirstOrDefault(segment => segment.ScriptID == 0);
+                if (_includeScriptList.Count <= 1 || segments.Count <= 1 || mainSegment == null)
+                {
+                    var segment = mainSegment ?? segments[0];
+                    DecompileSegment(segment, filename, true, null);
+                    generatedFiles.Add(filename);
+                    return generatedFiles;
+                }
+
+                string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? Directory.GetCurrentDirectory();
+                int indexWidth = Math.Max(2, Math.Max(1, _includeScriptList.Count - 1).ToString().Length);
+                var includeLines = new List<string>();
+
+                foreach (var segment in segments.Where(segment => segment.ScriptID > 0))
+                {
+                    string relativePath = BuildIncludeRelativePath(segment.ScriptID, indexWidth);
+                    string fullPath = Path.Combine(outputDirectory, relativePath);
+                    string? includeDirectory = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(includeDirectory))
+                        Directory.CreateDirectory(includeDirectory);
+
+                    DecompileSegment(segment, fullPath, false, null);
+                    generatedFiles.Add(fullPath);
+                    includeLines.Add($"include \"{relativePath}\"");
+                }
+
+                DecompileSegment(mainSegment, filename, true, includeLines);
+                generatedFiles.Insert(0, filename);
+                return generatedFiles;
+            }
+            catch
+            {
+                foreach (string generatedFile in generatedFiles)
+                {
+                    try
+                    {
+                        if (File.Exists(generatedFile))
+                            File.Delete(generatedFile);
+                    }
+                    catch
+                    {
+                        // Best-effort cleanup only.
+                    }
+                }
+
+                throw;
+            }
+        }
+
+        private void DecompileSegment(ScriptSegment segment, string filename, bool includeDescription, IReadOnlyList<string>? includeLines)
         {
             using (var output = new StreamWriter(filename, false, Encoding.Latin1))
             {
@@ -110,8 +189,7 @@ namespace TWXD
                         WriteTrackedLine();
                 }
 
-                // Add description as comments
-                if (!string.IsNullOrEmpty(_description))
+                if (includeDescription && !string.IsNullOrEmpty(_description))
                 {
                     foreach (var line in _description.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
                     {
@@ -132,13 +210,15 @@ namespace TWXD
                 bool branchEnd = false;
                 bool waitOn = false;
                 int lastLine = -1;
-                byte lastScript = byte.MaxValue;
 
                 void ProcessLabelsAt(int location)
                 {
                     foreach (var label in _labelList)
                     {
-                        if (label.Location != location)
+                        bool isAtSegmentStart = label.Location == segment.Start;
+                        bool isInsideSegment = label.Location >= segment.Start && label.Location < segment.End;
+                        bool isFinalSegmentEnd = label.Location == segment.End && segment.End == _codeSize;
+                        if (label.Location != location || (!isAtSegmentStart && !isInsideSegment && !isFinalSegmentEnd))
                             continue;
 
                         string labelName = label.Name;
@@ -198,32 +278,27 @@ namespace TWXD
                         }
                     }
                 }
-                
-                _codePos = 0;
-                ProcessLabelsAt(0);
 
-                while (_codePos < _codeSize)
+                _codePos = segment.Start;
+                ProcessLabelsAt(segment.Start);
+
+                while (_codePos < segment.End)
                 {
-                    int commandStart = _codePos;
-                    
-                    // Read script ID (1 byte)
-                    if (_codePos >= _codeSize) break;
+                    if (_codePos >= segment.End)
+                        break;
+
                     byte scriptID = _code[_codePos++];
-                    
-                    // Read line number (2 bytes)
-                    if (_codePos + 2 > _codeSize) break;
+                    if (_codePos + 2 > segment.End) break;
                     ushort lineNum = BitConverter.ToUInt16(_code, _codePos);
                     _codePos += 2;
-                    
-                    // Read command ID (2 bytes)
-                    if (_codePos + 2 > _codeSize) break;
+                    if (_codePos + 2 > segment.End) break;
                     ushort cmdID = BitConverter.ToUInt16(_code, _codePos);
                     _codePos += 2;
 
-                        if (lastLine != -1 && (lineNum != lastLine || scriptID != lastScript))
+                    if (lastLine != -1 && lineNum != lastLine)
+                    {
+                        if (lineElse)
                         {
-                            if (lineElse)
-                            {
                             PadToLine(pendingElseLine);
                             indent--;
                             WriteTrackedLine($"{Indent(indent)}else");
@@ -238,9 +313,7 @@ namespace TWXD
                     }
 
                     lastLine = lineNum;
-                    lastScript = scriptID;
 
-                    // Get command name
                     string cmdName;
                     cmdName = _scriptRef.GetCommandName(cmdID);
                     if (string.IsNullOrEmpty(cmdName))
@@ -250,7 +323,7 @@ namespace TWXD
                     
                     // Read parameters until PARAM_CMD (0) marker
                     int paramCount = 0;
-                    while (_codePos < _codeSize)
+                    while (_codePos < segment.End)
                     {
                         byte paramType = _code[_codePos];
                         if (paramType == ScriptConstants.PARAM_CMD)
@@ -292,7 +365,7 @@ namespace TWXD
                             };
                             
                             // Store for later expansion
-                            if (target.StartsWith("$$", StringComparison.Ordinal))
+                            if (IsSyntheticTempVar(target))
                             {
                                 string expandedLeft = ExpandTempVars(left, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
@@ -318,7 +391,7 @@ namespace TWXD
                                 _ => " ? "
                             };
                             
-                            if (target.StartsWith("$$", StringComparison.Ordinal))
+                            if (IsSyntheticTempVar(target))
                             {
                                 string expandedLeft = ExpandTempVars(target, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
@@ -336,7 +409,7 @@ namespace TWXD
                             string target = parts[1];
                             string right = parts[2];
                             
-                            if (target.StartsWith("$$", StringComparison.Ordinal))
+                            if (IsSyntheticTempVar(target))
                             {
                                 string expandedLeft = ExpandTempVars(target, tempVars);
                                 string expandedRight = ExpandTempVars(right, tempVars);
@@ -364,7 +437,7 @@ namespace TWXD
                         string target = parts[1];
                         string value = parts[2];
                         
-                        if (target.StartsWith("$$", StringComparison.Ordinal))
+                        if (IsSyntheticTempVar(target))
                         {
                             tempVars[target] = ExpandTempVars(value, tempVars);
                             skipOutput = true;
@@ -377,7 +450,7 @@ namespace TWXD
                         string src2 = parts[2];
                         string dest = parts[3];
 
-                        if (dest.StartsWith("$$", StringComparison.Ordinal))
+                        if (IsSyntheticTempVar(dest))
                         {
                             string exp1 = ExpandTempVars(src1, tempVars);
                             string exp2 = ExpandTempVars(src2, tempVars);
@@ -546,12 +619,141 @@ namespace TWXD
                     indent--;
                     WriteTrackedLine($"{Indent(indent)}end");
                 }
+
+                if (includeLines != null && includeLines.Count > 0)
+                {
+                    if (outputLine > 0)
+                        WriteTrackedLine();
+
+                    WriteTrackedLine("# includes:");
+                    foreach (string includeLine in includeLines)
+                        WriteTrackedLine(includeLine);
+                }
+            }
+        }
+
+        private List<ScriptSegment> GetScriptSegments()
+        {
+            var segments = new List<ScriptSegment>();
+            if (_codeSize == 0)
+                return segments;
+
+            byte? currentScriptID = null;
+            int currentStart = 0;
+            int pos = 0;
+
+            while (pos < _codeSize)
+            {
+                int commandStart = pos;
+                byte scriptID = _code[pos++];
+
+                if (currentScriptID == null)
+                {
+                    currentScriptID = scriptID;
+                    currentStart = commandStart;
+                }
+                else if (currentScriptID.Value != scriptID)
+                {
+                    segments.Add(new ScriptSegment(currentScriptID.Value, currentStart, commandStart, GetScriptName(currentScriptID.Value)));
+                    currentScriptID = scriptID;
+                    currentStart = commandStart;
+                }
+
+                pos += 4;
+                while (pos < _codeSize)
+                {
+                    byte paramType = _code[pos++];
+                    if (paramType == ScriptConstants.PARAM_CMD)
+                        break;
+
+                    SkipParameterPayload(paramType, ref pos);
+                }
+            }
+
+            if (currentScriptID != null)
+                segments.Add(new ScriptSegment(currentScriptID.Value, currentStart, _codeSize, GetScriptName(currentScriptID.Value)));
+
+            return segments;
+        }
+
+        private string GetScriptName(byte scriptID)
+        {
+            if (scriptID < _includeScriptList.Count)
+                return _includeScriptList[scriptID];
+
+            return $"SCRIPT_{scriptID}";
+        }
+
+        private string BuildIncludeRelativePath(byte scriptID, int indexWidth)
+        {
+            string includeName = GetScriptName(scriptID);
+            string includeBaseName = Path.GetFileNameWithoutExtension(includeName);
+            string safeBaseName = SanitizePathSegment(includeBaseName);
+            string folderName = $"{scriptID.ToString().PadLeft(indexWidth, '0')}_{safeBaseName}";
+            return Path.Combine("include", folderName, safeBaseName + ".ts");
+        }
+
+        private static string SanitizePathSegment(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "INCLUDE";
+
+            var builder = new StringBuilder(value.Length);
+            foreach (char c in value)
+            {
+                builder.Append(Path.GetInvalidFileNameChars().Contains(c) ? '_' : c);
+            }
+
+            return builder.ToString();
+        }
+
+        private void SkipParameterPayload(byte paramType, ref int pos)
+        {
+            switch (paramType)
+            {
+                case ScriptConstants.PARAM_VAR:
+                case ScriptConstants.PARAM_PROGVAR:
+                    pos += 4;
+                    SkipArrayIndexes(ref pos);
+                    break;
+
+                case ScriptConstants.PARAM_CONST:
+                    pos += 4;
+                    break;
+
+                case ScriptConstants.PARAM_SYSCONST:
+                    pos += 2;
+                    SkipArrayIndexes(ref pos);
+                    break;
+
+                case ScriptConstants.PARAM_CHAR:
+                    pos += 1;
+                    break;
+
+                default:
+                    throw new InvalidDataException($"Unknown parameter type {paramType} while scanning code");
+            }
+        }
+
+        private void SkipArrayIndexes(ref int pos)
+        {
+            if (pos >= _codeSize)
+                return;
+
+            byte indexCount = _code[pos++];
+            for (int i = 0; i < indexCount; i++)
+            {
+                if (pos >= _codeSize)
+                    return;
+
+                byte nestedType = _code[pos++];
+                SkipParameterPayload(nestedType, ref pos);
             }
         }
         
         private string ExpandTempVars(string text, Dictionary<string, string> tempVars)
         {
-            if (string.IsNullOrEmpty(text) || !text.Contains("$$", StringComparison.Ordinal))
+            if (string.IsNullOrEmpty(text) || !text.Contains('$'))
                 return text;
 
             string expanded = text;
@@ -563,20 +765,19 @@ namespace TWXD
 
                 for (int i = 0; i < expanded.Length; i++)
                 {
-                    if (expanded[i] == '$' && i + 2 < expanded.Length && expanded[i + 1] == '$' &&
-                        char.IsDigit(expanded[i + 2]))
+                    if (expanded[i] == '$')
                     {
-                        int j = i + 2;
-                        while (j < expanded.Length && char.IsDigit(expanded[j]))
-                            j++;
-
-                        string key = expanded.Substring(i, j - i);
-                        if (tempVars.TryGetValue(key, out string? replacement))
+                        int tokenLength = ReadVariableTokenLength(expanded, i);
+                        if (tokenLength > 0)
                         {
-                            sb.Append(replacement);
-                            i = j - 1;
-                            changed = true;
-                            continue;
+                            string key = expanded.Substring(i, tokenLength);
+                            if (tempVars.TryGetValue(key, out string? replacement))
+                            {
+                                sb.Append(replacement);
+                                i += tokenLength - 1;
+                                changed = true;
+                                continue;
+                            }
                         }
                     }
 
@@ -591,6 +792,51 @@ namespace TWXD
             }
 
             return expanded;
+        }
+
+        private static bool IsSyntheticTempVar(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value[0] != '$')
+                return false;
+
+            if (value.Length > 2 && value[1] == '$' && value.Substring(2).All(char.IsDigit))
+                return true;
+
+            string namePart = value.Substring(1);
+            if (namePart.All(char.IsDigit))
+                return true;
+
+            int tildeIndex = value.LastIndexOf('~');
+            if (tildeIndex >= 0 && tildeIndex + 2 < value.Length && value[tildeIndex + 1] == '$')
+            {
+                return value.Substring(tildeIndex + 2).All(char.IsDigit);
+            }
+
+            return false;
+        }
+
+        private static int ReadVariableTokenLength(string text, int start)
+        {
+            if (start < 0 || start >= text.Length || text[start] != '$')
+                return 0;
+
+            int i = start + 1;
+            while (i < text.Length)
+            {
+                char c = text[i];
+                if (char.IsLetterOrDigit(c) || c == '_' || c == '$' || c == '~' || c == '.')
+                {
+                    i++;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (i == start + 1)
+                return 0;
+
+            return IsSyntheticTempVar(text.Substring(start, i - start)) ? i - start : 0;
         }
         
         private string Indent(int level)
