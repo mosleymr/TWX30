@@ -448,6 +448,51 @@ namespace TWXProxy.Core
             return _labelDict.TryGetValue(name, out int pos) ? pos : -1;
         }
 
+        public string GetScriptNamespace(int scriptID)
+        {
+            if (scriptID > 0 && scriptID < _includeScriptList.Count)
+                return _includeScriptList[scriptID];
+
+            return string.Empty;
+        }
+
+        public string QualifyLabelReference(string name, int scriptID)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            bool hasColon = name.StartsWith(':');
+            string labelName = hasColon ? name.Substring(1) : name;
+            if (string.IsNullOrEmpty(labelName) || labelName.Contains('~'))
+                return name;
+
+            string scriptNamespace = GetScriptNamespace(scriptID);
+            if (string.IsNullOrEmpty(scriptNamespace))
+                return name;
+
+            string qualified = scriptNamespace + "~" + labelName;
+            return hasColon ? ":" + qualified : qualified;
+        }
+
+        public string StripLocalLabelReference(string name, int scriptID)
+        {
+            if (string.IsNullOrEmpty(name))
+                return name;
+
+            bool hasColon = name.StartsWith(':');
+            string labelName = hasColon ? name.Substring(1) : name;
+            string scriptNamespace = GetScriptNamespace(scriptID);
+            if (string.IsNullOrEmpty(scriptNamespace))
+                return name;
+
+            string prefix = scriptNamespace + "~";
+            if (!labelName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return name;
+
+            string stripped = labelName.Substring(prefix.Length);
+            return hasColon ? ":" + stripped : stripped;
+        }
+
         public void ExtendName(ref string name, int scriptID)
         {
             // Don't extend system variables (starting with $$)
@@ -457,7 +502,12 @@ namespace TWXProxy.Core
             if (!name.Contains('~'))
             {
                 if (scriptID > 0 && scriptID < _includeScriptList.Count)
-                    name = _includeScriptList[scriptID] + "~" + name;
+                {
+                    if (name.Length > 1 && (name[0] == '$' || name[0] == '%') && char.IsDigit(name[1]))
+                        name = name[0] + _includeScriptList[scriptID] + "~" + name;
+                    else
+                        name = _includeScriptList[scriptID] + "~" + name;
+                }
             }
             else
             {
@@ -860,7 +910,7 @@ namespace TWXProxy.Core
         private string CompileTree(ExprNode node, int lineNumber, byte scriptID)
         {
             _sysVarCount++;
-            string result = "$$" + _sysVarCount;
+            string result = scriptID > 0 ? "$" + _sysVarCount : "$$" + _sysVarCount;
 
             if (node.Op == ScriptConstants.OP_NONE)
                 return node.LeafValue!;
@@ -1236,17 +1286,6 @@ namespace TWXProxy.Core
                     value = value.Substring(1, value.Length - 2);
                     value = value.Replace("*", "\r"); // Replace * with CR
                 }
-                // Check if this is a label reference (starts with :) in an include file
-                else if (value.StartsWith(':'))
-                {
-                    // Strip the colon, apply include prefix if needed, then restore colon
-                    string labelName = value.Substring(1);
-                    if (!labelName.Contains('~') && scriptID > 0 && scriptID < _includeScriptList.Count)
-                    {
-                        labelName = _includeScriptList[scriptID] + "~" + labelName;
-                    }
-                    value = ":" + labelName;
-                }
                 else
                 {
                     // Bare identifier (trigger name, numeric literal, etc.) — match Pascal's
@@ -1281,7 +1320,9 @@ namespace TWXProxy.Core
                 // Extend name for included scripts (skip system variables starting with $$)
                 if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("$$"))
                 {
-                    varName = "$" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
+                    varName = varName.Length > 1 && char.IsDigit(varName[1])
+                        ? "$" + _includeScriptList[scriptID] + "~" + varName
+                        : "$" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
                 }
 
                 // Find or create variable
@@ -1309,7 +1350,9 @@ namespace TWXProxy.Core
                 // Extend name for included scripts (skip system variables starting with %%)
                 if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("%%"))
                 {
-                    varName = "%" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
+                    varName = varName.Length > 1 && char.IsDigit(varName[1])
+                        ? "%" + _includeScriptList[scriptID] + "~" + varName
+                        : "%" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
                 }
 
                 // Find or create variable
@@ -1393,30 +1436,11 @@ namespace TWXProxy.Core
         ///   $sector.port.exists      ->  $sector["port"]["exists"]
         /// Only processes $var and %progvar tokens.
         /// </summary>
-        private static string ConvertDotNotation(string param)
+        private string ConvertDotNotation(string param)
         {
-            if (string.IsNullOrEmpty(param))
-                return param;
-
-            // Only convert $ and % variable references
-            if (param[0] != '$' && param[0] != '%')
-                return param;
-
-            // Find position of first '[' – only convert the prefix before any bracket index
-            int firstBracket = param.IndexOf('[');
-            string beforeBracket = firstBracket >= 0 ? param.Substring(0, firstBracket) : param;
-            string afterBracket  = firstBracket >= 0 ? param.Substring(firstBracket) : "";
-
-            if (!beforeBracket.Contains('.'))
-                return param; // no dots, nothing to do
-
-            // Split prefix on dots: $sector.warp  ->  [$sector, warp]
-            string[] parts = beforeBracket.Split('.');
-            string result = parts[0]; // base $var / %var name
-            for (int di = 1; di < parts.Length; di++)
-                result += $"[\"{parts[di]}\"]";
-
-            return result + afterBracket;
+            // Pascal CTS artifacts keep dotted $/% variable names flat in the parameter table.
+            // Rewriting them into bracketed pseudo-fields breaks byte-for-byte parity.
+            return param;
         }
 
         private List<string> ExtractArrayIndexes(string param)
@@ -1504,9 +1528,13 @@ namespace TWXProxy.Core
                     if (scriptID > 0 && scriptID < _includeScriptList.Count && !indexVarName.Contains('~'))
                     {
                         if (indexVarName.StartsWith("$") && !indexVarName.StartsWith("$$"))
-                            indexVarName = "$" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
+                            indexVarName = indexVarName.Length > 1 && char.IsDigit(indexVarName[1])
+                                ? "$" + _includeScriptList[scriptID] + "~" + indexVarName
+                                : "$" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
                         else if (indexVarName.StartsWith("%") && !indexVarName.StartsWith("%%"))
-                            indexVarName = "%" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
+                            indexVarName = indexVarName.Length > 1 && char.IsDigit(indexVarName[1])
+                                ? "%" + _includeScriptList[scriptID] + "~" + indexVarName
+                                : "%" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
                     }
 
                     int indexId = FindOrCreateVariable(indexVarName);

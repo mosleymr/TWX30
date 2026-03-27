@@ -88,6 +88,7 @@ namespace TWXProxy.Core
         /// </summary>
         public bool Verbose { get; set; } = true;
 
+
         // Log: important events (connect/disconnect/errors) → always written to DebugLog.
         // LogVerbose: high-frequency traffic (byte counts) → Console only when Verbose=true.
         private void Log(string message) { GlobalModules.DebugLog(message + "\n"); if (Verbose) Console.WriteLine(message); }

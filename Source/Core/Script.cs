@@ -1381,8 +1381,11 @@ namespace TWXProxy.Core
 
         private Trigger CreateTrigger(string name, string labelName, string value)
         {
-            // Cmp.ExtendName(ref name, _execScriptID);
-            // Cmp.ExtendLabelName(ref labelName, _execScriptID);
+            if (_cmp != null)
+            {
+                _cmp.ExtendName(ref name, _execScriptID);
+                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+            }
 
             if (TriggerExists(name))
                 throw new Exception($"Trigger already exists: '{name}'");
@@ -1446,8 +1449,11 @@ namespace TWXProxy.Core
 
         public void SetEventTrigger(string name, string labelName, string value, string param)
         {
-            // Cmp.ExtendName(ref name, _execScriptID);
-            // Cmp.ExtendLabelName(ref labelName, _execScriptID);
+            if (_cmp != null)
+            {
+                _cmp.ExtendName(ref name, _execScriptID);
+                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+            }
 
             if (TriggerExists(name))
                 throw new Exception($"Trigger already exists: '{name}'");
@@ -1473,8 +1479,11 @@ namespace TWXProxy.Core
 
         public void SetDelayTrigger(string name, string labelName, int value)
         {
-            // Cmp.ExtendName(ref name, _execScriptID);
-            // Cmp.ExtendLabelName(ref labelName, _execScriptID);
+            if (_cmp != null)
+            {
+                _cmp.ExtendName(ref name, _execScriptID);
+                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+            }
 
             if (TriggerExists(name))
                 throw new Exception($"Trigger already exists: '{name}'");
@@ -1990,6 +1999,7 @@ namespace TWXProxy.Core
                             return true; // End of script
                         
                         byte scriptID = code[_codePos++];
+                        _execScriptID = scriptID;
                         ushort lineNumber = BitConverter.ToUInt16(code, _codePos);
                         _codePos += 2;
                         cmdID = BitConverter.ToUInt16(code, _codePos);
@@ -2380,6 +2390,16 @@ namespace TWXProxy.Core
 
             // Find label in label list - O(1) dict lookup
             int labelPos = _cmp.FindLabel(label);
+            if (labelPos < 0)
+            {
+                string qualified = _cmp.QualifyLabelReference(label, _execScriptID);
+                if (!string.Equals(qualified, label, StringComparison.Ordinal))
+                {
+                    labelPos = _cmp.FindLabel(qualified);
+                    if (labelPos >= 0)
+                        label = qualified;
+                }
+            }
 
             if (labelPos < 0)
             {

@@ -36,6 +36,7 @@ public class MainWindow : Window
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
+    private readonly SessionLogger         _sessionLog = new();
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented             = true,
@@ -130,6 +131,9 @@ public class MainWindow : Window
         _telnet.TextLineReceived += line =>
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(line);
 
+        // Session logging: capture all raw server output and client sends.
+        _telnet.AppDataDecoded   += text  => _sessionLog.LogFromServer(text);
+
         // Update current sector from the command prompt — fires on every "Command [TL=...]:[N]"
         Core.GlobalModules.GlobalAutoRecorder.CurrentSectorChanged += sn =>
             Dispatcher.UIThread.Post(() =>
@@ -169,7 +173,7 @@ public class MainWindow : Window
         _refreshTimer.Start();
 
         Activated += (_, _) => _termCtrl.Focus();
-        Closed    += (_, _) => { _refreshTimer.Stop(); _telnet.Disconnect(); _proxyCts?.Cancel(); if (_gameInstance != null) _ = _gameInstance.StopAsync(); };
+        Closed    += (_, _) => { _refreshTimer.Stop(); _telnet.Disconnect(); _proxyCts?.Cancel(); if (_gameInstance != null) _ = _gameInstance.StopAsync(); _sessionLog.Dispose(); };
     }
 
     // ── Layout ─────────────────────────────────────────────────────────────
@@ -750,6 +754,7 @@ public class MainWindow : Window
     private void OnTelnetConnected()
     {
         _state.Connected = true;
+        _sessionLog.Open(DeriveGameName());
         // Open (or create) the sector database for this game connection
         OpenSessionDatabase();
         Dispatcher.UIThread.Post(() =>
@@ -765,6 +770,7 @@ public class MainWindow : Window
     private void OnTelnetDisconnected()
     {
         _state.Connected = false;
+        _sessionLog.Close();
         // Flush and close the database
         try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
         _sessionDb = null;
@@ -789,6 +795,17 @@ public class MainWindow : Window
     }
 
     // ── Connection menu state helpers ──────────────────────────────────────
+
+    /// <summary>Derives a filesystem-safe game name for log/DB file naming.</summary>
+    private string DeriveGameName()
+    {
+        string name = !string.IsNullOrEmpty(_currentProfilePath)
+            ? Path.GetFileNameWithoutExtension(_currentProfilePath)
+            : $"{_state.Host}_{_state.Port}";
+        name = string.Concat(name.Split(Path.GetInvalidFileNameChars()));
+        return string.IsNullOrWhiteSpace(name) ? "game" : name;
+    }
+
     /// <summary>Call after a profile is applied (game selected) to enable Connect.</summary>
     private void OnGameSelected()
     {
@@ -995,6 +1012,9 @@ public class MainWindow : Window
         gameName = string.Concat(gameName.Split(System.IO.Path.GetInvalidFileNameChars()));
         if (string.IsNullOrWhiteSpace(gameName)) gameName = "game";
 
+        // Open session log for this connection.
+        _sessionLog.Open(gameName);
+
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
@@ -1082,6 +1102,7 @@ public class MainWindow : Window
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
+                    _sessionLog.LogFromServer(System.Text.Encoding.Latin1.GetString(chunk));
                     Dispatcher.UIThread.Post(() =>
                     {
                         _parser.Feed(chunk, chunk.Length);
@@ -1268,6 +1289,7 @@ public class MainWindow : Window
         _sessionDb = null;
         Core.ScriptRef.SetActiveDatabase(null);
 
+        _sessionLog.Close();
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
         _termCtrl.SendInput = bytes =>
         {

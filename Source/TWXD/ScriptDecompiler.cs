@@ -69,6 +69,7 @@ namespace TWXD
         };
 
         private ScriptRef _scriptRef;
+        private ScriptCmp? _scriptCmp;
         private byte[] _code = Array.Empty<byte>();
         private List<CmdParam> _paramList = new List<CmdParam>();
         private List<ScriptLabel> _labelList = new List<ScriptLabel>();
@@ -89,6 +90,7 @@ namespace TWXD
             // TWXP and twxd — no duplicated CTS-reading logic.
             var cmp = new ScriptCmp(_scriptRef);
             cmp.LoadFromFile(filename);
+            _scriptCmp        = cmp;
 
             _code             = cmp.Code;
             _codeSize         = cmp.CodeSize;
@@ -118,6 +120,7 @@ namespace TWXD
                 if (segments.Count == 0)
                 {
                     DecompileSegment(new ScriptSegment(0, 0, _codeSize, GetScriptName(0)), filename, true, null);
+                    NormalizeElseWhileChains(filename);
                     generatedFiles.Add(filename);
                     return generatedFiles;
                 }
@@ -127,6 +130,7 @@ namespace TWXD
                 {
                     var segment = mainSegment ?? segments[0];
                     DecompileSegment(segment, filename, true, null);
+                    NormalizeElseWhileChains(filename);
                     generatedFiles.Add(filename);
                     return generatedFiles;
                 }
@@ -144,11 +148,13 @@ namespace TWXD
                         Directory.CreateDirectory(includeDirectory);
 
                     DecompileSegment(segment, fullPath, false, null);
+                    NormalizeElseWhileChains(fullPath);
                     generatedFiles.Add(fullPath);
                     includeLines.Add($"include \"{relativePath}\"");
                 }
 
                 DecompileSegment(mainSegment, filename, true, includeLines);
+                NormalizeElseWhileChains(filename);
                 generatedFiles.Insert(0, filename);
                 return generatedFiles;
             }
@@ -221,12 +227,16 @@ namespace TWXD
                         if (label.Location != location || (!isAtSegmentStart && !isInsideSegment && !isFinalSegmentEnd))
                             continue;
 
-                        string labelName = label.Name;
-                        bool isNumericLabel = labelName.StartsWith(":") && labelName.Length > 1 &&
-                                              labelName.Substring(1).All(char.IsDigit);
+                        if (!LabelBelongsToSegment(label.Name, segment.ScriptID))
+                            continue;
 
-                        if ((waitOn && labelName.Contains("WAITON", StringComparison.OrdinalIgnoreCase)) ||
-                            waitOnLabels.Contains(labelName))
+                        string labelName = label.Name;
+                        string labelReference = NormalizeStoredLabelReference(labelName, segment.ScriptID);
+                        string? internalLabelKey = GetStoredInternalNumericLabelKey(labelName, segment.ScriptID);
+                        bool isNumericLabel = internalLabelKey != null;
+
+                        if ((waitOn && labelReference.Contains("WAITON", StringComparison.OrdinalIgnoreCase)) ||
+                            waitOnLabels.Contains(labelReference))
                         {
                             continue;
                         }
@@ -245,14 +255,14 @@ namespace TWXD
                             }
                             WriteTrackedLine($"{Indent(indent)}:{labelName}");
                         }
-                        else if (lineGoto && !whileLabels.Contains(labelName))
+                        else if (lineGoto && !whileLabels.Contains(internalLabelKey!))
                         {
                             lineGoto = false;
                             lineElse = true;
                         }
-                        else if (branchLabels.Contains(labelName))
+                        else if (branchLabels.Contains(internalLabelKey!))
                         {
-                            branchLabels.Remove(labelName);
+                            branchLabels.Remove(internalLabelKey!);
                             branchEnd = true;
 
                             if (lineElse)
@@ -272,7 +282,7 @@ namespace TWXD
                         }
                         else
                         {
-                            whileLabels.Add(labelName);
+                            whileLabels.Add(internalLabelKey!);
                             branchEnd = false;
                             whileLoop = true;
                         }
@@ -462,7 +472,7 @@ namespace TWXD
                     else if (cmdName == "BRANCH" && paramCount >= 2)
                     {
                         string condition = ExpandTempVars(parts[1], tempVars);
-                        string label = NormalizeLabelReference(parts[2]);
+                        string label = NormalizeLabelReference(parts[2], scriptID);
 
                         tempVars.Clear();
                         branchLabels.Add(label);
@@ -495,12 +505,13 @@ namespace TWXD
                     // GOTO / GOSUB
                     else if ((cmdName == "GOTO" || cmdName == "GOSUB") && paramCount >= 1)
                     {
-                        string labelExpr = ExpandTempVars(parts[1], tempVars);
-                        labelExpr = Unquote(labelExpr);
+                        string rawLabelExpr = ExpandTempVars(parts[1], tempVars);
+                        rawLabelExpr = Unquote(rawLabelExpr);
+                        bool isInternalLabel = IsInternalNumericLabelReference(rawLabelExpr);
+
+                        string labelExpr = rawLabelExpr;
                         if (labelExpr.StartsWith("::", StringComparison.Ordinal))
                             labelExpr = labelExpr.Substring(1);
-
-                        bool isInternalLabel = IsInternalNumericLabel(labelExpr);
 
                         if (cmdName == "GOTO" && isInternalLabel)
                         {
@@ -516,13 +527,19 @@ namespace TWXD
                         }
                         else
                         {
-                            if (!labelExpr.Contains('&', StringComparison.Ordinal) &&
-                                !labelExpr.StartsWith("$", StringComparison.Ordinal) &&
-                                !labelExpr.StartsWith("%", StringComparison.Ordinal) &&
+                            bool isDynamicTarget =
+                                labelExpr.Contains('&', StringComparison.Ordinal) ||
+                                labelExpr.StartsWith("$", StringComparison.Ordinal) ||
+                                labelExpr.StartsWith("%", StringComparison.Ordinal);
+
+                            if (!isDynamicTarget &&
                                 !labelExpr.StartsWith(":", StringComparison.Ordinal))
                             {
                                 labelExpr = ":" + labelExpr;
                             }
+
+                            if (!isDynamicTarget)
+                                labelExpr = NormalizeLabelReference(labelExpr, scriptID);
 
                             PadToLine(lineNum);
                             WriteTrackedLine($"{Indent(indent)}{cmdName.ToLowerInvariant()} {labelExpr}");
@@ -532,7 +549,7 @@ namespace TWXD
                     else if (IsTriggerCommand(cmdName) && paramCount >= 2)
                     {
                         parts[1] = Unquote(parts[1]);
-                        parts[2] = NormalizeLabelReference(parts[2]);
+                        parts[2] = NormalizeLabelReference(parts[2], scriptID);
 
                         if (parts[1].Contains("WAITON", StringComparison.OrdinalIgnoreCase) &&
                             parts[2].Contains("WAITON", StringComparison.OrdinalIgnoreCase) &&
@@ -580,7 +597,7 @@ namespace TWXD
                             else if (IsTriggerCommand(cmdName) && parts.Count >= 3)
                             {
                                 parts[1] = Unquote(parts[1]);
-                                parts[2] = NormalizeLabelReference(parts[2]);
+                                parts[2] = NormalizeLabelReference(parts[2], scriptID);
                             }
 
                             if (cmdName == "GETCONSOLEINPUT" && parts.Count >= 3 && parts[2] == "\"SINGLEKEY\"")
@@ -674,6 +691,171 @@ namespace TWXD
                 segments.Add(new ScriptSegment(currentScriptID.Value, currentStart, _codeSize, GetScriptName(currentScriptID.Value)));
 
             return segments;
+        }
+
+        private static void NormalizeElseWhileChains(string filename)
+        {
+            var lines = new List<string>(File.ReadAllLines(filename, Encoding.Latin1));
+            bool changed = false;
+            var blockStack = new Stack<(string kind, int lineIndex, bool hasElse)>();
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string trimmed = lines[i].Trim();
+                if (string.IsNullOrEmpty(trimmed))
+                    continue;
+
+                if (trimmed.StartsWith("if ", StringComparison.OrdinalIgnoreCase))
+                {
+                    blockStack.Push(("if", i, false));
+                    continue;
+                }
+
+                if (trimmed.StartsWith("while ", StringComparison.OrdinalIgnoreCase))
+                {
+                    blockStack.Push(("while", i, false));
+                    continue;
+                }
+
+                if (string.Equals(trimmed, "else", StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.StartsWith("elseif ", StringComparison.OrdinalIgnoreCase))
+                {
+                    while (blockStack.Count > 0)
+                    {
+                        var block = blockStack.Pop();
+                        if (string.Equals(block.kind, "while", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string whileTrimmed = lines[block.lineIndex].TrimStart();
+                            int indentLength = lines[block.lineIndex].Length - whileTrimmed.Length;
+                            lines[block.lineIndex] = new string(' ', indentLength) + "if" + whileTrimmed.Substring(5);
+                            block = ("if", block.lineIndex, block.hasElse);
+                            changed = true;
+                        }
+
+                        if (string.Equals(block.kind, "if", StringComparison.OrdinalIgnoreCase) && block.hasElse)
+                        {
+                            int indentLength = lines[i].Length - lines[i].TrimStart().Length;
+                            lines.Insert(i, new string(' ', indentLength) + "end");
+                            changed = true;
+                            i++;
+                            continue;
+                        }
+
+                        if (string.Equals(block.kind, "if", StringComparison.OrdinalIgnoreCase))
+                        {
+                            blockStack.Push((block.kind, block.lineIndex, true));
+                        }
+
+                        break;
+                    }
+                    continue;
+                }
+
+                if (string.Equals(trimmed, "end", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (blockStack.Count > 0)
+                    {
+                        blockStack.Pop();
+                    }
+                    else
+                    {
+                        lines.RemoveAt(i);
+                        changed = true;
+                        i--;
+                    }
+                }
+            }
+
+            for (int i = 1; i < lines.Count; i++)
+            {
+                string currentTrimmed = lines[i].TrimStart();
+                bool isElseChain = currentTrimmed.StartsWith("elseif ", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(currentTrimmed.Trim(), "else", StringComparison.OrdinalIgnoreCase);
+                if (!isElseChain)
+                    continue;
+
+                int previous = i - 1;
+                while (previous >= 0 && string.IsNullOrWhiteSpace(lines[previous]))
+                    previous--;
+
+                if (previous < 0 || !string.Equals(lines[previous].Trim(), "end", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int endIndent = lines[previous].Length - lines[previous].TrimStart().Length;
+                int elseifIndent = lines[i].Length - lines[i].TrimStart().Length;
+                if (endIndent != elseifIndent)
+                    continue;
+
+                lines.RemoveAt(previous);
+                changed = true;
+                i--;
+            }
+
+            bool changedThisRound;
+            do
+            {
+                changedThisRound = false;
+                var openBlocks = new Stack<int>();
+
+                for (int i = 0; i < lines.Count; i++)
+                {
+                    string trimmed = lines[i].Trim();
+                    if (string.IsNullOrEmpty(trimmed))
+                        continue;
+
+                    int indent = lines[i].Length - lines[i].TrimStart().Length;
+                    bool isElse = string.Equals(trimmed, "else", StringComparison.OrdinalIgnoreCase) ||
+                                  trimmed.StartsWith("elseif ", StringComparison.OrdinalIgnoreCase);
+                    bool isEnd = string.Equals(trimmed, "end", StringComparison.OrdinalIgnoreCase);
+                    bool isOpener = trimmed.StartsWith("if ", StringComparison.OrdinalIgnoreCase) ||
+                                    trimmed.StartsWith("while ", StringComparison.OrdinalIgnoreCase);
+
+                    if (isElse)
+                    {
+                        while (openBlocks.Count > 0 && openBlocks.Peek() > indent)
+                        {
+                            int blockIndent = openBlocks.Pop();
+                            lines.Insert(i, new string(' ', blockIndent) + "end");
+                            changed = true;
+                            changedThisRound = true;
+                            i++;
+                        }
+                    }
+
+                    if (!isElse && !isEnd)
+                    {
+                        while (openBlocks.Count > 0 && indent <= openBlocks.Peek())
+                        {
+                            int blockIndent = openBlocks.Pop();
+                            lines.Insert(i, new string(' ', blockIndent) + "end");
+                            changed = true;
+                            changedThisRound = true;
+                            i++;
+                        }
+                    }
+
+                    if (isOpener)
+                    {
+                        openBlocks.Push(indent);
+                    }
+                    else if (isEnd && openBlocks.Count > 0)
+                    {
+                        openBlocks.Pop();
+                    }
+                }
+
+                while (openBlocks.Count > 0)
+                {
+                    int blockIndent = openBlocks.Pop();
+                    lines.Add(new string(' ', blockIndent) + "end");
+                    changed = true;
+                    changedThisRound = true;
+                }
+            }
+            while (changedThisRound);
+
+            if (changed)
+                File.WriteAllLines(filename, lines, Encoding.Latin1);
         }
 
         private string GetScriptName(byte scriptID)
@@ -838,7 +1020,7 @@ namespace TWXD
 
             return IsSyntheticTempVar(text.Substring(start, i - start)) ? i - start : 0;
         }
-        
+
         private string Indent(int level)
         {
             return new string(' ', level * 2);
@@ -903,29 +1085,15 @@ namespace TWXD
                         // Read array indexes
                         string indexes = ReadArrayIndexes();
 
-                        if (paramIndex >= 0 && paramIndex < _paramList.Count && _paramList[paramIndex] is VarParam varParam)
-                        {
-                            string name = varParam.Name;
-                            // Check if name already has $ prefix
-                            if (!name.StartsWith("$"))
-                                name = "$" + name;
+	                        if (paramIndex >= 0 && paramIndex < _paramList.Count && _paramList[paramIndex] is VarParam varParam)
+	                        {
+	                            string name = varParam.Name;
+	                            // Check if name already has $ prefix
+	                            if (!name.StartsWith("$"))
+	                                name = "$" + name;
 
-                            // Pascal source uses $ARRAY[$IDX].FIELD notation, but the compiler
-                            // stores the variable as name="ARRAY.FIELD" with index [$IDX].  
-                            // Reconstruct the original notation: move indexes before the first dot.
-                            if (!string.IsNullOrEmpty(indexes))
-                            {
-                                int dotPos = name.IndexOf('.', 1); // skip leading '$'
-                                if (dotPos > 0)
-                                {
-                                    string basePart = name.Substring(0, dotPos); // "$ARRAY"
-                                    string suffix   = name.Substring(dotPos);    // ".FIELD"
-                                    return basePart + indexes + suffix;
-                                }
-                            }
-
-                            return name + indexes;
-                        }
+	                            return name + indexes;
+	                        }
                         return $"$VAR_{paramIndex}{indexes}";
                     }
 
@@ -1078,11 +1246,11 @@ namespace TWXD
             return input;
         }
 
-        private static bool IsInternalNumericLabel(string label)
+        private static bool IsInternalNumericLabelReference(string label)
         {
-            return label.StartsWith(":", StringComparison.Ordinal) &&
-                   label.Length > 1 &&
-                   label.Substring(1).All(char.IsDigit);
+            return label.StartsWith("::", StringComparison.Ordinal) &&
+                   label.Length > 2 &&
+                   label.Substring(2).All(char.IsDigit);
         }
 
         private static bool IsBareLabelReference(string value)
@@ -1093,13 +1261,66 @@ namespace TWXD
                    value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0;
         }
 
-        private static string NormalizeLabelReference(string label)
+        private bool LabelBelongsToSegment(string labelName, byte scriptID)
+        {
+            if (string.IsNullOrEmpty(labelName))
+                return false;
+
+            string stripped = labelName.StartsWith(':') ? labelName.Substring(1) : labelName;
+            string scriptNamespace = _scriptCmp?.GetScriptNamespace(scriptID) ?? string.Empty;
+            if (string.IsNullOrEmpty(scriptNamespace))
+                return !stripped.Contains('~');
+
+            return stripped.StartsWith(scriptNamespace + "~", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string NormalizeStoredLabelReference(string labelName, byte scriptID)
+        {
+            if (string.IsNullOrEmpty(labelName))
+                return labelName;
+
+            string value = labelName.StartsWith(":") ? labelName : ":" + labelName;
+            if (_scriptCmp != null)
+                value = _scriptCmp.StripLocalLabelReference(value, scriptID);
+            return value;
+        }
+
+        private string GetStoredLabelLocalPart(string labelName, byte scriptID)
+        {
+            if (string.IsNullOrEmpty(labelName))
+                return labelName;
+
+            string scriptNamespace = _scriptCmp?.GetScriptNamespace(scriptID) ?? string.Empty;
+            if (!string.IsNullOrEmpty(scriptNamespace) &&
+                labelName.StartsWith(scriptNamespace + "~", StringComparison.OrdinalIgnoreCase))
+            {
+                return labelName.Substring(scriptNamespace.Length + 1);
+            }
+
+            return labelName;
+        }
+
+        private string? GetStoredInternalNumericLabelKey(string labelName, byte scriptID)
+        {
+            string localPart = GetStoredLabelLocalPart(labelName, scriptID);
+            if (string.IsNullOrEmpty(localPart))
+                return null;
+
+            if (!localPart.StartsWith(":", StringComparison.Ordinal) || localPart.Length < 2)
+                return null;
+
+            return localPart.Substring(1).All(char.IsDigit) ? localPart : null;
+        }
+
+        private string NormalizeLabelReference(string label, byte scriptID)
         {
             string value = Unquote(label);
             if (value.StartsWith("::", StringComparison.Ordinal))
                 value = value.Substring(1);
             if (!value.StartsWith(":", StringComparison.Ordinal))
                 value = ":" + value;
+            if (_scriptCmp != null)
+                value = _scriptCmp.StripLocalLabelReference(value, scriptID);
             return value;
         }
 
@@ -1135,6 +1356,10 @@ namespace TWXD
 
             // Starts with a space — must quote
             if (value[0] == ' ')
+                return true;
+
+            // Trailing spaces are significant in compiled scripts and must survive round-trip.
+            if (value[^1] == ' ')
                 return true;
 
             // Positive integer (not a float, not negative) — no quotes, matching reference decompiler.

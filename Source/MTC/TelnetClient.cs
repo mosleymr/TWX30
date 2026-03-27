@@ -63,6 +63,12 @@ public sealed class TelnetClient : IDisposable
     /// </summary>
     public event Action<string>? TextLineReceived;
 
+    /// <summary>
+    /// Fired once per receive chunk with the raw Latin-1 decoded application data
+    /// (IAC-stripped but ANSI codes still present). Use for session logging.
+    /// </summary>
+    public event Action<string>? AppDataDecoded;
+
     /// <summary>Set before connecting if the terminal size differs from 80x24.</summary>
     public void SetWindowSize(int cols, int rows) { _termCols = cols; _termRows = rows; }
 
@@ -132,6 +138,7 @@ public sealed class TelnetClient : IDisposable
                 {
                     _parser.Feed(app, appLen);
                     _buffer.Dirty = true;
+                    AppDataDecoded?.Invoke(Encoding.Latin1.GetString(app, 0, appLen));
                     FeedTextLines(app, appLen);
                 }
             }
