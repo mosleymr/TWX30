@@ -1514,6 +1514,9 @@ namespace TWXProxy.Core
 
         public void KillTrigger(string name)
         {
+            if (_cmp != null)
+                _cmp.ExtendName(ref name, _execScriptID);
+
             // Remove trigger by name from all trigger lists
             foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
             {
