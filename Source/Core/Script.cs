@@ -1736,6 +1736,8 @@ namespace TWXProxy.Core
                     if (paramID >= 0 && paramID < (_cmp?.ParamList.Count ?? 0))
                     {
                         indexValue = _cmp!.ParamList[paramID].Value;
+                        if (indexValue.Length >= 2 && indexValue[0] == '"' && indexValue[^1] == '"')
+                            indexValue = indexValue.Substring(1, indexValue.Length - 2);
                         if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[EvalIndex {i}] CONST paramID={paramID}, value='{indexValue}'\n");
                     }
                 }
@@ -1765,6 +1767,8 @@ namespace TWXProxy.Core
                         // Recursively evaluate if this index is itself an array
                         indexParam = EvaluateArrayIndexes(code, ref codePos, indexParam);
                         indexValue = indexParam.Value;
+                        if (indexValue.Length >= 2 && indexValue[0] == '"' && indexValue[^1] == '"')
+                            indexValue = indexValue.Substring(1, indexValue.Length - 2);
                         if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[EvalIndex {i}] VAR after recursion value='{indexValue}'\n");
                     }
                     else
@@ -1787,6 +1791,8 @@ namespace TWXProxy.Core
                         // Recursively evaluate if this index is itself an array
                         progVarParam = EvaluateArrayIndexes(code, ref codePos, progVarParam) as ProgVarParam ?? progVarParam;
                         indexValue = progVarParam.Value;
+                        if (indexValue.Length >= 2 && indexValue[0] == '"' && indexValue[^1] == '"')
+                            indexValue = indexValue.Substring(1, indexValue.Length - 2);
                     }
                     else
                     {
@@ -2222,6 +2228,12 @@ namespace TWXProxy.Core
                     }
                     
                     var cmd = _owner.ScriptRef.GetCmd(cmdID);
+
+                    if (GlobalModules.VerboseDebugMode && cmd.Name == "GOTO" && _cmdParams.Count > 0)
+                    {
+                        string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
+                        GlobalModules.DebugLog($"[Execute/GOTO] raw='{_cmdParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
+                    }
                     
                     // Validate minimum parameter count before executing
                     if (_cmdParams.Count < cmd.MinParams)
@@ -2358,6 +2370,7 @@ namespace TWXProxy.Core
 
             normalized = normalized.ToUpperInvariant();
             _cmp.ExtendName(ref normalized, _execScriptID);
+
             return normalized;
         }
 
@@ -2371,9 +2384,38 @@ namespace TWXProxy.Core
 
             string normalized = NormalizeLabelLookup(label);
             int labelPos = _cmp.FindLabel(normalized);
+
             if (labelPos < 0)
             {
                 GlobalModules.DebugLog($"[GotoLabel] ERROR: Label '{label}' normalized='{normalized}' execScriptID={_execScriptID} not found in script\n");
+
+                string ns = _cmp.GetScriptNamespace(_execScriptID);
+                if (!string.IsNullOrEmpty(ns))
+                {
+                    string prefix = ns + "~";
+                    var nsLabels = _cmp.LabelList
+                        .Where(l => l.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                        .Select(l => l.Name)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(20)
+                        .ToList();
+
+                    GlobalModules.DebugLog($"[GotoLabel] Namespace '{ns}' sample labels ({nsLabels.Count}): {string.Join(", ", nsLabels)}\n");
+                }
+
+                string suffix = normalized;
+                int tilde = normalized.IndexOf('~');
+                if (tilde >= 0 && tilde + 1 < normalized.Length)
+                    suffix = normalized.Substring(tilde + 1);
+
+                var suffixLabels = _cmp.LabelList
+                    .Where(l => l.Name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    .Select(l => l.Name)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(20)
+                    .ToList();
+                GlobalModules.DebugLog($"[GotoLabel] Suffix '{suffix}' sample labels ({suffixLabels.Count}): {string.Join(", ", suffixLabels)}\n");
+
                 throw new ScriptException($"Label '{label}' not found");
             }
 

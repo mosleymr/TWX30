@@ -1039,6 +1039,10 @@ public class MainWindow : Window
         interpreter.ProgramDir      = programDir;
         Core.GlobalModules.ProgramDir = programDir;  // shared global used by some script commands
 
+        // Embedded mode needs a live menu manager so OPENMENU pauses and displays
+        // configuration menus (same behavior as TWXP ProxyService startup).
+        Core.GlobalModules.TWXMenu = new Core.MenuManager();
+
         // Load previously saved variables (excluding session-startup flags).
         var varsToLoad = new System.Collections.Generic.Dictionary<string, string>(gameConfig.Variables);
         varsToLoad.Remove("$gfile_chk");
@@ -1147,12 +1151,15 @@ public class MainWindow : Window
                     {
                         string remainderAnsi   = remainder.Replace("\n", "");
                         string strippedRemainder = rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r');
-                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                        Core.ScriptRef.SetCurrentLine(strippedRemainder);
                         _shipParser.FeedLine(strippedRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
-                        // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
-                        interpreter.TextEvent(strippedRemainder, false);
+                        if (!gi.IsProxyMenuActive)
+                        {
+                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                            Core.ScriptRef.SetCurrentLine(strippedRemainder);
+                            // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
+                            interpreter.TextEvent(strippedRemainder, false);
+                        }
                     }
                     break;
                 }
@@ -1161,19 +1168,22 @@ public class MainWindow : Window
                 string lineRaw     = buffered[lastProcessedPos..crPos].Replace("\n", "");
                 string lineStripped = rxAnsi.Replace(lineRaw, string.Empty).TrimEnd('\r');
 
-                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                Core.ScriptRef.SetCurrentLine(lineStripped);
-
                 if (!string.IsNullOrEmpty(lineStripped))
                 {
                     _shipParser.FeedLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped);
                 }
 
-                // Fire trigger pipeline (all lines including blank — matches Pascal ProcessLine).
-                interpreter.TextLineEvent(lineStripped, false);
-                interpreter.TextEvent(lineStripped, false);
-                interpreter.ActivateTriggers();
+                if (!gi.IsProxyMenuActive)
+                {
+                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                    Core.ScriptRef.SetCurrentLine(lineStripped);
+
+                    // Fire trigger pipeline (all lines including blank — matches Pascal ProcessLine).
+                    interpreter.TextLineEvent(lineStripped, false);
+                    interpreter.TextEvent(lineStripped, false);
+                    interpreter.ActivateTriggers();
+                }
 
                 searchPos = crPos + 1;
                 lastProcessedPos = searchPos;

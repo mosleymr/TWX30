@@ -371,7 +371,7 @@ namespace TWXProxy.Core
             
             // Use prompt if available, otherwise use name
             string prompt = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
-            server?.ClientMessage($"\r\n{prompt}>\r\n");
+            server?.ClientMessage($"\r\n{prompt}> ");
         }
         
         public bool HandleMenuInput(char keyChar)
@@ -415,6 +415,9 @@ namespace TWXProxy.Core
                 {
                     try
                     {
+                        // Echo the selected key on the current prompt line before handling it.
+                        GlobalModules.TWXServer?.ClientMessage($"{upperKey}\r\n");
+
                         // Get the label reference and strip leading ':' if present
                         string labelName = matchingItem.Reference;
                         if (labelName.StartsWith(':'))

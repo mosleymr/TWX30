@@ -92,9 +92,8 @@ namespace TWXProxy.Core
             // CMD: add var <value>
             double f1 = parameters[0].DecValue;
             double f2 = parameters[1].DecValue;
-            parameters[0].DecValue = f1 + f2;
-            // Use script's DecimalPrecision for SigDigits so SETPRECISION actually affects output.
-            parameters[0].SigDigits = (byte)(script is Script s0 ? s0.DecimalPrecision : 0);
+            int precision = script is Script s0 ? s0.DecimalPrecision : 0;
+            UpdateParam(parameters[0], f1 + f2, precision);
             string varLabel = parameters[0] is VarParam vp ? $"({vp.Name}) " :
                              (parameters[0] is ProgVarParam pvp ? $"(ProgVar:{pvp.Name}) " : "");
             GlobalModules.DebugLog($"[ADD] {varLabel}{f1} + {f2} = {parameters[0].DecValue}\n");
@@ -106,8 +105,8 @@ namespace TWXProxy.Core
             // CMD: subtract var <value>
             double f1 = parameters[0].DecValue;
             double f2 = parameters[1].DecValue;
-            parameters[0].DecValue = f1 - f2;
-            parameters[0].SigDigits = (byte)(script is Script s1 ? s1.DecimalPrecision : 0);
+            int precision = script is Script s1 ? s1.DecimalPrecision : 0;
+            UpdateParam(parameters[0], f1 - f2, precision);
             return CmdAction.None;
         }
 
@@ -116,8 +115,8 @@ namespace TWXProxy.Core
             // CMD: multiply var <value>
             double f1 = parameters[0].DecValue;
             double f2 = parameters[1].DecValue;
-            parameters[0].DecValue = f1 * f2;
-            parameters[0].SigDigits = (byte)(script is Script s2 ? s2.DecimalPrecision : 0);
+            int precision = script is Script s2 ? s2.DecimalPrecision : 0;
+            UpdateParam(parameters[0], f1 * f2, precision);
             return CmdAction.None;
         }
 
@@ -128,20 +127,20 @@ namespace TWXProxy.Core
             if (f2 == 0)
                 throw new ScriptException("Division by zero");
             double f1 = parameters[0].DecValue;
-            parameters[0].DecValue = f1 / f2;
-            parameters[0].SigDigits = (byte)(script is Script s3 ? s3.DecimalPrecision : 0);
+            int precision = script is Script s3 ? s3.DecimalPrecision : 0;
+            UpdateParam(parameters[0], f1 / f2, precision);
             return CmdAction.None;
         }
 
         private static CmdAction CmdModulus(object script, CmdParam[] parameters)
         {
             // CMD: modulus var <value>
-            double f1 = parameters[0].DecValue;
-            double f2 = parameters[1].DecValue;
+            int f2 = (int)Math.Floor(parameters[1].DecValue);
             if (f2 == 0)
                 throw new ScriptException("Division by zero");
-            parameters[0].DecValue = f1 % f2;
-            parameters[0].SigDigits = (byte)(script is Script s4 ? s4.DecimalPrecision : 0);
+            int f1 = (int)Math.Floor(parameters[0].DecValue);
+            int precision = script is Script s4 ? s4.DecimalPrecision : 0;
+            UpdateParam(parameters[0], f1 % f2, precision);
             return CmdAction.None;
         }
 
@@ -149,11 +148,19 @@ namespace TWXProxy.Core
         {
             // CMD: round var [precision]
             int precision = parameters.Length > 1 ? (int)parameters[1].DecValue : 0;
-            double value = parameters[0].DecValue;
-            if (precision == 0)
-                parameters[0].DecValue = Math.Round(value, MidpointRounding.AwayFromZero);
+            double factor = Math.Pow(10, precision);
+            double f = parameters[0].DecValue * factor;
+            // Pascal Int/Frac semantics are truncate-toward-zero, not floor.
+            double intPart = Math.Truncate(f);
+            double fraction = f - intPart;
+            double point5 = 0.5 - 1e-17; // Pascal fuzz factor.
+
+            if (fraction >= point5)
+                f = (intPart + 1.0) / factor;
             else
-                parameters[0].DecValue = Math.Round(value, precision, MidpointRounding.AwayFromZero);
+                f = intPart / factor;
+
+            parameters[0].DecValue = f;
             // Update sigDigits so Value formats correctly (e.g. round $X 0 → "2386" not "2386.000")
             parameters[0].SigDigits = (byte)precision;
             return CmdAction.None;
@@ -205,16 +212,25 @@ namespace TWXProxy.Core
             return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out val);
         }
 
+        private static double GetMaxFloatVariance(object script)
+        {
+            int precision = script is Script s ? s.DecimalPrecision : 0;
+            if (precision <= 0)
+                return 0;
+            return 0.5 / Math.Pow(10, precision);
+        }
+
         private static CmdAction CmdIsEqual(object script, CmdParam[] parameters)
         {
             // CMD: isequal var <value1> <value2>
             string v1 = parameters[1].Value;
             string v2 = parameters[2].Value;
             bool result;
-            if (TryNumericValue(v1, out double d1) && TryNumericValue(v2, out double d2))
-                result = d1 == d2;
+            int precision = script is Script s ? s.DecimalPrecision : 0;
+            if (precision != 0 && TryNumericValue(v1, out double d1) && TryNumericValue(v2, out double d2))
+                result = Math.Abs(d1 - d2) <= GetMaxFloatVariance(script);
             else
-                result = v1 == v2;
+                result = string.Equals(v1, v2, StringComparison.OrdinalIgnoreCase);
             parameters[0].Value = result ? "1" : "0";
             string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}@{vp1.GetHashCode():X6}" : "const";
             string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
@@ -231,9 +247,9 @@ namespace TWXProxy.Core
             string v2 = parameters[2].Value;
             bool result;
             if (TryNumericValue(v1, out double d1) && TryNumericValue(v2, out double d2))
-                result = d1 != d2;
+                result = Math.Abs(d1 - d2) > GetMaxFloatVariance(script);
             else
-                result = v1 != v2;
+                result = !string.Equals(v1, v2, StringComparison.OrdinalIgnoreCase);
             parameters[0].Value = result ? "1" : "0";
             string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}" : "const";
             string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
@@ -246,7 +262,8 @@ namespace TWXProxy.Core
             // CMD: isgreater var <value1> <value2>
             double v1 = parameters[1].DecValue;
             double v2 = parameters[2].DecValue;
-            bool result = v1 > v2;
+            double maxFloatVariance = GetMaxFloatVariance(script);
+            bool result = (v1 - maxFloatVariance) > v2;
             parameters[0].Value = result ? "1" : "0";
             if (GlobalModules.DiagnoseMode)
                 GlobalModules.DebugLog($"[CMP] {v1} > {v2} \u2192 {(result ? "TRUE" : "FALSE")}\n");
@@ -258,7 +275,8 @@ namespace TWXProxy.Core
             // CMD: isgreaterequal var <value1> <value2>
             double v1 = parameters[1].DecValue;
             double v2 = parameters[2].DecValue;
-            bool result = v1 >= v2;
+            double maxFloatVariance = GetMaxFloatVariance(script);
+            bool result = ((v1 - maxFloatVariance) >= v2) || (Math.Abs(v1 - v2) <= maxFloatVariance);
             parameters[0].Value = result ? "1" : "0";
             if (GlobalModules.DiagnoseMode)
                 GlobalModules.DebugLog($"[CMP] {v1} >= {v2} \u2192 {(result ? "TRUE" : "FALSE")}\n");
@@ -270,7 +288,8 @@ namespace TWXProxy.Core
             // CMD: islesser var <value1> <value2>
             double v1 = parameters[1].DecValue;
             double v2 = parameters[2].DecValue;
-            bool result = v1 < v2;
+            double maxFloatVariance = GetMaxFloatVariance(script);
+            bool result = (v1 + maxFloatVariance) < v2;
             parameters[0].Value = result ? "1" : "0";
             if (GlobalModules.DiagnoseMode)
                 GlobalModules.DebugLog($"[CMP] {v1} < {v2} \u2192 {(result ? "TRUE" : "FALSE")}\n");
@@ -282,7 +301,8 @@ namespace TWXProxy.Core
             // CMD: islesserequal var <value1> <value2>
             double v1 = parameters[1].DecValue;
             double v2 = parameters[2].DecValue;
-            bool result = v1 <= v2;
+            double maxFloatVariance = GetMaxFloatVariance(script);
+            bool result = ((v1 + maxFloatVariance) <= v2) || (Math.Abs(v1 - v2) <= maxFloatVariance);
             parameters[0].Value = result ? "1" : "0";
             if (GlobalModules.DiagnoseMode)
                 GlobalModules.DebugLog($"[CMP] {v1} <= {v2} \u2192 {(result ? "TRUE" : "FALSE")}\n");
@@ -332,7 +352,10 @@ namespace TWXProxy.Core
             }
             else if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[SETVAR] {varName}: '{oldValue}' → '{result}'\n");
-            parameters[0].Value = result;
+            if (parameters.Length == 2 && parameters[1].IsNumeric)
+                UpdateParam(parameters[0], parameters[1].DecValue, parameters[1].SigDigits);
+            else
+                parameters[0].Value = result;
 
             // Track login credentials whenever the script sets them so the login
             // state machine in ProxyService can send them at the TWGS prompts.
@@ -738,7 +761,9 @@ namespace TWXProxy.Core
         {
             // CMD: goto <label>
             if (script is Script scriptObj)
+            {
                 scriptObj.GotoLabel(parameters[0].Value);
+            }
             return CmdAction.None;
         }
 
@@ -1742,11 +1767,11 @@ namespace TWXProxy.Core
             // CMD: openmenu <menu> [pause]
             try
             {
-                if (GlobalModules.TWXMenu is MenuManager menuMgr)
+                if (GlobalModules.TWXMenu != null)
                 {
                     string menuName = parameters[0].Value.ToUpperInvariant();
                     GlobalModules.DebugLog($"[OpenMenu] Opening menu '{menuName}'...\n");
-                    menuMgr.OpenMenu(menuName, 0);
+                    GlobalModules.TWXMenu.OpenMenu(menuName, 0);
 
                     if (parameters.Length > 1 && parameters[1].Value == "0")
                         return CmdAction.None;
@@ -1756,6 +1781,8 @@ namespace TWXProxy.Core
 
                     return CmdAction.Pause;
                 }
+
+                GlobalModules.DebugLog("[OpenMenu] TWXMenu is null; OPENMENU ignored\n");
                 
                 return CmdAction.None;
             }

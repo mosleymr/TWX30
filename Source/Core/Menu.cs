@@ -81,6 +81,16 @@ namespace TWXProxy.Core
 
         public MenuState CurrentMenu => _currentMenu;
         public InputMode CurrentInputMode => _inputMode;
+        public bool IsActive => _currentMenu != MenuState.None || _inputMode != InputMode.None;
+
+        public async Task ExitMenuAsync()
+        {
+            _currentMenu = MenuState.None;
+            _inputMode = InputMode.None;
+            _inputBuffer.Clear();
+            _skipNextLineFeed = false;
+            await _gameInstance.SendMessageAsync("\r\n");
+        }
 
         /// <summary>
         /// Process a menu command (single character)
@@ -134,8 +144,7 @@ namespace TWXProxy.Core
                     return true;
 
                 case 'Q':
-                    _currentMenu = MenuState.None;
-                    await _gameInstance.SendMessageAsync("\r\n");
+                    await ExitMenuAsync();
                     return true;
 
                 case '-':

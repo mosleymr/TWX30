@@ -162,9 +162,11 @@ namespace TWXProxy.Core
             {
                 // Dynamic array - search for matching name
                 string key = indexes[offset];
+                if (key.Length >= 2 && key[0] == '"' && key[^1] == '"')
+                    key = key.Substring(1, key.Length - 2);
                 foreach (var v in _vars)
                 {
-                    if (v.Name == key)
+                    if (string.Equals(v.Name, key, StringComparison.OrdinalIgnoreCase))
                         return v.GetIndexVar(indexes, offset + 1);
                 }
 
@@ -348,6 +350,7 @@ namespace TWXProxy.Core
         private List<string> _description;
         private string _scriptFile = string.Empty;
         private string _scriptDirectory = string.Empty;
+        private string _rootScriptDirectory = string.Empty;
         private byte[] _code = Array.Empty<byte>();
         private int _ifLabelCount;
         private int _sysVarCount; // Resets per source line; temp vars reuse names for deduplication
@@ -366,6 +369,7 @@ namespace TWXProxy.Core
             _description = new List<string>();
             _scriptRef = scriptRef ?? new ScriptRef();
             _scriptDirectory = scriptDirectory;
+            _rootScriptDirectory = scriptDirectory;
             _includeScriptList = new List<string>();
             _ifStack = new Stack<ConditionStruct>();
             _lineCount = 0;
@@ -602,6 +606,8 @@ namespace TWXProxy.Core
         {
             _scriptFile = filename;
             _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
+            if (string.IsNullOrEmpty(_rootScriptDirectory))
+                _rootScriptDirectory = _scriptDirectory;
             _ifLabelCount = 0;
             _waitOnCount = 0;
             _lineCount = 0;
@@ -800,7 +806,12 @@ namespace TWXProxy.Core
 
                 string labelName = firstParam.Substring(1);
                 if (!labelName.Contains('~') && scriptID > 0 && scriptID < _includeScriptList.Count)
-                    labelName = _includeScriptList[scriptID] + "~" + labelName;
+                {
+                    // Keep numeric local labels (:76) aligned with QualifyLabelReference, which
+                    // emits include-scoped references as :NAME~:76 for GOTO/GOSUB operands.
+                    bool isNumericLocalLabel = labelName.All(char.IsDigit);
+                    labelName = _includeScriptList[scriptID] + "~" + (isNumericLocalLabel ? ":" : string.Empty) + labelName;
+                }
 
                 BuildLabel(labelName, _codeSize);
                 return;
@@ -1291,6 +1302,8 @@ namespace TWXProxy.Core
                 {
                     // Bare identifier (trigger name, numeric literal, etc.) — match Pascal's
                     // implicit ToUpperCase behaviour for unquoted string constants.
+                    if (value.StartsWith(':'))
+                        value = QualifyLabelReference(value, scriptID);
                     value = value.ToUpperInvariant();
                 }
 
@@ -1439,9 +1452,27 @@ namespace TWXProxy.Core
         /// </summary>
         private string ConvertDotNotation(string param)
         {
-            // Pascal CTS artifacts keep dotted $/% variable names flat in the parameter table.
-            // Rewriting them into bracketed pseudo-fields breaks byte-for-byte parity.
-            return param;
+            if (string.IsNullOrEmpty(param))
+                return param;
+
+            // Only convert $ and % variable references.
+            if (param[0] != '$' && param[0] != '%')
+                return param;
+
+            // Convert only the prefix before any explicit bracketed indexes.
+            int firstBracket = param.IndexOf('[');
+            string beforeBracket = firstBracket >= 0 ? param.Substring(0, firstBracket) : param;
+            string afterBracket = firstBracket >= 0 ? param.Substring(firstBracket) : string.Empty;
+
+            if (!beforeBracket.Contains('.'))
+                return param;
+
+            string[] parts = beforeBracket.Split('.');
+            string result = parts[0];
+            for (int i = 1; i < parts.Length; i++)
+                result += $"[\"{parts[i]}\"]";
+
+            return result + afterBracket;
         }
 
         private List<string> ExtractArrayIndexes(string param)
@@ -1603,20 +1634,42 @@ namespace TWXProxy.Core
                 filename += ".ts";
             }
             
-            // If the path is not absolute, resolve it relative to the script directory
+            // Resolve include path. TWX compatibility prefers scripts root,
+            // with current script directory as a fallback for compatibility.
             string fullPath = filename;
+            var searchedPaths = new List<string>();
             
             if (!Path.IsPathRooted(filename))
             {
-                // Try relative to script directory first
-                if (!string.IsNullOrEmpty(_scriptDirectory))
+                if (!string.IsNullOrEmpty(_rootScriptDirectory))
                 {
-                    fullPath = Path.Combine(_scriptDirectory, filename);
+                    string rootCandidate = Path.Combine(_rootScriptDirectory, filename);
+                    searchedPaths.Add(rootCandidate);
+                    if (File.Exists(rootCandidate))
+                        fullPath = rootCandidate;
                 }
+
+                if (!File.Exists(fullPath) && !string.IsNullOrEmpty(_scriptDirectory))
+                {
+                    string localCandidate = Path.Combine(_scriptDirectory, filename);
+                    if (!searchedPaths.Contains(localCandidate, StringComparer.OrdinalIgnoreCase))
+                        searchedPaths.Add(localCandidate);
+                    if (File.Exists(localCandidate))
+                        fullPath = localCandidate;
+                }
+            }
+            else
+            {
+                searchedPaths.Add(fullPath);
             }
             
             if (!File.Exists(fullPath))
-                throw new FileNotFoundException($"Include file not found: {filename} (searched: {fullPath})");
+            {
+                string searched = searchedPaths.Count > 0
+                    ? string.Join(", ", searchedPaths)
+                    : fullPath;
+                throw new FileNotFoundException($"Include file not found: {filename} (searched: {searched})");
+            }
 
             var scriptText = new List<string>(File.ReadAllLines(fullPath, Encoding.Latin1));
             

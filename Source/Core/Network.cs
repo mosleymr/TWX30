@@ -115,6 +115,7 @@ namespace TWXProxy.Core
         public bool IsRunning => _isRunning;
         public bool IsConnected => _serverClient?.Connected ?? false;
         public char CommandChar => _commandChar;
+        public bool IsProxyMenuActive => _menuHandler.IsActive;
 
         public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
         {
@@ -589,15 +590,10 @@ namespace TWXProxy.Core
                         
                         if (c == _commandChar)
                         {
-                            // Check if we're in menu mode
-                            if (_menuHandler.CurrentMenu != MenuState.None)
+                            // $ while in the proxy menu immediately exits the proxy menu.
+                            if (_menuHandler.IsActive)
                             {
-                                // In menu - this is just data, pass through
-                                if (_serverStream != null && _serverClient?.Connected == true)
-                                {
-                                    await _serverStream.WriteAsync(new byte[] { b }, 0, 1, token);
-                                    await _serverStream.FlushAsync(token);
-                                }
+                                await _menuHandler.ExitMenuAsync();
                             }
                             else if (_inCommandMode)
                             {
