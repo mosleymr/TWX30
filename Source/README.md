@@ -1,15 +1,15 @@
 # TWX Proxy 3.0
 
-Trade Wars 2002 Proxy Server with scripting support - Complete rewrite in .NET 8.0 (C#)
+Trade Wars 2002 Proxy Server with scripting support - Complete rewrite in .NET 10.0 (C#)
 
 **Version:** 3.0.1  
 **Original Author:** Remco Mulder  
-**Maintainer:** David O. McCartney (MicroBlaster)  
+**Primary 3.0 Author:** Matt Mosley (Shadow) 
 **License:** GPL v2+
 
 ## Overview
 
-TWX Proxy 3.0 is a complete modern rewrite of the classic TWXProxy application, converting the original Delphi codebase to C# .NET 8.0. It provides a proxy server for Trade Wars 2002 with powerful scripting capabilities and a modern cross-platform user interface.
+TWX Proxy 3.0 is a complete modern rewrite of the classic TWXProxy application, converting the original Delphi codebase to C# .NET 10.0. It provides a proxy server for Trade Wars 2002 with powerful scripting capabilities and a modern cross-platform user interface.
 
 ## Project Structure
 
@@ -202,8 +202,6 @@ Stored in:
 - Cross-platform MAUI UI framework
 - Game configuration management
 - Multi-game proxy service architecture
-
-### 🚧 In Progress
 - TCP connection implementation
 - Database integration with proxy
 - Script execution engine integration
@@ -213,7 +211,7 @@ Stored in:
 ## Migration from TWXProxy 2.x
 
 This is a complete rewrite, not a drop-in replacement. Key differences:
-- **Platform:** .NET 8.0 (C#) instead of Delphi
+- **Platform:** .NET 10.0 (C#) instead of Delphi
 - **UI:** Cross-platform MAUI instead of Windows-only VCL
 - **Architecture:** Modular design with separate compiler/decompiler tools
 - **Scripts:** Bytecode format maintained for compatibility
@@ -221,7 +219,7 @@ This is a complete rewrite, not a drop-in replacement. Key differences:
 ## Credits
 
 - **Original TWXProxy:** Remco Mulder
-- **C# Conversion:** David O. McCartney (MicroBlaster)
+- **TWX 2.6 and 2.7:** David O. McCartney (MicroBlaster)
 - **License:** GNU General Public License v2 or later
 
 ## License
@@ -230,4 +228,6 @@ TWXProxy is licensed under the GNU General Public License v2+.
 See LICENSE file for full text.
 
 Copyright (C) 2005 Remco Mulder  
-Copyright (C) 2026 David O. McCartney
+Copyright (C) 2025 David O. McCartney
+Copyright (C) 2026 Matt Mosley
+
