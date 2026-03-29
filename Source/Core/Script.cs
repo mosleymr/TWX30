@@ -242,6 +242,7 @@ namespace TWXProxy.Core
             // Normalise separators and resolve case-insensitively so scripts written
             // on Windows (with backslashes and arbitrary casing) work on macOS/Linux.
             filename = ResolveFilePath(filename, _programDir);
+            _scriptDirectory = ResolveScriptRoot(filename, _scriptDirectory);
 
             // MB - Stop script if it is already running
             int i = 0;
@@ -385,6 +386,38 @@ namespace TWXProxy.Core
                     GlobalModules.TWXServer?.ClientMessage($"\r\nScript execution error: {ex.Message}\r\n");
                 }
             }
+        }
+
+        private static string ResolveScriptRoot(string filename, string currentScriptDirectory)
+        {
+            if (!string.IsNullOrWhiteSpace(currentScriptDirectory) &&
+                Directory.Exists(currentScriptDirectory) &&
+                Path.GetFileName(currentScriptDirectory).Equals("scripts", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetFullPath(currentScriptDirectory);
+            }
+
+            string fileDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? Directory.GetCurrentDirectory();
+            string? candidate = fileDirectory;
+
+            while (!string.IsNullOrEmpty(candidate))
+            {
+                if (Directory.Exists(Path.Combine(candidate, "include")) ||
+                    Path.GetFileName(candidate).Equals("scripts", StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+
+                string? parent = Path.GetDirectoryName(candidate);
+                if (string.IsNullOrEmpty(parent) || string.Equals(parent, candidate, StringComparison.Ordinal))
+                    break;
+                candidate = parent;
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentScriptDirectory) && Directory.Exists(currentScriptDirectory))
+                return Path.GetFullPath(currentScriptDirectory);
+
+            return fileDirectory;
         }
 
         public void Stop(int index)
@@ -732,29 +765,10 @@ namespace TWXProxy.Core
         {
             // All text related triggers are deactivated for the rest of the line after they activate.
             // This is to prevent double triggering. Turn them back on.
-            // Also resume execution for scripts that were unpaused by a trigger firing.
+            // Pascal TWX does not resume script execution here; it only re-enables triggers.
             foreach (var script in _scriptList)
             {
                 script.TriggersActive = true;
-
-                // If the script is no longer paused (e.g. a one-shot trigger just satisfied
-                // the outer pause), resume execution so the main bytecode can continue.
-                if (!script.Paused && script.HasCode)
-                {
-                    try
-                    {
-                        int safety = 0;
-                        while (!script.Paused && !script.Execute() && safety++ < 100)
-                        {
-                            // Execute() returned false but script isn't paused → keep running.
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        GlobalModules.DebugLog($"[ActivateTriggers] Execute error: {ex.Message}\n");
-                        Console.WriteLine($"[ActivateTriggers] Execute error: {ex.Message}");
-                    }
-                }
             }
 
             // Clean up scripts that have fully terminated: no more code to run, not paused,
@@ -929,6 +943,15 @@ namespace TWXProxy.Core
 
         public void Dispose()
         {
+            string triggerSummary = string.Join(", ",
+                Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>()
+                    .Select(triggerType => $"{triggerType}={_triggers[triggerType].Count}"));
+            GlobalModules.DebugLog(
+                $"[Script.Dispose] script='{ScriptName}' persistenceId='{PersistenceId}' " +
+                $"paused={_paused} pauseReason={_pausedReason} waitForActive={_waitForActive} " +
+                $"waitText='{_waitText}' waitingInput={_waitingForInput} subDepth={_subStack.Count} " +
+                $"triggers=[{triggerSummary}]\n");
+
             // Free up menu items
             while (_menuItemList.Count > 0)
             {
@@ -962,7 +985,9 @@ namespace TWXProxy.Core
 
             // Clear this script's in-memory var cache so stale savevar values
             // don't carry over if the same script is reloaded in this session.
-            ScriptRef.ClearVarsForScript(ScriptName);
+            ScriptRef.ClearVarsForScript(PersistenceId);
+
+            GlobalModules.DebugLog($"[Script.Dispose] script='{ScriptName}' dispose complete\n");
         }
 
         public void Notify(NotificationType noteType)
@@ -1384,7 +1409,7 @@ namespace TWXProxy.Core
             if (_cmp != null)
             {
                 _cmp.ExtendName(ref name, _execScriptID);
-                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+                _cmp.ExtendLabelName(ref labelName, _execScriptID);
             }
 
             if (TriggerExists(name))
@@ -1452,7 +1477,7 @@ namespace TWXProxy.Core
             if (_cmp != null)
             {
                 _cmp.ExtendName(ref name, _execScriptID);
-                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+                _cmp.ExtendLabelName(ref labelName, _execScriptID);
             }
 
             if (TriggerExists(name))
@@ -1482,7 +1507,7 @@ namespace TWXProxy.Core
             if (_cmp != null)
             {
                 _cmp.ExtendName(ref name, _execScriptID);
-                labelName = _cmp.QualifyLabelReference(labelName, _execScriptID);
+                _cmp.ExtendLabelName(ref labelName, _execScriptID);
             }
 
             if (TriggerExists(name))
@@ -1835,6 +1860,17 @@ namespace TWXProxy.Core
                 if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[GetIndexVar] Getting element with indexes: [{string.Join(", ", indexes)}]\n");
                 
                 var result = varParam.GetIndexVar(indexes.ToArray());
+
+                string traceName = varParam.Name ?? string.Empty;
+                bool traceSectorLookup =
+                    traceName.IndexOf("CURSECTOR", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    traceName.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (traceSectorLookup && indexes.Count > 0)
+                {
+                    GlobalModules.DebugLog(
+                        $"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexes)}] " +
+                        $"resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
+                }
                 
                 if (GlobalModules.VerboseDebugMode && result is VarParam resultVp)
                 {
@@ -2091,7 +2127,7 @@ namespace TWXProxy.Core
                             else
                             {
                                 CmdParam param = _cmp.ParamList[paramID];
-                                
+
                                 // Evaluate array subscripts if this is a variable
                                 if (paramType == ScriptConstants.PARAM_VAR)
                                 {
@@ -2113,7 +2149,7 @@ namespace TWXProxy.Core
                                     {
                                         GlobalModules.DebugLog($"[PreEval] VAR param '{vp.Name}' = '{vp.Value}', paramID={paramID}, objID={param.GetHashCode():X8}, about to eval array indexes\n");
                                     }
-                                    
+
                                     param = EvaluateArrayIndexes(code, ref _codePos, param);
                                     
                                     if (GlobalModules.VerboseDebugMode && param is VarParam vp2)
@@ -2121,8 +2157,18 @@ namespace TWXProxy.Core
                                         GlobalModules.DebugLog($"[PostEval] VAR param '{vp2.Name}' = '{vp2.Value}', paramID={paramID}, objID={param.GetHashCode():X8}\n");
                                     }
                                 }
-                                
-                                _cmdParams.Add(param);
+
+                                if (paramType == ScriptConstants.PARAM_CONST)
+                                {
+                                    // Pascal passes per-command parameter values, so mutating a
+                                    // constant parameter during execution must not rewrite the
+                                    // shared compiled ParamList entry for later commands.
+                                    _cmdParams.Add(new CmdParam { Value = param.Value });
+                                }
+                                else
+                                {
+                                    _cmdParams.Add(param);
+                                }
                                 
                                 // Debug: show variable names for PARAM_VAR (only if enabled)
                                 if (_enableVariableDebug && paramType == ScriptConstants.PARAM_VAR && param is VarParam varParam)
@@ -2229,7 +2275,7 @@ namespace TWXProxy.Core
                     
                     var cmd = _owner.ScriptRef.GetCmd(cmdID);
 
-                    if (GlobalModules.VerboseDebugMode && cmd.Name == "GOTO" && _cmdParams.Count > 0)
+                    if (cmd.Name == "GOTO" && _cmdParams.Count > 0)
                     {
                         string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
                         GlobalModules.DebugLog($"[Execute/GOTO] raw='{_cmdParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
@@ -2258,11 +2304,9 @@ namespace TWXProxy.Core
                     // Handle RETURN before dispatch - stack/flow is maintained by Script itself.
                     if (cmd.Name == "RETURN")
                     {
-                        if (GlobalModules.VerboseDebugMode)
-                            GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count})\n");
+                        GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
                         Return();
-                        if (GlobalModules.VerboseDebugMode)
-                            GlobalModules.DebugLog($"[Execute] RETURN completed, continuing execution\n");
+                        GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
                         continue;
                     }
                     
@@ -2468,7 +2512,9 @@ namespace TWXProxy.Core
             if (_subStack.Count == 0)
                 throw new ScriptException("Return without gosub");
 
-            _codePos = _subStack.Pop();
+            int returnPos = _subStack.Pop();
+            GlobalModules.DebugLog($"[RETURN] Restoring codePos={returnPos}, remainingDepth={_subStack.Count}\n");
+            _codePos = returnPos;
         }
 
         public void DumpVars(string searchName)
@@ -2696,6 +2742,16 @@ namespace TWXProxy.Core
         public int DecimalPrecision { get; set; }
         public string ProgramDir => _owner.ProgramDir;
         public string ScriptName => Path.GetFileName(_cmp?.ScriptFile ?? string.Empty);
+        public string PersistenceId
+        {
+            get
+            {
+                if (_cmp != null && _cmp.IncludeScriptCount > 0)
+                    return _cmp.GetIncludeScript(0);
+
+                return ScriptName;
+            }
+        }
 
         /// <summary>
         /// Pause the script execution

@@ -53,6 +53,19 @@ namespace TWXProxy.Core
             {
                 var parts = name.Split('.');
                 sectorVar.GetIndexVar(parts).Value = value;
+
+                if (script is Script scriptObj && scriptObj.Compiler != null)
+                {
+                    string flatName = sectorVar.Name + "." + name;
+                    scriptObj.Compiler.GetOrCreateRuntimeVar(flatName).Value = value;
+                }
+            }
+
+            static bool ShouldTraceSectorVar(VarParam varParam)
+            {
+                string name = varParam.Name ?? string.Empty;
+                return name.IndexOf("CURSECTOR", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                       name.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
             }
 
             if (_activeDatabase == null || sectorNum <= 0 || sectorNum > _activeDatabase.SectorCount)
@@ -98,8 +111,18 @@ namespace TWXProxy.Core
             var warps = sector.Warp.Where(w => w != 0).ToList();
             SetField("warps", warps.Count.ToString());
             for (int i = 1; i <= 6; i++)
-                sectorVar.GetIndexVar(new[] { "warp", i.ToString() }).Value = 
-                    (i <= warps.Count) ? warps[i - 1].ToString() : "0";
+            {
+                string warpValue = (i <= warps.Count) ? warps[i - 1].ToString() : "0";
+                sectorVar.GetIndexVar(new[] { "warp", i.ToString() }).Value = warpValue;
+
+                if (script is Script scriptObj && scriptObj.Compiler != null)
+                {
+                    scriptObj.Compiler
+                        .GetOrCreateRuntimeVar(sectorVar.Name + ".warp")
+                        .GetIndexVar(new[] { i.ToString() })
+                        .Value = warpValue;
+                }
+            }
 
             // Port
             bool portExists = sector.SectorPort != null;
@@ -131,6 +154,17 @@ namespace TWXProxy.Core
 
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[GETSECTOR] #{sectorNum} warps:[{string.Join(",", warps)}] port.class={sector.SectorPort?.ClassIndex ?? 0}\n");
+
+            if (ShouldTraceSectorVar(sectorVar))
+            {
+                string warp1 = sectorVar.GetIndexVar(new[] { "warp", "1" }).Value;
+                string warp2 = sectorVar.GetIndexVar(new[] { "warp", "2" }).Value;
+                string warp3 = sectorVar.GetIndexVar(new[] { "warp", "3" }).Value;
+                GlobalModules.DebugLog(
+                    $"[GETSECTOR TRACE] var='{sectorVar.Name}' sector={sectorNum} " +
+                    $"warps={warps.Count} warp1='{warp1}' warp2='{warp2}' warp3='{warp3}' " +
+                    $"density='{sector.Density}' portClass='{sector.SectorPort?.ClassIndex ?? 0}'\n");
+            }
 
             return CmdAction.None;
         }

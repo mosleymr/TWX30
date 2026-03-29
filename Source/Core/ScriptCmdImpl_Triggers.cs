@@ -21,9 +21,6 @@ namespace TWXProxy.Core
 
             string name = parameters[0].Value;
             string label = parameters[1].Value;
-            // Strip leading colon from label if present
-            if (label.StartsWith(':'))
-                label = label.Substring(1);
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
             GlobalModules.DebugLog($"[SETTEXTLINETRIGGER] name='{name}', label='{label}', value='{value}'\n");
@@ -54,9 +51,6 @@ namespace TWXProxy.Core
 
             string name = parameters[0].Value;
             string label = parameters[1].Value;
-            // Strip leading colon from label if present
-            if (label.StartsWith(':'))
-                label = label.Substring(1);
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
             GlobalModules.DebugLog($"[SETTEXTOUTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
@@ -85,9 +79,6 @@ namespace TWXProxy.Core
 
             string name = parameters[0].Value;
             string label = parameters[1].Value;
-            // Strip leading colon from label if present
-            if (label.StartsWith(':'))
-                label = label.Substring(1);
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
             GlobalModules.DebugLog($"[SETTEXTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
@@ -117,9 +108,6 @@ namespace TWXProxy.Core
 
             string name = parameters[0].Value;
             string label = parameters[1].Value;
-            // Strip leading colon from label if present
-            if (label.StartsWith(':'))
-                label = label.Substring(1);
             int delay = (int)parameters[2].DecValue;
 
             try
@@ -146,9 +134,6 @@ namespace TWXProxy.Core
 
             string name = parameters[0].Value;
             string label = parameters[1].Value;
-            // Strip leading colon from label if present
-            if (label.StartsWith(':'))
-                label = label.Substring(1);
             string eventName = parameters[2].Value;
             string param = parameters.Length > 3 ? parameters[3].Value : string.Empty;
 

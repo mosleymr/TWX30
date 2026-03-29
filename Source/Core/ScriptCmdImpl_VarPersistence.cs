@@ -61,6 +61,7 @@ namespace TWXProxy.Core
                     vars.TryGetValue(varName, out var value))
                 {
                     varParam.Value = value;
+                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='script-cache' value='{value}'\n");
                 }
                 else if (_currentGameVars.TryGetValue(varName, out var gameValue))
                 {
@@ -70,6 +71,11 @@ namespace TWXProxy.Core
                     if (!_scriptVars.ContainsKey(scriptId))
                         _scriptVars[scriptId] = new Dictionary<string, string>();
                     _scriptVars[scriptId][varName] = gameValue;
+                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='game-cache' value='{gameValue}'\n");
+                }
+                else
+                {
+                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='miss' value='{varParam.Value}'\n");
                 }
             }
             return CmdAction.None;
@@ -89,6 +95,7 @@ namespace TWXProxy.Core
                     _scriptVars[scriptId] = new Dictionary<string, string>();
                 
                 _scriptVars[scriptId][varName] = value;
+                GlobalModules.DebugLog($"[SAVEVAR] scriptId='{scriptId}' var='{varName}' value='{value}'\n");
 
                 // Persist to the per-game data file via ProxyService callback.
                 _currentGameVars[varName] = value;
@@ -165,7 +172,7 @@ namespace TWXProxy.Core
             // Extract script identifier from Script object
             if (script is Script scriptObj)
             {
-                return scriptObj.ScriptName ?? script.GetHashCode().ToString();
+                return scriptObj.PersistenceId ?? scriptObj.ScriptName ?? script.GetHashCode().ToString();
             }
             return script.GetHashCode().ToString();
         }
@@ -220,7 +227,12 @@ namespace TWXProxy.Core
         public static void ClearVarsForScript(string scriptId)
         {
             if (!string.IsNullOrEmpty(scriptId))
+            {
+                bool existed = _scriptVars.TryGetValue(scriptId, out var vars);
+                int count = existed ? vars!.Count : 0;
                 _scriptVars.Remove(scriptId);
+                GlobalModules.DebugLog($"[VARCACHE] ClearVarsForScript scriptId='{scriptId}' existed={existed} count={count}\n");
+            }
         }
 
         /// <summary>

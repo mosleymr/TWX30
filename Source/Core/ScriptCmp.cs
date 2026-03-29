@@ -368,8 +368,10 @@ namespace TWXProxy.Core
             _labelDict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             _description = new List<string>();
             _scriptRef = scriptRef ?? new ScriptRef();
-            _scriptDirectory = scriptDirectory;
-            _rootScriptDirectory = scriptDirectory;
+            _scriptDirectory = string.IsNullOrWhiteSpace(scriptDirectory)
+                ? string.Empty
+                : Path.GetFullPath(scriptDirectory);
+            _rootScriptDirectory = _scriptDirectory;
             _includeScriptList = new List<string>();
             _ifStack = new Stack<ConditionStruct>();
             _lineCount = 0;
@@ -416,6 +418,12 @@ namespace TWXProxy.Core
         public string ScriptFile => _scriptFile;
         /// <summary>Description as a single string (lines joined with '\n').</summary>
         public string DescriptionText => _description.Count > 0 ? string.Join("\n", _description) : string.Empty;
+
+        public VarParam GetOrCreateRuntimeVar(string varName)
+        {
+            int id = FindOrCreateVariable(varName);
+            return (VarParam)_paramList[id];
+        }
 
         #endregion
 
@@ -465,18 +473,19 @@ namespace TWXProxy.Core
             if (string.IsNullOrEmpty(name))
                 return name;
 
+            // Pascal bytecode preserves label references exactly as written in source.
+            // Include-local refs such as ":BUY", ":246", and "::308" stay local in the
+            // compiled parameter table and are resolved at runtime using ExecScriptID.
+            // Only already-qualified cross-script refs carry a namespace in source.
             bool hasColon = name.StartsWith(':');
             string labelName = hasColon ? name.Substring(1) : name;
-            if (string.IsNullOrEmpty(labelName) || labelName.Contains('~'))
+            if (string.IsNullOrEmpty(labelName))
                 return name;
 
-            string scriptNamespace = GetScriptNamespace(scriptID);
-            if (string.IsNullOrEmpty(scriptNamespace))
+            if (!hasColon)
                 return name;
 
-            bool isInternalNumericLabel = hasColon && labelName.All(char.IsDigit);
-            string qualified = scriptNamespace + "~" + (isInternalNumericLabel ? ":" : string.Empty) + labelName;
-            return hasColon ? ":" + qualified : qualified;
+            return name;
         }
 
         public string StripLocalLabelReference(string name, int scriptID)
@@ -607,7 +616,7 @@ namespace TWXProxy.Core
             _scriptFile = filename;
             _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
             if (string.IsNullOrEmpty(_rootScriptDirectory))
-                _rootScriptDirectory = _scriptDirectory;
+                _rootScriptDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
             _ifLabelCount = 0;
             _waitOnCount = 0;
             _lineCount = 0;
@@ -807,10 +816,10 @@ namespace TWXProxy.Core
                 string labelName = firstParam.Substring(1);
                 if (!labelName.Contains('~') && scriptID > 0 && scriptID < _includeScriptList.Count)
                 {
-                    // Keep numeric local labels (:76) aligned with QualifyLabelReference, which
-                    // emits include-scoped references as :NAME~:76 for GOTO/GOSUB operands.
-                    bool isNumericLocalLabel = labelName.All(char.IsDigit);
-                    labelName = _includeScriptList[scriptID] + "~" + (isNumericLocalLabel ? ":" : string.Empty) + labelName;
+                    // Preserve Pascal's distinction between source local labels
+                    // (:76 -> HAGGLE~76) and compiler-generated flow labels
+                    // (::11 -> HAGGLE~:11) by keeping the local label text as-is.
+                    labelName = _includeScriptList[scriptID] + "~" + labelName;
                 }
 
                 BuildLabel(labelName, _codeSize);
@@ -1255,7 +1264,8 @@ namespace TWXProxy.Core
             // Compile parameters — each token is run through the expression tree compiler
             for (int i = 1; i < paramLine.Count; i++)
             {
-                CompileParam(paramLine[i], lineNumber, scriptID, cmdCode);
+                string param = CanonicalizeTriggerName(cmdName, i - 1, paramLine[i]);
+                CompileParam(param, lineNumber, scriptID, cmdCode);
             }
 
             // Null-terminate the parameter list (Pascal format)
@@ -1263,6 +1273,34 @@ namespace TWXProxy.Core
             AppendCode(cmdCode.ToArray());
 
             _cmdCount++;
+        }
+
+        private static string CanonicalizeTriggerName(string cmdName, int paramIndex, string param)
+        {
+            if (string.IsNullOrEmpty(param))
+                return param;
+
+            // Pascal canonicalizes a couple of legacy handwritten include trigger names
+            // into library sysconsts before emission. These show up in the original Pack2
+            // sources as ANSI / line, but in compiled bytecode and decompiled output as
+            // LIBSILENT / LIBMULTILINE.
+            bool isTriggerNameParam =
+                paramIndex == 0 &&
+                (cmdName == "SETTEXTLINETRIGGER" ||
+                 cmdName == "SETTEXTTRIGGER" ||
+                 cmdName == "SETTEXTOUTTRIGGER" ||
+                 cmdName == "SETDELAYTRIGGER" ||
+                 cmdName == "KILLTRIGGER");
+
+            if (!isTriggerNameParam)
+                return param;
+
+            return param.ToUpperInvariant() switch
+            {
+                "LINE" => "LIBMULTILINE",
+                "ANSI" => "LIBSILENT",
+                _ => param
+            };
         }
 
         private void WriteCodeByte(List<byte>? cmdCode, byte value)
@@ -1331,8 +1369,9 @@ namespace TWXProxy.Core
                 if (bracketPos > 0)
                     varName = varName.Substring(0, bracketPos);
 
-                // Extend name for included scripts (skip system variables starting with $$)
-                if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("$$"))
+                // Match Pascal: all include-local $vars are namespaced, including
+                // explicit $$-prefixed variables such as $$FILETEST.
+                if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~'))
                 {
                     varName = varName.Length > 1 && char.IsDigit(varName[1])
                         ? "$" + _includeScriptList[scriptID] + "~" + varName
@@ -1442,37 +1481,11 @@ namespace TWXProxy.Core
             return _paramList.Count - 1;
         }
 
-        /// <summary>
-        /// Converts dot-notation field access to bracket-index notation so the compiler
-        /// stores sub-fields as hierarchical VarParam entries rather than flat names.
-        ///   $sector.density          ->  $sector["density"]
-        ///   $sector.warp[$i]         ->  $sector["warp"][$i]
-        ///   $sector.port.exists      ->  $sector["port"]["exists"]
-        /// Only processes $var and %progvar tokens.
-        /// </summary>
         private string ConvertDotNotation(string param)
         {
-            if (string.IsNullOrEmpty(param))
-                return param;
-
-            // Only convert $ and % variable references.
-            if (param[0] != '$' && param[0] != '%')
-                return param;
-
-            // Convert only the prefix before any explicit bracketed indexes.
-            int firstBracket = param.IndexOf('[');
-            string beforeBracket = firstBracket >= 0 ? param.Substring(0, firstBracket) : param;
-            string afterBracket = firstBracket >= 0 ? param.Substring(firstBracket) : string.Empty;
-
-            if (!beforeBracket.Contains('.'))
-                return param;
-
-            string[] parts = beforeBracket.Split('.');
-            string result = parts[0];
-            for (int i = 1; i < parts.Length; i++)
-                result += $"[\"{parts[i]}\"]";
-
-            return result + afterBracket;
+            // Pascal keeps dotted $ / % names flat in the parameter table.
+            // Decompiler output relies on that for exact round-tripping.
+            return param;
         }
 
         private List<string> ExtractArrayIndexes(string param)
@@ -1559,7 +1572,7 @@ namespace TWXProxy.Core
 
                     if (scriptID > 0 && scriptID < _includeScriptList.Count && !indexVarName.Contains('~'))
                     {
-                        if (indexVarName.StartsWith("$") && !indexVarName.StartsWith("$$"))
+                        if (indexVarName.StartsWith("$"))
                             indexVarName = indexVarName.Length > 1 && char.IsDigit(indexVarName[1])
                                 ? "$" + _includeScriptList[scriptID] + "~" + indexVarName
                                 : "$" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
@@ -1622,54 +1635,74 @@ namespace TWXProxy.Core
             }
         }
 
-        private void IncludeFile(string filename)
+        private static void AddScriptPathCandidates(List<string> candidates, HashSet<string> seen, string baseDirectory, string filename)
         {
-            // Include another script file
-            // Normalize path separators (Windows scripts may use backslashes)
-            filename = filename.Replace('\\', Path.DirectorySeparatorChar);
-            
-            // Automatically append .ts extension if no extension is present
-            if (string.IsNullOrEmpty(Path.GetExtension(filename)))
-            {
-                filename += ".ts";
-            }
-            
-            // Resolve include path. TWX compatibility prefers scripts root,
-            // with current script directory as a fallback for compatibility.
-            string fullPath = filename;
-            var searchedPaths = new List<string>();
-            
-            if (!Path.IsPathRooted(filename))
-            {
-                if (!string.IsNullOrEmpty(_rootScriptDirectory))
-                {
-                    string rootCandidate = Path.Combine(_rootScriptDirectory, filename);
-                    searchedPaths.Add(rootCandidate);
-                    if (File.Exists(rootCandidate))
-                        fullPath = rootCandidate;
-                }
+            if (string.IsNullOrWhiteSpace(baseDirectory))
+                return;
 
-                if (!File.Exists(fullPath) && !string.IsNullOrEmpty(_scriptDirectory))
-                {
-                    string localCandidate = Path.Combine(_scriptDirectory, filename);
-                    if (!searchedPaths.Contains(localCandidate, StringComparer.OrdinalIgnoreCase))
-                        searchedPaths.Add(localCandidate);
-                    if (File.Exists(localCandidate))
-                        fullPath = localCandidate;
-                }
+            string basePath = Path.GetFullPath(baseDirectory);
+            string target = Path.Combine(basePath, filename);
+            string extension = Path.GetExtension(target);
+
+            void AddCandidate(string path)
+            {
+                string fullPath = Path.GetFullPath(path);
+                if (seen.Add(fullPath))
+                    candidates.Add(fullPath);
+            }
+
+            if (!string.IsNullOrEmpty(extension))
+            {
+                AddCandidate(target);
+                return;
+            }
+
+            AddCandidate(target + ".ts");
+            AddCandidate(target + ".cts");
+            AddCandidate(target + ".inc");
+        }
+
+        private string ResolveIncludePath(string filename)
+        {
+            filename = filename.Replace('\\', Path.DirectorySeparatorChar);
+            string searchRoot = !string.IsNullOrWhiteSpace(_rootScriptDirectory)
+                ? _rootScriptDirectory
+                : Path.GetFullPath(Directory.GetCurrentDirectory());
+
+            var candidates = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (Path.IsPathRooted(filename))
+            {
+                AddScriptPathCandidates(candidates, seen, Path.GetDirectoryName(filename) ?? string.Empty, Path.GetFileName(filename));
             }
             else
             {
-                searchedPaths.Add(fullPath);
+                // Match Pascal FetchScript behaviour first: resolve against the
+                // starting script root, then try a "scripts/" child under that root.
+                AddScriptPathCandidates(candidates, seen, searchRoot, filename);
+                AddScriptPathCandidates(candidates, seen, Path.Combine(searchRoot, "scripts"), filename);
+
+                // Final compatibility fallback: resolve relative to the current
+                // include file directory for decompiled or ad-hoc layouts.
+                AddScriptPathCandidates(candidates, seen, _scriptDirectory, filename);
             }
-            
-            if (!File.Exists(fullPath))
+
+            foreach (string candidate in candidates)
             {
-                string searched = searchedPaths.Count > 0
-                    ? string.Join(", ", searchedPaths)
-                    : fullPath;
-                throw new FileNotFoundException($"Include file not found: {filename} (searched: {searched})");
+                if (File.Exists(candidate))
+                    return candidate;
             }
+
+            string searched = candidates.Count > 0
+                ? string.Join(", ", candidates)
+                : filename;
+            throw new FileNotFoundException($"Include file not found: {filename} (searched: {searched})");
+        }
+
+        private void IncludeFile(string filename)
+        {
+            string fullPath = ResolveIncludePath(filename);
 
             var scriptText = new List<string>(File.ReadAllLines(fullPath, Encoding.Latin1));
             

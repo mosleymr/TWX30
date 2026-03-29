@@ -215,6 +215,8 @@ public class ProxyService : IProxyService
                                 // instead of waiting for the line after that.
                                 interpreter.TextEvent(strippedRemainder, false);
                             }
+
+                            gameInstance.ProcessNativeHaggleLine(strippedRemainder);
                         }
                         break;
                     }
@@ -263,6 +265,8 @@ public class ProxyService : IProxyService
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Re-activating triggers\n");
                             interpreter.ActivateTriggers();
                         }
+
+                        gameInstance.ProcessNativeHaggleLine(strippedLine);
                     }
                     
                     // Move past the \r (the \n that follows, if any, will be part of the next

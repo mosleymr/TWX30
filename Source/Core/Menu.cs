@@ -89,7 +89,14 @@ namespace TWXProxy.Core
             _inputMode = InputMode.None;
             _inputBuffer.Clear();
             _skipNextLineFeed = false;
-            await _gameInstance.SendMessageAsync("\r\n");
+
+            string currentAnsiLine = _gameInstance.IsConnected ? ScriptRef.GetCurrentAnsiLine() : string.Empty;
+            string exitText = "\r" + AnsiCodes.ANSI_CLEARLINE;
+
+            if (!string.IsNullOrEmpty(currentAnsiLine))
+                exitText += currentAnsiLine;
+
+            await _gameInstance.SendMessageAsync(exitText);
         }
 
         /// <summary>
@@ -107,6 +114,7 @@ namespace TWXProxy.Core
             if (_currentMenu == MenuState.None)
             {
                 _currentMenu = MenuState.Main;
+                await _gameInstance.SendMessageAsync("\r\n");
                 await ShowMenuPromptAsync();
                 return true;
             }
@@ -180,6 +188,10 @@ namespace TWXProxy.Core
 
                 case 'E':
                     await EditSendLastBurstAsync();
+                    return true;
+
+                case 'H':
+                    await ToggleNativeHaggleAsync();
                     return true;
 
                 case 'P':
@@ -409,6 +421,7 @@ namespace TWXProxy.Core
             help.Append("  C - Connect/Disconnect from server\r\n");
             help.Append("  D - Data menu\r\n");
             help.Append("  E - Edit/Send last burst\r\n");
+            help.Append("  H - Toggle native haggle\r\n");
             help.Append("  P - Port menu\r\n");
             help.Append("  R - Repeat last burst\r\n");
             help.Append("  S - Script menu\r\n");
@@ -547,6 +560,13 @@ namespace TWXProxy.Core
                 _inputBuffer.Clear();
                 _inputBuffer.Append(_lastBurst);
             }
+        }
+
+        private async Task ToggleNativeHaggleAsync()
+        {
+            bool enabled = _gameInstance.ToggleNativeHaggle();
+            await _gameInstance.SendMessageAsync($"\r\nNative haggle {(enabled ? "enabled" : "disabled")}.\r\n");
+            await ExitMenuAsync();
         }
 
         private async Task RepeatLastBurstAsync()

@@ -71,6 +71,8 @@ namespace TWXProxy.Core
         private bool _inCommandMode;
         private readonly object _stateLock = new();
         private readonly MenuHandler _menuHandler;
+        private readonly NativeHaggleEngine _nativeHaggle = new();
+        private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -110,12 +112,14 @@ namespace TWXProxy.Core
         public event EventHandler? Connected;
         public event EventHandler<DisconnectEventArgs>? Disconnected;
         public event EventHandler? ClearInputBufferRequested;
+        public event Action<bool>? NativeHaggleChanged;
 
         public string GameName => _gameName;
         public bool IsRunning => _isRunning;
         public bool IsConnected => _serverClient?.Connected ?? false;
         public char CommandChar => _commandChar;
         public bool IsProxyMenuActive => _menuHandler.IsActive;
+        public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
 
         public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
         {
@@ -134,6 +138,7 @@ namespace TWXProxy.Core
             _listenPort = listenPort;
             _commandChar = commandChar;
             _menuHandler = new MenuHandler(this, interpreter, scriptDirectory);
+            _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
         }
 
         /// <summary>
@@ -936,6 +941,52 @@ namespace TWXProxy.Core
             await SendToLocalAsync(data);
         }
 
+        public bool ToggleNativeHaggle()
+        {
+            return _nativeHaggle.Toggle();
+        }
+
+        public void SetNativeHaggleEnabled(bool enabled)
+        {
+            _nativeHaggle.SetEnabled(enabled);
+        }
+
+        public void ProcessNativeHaggleLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            string? response = _nativeHaggle.HandleLine(line);
+            if (!string.IsNullOrEmpty(response))
+                _ = SendNativeHaggleResponseAsync(response);
+        }
+
+        private async Task SendNativeHaggleResponseAsync(string response)
+        {
+            await _nativeHaggleSendLock.WaitAsync();
+            try
+            {
+                if (_serverStream == null || _serverClient?.Connected != true)
+                {
+                    GlobalModules.DebugLog($"[NativeHaggle] Dropped response '{response}' because the server is not connected.\n");
+                    return;
+                }
+
+                byte[] data = Encoding.ASCII.GetBytes(response + "\r");
+                GlobalModules.DebugLog($"[NativeHaggle] SEND '{response}\\r'\n");
+                await _serverStream.WriteAsync(data, 0, data.Length);
+                await _serverStream.FlushAsync();
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeHaggle] SEND FAILED '{response}': {ex.Message}\n");
+            }
+            finally
+            {
+                _nativeHaggleSendLock.Release();
+            }
+        }
+
         /// <summary>
         /// Request input buffer to be cleared (for GETINPUT)
         /// </summary>
@@ -1033,6 +1084,7 @@ namespace TWXProxy.Core
             
             StopAsync().Wait();
             _cancellationSource?.Dispose();
+            _nativeHaggleSendLock.Dispose();
         }
     }
 

@@ -7,6 +7,7 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using SkiaSharp;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -48,6 +49,16 @@ public class MainWindow : Window
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
     private Menu            _menuBar       = new();
+    private readonly ToggleSwitch _haggleToggle = new()
+    {
+        OffContent = "Off",
+        OnContent = "On",
+        IsEnabled = false,
+        IsChecked = false,
+        Margin = new Thickness(8, 0, 0, 0),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+    private bool _updatingHaggleToggle;
     // ── Sidebar value TextBlocks (updated when GameState fires Changed) ────
     private TextBlock _valName     = new();
     private TextBlock _valSector    = new();
@@ -155,6 +166,9 @@ public class MainWindow : Window
             else
                 _parser.Feed("\x1b[33m[not connected]\x1b[0m\r\n");
         };
+
+        _haggleToggle.Checked += (_, _) => OnHaggleToggleRequested();
+        _haggleToggle.Unchecked += (_, _) => OnHaggleToggleRequested();
 
         Content = BuildLayout();
 
@@ -450,6 +464,7 @@ public class MainWindow : Window
 
         // Scanner indicators
         panel.Children.Add(BuildScannerRow());
+        panel.Children.Add(BuildHaggleRow());
 
         panel.Children.Add(new Border { Height = 6 });
         return panel;
@@ -507,6 +522,25 @@ public class MainWindow : Window
         var label = new TextBlock { Text = "Scanners", Foreground = FgKey, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(label, 0); Grid.SetColumn(indicators, 1);
         row.Children.Add(label); row.Children.Add(indicators);
+        return row;
+    }
+
+    private Control BuildHaggleRow()
+    {
+        var row = new Grid { Margin = new Thickness(6, 2, 6, 3) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var label = new TextBlock
+        {
+            Text = "Haggle",
+            Foreground = FgKey,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 0);
+        Grid.SetColumn(_haggleToggle, 1);
+        row.Children.Add(label);
+        row.Children.Add(_haggleToggle);
         return row;
     }
 
@@ -819,6 +853,7 @@ public class MainWindow : Window
     {
         _fileConnect.IsEnabled    = false;
         _fileDisconnect.IsEnabled = true;
+        UpdateHaggleToggleState();
     }
 
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
@@ -826,6 +861,44 @@ public class MainWindow : Window
     {
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
+        UpdateHaggleToggleState();
+    }
+
+    private void OnHaggleToggleRequested()
+    {
+        if (_updatingHaggleToggle)
+            return;
+
+        if (_gameInstance == null)
+        {
+            UpdateHaggleToggleState();
+            return;
+        }
+
+        _termCtrl.SendInput?.Invoke(System.Text.Encoding.ASCII.GetBytes("$h"));
+    }
+
+    private void UpdateHaggleToggleState()
+    {
+        bool proxyActive = _gameInstance != null;
+        _haggleToggle.IsEnabled = proxyActive;
+        if (!proxyActive)
+        {
+            _updatingHaggleToggle = true;
+            _haggleToggle.IsChecked = false;
+            _updatingHaggleToggle = false;
+        }
+    }
+
+    private void OnNativeHaggleChanged(bool enabled)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _updatingHaggleToggle = true;
+            _haggleToggle.IsChecked = enabled;
+            _updatingHaggleToggle = false;
+            UpdateHaggleToggleState();
+        });
     }
 
     // ── Menu actions ───────────────────────────────────────────────────────
@@ -1072,6 +1145,7 @@ public class MainWindow : Window
             Verbose       = false,          // suppress diagnostic Console.WriteLine in embedded mode
             AutoReconnect = _state.AutoReconnect,
         };
+        gi.NativeHaggleChanged += OnNativeHaggleChanged;
 
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
@@ -1160,6 +1234,8 @@ public class MainWindow : Window
                             // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
                             interpreter.TextEvent(strippedRemainder, false);
                         }
+
+                        gi.ProcessNativeHaggleLine(strippedRemainder);
                     }
                     break;
                 }
@@ -1184,6 +1260,8 @@ public class MainWindow : Window
                     interpreter.TextEvent(lineStripped, false);
                     interpreter.ActivateTriggers();
                 }
+
+                gi.ProcessNativeHaggleLine(lineStripped);
 
                 searchPos = crPos + 1;
                 lastProcessedPos = searchPos;
@@ -1272,6 +1350,7 @@ public class MainWindow : Window
 
         _gameInstance = gi;
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
+        OnNativeHaggleChanged(gi.NativeHaggleEnabled);
 
         // The proxy is now running. Scripts can execute and communicate with the user
         // before any server connection is made. The server connection is triggered by
@@ -1291,6 +1370,8 @@ public class MainWindow : Window
 
         var gi = _gameInstance;
         _gameInstance = null;
+        if (gi != null)
+            gi.NativeHaggleChanged -= OnNativeHaggleChanged;
         if (gi != null)
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
 
@@ -1314,6 +1395,7 @@ public class MainWindow : Window
         OnGameDisconnected();
         _parser.Feed("\x1b[1;31m[Embedded proxy stopped]\x1b[0m\r\n");
         RefreshStatusBar();
+        UpdateHaggleToggleState();
         _buffer.Dirty = true;
     }
 
