@@ -2619,14 +2619,16 @@ namespace TWXProxy.Core
                 return true; // No script loaded
             }
 
+            ScriptCmp cmp = _cmp;
+
             if (PreferPreparedExecution)
             {
-                PreparedScriptProgram? prepared = _cmp.PrepareForExecution();
+                PreparedScriptProgram? prepared = cmp.PrepareForExecution();
                 if (prepared != null)
                     return ExecutePrepared(prepared);
             }
 
-            byte[] code = _cmp.Code;
+            byte[] code = cmp.Code;
             
             if (code.Length == 0 || _codePos >= code.Length)
             {
@@ -2718,10 +2720,10 @@ namespace TWXProxy.Core
 
                             // For older file versions, parameters might be embedded differently
                             // Create a placeholder if parameter doesn't exist
-                            if (paramID < 0 || paramID >= _cmp.ParamList.Count)
+                            if (paramID < 0 || paramID >= cmp.ParamList.Count)
                             {
-                                server?.ClientMessage($"Warning: Parameter ID {paramID} not found in list (count={_cmp.ParamList.Count}), using empty string\r\n");
-                                Console.WriteLine($"Warning: Parameter ID {paramID} not found in ParamList (count={_cmp.ParamList.Count})");
+                                server?.ClientMessage($"Warning: Parameter ID {paramID} not found in list (count={cmp.ParamList.Count}), using empty string\r\n");
+                                Console.WriteLine($"Warning: Parameter ID {paramID} not found in ParamList (count={cmp.ParamList.Count})");
                                 
                                 // Skip array index data if it's a VAR type
                                 if (paramType == ScriptConstants.PARAM_VAR)
@@ -2734,7 +2736,7 @@ namespace TWXProxy.Core
                             }
                             else
                             {
-                                CmdParam param = _cmp.ParamList[paramID];
+                                CmdParam param = cmp.ParamList[paramID];
 
                                 // Evaluate array subscripts if this is a variable
                                 if (paramType == ScriptConstants.PARAM_VAR)
@@ -2827,9 +2829,9 @@ namespace TWXProxy.Core
 
                             // Get the parameter containing the program variable name
                             string progVarName = "";
-                            if (paramID >= 0 && paramID < _cmp.ParamList.Count)
+                            if (paramID >= 0 && paramID < cmp.ParamList.Count)
                             {
-                                var param = _cmp.ParamList[paramID];
+                                var param = cmp.ParamList[paramID];
                                 progVarName = param is VarParam vp ? vp.Name : param.Value;
                             }
 

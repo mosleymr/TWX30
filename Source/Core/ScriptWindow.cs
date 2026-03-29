@@ -245,6 +245,16 @@ namespace TWXProxy.Core
             {
                 var menu = _menuStack.Pop();
                 Console.WriteLine($"[Menu] Closed menu '{menu.Name}'");
+
+                if (_menuStack.Count == 0)
+                {
+                    string currentAnsiLine = ScriptRef.GetCurrentAnsiLine();
+                    string exitText = "\r" + AnsiCodes.ANSI_CLEARLINE;
+                    if (!string.IsNullOrEmpty(currentAnsiLine))
+                        exitText += currentAnsiLine;
+
+                    GlobalModules.TWXServer?.ClientMessage(exitText);
+                }
             }
         }
 
@@ -321,11 +331,10 @@ namespace TWXProxy.Core
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
             
-            // Display menu header with prompt if available
-            if (!string.IsNullOrEmpty(menu.Prompt))
-            {
-                server?.ClientMessage($"\r\n{menu.Prompt}\r\n");
-            }
+            // Match Pascal menu behavior more closely: redraw the current line
+            // before showing the menu header instead of forcing a leading blank line.
+            string title = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
+            server?.ClientMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + "\r\n");
             
             // Get all menu items that have this menu as their parent
             // Note: Parent '0' means display in all menus (like root-level items)
@@ -383,11 +392,18 @@ namespace TWXProxy.Core
                 return false;
                 
             var currentMenu = _menuStack.Peek();
+
+            static void EchoMenuKey(char key)
+            {
+                GlobalModules.TWXServer?.ClientMessage($"{char.ToUpperInvariant(key)}\r\n");
+            }
             
             // Handle standard options
             char upperKey = char.ToUpper(keyChar);
             if (upperKey == 'Q')
             {
+                EchoMenuKey(upperKey);
+
                 // Q always goes back/closes menu (never passes to server)
                 if (_menuStack.Count > 1)
                 {
@@ -400,7 +416,6 @@ namespace TWXProxy.Core
                 {
                     // In root menu - close entirely
                     CloseMenu(false);
-                    GlobalModules.TWXServer?.ClientMessage("\r\nMenu closed.\r\n");
                 }
                 return true; // Always consume Q key
             }
@@ -418,8 +433,7 @@ namespace TWXProxy.Core
                 {
                     try
                     {
-                        // Echo the selected key on the current prompt line before handling it.
-                        GlobalModules.TWXServer?.ClientMessage($"{upperKey}\r\n");
+                        EchoMenuKey(upperKey);
 
                         // Get the label reference and strip leading ':' if present
                         string labelName = matchingItem.Reference;

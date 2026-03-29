@@ -803,7 +803,6 @@ namespace TWXProxy.Core
                 _interpreter.Load(fullPath, false);
                 
                 _lastScript = fullPath;
-                await _gameInstance.SendMessageAsync($"Script '{Path.GetFileName(fullPath)}' loaded successfully.\r\n");
                 
                 // Exit menu mode after loading script
                 _currentMenu = MenuState.None;
