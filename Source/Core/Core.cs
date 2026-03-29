@@ -29,7 +29,7 @@ namespace TWXProxy.Core
 {
     public static class Constants
     {
-        public const string ProgramVersion = "2.6.10";
+        public const string ProgramVersion = "3.0.1";
         public const int ReleaseNumber = 1;
         public const string ReleaseVersion = "Beta";
         public const string SetupFile = "TWX26.dat";

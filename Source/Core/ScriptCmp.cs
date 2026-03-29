@@ -360,6 +360,7 @@ namespace TWXProxy.Core
         private int _codeSize;
         private int _version = ScriptConstants.CompiledScriptVersion;
         private ScriptRef? _scriptRef;
+        private PreparedScriptProgram? _preparedProgram;
 
         public ScriptCmp(ScriptRef? scriptRef = null, string scriptDirectory = "")
         {
@@ -396,6 +397,7 @@ namespace TWXProxy.Core
 
             _code = Array.Empty<byte>();
             _includeScriptList.Clear();
+            _preparedProgram = null;
         }
 
         #region Properties
@@ -416,8 +418,28 @@ namespace TWXProxy.Core
         public int Version => _version;
         public ScriptRef? ScriptRef => _scriptRef;
         public string ScriptFile => _scriptFile;
+        public PreparedScriptProgram? PreparedProgram => _preparedProgram;
+        public int PreparedInstructionCount => _preparedProgram?.Instructions.Length ?? 0;
         /// <summary>Description as a single string (lines joined with '\n').</summary>
         public string DescriptionText => _description.Count > 0 ? string.Join("\n", _description) : string.Empty;
+
+        public PreparedScriptProgram? PrepareForExecution()
+        {
+            if (_preparedProgram != null)
+                return _preparedProgram;
+
+            try
+            {
+                _preparedProgram = PreparedScriptDecoder.Decode(this);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[ScriptCmp.PrepareForExecution] Failed for '{_scriptFile}': {ex.Message}\n");
+                _preparedProgram = null;
+            }
+
+            return _preparedProgram;
+        }
 
         public VarParam GetOrCreateRuntimeVar(string varName)
         {
@@ -613,6 +635,7 @@ namespace TWXProxy.Core
 
         public void CompileFromFile(string filename, string descFile)
         {
+            _preparedProgram = null;
             _scriptFile = filename;
             _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
             if (string.IsNullOrEmpty(_rootScriptDirectory))
@@ -1857,6 +1880,7 @@ namespace TWXProxy.Core
 
         public void LoadFromFile(string filename)
         {
+            _preparedProgram = null;
             if (_codeSize > 0)
                 throw new Exception("Code already exists - cannot load from file");
 

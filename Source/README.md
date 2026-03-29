@@ -2,7 +2,7 @@
 
 Trade Wars 2002 Proxy Server with scripting support - Complete rewrite in .NET 8.0 (C#)
 
-**Version:** 3.0.0  
+**Version:** 3.0.1  
 **Original Author:** Remco Mulder  
 **Maintainer:** David O. McCartney (MicroBlaster)  
 **License:** GPL v2+

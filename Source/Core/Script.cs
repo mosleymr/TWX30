@@ -918,6 +918,9 @@ namespace TWXProxy.Core
 #pragma warning restore CS0649
         private Stack<int> _subStack;
         private List<CmdParam> _cmdParams;
+        private Dictionary<int, CmdParam[]> _dispatchParamCache;
+        private CmdParam?[] _scratchParams;
+        private Dictionary<string, ProgVarParam> _progVarCache;
         private string _libCmdName = string.Empty;
         private List<string> _libCmdLoaded;
         public Script(ModInterpreter owner)
@@ -930,6 +933,9 @@ namespace TWXProxy.Core
             _inputVarParam = null;
             _subStack = new Stack<int>();
             _cmdParams = new List<CmdParam>(20);
+            _dispatchParamCache = new Dictionary<int, CmdParam[]>();
+            _scratchParams = Array.Empty<CmdParam?>();
+            _progVarCache = new Dictionary<string, ProgVarParam>(StringComparer.OrdinalIgnoreCase);
             _windowList = new List<IScriptWindow>();
             _menuItemList = new List<object>();
             _libCmdLoaded = new List<string>();
@@ -1983,6 +1989,351 @@ namespace TWXProxy.Core
             return indexes.ToArray();
         }
 
+        private static string NormalizePreparedIndexValue(string value)
+        {
+            return value.Length >= 2 && value[0] == '"' && value[^1] == '"'
+                ? value.Substring(1, value.Length - 2)
+                : value;
+        }
+
+        private CmdParam GetScratchParam(int slotIndex, string value)
+        {
+            if (slotIndex >= _scratchParams.Length)
+            {
+                int newSize = _scratchParams.Length == 0 ? 8 : _scratchParams.Length;
+                while (newSize <= slotIndex)
+                    newSize *= 2;
+
+                Array.Resize(ref _scratchParams, newSize);
+            }
+
+            CmdParam scratch = _scratchParams[slotIndex] ??= new CmdParam();
+            scratch.Value = value;
+            return scratch;
+        }
+
+        private CmdParam[] GetDispatchParamBuffer(int paramCount)
+        {
+            if (!_dispatchParamCache.TryGetValue(paramCount, out var buffer))
+            {
+                buffer = new CmdParam[paramCount];
+                _dispatchParamCache[paramCount] = buffer;
+            }
+
+            return buffer;
+        }
+
+        private ProgVarParam GetOrCreatePreparedProgVar(string progVarName)
+        {
+            if (!_progVarCache.TryGetValue(progVarName, out var progVar))
+            {
+                progVar = new ProgVarParam(progVarName, _owner);
+                _progVarCache[progVarName] = progVar;
+            }
+
+            return progVar;
+        }
+
+        private string[] EvaluatePreparedIndexes(PreparedParam[] indexes)
+        {
+            if (indexes.Length == 0)
+                return Array.Empty<string>();
+
+            var values = new string[indexes.Length];
+            for (int i = 0; i < indexes.Length; i++)
+                values[i] = EvaluatePreparedIndexValue(indexes[i]);
+
+            return values;
+        }
+
+        private string EvaluatePreparedIndexValue(PreparedParam param)
+        {
+            if (_cmp == null)
+                return string.Empty;
+
+            switch (param.ParamType)
+            {
+                case ScriptConstants.PARAM_CONST:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                        return NormalizePreparedIndexValue(_cmp.ParamList[param.ParamId].Value);
+                    return string.Empty;
+
+                case ScriptConstants.PARAM_VAR:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    {
+                        CmdParam indexParam = _cmp.ParamList[param.ParamId];
+                        if (indexParam is VarParam varParam)
+                        {
+                            var arithResult = EvaluateArithExprVar(varParam);
+                            if (arithResult != null)
+                                return NormalizePreparedIndexValue(arithResult.Value);
+                        }
+
+                        return NormalizePreparedIndexValue(EvaluatePreparedArrayIndexes(param.Indexes, indexParam).Value);
+                    }
+                    return string.Empty;
+
+                case ScriptConstants.PARAM_PROGVAR:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    {
+                        var nameParam = _cmp.ParamList[param.ParamId];
+                        string progVarName = nameParam is VarParam vp ? vp.Name : nameParam.Value;
+                        var progVar = GetOrCreatePreparedProgVar(progVarName);
+                        return NormalizePreparedIndexValue(EvaluatePreparedArrayIndexes(param.Indexes, progVar).Value);
+                    }
+                    return string.Empty;
+
+                case ScriptConstants.PARAM_SYSCONST:
+                    return NormalizePreparedIndexValue((param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId))?.Read(Array.Empty<string>()) ?? string.Empty);
+
+                case ScriptConstants.PARAM_CHAR:
+                    return ((char)param.CharCode).ToString();
+
+                default:
+                    return string.Empty;
+            }
+        }
+
+        private CmdParam EvaluatePreparedArrayIndexes(PreparedParam[] indexes, CmdParam baseParam)
+        {
+            if (indexes.Length == 0)
+                return baseParam;
+
+            if (baseParam is not VarParam varParam)
+                return baseParam;
+
+            string[] indexValues = EvaluatePreparedIndexes(indexes);
+
+            try
+            {
+                var result = varParam.GetIndexVar(indexValues);
+
+                string traceName = varParam.Name ?? string.Empty;
+                bool traceSectorLookup =
+                    traceName.IndexOf("CURSECTOR", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    traceName.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (traceSectorLookup)
+                {
+                    GlobalModules.DebugLog(
+                        $"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexValues)}] " +
+                        $"resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                return baseParam;
+            }
+        }
+
+        private CmdParam EvaluatePreparedParam(PreparedParam param, int slotIndex)
+        {
+            if (_cmp == null)
+                return GetScratchParam(slotIndex, string.Empty);
+
+            switch (param.ParamType)
+            {
+                case ScriptConstants.PARAM_CONST:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                        return GetScratchParam(slotIndex, _cmp.ParamList[param.ParamId].Value);
+                    return GetScratchParam(slotIndex, string.Empty);
+
+                case ScriptConstants.PARAM_VAR:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    {
+                        CmdParam baseParam = _cmp.ParamList[param.ParamId];
+                        if (baseParam is VarParam varParam)
+                        {
+                            var arithResult = EvaluateArithExprVar(varParam);
+                            if (arithResult != null)
+                                return GetScratchParam(slotIndex, arithResult.Value);
+                        }
+
+                        return EvaluatePreparedArrayIndexes(param.Indexes, baseParam);
+                    }
+                    return GetScratchParam(slotIndex, string.Empty);
+
+                case ScriptConstants.PARAM_PROGVAR:
+                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    {
+                        var nameParam = _cmp.ParamList[param.ParamId];
+                        string progVarName = nameParam is VarParam vp ? vp.Name : nameParam.Value;
+                        var progVar = GetOrCreatePreparedProgVar(progVarName);
+                        return EvaluatePreparedArrayIndexes(param.Indexes, progVar);
+                    }
+                    return GetScratchParam(slotIndex, string.Empty);
+
+                case ScriptConstants.PARAM_SYSCONST:
+                    {
+                        string[] indexValues = EvaluatePreparedIndexes(param.Indexes);
+                        string constValue = (param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId))?.Read(indexValues) ?? string.Empty;
+                        return GetScratchParam(slotIndex, constValue);
+                    }
+
+                case ScriptConstants.PARAM_CHAR:
+                    return GetScratchParam(slotIndex, ((char)param.CharCode).ToString());
+
+                default:
+                    return GetScratchParam(slotIndex, string.Empty);
+            }
+        }
+
+        private bool ExecutePrepared(PreparedScriptProgram prepared)
+        {
+            var server = GlobalModules.TWXServer;
+
+            if (_codePos >= prepared.CodeLength)
+                return true;
+
+            if (!prepared.TryGetInstructionIndex(_codePos, out int instructionIndex))
+            {
+                if (_codePos == prepared.CodeLength)
+                    return true;
+
+                throw new Exception($"Prepared instruction not found for code position {_codePos}");
+            }
+
+            try
+            {
+                while (instructionIndex < prepared.Instructions.Length)
+                {
+                    PreparedInstruction instruction = prepared.Instructions[instructionIndex];
+                    _execScriptID = instruction.ScriptId;
+                    _codePos = instruction.RawEndOffset;
+
+                    if (instruction.IsLabel)
+                    {
+                        if (_codePos >= prepared.CodeLength)
+                            return true;
+
+                        if (!prepared.TryGetInstructionIndex(_codePos, out instructionIndex))
+                        {
+                            if (_codePos == prepared.CodeLength)
+                                return true;
+
+                            throw new Exception($"Prepared instruction not found for code position {_codePos}");
+                        }
+
+                        continue;
+                    }
+
+                    ScriptCmd? cmd = instruction.Command;
+                    ushort cmdID = instruction.CommandId;
+
+                    if (cmd == null)
+                    {
+                        if (_owner.ScriptRef != null && cmdID >= _owner.ScriptRef.CmdCount)
+                            server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
+
+                        goto NextInstruction;
+                    }
+
+                    CmdParam[] dispatchParams = GetDispatchParamBuffer(instruction.Params.Length);
+                    for (int i = 0; i < instruction.Params.Length; i++)
+                        dispatchParams[i] = EvaluatePreparedParam(instruction.Params[i], i);
+
+                    if (cmd.Name == "GOTO" && instruction.Params.Length > 0)
+                    {
+                        string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
+                        GlobalModules.DebugLog($"[Execute/GOTO] raw='{dispatchParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
+                    }
+
+                    if (instruction.Params.Length < cmd.MinParams)
+                    {
+                        var dbg = new System.Text.StringBuilder();
+                        dbg.AppendLine($"ERROR: Command '{cmd.Name}' (ID={cmdID}) requires at least {cmd.MinParams} parameters, but only {instruction.Params.Length} were provided.");
+                        dbg.AppendLine($"  RawOffset={instruction.RawOffset}, RawEndOffset={instruction.RawEndOffset}, ScriptID={instruction.ScriptId}, Line={instruction.LineNumber}");
+                        File.AppendAllText("/tmp/twxproxy_debug.log", dbg.ToString());
+                        goto NextInstruction;
+                    }
+
+                    if (cmd.Name == "RETURN")
+                    {
+                        GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
+                        Return();
+                        GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
+                        goto NextInstruction;
+                    }
+
+                    if (cmd.OnCmd == null)
+                        throw new Exception($"Command {cmd.Name} has no handler");
+
+                    if (GlobalModules.VerboseDebugMode)
+                        GlobalModules.DebugLog($"[Dispatch] CMD={cmd.Name} paramCount={instruction.Params.Length}\n");
+
+                    CmdAction action;
+                    try
+                    {
+                        action = cmd.OnCmd(this, dispatchParams);
+                    }
+                    catch (Exception ex)
+                    {
+                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {cmd.Name}: {ex.Message}\n");
+                        throw new ScriptException($"Error executing command '{cmd.Name}': {ex.Message}", ex);
+                    }
+
+                    switch (action)
+                    {
+                        case CmdAction.Stop:
+                            _codePos = prepared.CodeLength;
+                            return true;
+
+                        case CmdAction.Pause:
+                            _paused = true;
+                            _pausedReason = PauseReason.Command;
+                            GlobalModules.DebugLog($"[PAUSED_BY] cmd='{cmd.Name}' id={cmdID}\n");
+                            GlobalModules.FlushDebugLog();
+                            return false;
+
+                        case CmdAction.Auth:
+                            _waitingForAuth = true;
+                            _pausedReason = PauseReason.Auth;
+                            return false;
+                    }
+
+                NextInstruction:
+                    if (_codePos >= prepared.CodeLength)
+                    {
+                        GlobalModules.FlushDebugLog();
+                        return true;
+                    }
+
+                    if (!prepared.TryGetInstructionIndex(_codePos, out instructionIndex))
+                        throw new Exception($"Prepared instruction not found for code position {_codePos}");
+                }
+
+                GlobalModules.FlushDebugLog();
+                return true;
+            }
+            catch (ScriptException ex)
+            {
+                string msg = $"[Script.ExecutePrepared] Script exception at pos {_codePos}: {ex.Message}";
+                Console.WriteLine(msg);
+                GlobalModules.DebugLog(msg + "\n");
+                if (ex.InnerException != null)
+                {
+                    string innerMsg = $"[Script.ExecutePrepared] Inner: {ex.InnerException.Message}";
+                    Console.WriteLine(innerMsg);
+                    GlobalModules.DebugLog(innerMsg + "\n");
+                }
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                _codePos = prepared.CodeLength;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                string msg = $"[Script.ExecutePrepared] Unexpected exception at pos {_codePos}: {ex.Message}";
+                Console.WriteLine(msg);
+                Console.WriteLine($"[Script.ExecutePrepared] Stack trace: {ex.StackTrace}");
+                GlobalModules.DebugLog(msg + "\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                _codePos = prepared.CodeLength;
+                return true;
+            }
+        }
+
         public bool Execute()
         {
             var server = GlobalModules.TWXServer;
@@ -2016,6 +2367,13 @@ namespace TWXProxy.Core
             if (_cmp == null)
             {
                 return true; // No script loaded
+            }
+
+            if (PreferPreparedExecution)
+            {
+                PreparedScriptProgram? prepared = _cmp.PrepareForExecution();
+                if (prepared != null)
+                    return ExecutePrepared(prepared);
             }
 
             byte[] code = _cmp.Code;
@@ -2739,6 +3097,7 @@ namespace TWXProxy.Core
         public bool HasActiveTriggers =>
             _waitForActive ||
             _triggers.Values.Any(list => list.Count > 0);
+        public bool PreferPreparedExecution { get; set; } = false;
         public int DecimalPrecision { get; set; }
         public string ProgramDir => _owner.ProgramDir;
         public string ScriptName => Path.GetFileName(_cmp?.ScriptFile ?? string.Empty);

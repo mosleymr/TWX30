@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TWXProxy.Core</RootNamespace>
     <AssemblyName>TWXProxy</AssemblyName>
-    <Version>3.0.0</Version>
+    <Version>3.0.1</Version>
     <Authors>Remco Mulder, David O. McCartney (MicroBlaster), Matt Mosley (reaper)</Authors>
     <Company>TWXProxy</Company>
     <Product>TWXProxy</Product>
