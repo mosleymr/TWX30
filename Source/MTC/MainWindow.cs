@@ -876,6 +876,7 @@ public class MainWindow : Window
         }
 
         _termCtrl.SendInput?.Invoke(System.Text.Encoding.ASCII.GetBytes("$h"));
+        Dispatcher.UIThread.Post(() => _termCtrl.Focus(), DispatcherPriority.Input);
     }
 
     private void UpdateHaggleToggleState()
