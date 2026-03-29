@@ -1726,8 +1726,10 @@ namespace TWXProxy.Core
             // Adds a custom menu item to the menu system
             try
             {
-                // Debug: show all parameters
-                GlobalModules.DebugLog($"[DEBUG ADDMENU] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\n");
+                if (GlobalModules.DebugMode)
+                {
+                    GlobalModules.DebugLog($"[DEBUG ADDMENU] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\n");
+                }
                 
                 if (parameters[3].Value.Length != 1)
                 {
@@ -1742,7 +1744,10 @@ namespace TWXProxy.Core
                 string prompt = parameters[5].Value;
                 bool closeMenu = parameters[6].Value == "1";
                 
-                GlobalModules.DebugLog($"[DEBUG ADDMENU] parent='{parent}' name='{name}' desc='{description}' hotkey='{hotkey}' ref='{reference}' prompt='{prompt}' close={closeMenu}\n");
+                if (GlobalModules.DebugMode)
+                {
+                    GlobalModules.DebugLog($"[DEBUG ADDMENU] parent='{parent}' name='{name}' desc='{description}' hotkey='{hotkey}' ref='{reference}' prompt='{prompt}' close={closeMenu}\n");
+                }
 
                 if (GlobalModules.TWXMenu != null)
                 {

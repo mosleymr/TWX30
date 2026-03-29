@@ -886,6 +886,18 @@ namespace TWXProxy.Core
     /// </summary>
     public class Script : IObserver, IDisposable
     {
+        public interface IExecutionObserver
+        {
+            void OnCommandExecuted(
+                bool prepared,
+                ushort commandId,
+                string commandName,
+                int paramCount,
+                int dynamicParamCount,
+                int rawOffset,
+                long elapsedTicks);
+        }
+
         private sealed class ArithmeticVarPlan
         {
             public required VarParam BaseVar { get; init; }
@@ -2108,12 +2120,34 @@ namespace TWXProxy.Core
 
                 switch (param.ParamType)
                 {
+                    case ScriptConstants.PARAM_CONST:
+                    case ScriptConstants.PARAM_CHAR:
+                        {
+                            CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                            runtimeParam.Value = param.LiteralValue;
+                            dispatchParams[i] = runtimeParam;
+                            break;
+                        }
+
                     case ScriptConstants.PARAM_VAR:
                         dispatchParams[i] = param.CompiledParam ?? GetOrCreatePreparedRuntimeParam(param);
                         break;
 
                     case ScriptConstants.PARAM_PROGVAR:
                         dispatchParams[i] = GetOrCreatePreparedRuntimeProgVar(param);
+                        break;
+
+                    case ScriptConstants.PARAM_SYSCONST:
+                        if (param.Indexes.Length == 0 &&
+                            param.SysConst != null &&
+                            (string.Equals(param.SysConst.Name, "TRUE", StringComparison.Ordinal) ||
+                             string.Equals(param.SysConst.Name, "FALSE", StringComparison.Ordinal) ||
+                             param.SysConst.Name.StartsWith("ANSI_", StringComparison.Ordinal)))
+                        {
+                            CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                            runtimeParam.Value = param.SysConst.Read(Array.Empty<string>());
+                            dispatchParams[i] = runtimeParam;
+                        }
                         break;
                 }
             }
@@ -2363,6 +2397,7 @@ namespace TWXProxy.Core
         private bool ExecutePrepared(PreparedScriptProgram prepared)
         {
             var server = GlobalModules.TWXServer;
+            IExecutionObserver? observer = ExecutionObserver;
 
             if (_codePos >= prepared.CodeLength)
                 return true;
@@ -2392,10 +2427,10 @@ namespace TWXProxy.Core
                         continue;
                     }
 
-                    ScriptCmd? cmd = instruction.Command;
                     ushort cmdID = instruction.CommandId;
+                    string commandName = instruction.CommandName;
 
-                    if (cmd == null)
+                    if (instruction.Handler == null)
                     {
                         if (_owner.ScriptRef != null && cmdID >= _owner.ScriptRef.CmdCount)
                             server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
@@ -2420,44 +2455,66 @@ namespace TWXProxy.Core
                         }
                     }
 
-                    if (cmd.Name == "GOTO" && instruction.Params.Length > 0)
+                    if (instruction.IsGotoCommand && instruction.Params.Length > 0)
                     {
                         string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
                         GlobalModules.DebugLog($"[Execute/GOTO] raw='{dispatchParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
                     }
 
-                    if (instruction.Params.Length < cmd.MinParams)
+                    if (instruction.Params.Length < instruction.MinParams)
                     {
                         var dbg = new System.Text.StringBuilder();
-                        dbg.AppendLine($"ERROR: Command '{cmd.Name}' (ID={cmdID}) requires at least {cmd.MinParams} parameters, but only {instruction.Params.Length} were provided.");
+                        dbg.AppendLine($"ERROR: Command '{commandName}' (ID={cmdID}) requires at least {instruction.MinParams} parameters, but only {instruction.Params.Length} were provided.");
                         dbg.AppendLine($"  RawOffset={instruction.RawOffset}, RawEndOffset={instruction.RawEndOffset}, ScriptID={instruction.ScriptId}, Line={instruction.LineNumber}");
                         File.AppendAllText("/tmp/twxproxy_debug.log", dbg.ToString());
                         goto NextInstruction;
                     }
 
-                    if (cmd.Name == "RETURN")
+                    if (instruction.IsReturnCommand)
                     {
                         GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
+                        long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
                         Return();
+                        if (observer != null)
+                        {
+                            observer.OnCommandExecuted(
+                                true,
+                                cmdID,
+                                commandName,
+                                instruction.Params.Length,
+                                instruction.DynamicParamIndexes.Length,
+                                instruction.RawOffset,
+                                Stopwatch.GetTimestamp() - returnStart);
+                        }
                         GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
                         goto NextInstruction;
                     }
 
-                    if (cmd.OnCmd == null)
-                        throw new Exception($"Command {cmd.Name} has no handler");
-
                     if (GlobalModules.VerboseDebugMode)
-                        GlobalModules.DebugLog($"[Dispatch] CMD={cmd.Name} paramCount={instruction.Params.Length}\n");
+                        GlobalModules.DebugLog($"[Dispatch] CMD={commandName} paramCount={instruction.Params.Length}\n");
 
                     CmdAction action;
+                    long commandStart = observer != null ? Stopwatch.GetTimestamp() : 0;
                     try
                     {
-                        action = cmd.OnCmd(this, dispatchParams);
+                        action = instruction.Handler(this, dispatchParams);
                     }
                     catch (Exception ex)
                     {
-                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {cmd.Name}: {ex.Message}\n");
-                        throw new ScriptException($"Error executing command '{cmd.Name}': {ex.Message}", ex);
+                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {commandName}: {ex.Message}\n");
+                        throw new ScriptException($"Error executing command '{commandName}': {ex.Message}", ex);
+                    }
+
+                    if (observer != null)
+                    {
+                        observer.OnCommandExecuted(
+                            true,
+                            cmdID,
+                            commandName,
+                            instruction.Params.Length,
+                            instruction.DynamicParamIndexes.Length,
+                            instruction.RawOffset,
+                            Stopwatch.GetTimestamp() - commandStart);
                     }
 
                     switch (action)
@@ -2469,7 +2526,7 @@ namespace TWXProxy.Core
                         case CmdAction.Pause:
                             _paused = true;
                             _pausedReason = PauseReason.Command;
-                            GlobalModules.DebugLog($"[PAUSED_BY] cmd='{cmd.Name}' id={cmdID}\n");
+                            GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
                             GlobalModules.FlushDebugLog();
                             return false;
 
@@ -2529,6 +2586,7 @@ namespace TWXProxy.Core
         public bool Execute()
         {
             var server = GlobalModules.TWXServer;
+            IExecutionObserver? observer = ExecutionObserver;
             
             // Loop detection: check if we're repeatedly hitting the same code position
             if (_codePos == _lastCodePos && (DateTime.Now - _lastLoopCheck).TotalMilliseconds < 100)
@@ -2824,8 +2882,9 @@ namespace TWXProxy.Core
                     }
                     
                     var cmd = _owner.ScriptRef.GetCmd(cmdID);
+                    string commandName = cmd.Name;
 
-                    if (cmd.Name == "GOTO" && _cmdParams.Count > 0)
+                    if (commandName == "GOTO" && _cmdParams.Count > 0)
                     {
                         string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
                         GlobalModules.DebugLog($"[Execute/GOTO] raw='{_cmdParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
@@ -2835,7 +2894,7 @@ namespace TWXProxy.Core
                     if (_cmdParams.Count < cmd.MinParams)
                     {
                         var _dbgSb = new System.Text.StringBuilder();
-                        _dbgSb.AppendLine($"ERROR: Command '{cmd.Name}' (ID={cmdID}) requires at least {cmd.MinParams} parameters, but only {_cmdParams.Count} were provided.");
+                        _dbgSb.AppendLine($"ERROR: Command '{commandName}' (ID={cmdID}) requires at least {cmd.MinParams} parameters, but only {_cmdParams.Count} were provided.");
                         int dumpStart = Math.Max(0, cmdStartPos - 20);
                         int dumpLen = Math.Min(40, code.Length - dumpStart);
                         _dbgSb.AppendLine($"  Code pos: cmdStart={cmdStartPos}, current={_codePos}, total={code.Length}");
@@ -2852,20 +2911,33 @@ namespace TWXProxy.Core
                     }
                     
                     // Handle RETURN before dispatch - stack/flow is maintained by Script itself.
-                    if (cmd.Name == "RETURN")
+                    if (commandName == "RETURN")
                     {
                         GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
+                        long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
                         Return();
+                        if (observer != null)
+                        {
+                            observer.OnCommandExecuted(
+                                false,
+                                cmdID,
+                                commandName,
+                                _cmdParams.Count,
+                                -1,
+                                cmdStartPos - 5,
+                                Stopwatch.GetTimestamp() - returnStart);
+                        }
                         GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
                         continue;
                     }
                     
                     if (cmd.OnCmd == null)
-                        throw new Exception($"Command {cmd.Name} has no handler");
+                        throw new Exception($"Command {commandName} has no handler");
                     
                     if (GlobalModules.VerboseDebugMode)
-                        GlobalModules.DebugLog($"[Dispatch] CMD={cmd.Name} paramCount={_cmdParams.Count}\n");
+                        GlobalModules.DebugLog($"[Dispatch] CMD={commandName} paramCount={_cmdParams.Count}\n");
                     CmdAction action;
+                    long commandStart = observer != null ? Stopwatch.GetTimestamp() : 0;
                     try
                     {
                         CmdParam[] dispatchParams = GetDispatchParamBuffer(_cmdParams.Count);
@@ -2876,8 +2948,20 @@ namespace TWXProxy.Core
                     }
                     catch (Exception ex)
                     {
-                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {cmd.Name}: {ex.Message}\n");
-                        throw new ScriptException($"Error executing command '{cmd.Name}': {ex.Message}", ex);
+                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {commandName}: {ex.Message}\n");
+                        throw new ScriptException($"Error executing command '{commandName}': {ex.Message}", ex);
+                    }
+
+                    if (observer != null)
+                    {
+                        observer.OnCommandExecuted(
+                            false,
+                            cmdID,
+                            commandName,
+                            _cmdParams.Count,
+                            -1,
+                            cmdStartPos - 5,
+                            Stopwatch.GetTimestamp() - commandStart);
                     }
 
                     // Handle command actions
@@ -2896,7 +2980,7 @@ namespace TWXProxy.Core
                         case CmdAction.Pause:
                             _paused = true;
                             _pausedReason = PauseReason.Command;
-                            GlobalModules.DebugLog($"[PAUSED_BY] cmd='{cmd.Name}' id={cmdID}\n");
+                            GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
                             GlobalModules.FlushDebugLog();
                             return false; // Pause execution
                         
@@ -3294,6 +3378,7 @@ namespace TWXProxy.Core
             _waitForActive ||
             _triggers.Values.Any(list => list.Count > 0);
         public bool PreferPreparedExecution { get; set; } = false;
+        public IExecutionObserver? ExecutionObserver { get; set; }
         public int DecimalPrecision { get; set; }
         public string ProgramDir => _owner.ProgramDir;
         public string ScriptName => Path.GetFileName(_cmp?.ScriptFile ?? string.Empty);

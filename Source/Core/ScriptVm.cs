@@ -43,6 +43,11 @@ namespace TWXProxy.Core
         public ushort CommandId { get; init; }
         public bool IsLabel { get; init; }
         public ScriptCmd? Command { get; init; }
+        public string CommandName { get; init; } = string.Empty;
+        public ScriptCmdHandler? Handler { get; init; }
+        public ushort MinParams { get; init; }
+        public bool IsGotoCommand { get; init; }
+        public bool IsReturnCommand { get; init; }
         public PreparedParam[] Params { get; init; } = Array.Empty<PreparedParam>();
         public int NextInstructionIndex { get; set; } = -1;
         public CmdParam[]? RuntimeDispatchParams { get; set; }
@@ -66,7 +71,7 @@ namespace TWXProxy.Core
         public char ArithmeticOperator { get; init; }
         public double ArithmeticRightValue { get; init; }
         public CmdParam? RuntimeParam { get; set; }
-        public bool IsDirectReference { get; init; }
+        public bool IsDirectReference { get; set; }
     }
 
     internal static class PreparedScriptDecoder
@@ -135,9 +140,18 @@ namespace TWXProxy.Core
                         LineNumber = lineNumber,
                         CommandId = commandId,
                         Command = command,
+                        CommandName = command?.Name ?? string.Empty,
+                        Handler = command?.OnCmd,
+                        MinParams = command != null ? (ushort)command.MinParams : (ushort)0,
+                        IsGotoCommand = string.Equals(command?.Name, "GOTO", StringComparison.Ordinal),
+                        IsReturnCommand = string.Equals(command?.Name, "RETURN", StringComparison.Ordinal),
                         Params = parameters.ToArray(),
-                        DynamicParamIndexes = BuildDynamicParamIndexes(parameters)
+                        DynamicParamIndexes = BuildDynamicParamIndexes(MarkDirectReferences(parameters, command))
                     };
+
+                    PreparedInitialization initialization = BuildInitialDispatchState(instruction.Params);
+                    instruction.RuntimeDispatchParams = initialization.DispatchParams;
+                    instruction.DirectParamsInitialized = initialization.DirectParamsInitialized;
                 }
 
                 instructionIndexByOffset[rawOffset] = instructions.Count;
@@ -268,6 +282,35 @@ namespace TWXProxy.Core
                 : null;
         }
 
+        private static List<PreparedParam> MarkDirectReferences(List<PreparedParam> parameters, ScriptCmd? command)
+        {
+            for (int i = 0; i < parameters.Count; i++)
+            {
+                PreparedParam param = parameters[i];
+                if (param.IsDirectReference)
+                    continue;
+
+                ParamKind paramKind = command?.GetParamKind(i) ?? ParamKind.Value;
+                if (paramKind == ParamKind.Variable)
+                    continue;
+
+                switch (param.ParamType)
+                {
+                    case ScriptConstants.PARAM_CONST:
+                    case ScriptConstants.PARAM_CHAR:
+                        param.IsDirectReference = true;
+                        break;
+
+                    case ScriptConstants.PARAM_SYSCONST:
+                        if (param.Indexes.Length == 0 && IsStaticSysConst(param.SysConst))
+                            param.IsDirectReference = true;
+                        break;
+                }
+            }
+
+            return parameters;
+        }
+
         private static int[] BuildDynamicParamIndexes(List<PreparedParam> parameters)
         {
             if (parameters.Count == 0)
@@ -284,6 +327,68 @@ namespace TWXProxy.Core
                 ? Array.Empty<int>()
                 : dynamicIndexes.ToArray();
         }
+
+        private static bool IsStaticSysConst(ScriptSysConst? sysConst)
+        {
+            if (sysConst == null)
+                return false;
+
+            string name = sysConst.Name;
+            return string.Equals(name, "TRUE", StringComparison.Ordinal) ||
+                string.Equals(name, "FALSE", StringComparison.Ordinal) ||
+                name.StartsWith("ANSI_", StringComparison.Ordinal);
+        }
+
+        private static PreparedInitialization BuildInitialDispatchState(PreparedParam[] parameters)
+        {
+            if (parameters.Length == 0)
+                return new PreparedInitialization(Array.Empty<CmdParam>(), true);
+
+            var dispatchParams = new CmdParam[parameters.Length];
+            bool directParamsInitialized = true;
+
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                PreparedParam param = parameters[i];
+                if (!param.IsDirectReference)
+                    continue;
+
+                CmdParam? runtimeParam = TryCreateStaticDirectParam(param);
+                if (runtimeParam == null)
+                {
+                    directParamsInitialized = false;
+                    continue;
+                }
+
+                dispatchParams[i] = runtimeParam;
+                param.RuntimeParam = runtimeParam;
+            }
+
+            return new PreparedInitialization(dispatchParams, directParamsInitialized);
+        }
+
+        private static CmdParam? TryCreateStaticDirectParam(PreparedParam param)
+        {
+            switch (param.ParamType)
+            {
+                case ScriptConstants.PARAM_CONST:
+                case ScriptConstants.PARAM_CHAR:
+                    return new CmdParam { Value = param.LiteralValue };
+
+                case ScriptConstants.PARAM_VAR:
+                    return param.CompiledParam;
+
+                case ScriptConstants.PARAM_SYSCONST:
+                    if (param.Indexes.Length == 0 && IsStaticSysConst(param.SysConst))
+                        return new CmdParam { Value = param.SysConst!.Read(Array.Empty<string>()) };
+                    return null;
+
+                default:
+                    return null;
+            }
+        }
+
+        private readonly record struct PreparedInitialization(CmdParam[] DispatchParams, bool DirectParamsInitialized);
 
         private static bool TryDecodeArithmetic(
             string varName,

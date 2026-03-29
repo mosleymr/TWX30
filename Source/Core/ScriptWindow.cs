@@ -318,8 +318,8 @@ namespace TWXProxy.Core
         {
             var server = GlobalModules.TWXServer;
             
-            // Debug: show what menu we're displaying
-            GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
+            if (GlobalModules.DebugMode)
+                GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
             
             // Display menu header with prompt if available
             if (!string.IsNullOrEmpty(menu.Prompt))
@@ -329,21 +329,24 @@ namespace TWXProxy.Core
             
             // Get all menu items that have this menu as their parent
             // Note: Parent '0' means display in all menus (like root-level items)
-            GlobalModules.DebugLog($"[DEBUG] Checking children for menu '{menu.Name}' (parent='{menu.Parent}'):\n");
-            foreach (var m in _menus.Values)
+            if (GlobalModules.DebugMode)
             {
-                bool parentMatch = m.Parent == menu.Name;
-                bool zeroMatch = m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN");
-                bool included = parentMatch || zeroMatch;
-                GlobalModules.DebugLog($"[DEBUG]   Item '{m.Name}' parent='{m.Parent}' hotkey='{m.Hotkey}': parentMatch={parentMatch}, zeroMatch={zeroMatch}, included={included}\n");
+                GlobalModules.DebugLog($"[DEBUG] Checking children for menu '{menu.Name}' (parent='{menu.Parent}'):\n");
+                foreach (var m in _menus.Values)
+                {
+                    bool parentMatch = m.Parent == menu.Name;
+                    bool zeroMatch = m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN");
+                    bool included = parentMatch || zeroMatch;
+                    GlobalModules.DebugLog($"[DEBUG]   Item '{m.Name}' parent='{m.Parent}' hotkey='{m.Hotkey}': parentMatch={parentMatch}, zeroMatch={zeroMatch}, included={included}\n");
+                }
             }
             var childItems = _menus.Values.Where(m => 
                 m.Parent == menu.Name || 
                 (m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN"))
             ).ToList();
             
-            // Debug: show child items found
-            GlobalModules.DebugLog($"[DEBUG] Found {childItems.Count} child items\n");
+            if (GlobalModules.DebugMode)
+                GlobalModules.DebugLog($"[DEBUG] Found {childItems.Count} child items\n");
             
             // Display menu items
             foreach (var item in childItems)
