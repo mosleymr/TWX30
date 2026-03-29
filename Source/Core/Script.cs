@@ -886,6 +886,13 @@ namespace TWXProxy.Core
     /// </summary>
     public class Script : IObserver, IDisposable
     {
+        private sealed class ArithmeticVarPlan
+        {
+            public required VarParam BaseVar { get; init; }
+            public required char Operator { get; init; }
+            public required double RightValue { get; init; }
+        }
+
         private int _codePos;
         private List<IScriptWindow> _windowList;
         private List<object> _menuItemList;
@@ -921,6 +928,8 @@ namespace TWXProxy.Core
         private Dictionary<int, CmdParam[]> _dispatchParamCache;
         private CmdParam?[] _scratchParams;
         private Dictionary<string, ProgVarParam> _progVarCache;
+        private Dictionary<string, ArithmeticVarPlan?> _arithVarCache;
+        private Dictionary<int, Stack<string[]>> _preparedIndexBufferCache;
         private string _libCmdName = string.Empty;
         private List<string> _libCmdLoaded;
         public Script(ModInterpreter owner)
@@ -936,6 +945,8 @@ namespace TWXProxy.Core
             _dispatchParamCache = new Dictionary<int, CmdParam[]>();
             _scratchParams = Array.Empty<CmdParam?>();
             _progVarCache = new Dictionary<string, ProgVarParam>(StringComparer.OrdinalIgnoreCase);
+            _arithVarCache = new Dictionary<string, ArithmeticVarPlan?>(StringComparer.OrdinalIgnoreCase);
+            _preparedIndexBufferCache = new Dictionary<int, Stack<string[]>>();
             _windowList = new List<IScriptWindow>();
             _menuItemList = new List<object>();
             _libCmdLoaded = new List<string>();
@@ -1614,43 +1625,70 @@ namespace TWXProxy.Core
         /// </summary>
         private CmdParam? EvaluateArithExprVar(VarParam param)
         {
-            int opIdx = FindArithOpInVarName(param.Name);
-            if (opIdx < 0) return null;
+            if (!_arithVarCache.TryGetValue(param.Name, out ArithmeticVarPlan? plan))
+            {
+                int opIdx = FindArithOpInVarName(param.Name);
+                if (opIdx < 0)
+                {
+                    _arithVarCache[param.Name] = null;
+                    return null;
+                }
 
-            string baseVarName = param.Name.Substring(0, opIdx);
-            char op            = param.Name[opIdx];
-            string rhsStr      = param.Name.Substring(opIdx + 1);
+                string baseVarName = param.Name.Substring(0, opIdx);
+                char op = param.Name[opIdx];
+                string rhsStr = param.Name.Substring(opIdx + 1);
 
-            if (!double.TryParse(rhsStr, NumberStyles.Float,
-                                 CultureInfo.InvariantCulture, out double rhs))
+                if (!double.TryParse(rhsStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double rhs))
+                {
+                    _arithVarCache[param.Name] = null;
+                    return null;
+                }
+
+                VarParam? baseVar = null;
+                foreach (var p in (_cmp?.ParamList ?? Enumerable.Empty<CmdParam>()))
+                {
+                    if (p is VarParam vp &&
+                        string.Equals(vp.Name, baseVarName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        baseVar = vp;
+                        break;
+                    }
+                }
+
+                if (baseVar == null)
+                {
+                    _arithVarCache[param.Name] = null;
+                    return null;
+                }
+
+                plan = new ArithmeticVarPlan
+                {
+                    BaseVar = baseVar,
+                    Operator = op,
+                    RightValue = rhs
+                };
+                _arithVarCache[param.Name] = plan;
+            }
+
+            if (plan == null)
                 return null;
 
-            // Find the base VarParam in the compiled parameter list.
-            VarParam? baseVar = null;
-            foreach (var p in (_cmp?.ParamList ?? Enumerable.Empty<CmdParam>()))
-            {
-                if (p is VarParam vp &&
-                    string.Equals(vp.Name, baseVarName, StringComparison.OrdinalIgnoreCase))
-                { baseVar = vp; break; }
-            }
-            if (baseVar == null) return null;
-
-            double.TryParse(baseVar.Value,
+            double.TryParse(plan.BaseVar.Value,
                             NumberStyles.Float,
                             CultureInfo.InvariantCulture,
                             out double baseVal);
 
-            double result = op switch
+            double result = plan.Operator switch
             {
-                '+' => baseVal + rhs,
-                '-' => baseVal - rhs,
-                '*' => baseVal * rhs,
-                '/' when rhs != 0 => baseVal / rhs,
+                '+' => baseVal + plan.RightValue,
+                '-' => baseVal - plan.RightValue,
+                '*' => baseVal * plan.RightValue,
+                '/' when plan.RightValue != 0 => baseVal / plan.RightValue,
                 _   => baseVal
             };
 
             GlobalModules.DebugLog(
-                $"[ArithVar] '{param.Name}': {baseVarName}={baseVal} {op} {rhs} = {result}\n");
+                $"[ArithVar] '{param.Name}': {plan.BaseVar.Name}={baseVal} {plan.Operator} {plan.RightValue} = {result}\n");
 
             long intResult = (long)result;
             string valStr = (result == intResult)
@@ -2034,60 +2072,106 @@ namespace TWXProxy.Core
             return progVar;
         }
 
-        private string[] EvaluatePreparedIndexes(PreparedParam[] indexes)
+        private string[] RentPreparedIndexBuffer(int count)
         {
-            if (indexes.Length == 0)
-                return Array.Empty<string>();
+            if (!_preparedIndexBufferCache.TryGetValue(count, out var buffers))
+            {
+                buffers = new Stack<string[]>();
+                _preparedIndexBufferCache[count] = buffers;
+            }
 
-            var values = new string[indexes.Length];
+            return buffers.Count > 0
+                ? buffers.Pop()
+                : new string[count];
+        }
+
+        private void ReturnPreparedIndexBuffer(string[] buffer, int count)
+        {
+            Array.Clear(buffer, 0, count);
+            _preparedIndexBufferCache[count].Push(buffer);
+        }
+
+        private void FillPreparedIndexBuffer(PreparedParam[] indexes, string[] buffer)
+        {
             for (int i = 0; i < indexes.Length; i++)
-                values[i] = EvaluatePreparedIndexValue(indexes[i]);
+                buffer[i] = EvaluatePreparedIndexValue(indexes[i]);
+        }
 
-            return values;
+        private string EvaluatePreparedArithmeticValue(PreparedParam param)
+        {
+            if (!param.HasArithmeticExpression || param.ArithmeticBaseVar == null)
+                return string.Empty;
+
+            double.TryParse(
+                param.ArithmeticBaseVar.Value,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out double baseVal);
+
+            double rhs = param.ArithmeticRightValue;
+            double result = param.ArithmeticOperator switch
+            {
+                '+' => baseVal + rhs,
+                '-' => baseVal - rhs,
+                '*' => baseVal * rhs,
+                '/' when rhs != 0 => baseVal / rhs,
+                _ => baseVal
+            };
+
+            long intResult = (long)result;
+            return result == intResult
+                ? intResult.ToString()
+                : result.ToString("R", CultureInfo.InvariantCulture);
         }
 
         private string EvaluatePreparedIndexValue(PreparedParam param)
         {
-            if (_cmp == null)
-                return string.Empty;
-
             switch (param.ParamType)
             {
                 case ScriptConstants.PARAM_CONST:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
-                        return NormalizePreparedIndexValue(_cmp.ParamList[param.ParamId].Value);
-                    return string.Empty;
+                    return NormalizePreparedIndexValue(param.LiteralValue);
 
                 case ScriptConstants.PARAM_VAR:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
-                    {
-                        CmdParam indexParam = _cmp.ParamList[param.ParamId];
-                        if (indexParam is VarParam varParam)
-                        {
-                            var arithResult = EvaluateArithExprVar(varParam);
-                            if (arithResult != null)
-                                return NormalizePreparedIndexValue(arithResult.Value);
-                        }
+                    if (param.HasArithmeticExpression)
+                        return NormalizePreparedIndexValue(EvaluatePreparedArithmeticValue(param));
 
-                        return NormalizePreparedIndexValue(EvaluatePreparedArrayIndexes(param.Indexes, indexParam).Value);
+                    if (param.CompiledParam != null)
+                    {
+                        return NormalizePreparedIndexValue(EvaluatePreparedArrayIndexes(param.Indexes, param.CompiledParam).Value);
                     }
                     return string.Empty;
 
                 case ScriptConstants.PARAM_PROGVAR:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    if (param.ProgVarName.Length > 0)
                     {
-                        var nameParam = _cmp.ParamList[param.ParamId];
-                        string progVarName = nameParam is VarParam vp ? vp.Name : nameParam.Value;
-                        var progVar = GetOrCreatePreparedProgVar(progVarName);
+                        var progVar = GetOrCreatePreparedProgVar(param.ProgVarName);
                         return NormalizePreparedIndexValue(EvaluatePreparedArrayIndexes(param.Indexes, progVar).Value);
                     }
                     return string.Empty;
 
                 case ScriptConstants.PARAM_SYSCONST:
-                    return NormalizePreparedIndexValue((param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId))?.Read(Array.Empty<string>()) ?? string.Empty);
+                    {
+                        ScriptSysConst? sysConst = param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId);
+                        if (sysConst == null)
+                            return string.Empty;
+
+                        if (param.Indexes.Length == 0)
+                            return NormalizePreparedIndexValue(sysConst.Read(Array.Empty<string>()));
+
+                        string[] indexValues = RentPreparedIndexBuffer(param.Indexes.Length);
+                        try
+                        {
+                            FillPreparedIndexBuffer(param.Indexes, indexValues);
+                            return NormalizePreparedIndexValue(sysConst.Read(indexValues));
+                        }
+                        finally
+                        {
+                            ReturnPreparedIndexBuffer(indexValues, param.Indexes.Length);
+                        }
+                    }
 
                 case ScriptConstants.PARAM_CHAR:
-                    return ((char)param.CharCode).ToString();
+                    return param.LiteralValue;
 
                 default:
                     return string.Empty;
@@ -2102,10 +2186,11 @@ namespace TWXProxy.Core
             if (baseParam is not VarParam varParam)
                 return baseParam;
 
-            string[] indexValues = EvaluatePreparedIndexes(indexes);
+            string[] indexValues = RentPreparedIndexBuffer(indexes.Length);
 
             try
             {
+                FillPreparedIndexBuffer(indexes, indexValues);
                 var result = varParam.GetIndexVar(indexValues);
 
                 string traceName = varParam.Name ?? string.Empty;
@@ -2126,54 +2211,67 @@ namespace TWXProxy.Core
                 GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
                 return baseParam;
             }
+            finally
+            {
+                ReturnPreparedIndexBuffer(indexValues, indexes.Length);
+            }
         }
 
         private CmdParam EvaluatePreparedParam(PreparedParam param, int slotIndex)
         {
-            if (_cmp == null)
-                return GetScratchParam(slotIndex, string.Empty);
-
             switch (param.ParamType)
             {
                 case ScriptConstants.PARAM_CONST:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
-                        return GetScratchParam(slotIndex, _cmp.ParamList[param.ParamId].Value);
-                    return GetScratchParam(slotIndex, string.Empty);
+                    return GetScratchParam(slotIndex, param.LiteralValue);
 
                 case ScriptConstants.PARAM_VAR:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
-                    {
-                        CmdParam baseParam = _cmp.ParamList[param.ParamId];
-                        if (baseParam is VarParam varParam)
-                        {
-                            var arithResult = EvaluateArithExprVar(varParam);
-                            if (arithResult != null)
-                                return GetScratchParam(slotIndex, arithResult.Value);
-                        }
+                    if (param.HasArithmeticExpression)
+                        return GetScratchParam(slotIndex, EvaluatePreparedArithmeticValue(param));
 
-                        return EvaluatePreparedArrayIndexes(param.Indexes, baseParam);
+                    if (param.CompiledParam != null)
+                    {
+                        return EvaluatePreparedArrayIndexes(param.Indexes, param.CompiledParam);
                     }
                     return GetScratchParam(slotIndex, string.Empty);
 
                 case ScriptConstants.PARAM_PROGVAR:
-                    if (param.ParamId >= 0 && param.ParamId < _cmp.ParamList.Count)
+                    if (param.ProgVarName.Length > 0)
                     {
-                        var nameParam = _cmp.ParamList[param.ParamId];
-                        string progVarName = nameParam is VarParam vp ? vp.Name : nameParam.Value;
-                        var progVar = GetOrCreatePreparedProgVar(progVarName);
+                        var progVar = GetOrCreatePreparedProgVar(param.ProgVarName);
                         return EvaluatePreparedArrayIndexes(param.Indexes, progVar);
                     }
                     return GetScratchParam(slotIndex, string.Empty);
 
                 case ScriptConstants.PARAM_SYSCONST:
                     {
-                        string[] indexValues = EvaluatePreparedIndexes(param.Indexes);
-                        string constValue = (param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId))?.Read(indexValues) ?? string.Empty;
+                        ScriptSysConst? sysConst = param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId);
+                        if (sysConst == null)
+                            return GetScratchParam(slotIndex, string.Empty);
+
+                        string constValue;
+                        if (param.Indexes.Length == 0)
+                        {
+                            constValue = sysConst.Read(Array.Empty<string>());
+                        }
+                        else
+                        {
+                            string[] indexValues = RentPreparedIndexBuffer(param.Indexes.Length);
+                            try
+                            {
+                                FillPreparedIndexBuffer(param.Indexes, indexValues);
+                                constValue = sysConst.Read(indexValues);
+                            }
+                            finally
+                            {
+                                ReturnPreparedIndexBuffer(indexValues, param.Indexes.Length);
+                            }
+                        }
+
                         return GetScratchParam(slotIndex, constValue);
                     }
 
                 case ScriptConstants.PARAM_CHAR:
-                    return GetScratchParam(slotIndex, ((char)param.CharCode).ToString());
+                    return GetScratchParam(slotIndex, param.LiteralValue);
 
                 default:
                     return GetScratchParam(slotIndex, string.Empty);
@@ -2208,14 +2306,7 @@ namespace TWXProxy.Core
                         if (_codePos >= prepared.CodeLength)
                             return true;
 
-                        if (!prepared.TryGetInstructionIndex(_codePos, out instructionIndex))
-                        {
-                            if (_codePos == prepared.CodeLength)
-                                return true;
-
-                            throw new Exception($"Prepared instruction not found for code position {_codePos}");
-                        }
-
+                        instructionIndex = instruction.NextInstructionIndex;
                         continue;
                     }
 
@@ -2298,6 +2389,12 @@ namespace TWXProxy.Core
                     {
                         GlobalModules.FlushDebugLog();
                         return true;
+                    }
+
+                    if (_codePos == instruction.RawEndOffset)
+                    {
+                        instructionIndex = instruction.NextInstructionIndex;
+                        continue;
                     }
 
                     if (!prepared.TryGetInstructionIndex(_codePos, out instructionIndex))
@@ -2479,7 +2576,7 @@ namespace TWXProxy.Core
                                     SkipArrayIndexes(code, ref _codePos);
                                 }
                                 
-                                var placeholder = new CmdParam { Value = "" };
+                                var placeholder = GetScratchParam(_cmdParams.Count, string.Empty);
                                 _cmdParams.Add(placeholder);
                             }
                             else
@@ -2521,7 +2618,7 @@ namespace TWXProxy.Core
                                     // Pascal passes per-command parameter values, so mutating a
                                     // constant parameter during execution must not rewrite the
                                     // shared compiled ParamList entry for later commands.
-                                    _cmdParams.Add(new CmdParam { Value = param.Value });
+                                    _cmdParams.Add(GetScratchParam(_cmdParams.Count, param.Value));
                                 }
                                 else
                                 {
@@ -2557,7 +2654,7 @@ namespace TWXProxy.Core
                                 throw new Exception($"System constant {constID} not found");
                             
                             string constValue = sysConst.Read(sysConstIndexValues);
-                            var constParam = new CmdParam { Value = constValue };
+                            var constParam = GetScratchParam(_cmdParams.Count, constValue);
                             _cmdParams.Add(constParam);
                         }
                         else if (paramType == ScriptConstants.PARAM_PROGVAR)
@@ -2584,7 +2681,7 @@ namespace TWXProxy.Core
                             }
 
                             // Create a ProgVarParam that reads/writes to storage automatically
-                            var progVarParam = new ProgVarParam(progVarName, _owner);
+                            var progVarParam = GetOrCreatePreparedProgVar(progVarName);
                             _cmdParams.Add(progVarParam);
                         }
                         else if (paramType == ScriptConstants.PARAM_CHAR)
@@ -2593,7 +2690,7 @@ namespace TWXProxy.Core
                                 return true;
                             
                             byte charCode = code[_codePos++];
-                            var charParam = new CmdParam { Value = ((char)charCode).ToString() };
+                            var charParam = GetScratchParam(_cmdParams.Count, ((char)charCode).ToString());
                             _cmdParams.Add(charParam);
                         }
                         else
@@ -2676,7 +2773,11 @@ namespace TWXProxy.Core
                     CmdAction action;
                     try
                     {
-                        action = cmd.OnCmd(this, _cmdParams.ToArray());
+                        CmdParam[] dispatchParams = GetDispatchParamBuffer(_cmdParams.Count);
+                        for (int i = 0; i < _cmdParams.Count; i++)
+                            dispatchParams[i] = _cmdParams[i];
+
+                        action = cmd.OnCmd(this, dispatchParams);
                     }
                     catch (Exception ex)
                     {

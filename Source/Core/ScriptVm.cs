@@ -1,15 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace TWXProxy.Core
 {
     public sealed class PreparedScriptProgram
     {
-        private readonly Dictionary<int, int> _instructionIndexByOffset;
+        private readonly int[] _instructionIndexByOffset;
 
         public PreparedScriptProgram(
             PreparedInstruction[] instructions,
-            Dictionary<int, int> instructionIndexByOffset,
+            int[] instructionIndexByOffset,
             int codeLength)
         {
             Instructions = instructions;
@@ -22,7 +23,14 @@ namespace TWXProxy.Core
 
         public bool TryGetInstructionIndex(int rawOffset, out int instructionIndex)
         {
-            return _instructionIndexByOffset.TryGetValue(rawOffset, out instructionIndex);
+            if (rawOffset < 0 || rawOffset >= _instructionIndexByOffset.Length)
+            {
+                instructionIndex = -1;
+                return false;
+            }
+
+            instructionIndex = _instructionIndexByOffset[rawOffset];
+            return instructionIndex >= 0;
         }
     }
 
@@ -36,6 +44,7 @@ namespace TWXProxy.Core
         public bool IsLabel { get; init; }
         public ScriptCmd? Command { get; init; }
         public PreparedParam[] Params { get; init; } = Array.Empty<PreparedParam>();
+        public int NextInstructionIndex { get; set; } = -1;
     }
 
     public sealed class PreparedParam
@@ -46,6 +55,13 @@ namespace TWXProxy.Core
         public byte CharCode { get; init; }
         public ScriptSysConst? SysConst { get; init; }
         public PreparedParam[] Indexes { get; init; } = Array.Empty<PreparedParam>();
+        public CmdParam? CompiledParam { get; init; }
+        public string LiteralValue { get; init; } = string.Empty;
+        public string ProgVarName { get; init; } = string.Empty;
+        public bool HasArithmeticExpression { get; init; }
+        public VarParam? ArithmeticBaseVar { get; init; }
+        public char ArithmeticOperator { get; init; }
+        public double ArithmeticRightValue { get; init; }
     }
 
     internal static class PreparedScriptDecoder
@@ -54,7 +70,8 @@ namespace TWXProxy.Core
         {
             byte[] code = cmp.Code;
             var instructions = new List<PreparedInstruction>();
-            var instructionIndexByOffset = new Dictionary<int, int>();
+            var instructionIndexByOffset = new int[code.Length + 1];
+            Array.Fill(instructionIndexByOffset, -1);
             int codePos = 0;
 
             while (codePos < code.Length)
@@ -121,7 +138,13 @@ namespace TWXProxy.Core
                 instructions.Add(instruction);
             }
 
-            return new PreparedScriptProgram(instructions.ToArray(), instructionIndexByOffset, code.Length);
+            instructionIndexByOffset[code.Length] = instructions.Count;
+
+            var preparedInstructions = instructions.ToArray();
+            for (int i = 0; i < preparedInstructions.Length; i++)
+                preparedInstructions[i].NextInstructionIndex = i + 1;
+
+            return new PreparedScriptProgram(preparedInstructions, instructionIndexByOffset, code.Length);
         }
 
         private static PreparedParam DecodeParam(byte[] code, ref int codePos, ScriptCmp cmp)
@@ -132,23 +155,9 @@ namespace TWXProxy.Core
             byte paramType = code[codePos++];
             return paramType switch
             {
-                ScriptConstants.PARAM_CONST => new PreparedParam
-                {
-                    ParamType = paramType,
-                    ParamId = ReadInt32(code, ref codePos)
-                },
-                ScriptConstants.PARAM_VAR => new PreparedParam
-                {
-                    ParamType = paramType,
-                    ParamId = ReadInt32(code, ref codePos),
-                    Indexes = DecodeIndexes(code, ref codePos, cmp)
-                },
-                ScriptConstants.PARAM_PROGVAR => new PreparedParam
-                {
-                    ParamType = paramType,
-                    ParamId = ReadInt32(code, ref codePos),
-                    Indexes = DecodeIndexes(code, ref codePos, cmp)
-                },
+                ScriptConstants.PARAM_CONST => DecodeConstParam(code, ref codePos, cmp, paramType),
+                ScriptConstants.PARAM_VAR => DecodeVarParam(code, ref codePos, cmp, paramType),
+                ScriptConstants.PARAM_PROGVAR => DecodeProgVarParam(code, ref codePos, cmp, paramType),
                 ScriptConstants.PARAM_SYSCONST => new PreparedParam
                 {
                     ParamType = paramType,
@@ -159,9 +168,69 @@ namespace TWXProxy.Core
                 ScriptConstants.PARAM_CHAR => new PreparedParam
                 {
                     ParamType = paramType,
-                    CharCode = ReadByte(code, ref codePos)
+                    CharCode = ReadByte(code, ref codePos),
+                    LiteralValue = ((char)code[codePos - 1]).ToString()
                 },
                 _ => throw new Exception($"Unknown parameter type {paramType} at byte offset {codePos - 1}")
+            };
+        }
+
+        private static PreparedParam DecodeConstParam(byte[] code, ref int codePos, ScriptCmp cmp, byte paramType)
+        {
+            int paramId = ReadInt32(code, ref codePos);
+            CmdParam? compiledParam = TryGetParam(cmp, paramId);
+            return new PreparedParam
+            {
+                ParamType = paramType,
+                ParamId = paramId,
+                CompiledParam = compiledParam,
+                LiteralValue = compiledParam?.Value ?? string.Empty
+            };
+        }
+
+        private static PreparedParam DecodeVarParam(byte[] code, ref int codePos, ScriptCmp cmp, byte paramType)
+        {
+            int paramId = ReadInt32(code, ref codePos);
+            CmdParam? compiledParam = TryGetParam(cmp, paramId);
+            VarParam? varParam = compiledParam as VarParam;
+            PreparedParam[] indexes = DecodeIndexes(code, ref codePos, cmp);
+
+            bool hasArithmeticExpression = false;
+            VarParam? arithmeticBaseVar = null;
+            char arithmeticOperator = '\0';
+            double arithmeticRightValue = 0;
+
+            if (varParam != null && TryDecodeArithmetic(varParam.Name, cmp, out arithmeticBaseVar, out arithmeticOperator, out arithmeticRightValue))
+                hasArithmeticExpression = true;
+
+            return new PreparedParam
+            {
+                ParamType = paramType,
+                ParamId = paramId,
+                CompiledParam = compiledParam,
+                Indexes = indexes,
+                HasArithmeticExpression = hasArithmeticExpression,
+                ArithmeticBaseVar = arithmeticBaseVar,
+                ArithmeticOperator = arithmeticOperator,
+                ArithmeticRightValue = arithmeticRightValue
+            };
+        }
+
+        private static PreparedParam DecodeProgVarParam(byte[] code, ref int codePos, ScriptCmp cmp, byte paramType)
+        {
+            int paramId = ReadInt32(code, ref codePos);
+            CmdParam? compiledParam = TryGetParam(cmp, paramId);
+            string progVarName = compiledParam is VarParam vp
+                ? vp.Name
+                : compiledParam?.Value ?? string.Empty;
+
+            return new PreparedParam
+            {
+                ParamType = paramType,
+                ParamId = paramId,
+                CompiledParam = compiledParam,
+                ProgVarName = progVarName,
+                Indexes = DecodeIndexes(code, ref codePos, cmp)
             };
         }
 
@@ -179,6 +248,66 @@ namespace TWXProxy.Core
                 indexes[i] = DecodeParam(code, ref codePos, cmp);
 
             return indexes;
+        }
+
+        private static CmdParam? TryGetParam(ScriptCmp cmp, int paramId)
+        {
+            return paramId >= 0 && paramId < cmp.ParamList.Count
+                ? cmp.ParamList[paramId]
+                : null;
+        }
+
+        private static bool TryDecodeArithmetic(
+            string varName,
+            ScriptCmp cmp,
+            out VarParam? baseVar,
+            out char arithmeticOperator,
+            out double arithmeticRightValue)
+        {
+            baseVar = null;
+            arithmeticOperator = '\0';
+            arithmeticRightValue = 0;
+
+            int opIdx = FindArithmeticOperator(varName);
+            if (opIdx < 0)
+                return false;
+
+            string baseVarName = varName.Substring(0, opIdx);
+            arithmeticOperator = varName[opIdx];
+            string rhsStr = varName.Substring(opIdx + 1);
+
+            if (!double.TryParse(rhsStr, NumberStyles.Float, CultureInfo.InvariantCulture, out arithmeticRightValue))
+                return false;
+
+            foreach (CmdParam param in cmp.ParamList)
+            {
+                if (param is VarParam vp &&
+                    string.Equals(vp.Name, baseVarName, StringComparison.OrdinalIgnoreCase))
+                {
+                    baseVar = vp;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int FindArithmeticOperator(string varName)
+        {
+            if (string.IsNullOrEmpty(varName) || varName[0] != '$')
+                return -1;
+
+            for (int i = 2; i < varName.Length; i++)
+            {
+                char c = varName[i];
+                if (c == '+' || c == '-' || c == '*' || c == '/')
+                    return i;
+
+                if (!(char.IsLetterOrDigit(c) || c == '_'))
+                    return -1;
+            }
+
+            return -1;
         }
 
         private static ScriptSysConst? TryGetSysConst(ScriptCmp cmp, ushort sysConstId)
