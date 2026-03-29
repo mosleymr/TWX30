@@ -4,7 +4,8 @@ Trade Wars 2002 Proxy Server with scripting support - Complete rewrite in .NET 1
 
 **Version:** 3.0.1  
 **Original Author:** Remco Mulder  
-**Primary 3.0 Author:** Matt Mosley (Shadow) 
+**Primary 3.0 Author:** Matt Mosley (Shadow)
+
 **License:** GPL v2+
 
 ## Overview
