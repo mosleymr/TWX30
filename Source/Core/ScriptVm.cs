@@ -45,6 +45,9 @@ namespace TWXProxy.Core
         public ScriptCmd? Command { get; init; }
         public PreparedParam[] Params { get; init; } = Array.Empty<PreparedParam>();
         public int NextInstructionIndex { get; set; } = -1;
+        public CmdParam[]? RuntimeDispatchParams { get; set; }
+        public int[] DynamicParamIndexes { get; init; } = Array.Empty<int>();
+        public bool DirectParamsInitialized { get; set; }
     }
 
     public sealed class PreparedParam
@@ -62,6 +65,8 @@ namespace TWXProxy.Core
         public VarParam? ArithmeticBaseVar { get; init; }
         public char ArithmeticOperator { get; init; }
         public double ArithmeticRightValue { get; init; }
+        public CmdParam? RuntimeParam { get; set; }
+        public bool IsDirectReference { get; init; }
     }
 
     internal static class PreparedScriptDecoder
@@ -130,7 +135,8 @@ namespace TWXProxy.Core
                         LineNumber = lineNumber,
                         CommandId = commandId,
                         Command = command,
-                        Params = parameters.ToArray()
+                        Params = parameters.ToArray(),
+                        DynamicParamIndexes = BuildDynamicParamIndexes(parameters)
                     };
                 }
 
@@ -184,7 +190,8 @@ namespace TWXProxy.Core
                 ParamType = paramType,
                 ParamId = paramId,
                 CompiledParam = compiledParam,
-                LiteralValue = compiledParam?.Value ?? string.Empty
+                LiteralValue = compiledParam?.Value ?? string.Empty,
+                IsDirectReference = false
             };
         }
 
@@ -212,7 +219,8 @@ namespace TWXProxy.Core
                 HasArithmeticExpression = hasArithmeticExpression,
                 ArithmeticBaseVar = arithmeticBaseVar,
                 ArithmeticOperator = arithmeticOperator,
-                ArithmeticRightValue = arithmeticRightValue
+                ArithmeticRightValue = arithmeticRightValue,
+                IsDirectReference = compiledParam != null && indexes.Length == 0 && !hasArithmeticExpression
             };
         }
 
@@ -224,13 +232,16 @@ namespace TWXProxy.Core
                 ? vp.Name
                 : compiledParam?.Value ?? string.Empty;
 
+            PreparedParam[] indexes = DecodeIndexes(code, ref codePos, cmp);
+
             return new PreparedParam
             {
                 ParamType = paramType,
                 ParamId = paramId,
                 CompiledParam = compiledParam,
                 ProgVarName = progVarName,
-                Indexes = DecodeIndexes(code, ref codePos, cmp)
+                Indexes = indexes,
+                IsDirectReference = !string.IsNullOrEmpty(progVarName) && indexes.Length == 0
             };
         }
 
@@ -255,6 +266,23 @@ namespace TWXProxy.Core
             return paramId >= 0 && paramId < cmp.ParamList.Count
                 ? cmp.ParamList[paramId]
                 : null;
+        }
+
+        private static int[] BuildDynamicParamIndexes(List<PreparedParam> parameters)
+        {
+            if (parameters.Count == 0)
+                return Array.Empty<int>();
+
+            var dynamicIndexes = new List<int>(parameters.Count);
+            for (int i = 0; i < parameters.Count; i++)
+            {
+                if (!parameters[i].IsDirectReference)
+                    dynamicIndexes.Add(i);
+            }
+
+            return dynamicIndexes.Count == 0
+                ? Array.Empty<int>()
+                : dynamicIndexes.ToArray();
         }
 
         private static bool TryDecodeArithmetic(

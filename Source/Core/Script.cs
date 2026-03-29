@@ -2072,6 +2072,55 @@ namespace TWXProxy.Core
             return progVar;
         }
 
+        private static CmdParam GetOrCreatePreparedRuntimeParam(PreparedParam param)
+        {
+            param.RuntimeParam ??= new CmdParam();
+            return param.RuntimeParam;
+        }
+
+        private ProgVarParam GetOrCreatePreparedRuntimeProgVar(PreparedParam param)
+        {
+            if (param.RuntimeParam is not ProgVarParam progVar)
+            {
+                progVar = new ProgVarParam(param.ProgVarName, _owner);
+                param.RuntimeParam = progVar;
+            }
+
+            return progVar;
+        }
+
+        private static CmdParam[] GetOrCreatePreparedDispatchParams(PreparedInstruction instruction)
+        {
+            if (instruction.Params.Length == 0)
+                return Array.Empty<CmdParam>();
+
+            instruction.RuntimeDispatchParams ??= new CmdParam[instruction.Params.Length];
+            return instruction.RuntimeDispatchParams;
+        }
+
+        private void InitializePreparedDirectParams(PreparedInstruction instruction, CmdParam[] dispatchParams)
+        {
+            for (int i = 0; i < instruction.Params.Length; i++)
+            {
+                PreparedParam param = instruction.Params[i];
+                if (!param.IsDirectReference)
+                    continue;
+
+                switch (param.ParamType)
+                {
+                    case ScriptConstants.PARAM_VAR:
+                        dispatchParams[i] = param.CompiledParam ?? GetOrCreatePreparedRuntimeParam(param);
+                        break;
+
+                    case ScriptConstants.PARAM_PROGVAR:
+                        dispatchParams[i] = GetOrCreatePreparedRuntimeProgVar(param);
+                        break;
+                }
+            }
+
+            instruction.DirectParamsInitialized = true;
+        }
+
         private string[] RentPreparedIndexBuffer(int count)
         {
             if (!_preparedIndexBufferCache.TryGetValue(count, out var buffers))
@@ -2217,36 +2266,59 @@ namespace TWXProxy.Core
             }
         }
 
-        private CmdParam EvaluatePreparedParam(PreparedParam param, int slotIndex)
+        private CmdParam EvaluatePreparedParam(PreparedParam param)
         {
             switch (param.ParamType)
             {
                 case ScriptConstants.PARAM_CONST:
-                    return GetScratchParam(slotIndex, param.LiteralValue);
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = param.LiteralValue;
+                        return runtimeParam;
+                    }
 
                 case ScriptConstants.PARAM_VAR:
                     if (param.HasArithmeticExpression)
-                        return GetScratchParam(slotIndex, EvaluatePreparedArithmeticValue(param));
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = EvaluatePreparedArithmeticValue(param);
+                        return runtimeParam;
+                    }
+
+                    if (param.Indexes.Length == 0 && param.CompiledParam != null)
+                        return param.CompiledParam;
 
                     if (param.CompiledParam != null)
                     {
                         return EvaluatePreparedArrayIndexes(param.Indexes, param.CompiledParam);
                     }
-                    return GetScratchParam(slotIndex, string.Empty);
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = string.Empty;
+                        return runtimeParam;
+                    }
 
                 case ScriptConstants.PARAM_PROGVAR:
                     if (param.ProgVarName.Length > 0)
                     {
-                        var progVar = GetOrCreatePreparedProgVar(param.ProgVarName);
+                        var progVar = GetOrCreatePreparedRuntimeProgVar(param);
                         return EvaluatePreparedArrayIndexes(param.Indexes, progVar);
                     }
-                    return GetScratchParam(slotIndex, string.Empty);
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = string.Empty;
+                        return runtimeParam;
+                    }
 
                 case ScriptConstants.PARAM_SYSCONST:
                     {
                         ScriptSysConst? sysConst = param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId);
                         if (sysConst == null)
-                            return GetScratchParam(slotIndex, string.Empty);
+                        {
+                            CmdParam missingParam = GetOrCreatePreparedRuntimeParam(param);
+                            missingParam.Value = string.Empty;
+                            return missingParam;
+                        }
 
                         string constValue;
                         if (param.Indexes.Length == 0)
@@ -2267,14 +2339,24 @@ namespace TWXProxy.Core
                             }
                         }
 
-                        return GetScratchParam(slotIndex, constValue);
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = constValue;
+                        return runtimeParam;
                     }
 
                 case ScriptConstants.PARAM_CHAR:
-                    return GetScratchParam(slotIndex, param.LiteralValue);
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = param.LiteralValue;
+                        return runtimeParam;
+                    }
 
                 default:
-                    return GetScratchParam(slotIndex, string.Empty);
+                    {
+                        CmdParam runtimeParam = GetOrCreatePreparedRuntimeParam(param);
+                        runtimeParam.Value = string.Empty;
+                        return runtimeParam;
+                    }
             }
         }
 
@@ -2321,9 +2403,22 @@ namespace TWXProxy.Core
                         goto NextInstruction;
                     }
 
-                    CmdParam[] dispatchParams = GetDispatchParamBuffer(instruction.Params.Length);
-                    for (int i = 0; i < instruction.Params.Length; i++)
-                        dispatchParams[i] = EvaluatePreparedParam(instruction.Params[i], i);
+                    CmdParam[] dispatchParams = GetOrCreatePreparedDispatchParams(instruction);
+                    if (!instruction.DirectParamsInitialized)
+                        InitializePreparedDirectParams(instruction, dispatchParams);
+
+                    if (instruction.DynamicParamIndexes.Length == 0)
+                    {
+                        // All params are direct live references; nothing to refresh here.
+                    }
+                    else
+                    {
+                        for (int i = 0; i < instruction.DynamicParamIndexes.Length; i++)
+                        {
+                            int paramIndex = instruction.DynamicParamIndexes[i];
+                            dispatchParams[paramIndex] = EvaluatePreparedParam(instruction.Params[paramIndex]);
+                        }
+                    }
 
                     if (cmd.Name == "GOTO" && instruction.Params.Length > 0)
                     {
