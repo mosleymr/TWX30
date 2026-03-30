@@ -1311,7 +1311,6 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = false;
-                _parser.Feed("\x1b[1;33m[Server disconnected — proxy auto-reconnecting…]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             });

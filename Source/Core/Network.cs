@@ -87,6 +87,7 @@ namespace TWXProxy.Core
         // Auto-reconnect: true by default, set to false by "disconnect disable"
         private bool _autoReconnect = true;
         private int _reconnectLoopRunning = 0; // Interlocked guard — only one loop at a time
+        private int _disconnectHandling = 0;   // Interlocked guard — emit disconnect UI/event once
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
 
         /// <summary>
@@ -308,6 +309,8 @@ namespace TWXProxy.Core
                     _telnetNegotiationComplete = false;
                     _clientBufferDuringNegotiation.Clear();
                 }
+
+                System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
                 
                 Connected?.Invoke(this, EventArgs.Empty);
 
@@ -336,6 +339,12 @@ namespace TWXProxy.Core
 
             try
             {
+                if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
+                {
+                    Log($"[{_gameName}] Disconnect already in progress");
+                    return;
+                }
+
                 Log($"[{_gameName}] Disconnecting from server");
                 
                 // Close the server connection
@@ -352,7 +361,7 @@ namespace TWXProxy.Core
                 }
                 
                 // Send disconnect message to client
-                await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\n[twxp] Disconnected from server.  Type {_commandChar} then C to reconnect.\r\n"));
+                await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\n[twxp] Disconnected from server.  Type {_commandChar}c to reconnect.\r\n"));
                 
                 Disconnected?.Invoke(this, new DisconnectEventArgs("User requested disconnect"));
             }
@@ -416,13 +425,19 @@ namespace TWXProxy.Core
                     if (bytesRead == 0)
                     {
                         Log($"[{_gameName}] Server disconnected");
+
+                        if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
+                            break;
                         
                         // Notify local client if connected
                         if (_localStream != null && LocalIsConnected)
                         {
                             try
                             {
-                                var message = Encoding.ASCII.GetBytes($"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n");
+                                string disconnectText = _autoReconnect && !token.IsCancellationRequested
+                                    ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
+                                    : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
+                                var message = Encoding.ASCII.GetBytes(disconnectText);
                                 await _localStream.WriteAsync(message, 0, message.Length, token);
                                 await _localStream.FlushAsync(token);
                             }
@@ -527,6 +542,9 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Log($"[{_gameName}] Error reading from server: {ex.Message}");
+
+                if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
+                    return;
                 
                 // Clean up server connection
                 _serverStream?.Close();
@@ -541,6 +559,23 @@ namespace TWXProxy.Core
                     _clientBufferDuringNegotiation.Clear();
                 }
                 
+                if (_localStream != null && LocalIsConnected)
+                {
+                    try
+                    {
+                        string disconnectText = _autoReconnect && !token.IsCancellationRequested
+                            ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
+                            : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
+                        var message = Encoding.ASCII.GetBytes(disconnectText);
+                        await _localStream.WriteAsync(message, 0, message.Length, token);
+                        await _localStream.FlushAsync(token);
+                    }
+                    catch (Exception sendEx)
+                    {
+                        Log($"[{_gameName}] Could not send disconnect message to client: {sendEx.Message}");
+                    }
+                }
+
                 Disconnected?.Invoke(this, new DisconnectEventArgs(ex.Message));
                 // Start auto-reconnect if allowed
                 if (_autoReconnect && !token.IsCancellationRequested)
