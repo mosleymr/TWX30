@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Core = TWXProxy.Core;
 
 namespace MTC;
 
@@ -18,6 +19,12 @@ public static class AppPaths
     /// <summary>Directory where .xdb database files are stored.</summary>
     public static string DatabaseDir => Path.Combine(AppDataDir, "databases");
 
+    /// <summary>
+    /// Directory where embedded-proxy mode shares databases with the standalone proxy.
+    /// On macOS this is ~/Library/twxproxy/databases.
+    /// </summary>
+    public static string TwxproxyDatabaseDir => Core.SharedPaths.DatabaseDir;
+
     /// <summary>Returns the .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
     {
@@ -26,10 +33,19 @@ public static class AppPaths
         return Path.Combine(DatabaseDir, safe + ".xdb");
     }
 
+    /// <summary>Returns the shared TWX Proxy .xdb path for a given game name.</summary>
+    public static string TwxproxyDatabasePathForGame(string gameName)
+        => Core.SharedPaths.DatabasePathForGame(gameName);
+
     /// <summary>Ensure required directories exist.</summary>
     public static void EnsureDirectories()
     {
         Directory.CreateDirectory(DatabaseDir);
+    }
+
+    public static void EnsureTwxproxyDatabaseDir()
+    {
+        Core.SharedPaths.EnsureDatabaseDir();
     }
 
     /// <summary>

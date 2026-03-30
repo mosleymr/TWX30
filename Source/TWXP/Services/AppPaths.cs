@@ -33,8 +33,18 @@ public static class AppPaths
         return Path.Combine(GamesDir, safe + ".json");
     }
 
-    /// <summary>Directory where .xdb database files are stored.</summary>
-    public static string DatabaseDir => Path.Combine(AppDataDir, "databases");
+    /// <summary>
+    /// Directory where shared .xdb database files are stored.
+    /// This is intentionally outside the app-specific config root so MTC embedded-proxy
+    /// mode and the standalone proxy see the same universe database.
+    /// </summary>
+    public static string DatabaseDir => TWXProxy.Core.SharedPaths.DatabaseDir;
+
+    /// <summary>
+    /// Legacy per-app database directory used before the shared-database change.
+    /// Still used for one-time migration of existing default databases.
+    /// </summary>
+    public static string LegacyDatabaseDir => Path.Combine(AppDataDir, "databases");
 
     /// <summary>
     /// Default scripts directory (used when a game config has no explicit ScriptDirectory).
@@ -48,8 +58,13 @@ public static class AppPaths
     /// <summary>Returns the .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
     {
-        string safe = string.Concat(gameName.Split(Path.GetInvalidFileNameChars()));
-        return Path.Combine(DatabaseDir, safe + ".xdb");
+        return TWXProxy.Core.SharedPaths.DatabasePathForGame(gameName);
+    }
+
+    public static string LegacyDatabasePathForGame(string gameName)
+    {
+        string safe = TWXProxy.Core.SharedPaths.SanitizeFileComponent(gameName);
+        return Path.Combine(LegacyDatabaseDir, safe + ".xdb");
     }
 
     /// <summary>Directory where per-game debug logs are stored.</summary>
@@ -69,6 +84,7 @@ public static class AppPaths
         Directory.CreateDirectory(ConfigDir);
         Directory.CreateDirectory(GamesDir);
         Directory.CreateDirectory(DatabaseDir);
+        Directory.CreateDirectory(LegacyDatabaseDir);
         Directory.CreateDirectory(LogsDir);
         // Do NOT auto-create DefaultScriptDir — it may be a shared system path
         // that already exists or requires admin rights to create.

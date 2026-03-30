@@ -98,10 +98,24 @@ public class ProxyService : IProxyService
                 // absolute path — a relative path would be resolved against the
                 // app's working directory (unpredictable on Mac Catalyst) and
                 // silently land in the wrong place or get bundled into the .app.
-                string dbPath = (!string.IsNullOrWhiteSpace(config.DatabasePath)
-                                    && Path.IsPathRooted(config.DatabasePath))
+                string sharedDbPath = AppPaths.DatabasePathForGame(config.Name);
+                string legacyDbPath = AppPaths.LegacyDatabasePathForGame(config.Name);
+                bool hasAbsoluteConfigPath = !string.IsNullOrWhiteSpace(config.DatabasePath)
+                    && Path.IsPathRooted(config.DatabasePath);
+                bool usesLegacyDefaultPath = hasAbsoluteConfigPath
+                    && PathsEqual(config.DatabasePath, legacyDbPath);
+
+                string dbPath = hasAbsoluteConfigPath && !usesLegacyDefaultPath
                     ? config.DatabasePath
-                    : AppPaths.DatabasePathForGame(config.Name);
+                    : sharedDbPath;
+
+                Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+                if (!File.Exists(dbPath) && File.Exists(legacyDbPath) && !PathsEqual(dbPath, legacyDbPath))
+                {
+                    File.Copy(legacyDbPath, dbPath, overwrite: false);
+                    TWXProxy.Core.GlobalModules.DebugLog(
+                        $"[ProxyService] Migrated legacy database '{legacyDbPath}' -> '{dbPath}'\n");
+                }
 
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] AppDataDir={AppPaths.AppDataDir}\n");
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] DatabaseDir={AppPaths.DatabaseDir}\n");
@@ -481,6 +495,11 @@ public class ProxyService : IProxyService
         CommandChar  = config.CommandChar,
         Description  = config.Name,
     };
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+    }
 
     private class ProxyGameInstance
     {

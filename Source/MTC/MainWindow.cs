@@ -792,7 +792,7 @@ public class MainWindow : Window
         _state.Connected = true;
         _sessionLog.Open(DeriveGameName());
         // Open (or create) the sector database for this game connection
-        OpenSessionDatabase();
+        OpenSessionDatabase(useSharedProxyDatabase: false);
         Dispatcher.UIThread.Post(() =>
         {
             _termCtrl.IsConnected = true;
@@ -1108,7 +1108,7 @@ public class MainWindow : Window
         _embeddedGameName = gameName;
 
         // Open / create the session database using sectors from the game config.
-        OpenSessionDatabase(gameName, gameConfig.Sectors);
+        OpenSessionDatabase(gameName, gameConfig.Sectors, useSharedProxyDatabase: true);
 
         // Resolve the effective script directory: app prefs → ~/Documents.
         // TrimEnd removes any trailing separator so Path.GetDirectoryName returns the
@@ -1464,9 +1464,10 @@ public class MainWindow : Window
     /// <summary>
     /// Opens or creates the sector database for the current connection.
     /// Named after the profile file (if saved) or the host:port string.
-    /// Stored in ~/Library/MTC/databases/&lt;name&gt;.xdb.
+    /// Non-proxy mode uses MTC's local database store. Embedded-proxy mode uses the
+    /// shared TWX Proxy database store so MTC and the proxy read/write the same .xdb.
     /// </summary>
-    private void OpenSessionDatabase(string? gameName = null, int sectors = 0)
+    private void OpenSessionDatabase(string? gameName = null, int sectors = 0, bool useSharedProxyDatabase = false)
     {
         try
         {
@@ -1481,8 +1482,24 @@ public class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(gameName)) gameName = "game";
             }
 
-            AppPaths.EnsureDirectories();
-            string dbPath = AppPaths.DatabasePathForGame(gameName);
+            string dbPath;
+            if (useSharedProxyDatabase)
+            {
+                AppPaths.EnsureTwxproxyDatabaseDir();
+                dbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+
+                string legacyMtcDbPath = AppPaths.DatabasePathForGame(gameName);
+                if (!File.Exists(dbPath) && File.Exists(legacyMtcDbPath))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+                    File.Copy(legacyMtcDbPath, dbPath, overwrite: false);
+                }
+            }
+            else
+            {
+                AppPaths.EnsureDirectories();
+                dbPath = AppPaths.DatabasePathForGame(gameName);
+            }
 
             var db = new Core.ModDatabase();
             if (File.Exists(dbPath))

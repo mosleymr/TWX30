@@ -528,6 +528,7 @@ namespace TWXProxy.Core
         public static void SetActiveDatabase(ModDatabase? database)
         {
             _activeDatabase = database;
+            GlobalModules.TWXDatabase = database;
         }
 
         /// <summary>
