@@ -78,6 +78,15 @@ public class ProxyService : IProxyService
                 interpreter,
                 scriptDirectory
             );
+            gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
+            gameInstance.NativeHaggleChanged += enabled =>
+            {
+                if (config.NativeHaggleEnabled == enabled)
+                    return;
+
+                config.NativeHaggleEnabled = enabled;
+                _ = _configService.SaveConfigAsync(config);
+            };
             
             // Create and wire up a file-backed database so sector/port data is
             // persisted across sessions.  The autosave timer in ModDatabase writes

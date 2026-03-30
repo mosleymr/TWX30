@@ -138,6 +138,7 @@ namespace TWXProxy.Core
             _listenPort = listenPort;
             _commandChar = commandChar;
             _menuHandler = new MenuHandler(this, interpreter, scriptDirectory);
+            _nativeHaggle.SetEnabled(true);
             _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
         }
 

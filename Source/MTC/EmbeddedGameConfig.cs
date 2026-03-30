@@ -20,6 +20,7 @@ internal class EmbeddedGameConfig
     public string Host    { get; set; } = string.Empty;
     public int    Port    { get; set; } = 23;
     public int    Sectors { get; set; } = 1000;
+    public bool   NativeHaggleEnabled { get; set; } = true;
 
     /// <summary>Variables persisted by <c>savevar</c> / retrieved by <c>loadvar</c>.</summary>
     public Dictionary<string, string> Variables { get; set; } = new();

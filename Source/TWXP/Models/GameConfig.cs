@@ -14,6 +14,7 @@ public class GameConfig
     public string DatabasePath { get; set; } = string.Empty;
     public string ScriptDirectory { get; set; } = string.Empty;
     public bool AutoConnect { get; set; }
+    public bool NativeHaggleEnabled { get; set; } = true;
     
     // Runtime status - not persisted
     [JsonIgnore]

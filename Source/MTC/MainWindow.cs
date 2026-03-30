@@ -38,6 +38,8 @@ public class MainWindow : Window
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
     private readonly SessionLogger         _sessionLog = new();
+    private EmbeddedGameConfig?            _embeddedGameConfig;
+    private string?                        _embeddedGameName;
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented             = true,
@@ -893,6 +895,16 @@ public class MainWindow : Window
 
     private void OnNativeHaggleChanged(bool enabled)
     {
+        var gameConfig = _embeddedGameConfig;
+        var gameName = _embeddedGameName;
+        if (gameConfig != null &&
+            !string.IsNullOrWhiteSpace(gameName) &&
+            gameConfig.NativeHaggleEnabled != enabled)
+        {
+            gameConfig.NativeHaggleEnabled = enabled;
+            _ = SaveEmbeddedGameConfigAsync(gameName, gameConfig);
+        }
+
         Dispatcher.UIThread.Post(() =>
         {
             _updatingHaggleToggle = true;
@@ -1092,6 +1104,8 @@ public class MainWindow : Window
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        _embeddedGameConfig = gameConfig;
+        _embeddedGameName = gameName;
 
         // Open / create the session database using sectors from the game config.
         OpenSessionDatabase(gameName, gameConfig.Sectors);
@@ -1146,6 +1160,7 @@ public class MainWindow : Window
             Verbose       = false,          // suppress diagnostic Console.WriteLine in embedded mode
             AutoReconnect = _state.AutoReconnect,
         };
+        gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
 
         // Two in-process pipes for bidirectional communication.
@@ -1378,6 +1393,8 @@ public class MainWindow : Window
 
         Core.ScriptRef.SetActiveGameInstance(null);
         Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game
+        _embeddedGameConfig = null;
+        _embeddedGameName = null;
 
         try { _sessionDb?.CloseDatabase(); } catch { }
         _sessionDb = null;
@@ -1425,6 +1442,7 @@ public class MainWindow : Window
             Host    = _state.Host,
             Port    = _state.Port,
             Sectors = _state.Sectors,
+            NativeHaggleEnabled = true,
         };
         await SaveEmbeddedGameConfigAsync(gameName, newCfg);
         return newCfg;

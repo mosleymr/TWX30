@@ -126,6 +126,19 @@ public class GameConfigViewModel : BaseViewModel
         }
     }
 
+    public bool NativeHaggleEnabled
+    {
+        get => Config.NativeHaggleEnabled;
+        set
+        {
+            if (Config.NativeHaggleEnabled != value)
+            {
+                Config.NativeHaggleEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public GameStatus Status
     {
         get => _status;

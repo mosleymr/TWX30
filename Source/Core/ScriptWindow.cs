@@ -395,7 +395,7 @@ namespace TWXProxy.Core
 
             static void EchoMenuKey(char key)
             {
-                GlobalModules.TWXServer?.ClientMessage($"{char.ToUpperInvariant(key)}\r\n");
+                GlobalModules.TWXServer?.ClientMessage(char.ToUpperInvariant(key).ToString());
             }
             
             // Handle standard options
