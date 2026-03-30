@@ -192,8 +192,10 @@ namespace TWXProxy.Core
             }
             catch
             {
-                WriteBubbles(false);
+                // Ignore export failures; we still want the on-screen results below.
             }
+
+            WriteBubbles(false);
 
             // Broadcast results
             string message = $"\r\n{AnsiCodes.ANSI_15}Completed - {_totalBubbles - _gappedBubbles} solid bubbles, " +

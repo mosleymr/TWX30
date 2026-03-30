@@ -788,14 +788,14 @@ namespace TWXProxy.Core
 
         public void DumpVars(string searchName)
         {
+            var server = GlobalModules.Server;
+            if (server == null)
+                return;
+
             if (string.IsNullOrEmpty(searchName))
-            {
-                // TWXServer.ClientMessage("Dumping all script variables");
-            }
+                server.ClientMessage("Dumping all script variables\r\n");
             else
-            {
-                // TWXServer.ClientMessage($"Dumping all script variables containing '{searchName}'");
-            }
+                server.ClientMessage($"Dumping all script variables containing '{searchName}'\r\n");
 
             // Dump variables in all scripts
             foreach (var script in _scriptList)
@@ -803,7 +803,7 @@ namespace TWXProxy.Core
                 script.DumpVars(searchName);
             }
 
-            // TWXServer.ClientMessage("Variable Dump Complete.");
+            server.ClientMessage("Variable dump complete.\r\n");
         }
 
         public void DumpTriggers()
@@ -3159,25 +3159,56 @@ namespace TWXProxy.Core
 
         public void DumpVars(string searchName)
         {
-            // Dump script variables (would require variable storage implementation)
-            // Placeholder
+            var server = GlobalModules.Server;
+            if (server == null || _cmp == null)
+                return;
+
+            string scriptName = _cmp.ScriptFile;
+            server.Broadcast($"\r\n{AnsiCodes.ANSI_15}Variables for {AnsiCodes.ANSI_7}{scriptName}{AnsiCodes.ANSI_15}\r\n");
+
+            bool found = false;
+            foreach (var param in _cmp.ParamList.OfType<VarParam>())
+            {
+                if (!string.IsNullOrEmpty(searchName) &&
+                    param.Name.IndexOf(searchName, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                found = true;
+                param.Dump("  ");
+            }
+
+            if (!found)
+                server.Broadcast($"  {AnsiCodes.ANSI_8}No matching variables.\r\n");
         }
 
         public void DumpTriggers()
         {
-            // Dump all triggers
+            var server = GlobalModules.Server;
+            if (server == null)
+                return;
+
+            server.Broadcast($"\r\n{AnsiCodes.ANSI_15}Triggers for {AnsiCodes.ANSI_7}{ScriptName}{AnsiCodes.ANSI_15}\r\n");
+
+            bool found = false;
             foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
             {
                 var triggerList = _triggers[triggerType];
                 if (triggerList.Count > 0)
                 {
-                    // TWXServer.ClientMessage($"Triggers ({triggerType}):");
+                    found = true;
+                    server.Broadcast($"  {AnsiCodes.ANSI_11}{triggerType}{AnsiCodes.ANSI_15}\r\n");
                     foreach (var trigger in triggerList)
                     {
-                        // TWXServer.ClientMessage($"  {trigger.Name} = {trigger.Value}");
+                        server.Broadcast(
+                            $"    {AnsiCodes.ANSI_7}{trigger.Name}{AnsiCodes.ANSI_15} = {AnsiCodes.ANSI_7}{trigger.Value}{AnsiCodes.ANSI_15}\r\n");
                     }
                 }
             }
+
+            if (!found)
+                server.Broadcast($"  {AnsiCodes.ANSI_8}No active triggers.\r\n");
         }
 
         public void SetVariable(string varName, string value, string index)

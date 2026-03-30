@@ -38,7 +38,7 @@ namespace TWXProxy.Core
         private readonly string _serverAddress;
         private readonly int _serverPort;
         private readonly int _listenPort;
-        private readonly char _commandChar;
+        private char _commandChar;
         private readonly ModInterpreter? _interpreter;
         
         // ITWXServer / IModServer properties
@@ -73,6 +73,11 @@ namespace TWXProxy.Core
         private readonly MenuHandler _menuHandler;
         private readonly NativeHaggleEngine _nativeHaggle = new();
         private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
+        private readonly object _dataLogLock = new();
+        private StreamWriter? _dataLogWriter;
+        private DateTime _dataLogDate = DateTime.MinValue;
+        private bool _logDataEnabled;
+        private bool _logAnsiEnabled;
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -120,6 +125,28 @@ namespace TWXProxy.Core
         public char CommandChar => _commandChar;
         public bool IsProxyMenuActive => _menuHandler.IsActive;
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
+        public bool LogDataEnabled
+        {
+            get => _logDataEnabled;
+            set
+            {
+                lock (_dataLogLock)
+                {
+                    _logDataEnabled = value;
+                    if (!value)
+                    {
+                        _dataLogWriter?.Dispose();
+                        _dataLogWriter = null;
+                        _dataLogDate = DateTime.MinValue;
+                    }
+                }
+            }
+        }
+        public bool LogAnsiEnabled
+        {
+            get => _logAnsiEnabled;
+            set => _logAnsiEnabled = value;
+        }
 
         public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
         {
@@ -473,6 +500,7 @@ namespace TWXProxy.Core
                     if (cleanData.Length > 0)
                     {
                         ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
+                        WriteServerLog(cleanData);
                     }
 
                     // Pass through cleaned data to local client
@@ -952,6 +980,12 @@ namespace TWXProxy.Core
             _nativeHaggle.SetEnabled(enabled);
         }
 
+        public void SetCommandChar(char commandChar)
+        {
+            if (!char.IsControl(commandChar))
+                _commandChar = commandChar;
+        }
+
         public void ProcessNativeHaggleLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
@@ -998,6 +1032,13 @@ namespace TWXProxy.Core
 
         private void CloseConnections()
         {
+            lock (_dataLogLock)
+            {
+                _dataLogWriter?.Dispose();
+                _dataLogWriter = null;
+                _dataLogDate = DateTime.MinValue;
+            }
+
             _localStream?.Close();
             _localReadStream?.Close();
             _serverStream?.Close();
@@ -1012,6 +1053,53 @@ namespace TWXProxy.Core
             _serverClient = null;
             _localListener = null;
             _directMode = false;
+        }
+
+        private void WriteServerLog(byte[] cleanData)
+        {
+            if (!_logDataEnabled || cleanData.Length == 0)
+                return;
+
+            string text = Encoding.ASCII.GetString(cleanData);
+            if (!_logAnsiEnabled)
+                text = AnsiCodes.StripANSI(text);
+
+            if (text.Length == 0)
+                return;
+
+            try
+            {
+                lock (_dataLogLock)
+                {
+                    DateTime today = DateTime.Today;
+                    if (_dataLogWriter == null || _dataLogDate != today)
+                    {
+                        _dataLogWriter?.Dispose();
+                        _dataLogDate = today;
+
+                        string directory = Path.GetDirectoryName(GlobalModules.DebugLogPath) ?? Path.GetTempPath();
+                        if (string.IsNullOrWhiteSpace(directory))
+                            directory = Path.GetTempPath();
+                        Directory.CreateDirectory(directory);
+
+                        string safeName = string.Concat(_gameName.Split(Path.GetInvalidFileNameChars()));
+                        if (string.IsNullOrWhiteSpace(safeName))
+                            safeName = "game";
+
+                        string logPath = Path.Combine(directory, $"{safeName}-{today:yyyy-MM-dd}.log");
+                        _dataLogWriter = new StreamWriter(logPath, append: true, Encoding.UTF8, 4096)
+                        {
+                            AutoFlush = true
+                        };
+                    }
+
+                    _dataLogWriter.Write(text);
+                }
+            }
+            catch
+            {
+                // Never interrupt live proxy traffic because of a logging failure.
+            }
         }
 
         #region ITWXServer Implementation

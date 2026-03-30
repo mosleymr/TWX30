@@ -265,13 +265,15 @@ namespace TWXProxy.Core
             if (Name.Length >= 2 && Name.StartsWith("$$"))
                 return; // don't dump system variables
 
-            // TWXServer.AddBuffer($"{tab}{AnsiCodes.ANSI_15}\"{AnsiCodes.ANSI_7}{Name}{AnsiCodes.ANSI_15}\" = \"{AnsiCodes.ANSI_7}{Value}{AnsiCodes.ANSI_15}\"\r\n");
+            GlobalModules.Server?.Broadcast(
+                $"{tab}{AnsiCodes.ANSI_15}\"{AnsiCodes.ANSI_7}{Name}{AnsiCodes.ANSI_15}\" = \"{AnsiCodes.ANSI_7}{Value}{AnsiCodes.ANSI_15}\"\r\n");
 
             if (_vars.Count > 0)
             {
                 // Dump array contents
                 string arrayType = _arraySize > 0 ? "Static" : "Dynamic";
-                // TWXServer.AddBuffer($"{tab}{AnsiCodes.ANSI_15}{arrayType} array of \"{Name}\" (size {_vars.Count})\r\n");
+                GlobalModules.Server?.Broadcast(
+                    $"{tab}{AnsiCodes.ANSI_15}{arrayType} array of \"{AnsiCodes.ANSI_7}{Name}{AnsiCodes.ANSI_15}\" (size {_vars.Count})\r\n");
 
                 foreach (var v in _vars)
                 {

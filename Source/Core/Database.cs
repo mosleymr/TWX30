@@ -243,6 +243,8 @@ namespace TWXProxy.Core
             set => _databaseName = value;
         }
 
+        public string DatabasePath => _databasePath;
+
         public bool UseCache
         {
             get => _useCache;
@@ -306,6 +308,24 @@ namespace TWXProxy.Core
                 if (updates.ListenPort  != 0)  _header.ListenPort  = updates.ListenPort;
                 if (updates.CommandChar != '\0') _header.CommandChar = updates.CommandChar;
                 if (!string.IsNullOrEmpty(updates.Description)) _header.Description = updates.Description;
+            }
+            finally
+            {
+                _headerLock.ExitWriteLock();
+            }
+        }
+
+        /// <summary>
+        /// Replaces the in-memory database header exactly as supplied.
+        /// Use this when editing persisted database metadata where false/blank values
+        /// are meaningful and should not be treated as "leave unchanged".
+        /// </summary>
+        public void ReplaceHeader(DataHeader header)
+        {
+            _headerLock.EnterWriteLock();
+            try
+            {
+                _header = header;
             }
             finally
             {
@@ -949,6 +969,47 @@ namespace TWXProxy.Core
             // v11: CommandChar added
             if (_header.Version >= 11 && reader.BaseStream.Position < reader.BaseStream.Length)
                 _header.CommandChar = reader.ReadChar();
+        }
+
+        public static bool TryReadHeader(string filename, out DataHeader header)
+        {
+            header = new DataHeader();
+
+            try
+            {
+                using var stream = new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new BinaryReader(stream);
+
+                header.ProgramName = reader.ReadString();
+                header.Version = reader.ReadByte();
+                header.Sectors = reader.ReadInt32();
+                header.StarDock = reader.ReadUInt16();
+                header.AlphaCentauri = reader.ReadUInt16();
+                header.Rylos = reader.ReadUInt16();
+                header.Address = reader.ReadString();
+                header.Description = reader.ReadString();
+                header.ServerPort = reader.ReadUInt16();
+                header.ListenPort = reader.ReadUInt16();
+                header.LoginScript = reader.ReadString();
+                header.Password = reader.ReadString();
+                header.LoginName = reader.ReadString();
+                header.Game = reader.ReadChar();
+                header.IconFile = reader.ReadString();
+                header.UseRLogin = reader.ReadBoolean();
+                header.UseLogin = reader.ReadBoolean();
+                header.RobFactor = reader.ReadByte();
+                header.StealFactor = reader.ReadByte();
+                header.LastPortCIM = DateTime.FromBinary(reader.ReadInt64());
+                if (header.Version >= 11 && reader.BaseStream.Position < reader.BaseStream.Length)
+                    header.CommandChar = reader.ReadChar();
+
+                return true;
+            }
+            catch
+            {
+                header = new DataHeader();
+                return false;
+            }
         }
 
         private void WriteSector(BinaryWriter writer, SectorData sector)
