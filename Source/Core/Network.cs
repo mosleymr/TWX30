@@ -73,11 +73,7 @@ namespace TWXProxy.Core
         private readonly MenuHandler _menuHandler;
         private readonly NativeHaggleEngine _nativeHaggle = new();
         private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
-        private readonly object _dataLogLock = new();
-        private StreamWriter? _dataLogWriter;
-        private DateTime _dataLogDate = DateTime.MinValue;
-        private bool _logDataEnabled;
-        private bool _logAnsiEnabled;
+        private readonly ModLog _log = new();
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -126,27 +122,16 @@ namespace TWXProxy.Core
         public char CommandChar => _commandChar;
         public bool IsProxyMenuActive => _menuHandler.IsActive;
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
+        public ModLog Logger => _log;
         public bool LogDataEnabled
         {
-            get => _logDataEnabled;
-            set
-            {
-                lock (_dataLogLock)
-                {
-                    _logDataEnabled = value;
-                    if (!value)
-                    {
-                        _dataLogWriter?.Dispose();
-                        _dataLogWriter = null;
-                        _dataLogDate = DateTime.MinValue;
-                    }
-                }
-            }
+            get => _log.LogData;
+            set => _log.LogData = value;
         }
         public bool LogAnsiEnabled
         {
-            get => _logAnsiEnabled;
-            set => _logAnsiEnabled = value;
+            get => _log.LogANSI;
+            set => _log.LogANSI = value;
         }
 
         public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
@@ -168,6 +153,12 @@ namespace TWXProxy.Core
             _menuHandler = new MenuHandler(this, interpreter, scriptDirectory);
             _nativeHaggle.SetEnabled(true);
             _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
+            _log.ProgramDir = GlobalModules.ProgramDir;
+            _log.SetLogIdentity(gameName);
+            _log.SetPlaybackTargets(
+                (payload, token) => SendPlaybackToLocalAsync(payload, token),
+                message => SendMessageAsync(message).GetAwaiter().GetResult());
+            GlobalModules.TWXLog = _log;
         }
 
         /// <summary>
@@ -515,7 +506,7 @@ namespace TWXProxy.Core
                     if (cleanData.Length > 0)
                     {
                         ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
-                        WriteServerLog(cleanData);
+                        _log.RecordServerData(cleanData);
                     }
 
                     // Pass through cleaned data to local client
@@ -654,6 +645,8 @@ namespace TWXProxy.Core
                     // Process each byte immediately for instant response
                     for (int i = 0; i < bytesRead; i++)
                     {
+                        _log.NotifyUserInput();
+
                         byte b = buffer[i];
                         char c = (char)b;
                         
@@ -976,6 +969,22 @@ namespace TWXProxy.Core
             }
         }
 
+        private async Task SendPlaybackToLocalAsync(byte[] data, CancellationToken token)
+        {
+            if (_localStream == null || !LocalIsConnected)
+                return;
+
+            try
+            {
+                await _localStream.WriteAsync(data, 0, data.Length, token);
+                await _localStream.FlushAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Playback was cancelled.
+            }
+        }
+
         /// <summary>
         /// Send text to the local client
         /// </summary>
@@ -1047,12 +1056,7 @@ namespace TWXProxy.Core
 
         private void CloseConnections()
         {
-            lock (_dataLogLock)
-            {
-                _dataLogWriter?.Dispose();
-                _dataLogWriter = null;
-                _dataLogDate = DateTime.MinValue;
-            }
+            _log.CloseLog();
 
             _localStream?.Close();
             _localReadStream?.Close();
@@ -1068,53 +1072,6 @@ namespace TWXProxy.Core
             _serverClient = null;
             _localListener = null;
             _directMode = false;
-        }
-
-        private void WriteServerLog(byte[] cleanData)
-        {
-            if (!_logDataEnabled || cleanData.Length == 0)
-                return;
-
-            string text = Encoding.ASCII.GetString(cleanData);
-            if (!_logAnsiEnabled)
-                text = AnsiCodes.StripANSI(text);
-
-            if (text.Length == 0)
-                return;
-
-            try
-            {
-                lock (_dataLogLock)
-                {
-                    DateTime today = DateTime.Today;
-                    if (_dataLogWriter == null || _dataLogDate != today)
-                    {
-                        _dataLogWriter?.Dispose();
-                        _dataLogDate = today;
-
-                        string directory = Path.GetDirectoryName(GlobalModules.DebugLogPath) ?? Path.GetTempPath();
-                        if (string.IsNullOrWhiteSpace(directory))
-                            directory = Path.GetTempPath();
-                        Directory.CreateDirectory(directory);
-
-                        string safeName = string.Concat(_gameName.Split(Path.GetInvalidFileNameChars()));
-                        if (string.IsNullOrWhiteSpace(safeName))
-                            safeName = "game";
-
-                        string logPath = Path.Combine(directory, $"{safeName}-{today:yyyy-MM-dd}.log");
-                        _dataLogWriter = new StreamWriter(logPath, append: true, Encoding.UTF8, 4096)
-                        {
-                            AutoFlush = true
-                        };
-                    }
-
-                    _dataLogWriter.Write(text);
-                }
-            }
-            catch
-            {
-                // Never interrupt live proxy traffic because of a logging failure.
-            }
         }
 
         #region ITWXServer Implementation
@@ -1189,6 +1146,7 @@ namespace TWXProxy.Core
             StopAsync().Wait();
             _cancellationSource?.Dispose();
             _nativeHaggleSendLock.Dispose();
+            _log.Dispose();
         }
     }
 

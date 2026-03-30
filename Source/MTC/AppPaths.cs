@@ -19,6 +19,9 @@ public static class AppPaths
     /// <summary>Directory where .xdb database files are stored.</summary>
     public static string DatabaseDir => Path.Combine(AppDataDir, "databases");
 
+    /// <summary>Directory where session/capture logs are stored.</summary>
+    public static string LogDir => Path.Combine(AppDataDir, "logs");
+
     /// <summary>
     /// Directory where embedded-proxy mode shares databases with the standalone proxy.
     /// On macOS this is ~/Library/twxproxy/databases.
@@ -41,6 +44,7 @@ public static class AppPaths
     public static void EnsureDirectories()
     {
         Directory.CreateDirectory(DatabaseDir);
+        Directory.CreateDirectory(LogDir);
     }
 
     public static void EnsureTwxproxyDatabaseDir()

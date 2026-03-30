@@ -37,7 +37,7 @@ public class MainWindow : Window
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
-    private readonly SessionLogger         _sessionLog = new();
+    private readonly Core.ModLog           _sessionLog = new();
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
@@ -144,8 +144,10 @@ public class MainWindow : Window
         _telnet.TextLineReceived += line =>
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(line);
 
-        // Session logging: capture all raw server output and client sends.
-        _telnet.AppDataDecoded   += text  => _sessionLog.LogFromServer(text);
+        // Session logging for direct telnet mode is handled through the shared Core logger.
+        _sessionLog.LogDirectory = AppPaths.LogDir;
+        _sessionLog.SetLogIdentity(DeriveGameName());
+        _telnet.AppDataDecoded   += text  => _sessionLog.RecordServerText(text);
 
         // Update current sector from the command prompt — fires on every "Command [TL=...]:[N]"
         Core.GlobalModules.GlobalAutoRecorder.CurrentSectorChanged += sn =>
@@ -790,7 +792,7 @@ public class MainWindow : Window
     private void OnTelnetConnected()
     {
         _state.Connected = true;
-        _sessionLog.Open(DeriveGameName());
+        _sessionLog.SetLogIdentity(DeriveGameName());
         // Open (or create) the sector database for this game connection
         OpenSessionDatabase(useSharedProxyDatabase: false);
         Dispatcher.UIThread.Post(() =>
@@ -806,7 +808,7 @@ public class MainWindow : Window
     private void OnTelnetDisconnected()
     {
         _state.Connected = false;
-        _sessionLog.Close();
+        _sessionLog.CloseLog();
         // Flush and close the database
         try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
         _sessionDb = null;
@@ -1098,9 +1100,6 @@ public class MainWindow : Window
         gameName = string.Concat(gameName.Split(System.IO.Path.GetInvalidFileNameChars()));
         if (string.IsNullOrWhiteSpace(gameName)) gameName = "game";
 
-        // Open session log for this connection.
-        _sessionLog.Open(gameName);
-
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
@@ -1160,6 +1159,8 @@ public class MainWindow : Window
             Verbose       = false,          // suppress diagnostic Console.WriteLine in embedded mode
             AutoReconnect = _state.AutoReconnect,
         };
+        gi.Logger.LogDirectory = AppPaths.LogDir;
+        gi.Logger.SetLogIdentity(gameName);
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
 
@@ -1218,9 +1219,6 @@ public class MainWindow : Window
 
         gi.ServerDataReceived += (_, e) =>
         {
-            // Session log captures only true server-originated text in embedded mode.
-            _sessionLog.LogFromServer(e.Text);
-
             serverLineBuf.Append(e.Text);
             string buffered = serverLineBuf.ToString();
             int searchPos = 0;
@@ -1399,7 +1397,6 @@ public class MainWindow : Window
         _sessionDb = null;
         Core.ScriptRef.SetActiveDatabase(null);
 
-        _sessionLog.Close();
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
         _termCtrl.SendInput = bytes =>
         {

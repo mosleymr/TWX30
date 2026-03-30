@@ -20,6 +20,9 @@ public static class SharedPaths
     /// <summary>Directory where shared .xdb database files are stored.</summary>
     public static string DatabaseDir => Path.Combine(AppDataDir, "databases");
 
+    /// <summary>Directory where shared proxy capture/log files are stored.</summary>
+    public static string LogDir => Path.Combine(AppDataDir, "logs");
+
     /// <summary>Returns the shared .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
     {
@@ -28,6 +31,7 @@ public static class SharedPaths
     }
 
     public static void EnsureDatabaseDir() => Directory.CreateDirectory(DatabaseDir);
+    public static void EnsureLogDir() => Directory.CreateDirectory(LogDir);
 
     public static string SanitizeFileComponent(string value)
     {

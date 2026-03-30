@@ -529,6 +529,9 @@ namespace TWXProxy.Core
         {
             _activeDatabase = database;
             GlobalModules.TWXDatabase = database;
+
+            if (GlobalModules.TWXLog is ModLog log)
+                log.SetLogIdentity(database?.DatabaseName);
         }
 
         /// <summary>

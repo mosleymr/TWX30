@@ -78,6 +78,8 @@ public class ProxyService : IProxyService
                 interpreter,
                 scriptDirectory
             );
+            gameInstance.Logger.LogDirectory = AppPaths.LogsDir;
+            gameInstance.Logger.SetLogIdentity(config.Name);
             gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
             gameInstance.NativeHaggleChanged += enabled =>
             {
@@ -134,6 +136,8 @@ public class ProxyService : IProxyService
                     sessionDb.CreateDatabase(dbPath, BuildHeader(config));
                     TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Created new database: {dbPath} ({config.Sectors} sectors)\n");
                 }
+
+                gameInstance.Logger.SetLogIdentity(dbPath);
             }
             catch (Exception dbEx)
             {

@@ -161,8 +161,13 @@ namespace TWXProxy.Core
 
     public interface IModLog
     {
+        bool LogEnabled { get; set; }
         bool LogData { get; set; }
         bool LogANSI { get; set; }
+        bool BinaryLogs { get; set; }
+        bool NotifyPlayCuts { get; set; }
+        int MaxPlayDelay { get; set; }
+        bool PlayingLog { get; }
     }
 
     public interface IModAuth
