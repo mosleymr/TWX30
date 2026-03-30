@@ -752,26 +752,6 @@ namespace TWXProxy.Core
                                             }
                                         }
                                     }
-                                    else if (textOutConsumed)
-                                    {
-                                        // A TextOut trigger consumed this character (e.g. the bot's '>' prompt
-                                        // menu).  In the original Pascal TWX, the Telnet client's local echo
-                                        // made the character visible immediately; in TWXP (no Telnet client)
-                                        // we must echo it back explicitly so the user sees what they type.
-                                        if (_localStream != null)
-                                        {
-                                            if (b >= 32 && b <= 126) // printable ASCII
-                                            {
-                                                await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
-                                                await _localStream.FlushAsync(token);
-                                            }
-                                            else if (b == 8 || b == 127) // Backspace/DEL
-                                            {
-                                                await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
-                                                await _localStream.FlushAsync(token);
-                                            }
-                                        }
-                                    }
                                 
                                 // Raise event for input buffering / keypress / line-assembly
                                 // (ProxyService subscriber handles those cases).

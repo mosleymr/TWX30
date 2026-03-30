@@ -9,7 +9,7 @@ echo "==> Cleaning..."
 rm -rf bin obj MTC/bin MTC/obj
 
 echo "==> Publishing..."
-dotnet publish MTC/MTC.csproj \
+AVALONIA_TELEMETRY_OPTOUT=1 dotnet publish MTC/MTC.csproj \
     -c Release \
     -r osx-arm64 \
     --self-contained true \
