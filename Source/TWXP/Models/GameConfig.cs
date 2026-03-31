@@ -14,7 +14,23 @@ public class GameConfig
     public string DatabasePath { get; set; } = string.Empty;
     public string ScriptDirectory { get; set; } = string.Empty;
     public bool AutoConnect { get; set; }
+    public bool AutoReconnect { get; set; }
+    public int ReconnectDelaySeconds { get; set; } = 5;
     public bool NativeHaggleEnabled { get; set; } = true;
+    public bool UseCache { get; set; } = true;
+    public int BubbleSize { get; set; } = 25;
+    public bool LocalEcho { get; set; } = true;
+    public bool LogEnabled { get; set; } = true;
+    public bool LogAnsi { get; set; }
+    public bool LogBinary { get; set; }
+    public bool NotifyPlayCuts { get; set; } = true;
+    public int MaxPlayDelay { get; set; } = 10000;
+    public bool AcceptExternal { get; set; } = true;
+    public bool AllowLerkers { get; set; } = true;
+    public bool BroadcastMessages { get; set; } = true;
+    public string ExternalAddress { get; set; } = string.Empty;
+    public string LerkerAddress { get; set; } = string.Empty;
+    public bool StreamingMode { get; set; }
     public bool UseLogin { get; set; }
     public bool UseRLogin { get; set; }
     public string LoginScript { get; set; } = "0_Login.cts";

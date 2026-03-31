@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -46,6 +47,7 @@ public class MainWindow : Window
         PropertyNameCaseInsensitive = true,
     };
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
+    private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
@@ -179,6 +181,7 @@ public class MainWindow : Window
         // Load persisted preferences (recent file list etc.)
         _appPrefs = AppPreferences.Load();
         RebuildRecentMenu();
+        RebuildProxyMenu();
         RebuildScriptsMenu();
         _parser.Feed("\x1b[2J\x1b[H");
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
@@ -340,7 +343,7 @@ public class MainWindow : Window
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, mapMenu, viewMenu, helpMenu },
         };
 
         return menu;
@@ -850,6 +853,7 @@ public class MainWindow : Window
         _fileEdit.IsEnabled       = true;
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
+        RebuildProxyMenu();
     }
 
     /// <summary>Call when TCP connection is established.</summary>
@@ -858,6 +862,7 @@ public class MainWindow : Window
         _fileConnect.IsEnabled    = false;
         _fileDisconnect.IsEnabled = true;
         UpdateHaggleToggleState();
+        RebuildProxyMenu();
     }
 
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
@@ -866,6 +871,7 @@ public class MainWindow : Window
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
         UpdateHaggleToggleState();
+        RebuildProxyMenu();
     }
 
     private void OnHaggleToggleRequested()
@@ -1228,8 +1234,8 @@ public class MainWindow : Window
             gameName,
             _state.Host,
             _state.Port,
-            listenPort: 0,
-            commandChar: '$',
+            listenPort: gameConfig.ListenPort,
+            commandChar: gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar,
             interpreter: interpreter,
             scriptDirectory: effectiveScriptDir)
         {
@@ -1238,6 +1244,18 @@ public class MainWindow : Window
         };
         gi.Logger.LogDirectory = AppPaths.LogDir;
         gi.Logger.SetLogIdentity(gameName);
+        gi.ReconnectDelayMs = Math.Max(1, gameConfig.ReconnectDelaySeconds) * 1000;
+        gi.LocalEcho = gameConfig.LocalEcho;
+        gi.AcceptExternal = gameConfig.AcceptExternal;
+        gi.AllowLerkers = gameConfig.AllowLerkers;
+        gi.ExternalAddress = gameConfig.ExternalAddress ?? string.Empty;
+        gi.BroadCastMsgs = gameConfig.BroadcastMessages;
+        gi.Logger.LogEnabled = gameConfig.LogEnabled;
+        gi.Logger.LogData = gameConfig.LogEnabled;
+        gi.Logger.LogANSI = gameConfig.LogAnsi;
+        gi.Logger.BinaryLogs = gameConfig.LogBinary;
+        gi.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
+        gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
 
@@ -1340,6 +1358,8 @@ public class MainWindow : Window
                     _shipParser.FeedLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped);
                 }
+
+                gi.History.ProcessLine(lineStripped);
 
                 if (!gi.IsProxyMenuActive)
                 {
@@ -1581,9 +1601,12 @@ public class MainWindow : Window
             if (File.Exists(dbPath))
             {
                 db.OpenDatabase(dbPath);
+                db.UseCache = _embeddedGameConfig?.UseCache ?? true;
                 var header = db.DBHeader;
                 header.Address = _state.Host;
                 header.ServerPort = (ushort)_state.Port;
+                header.ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300);
+                header.CommandChar = _embeddedGameConfig?.CommandChar ?? '$';
                 header.UseLogin = _state.UseLogin;
                 header.UseRLogin = _state.UseRLogin;
                 header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
@@ -1598,6 +1621,8 @@ public class MainWindow : Window
                 {
                     Address    = _state.Host,
                     ServerPort = (ushort)_state.Port,
+                    ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300),
+                    CommandChar = _embeddedGameConfig?.CommandChar ?? '$',
                     Sectors    = sectors,
                     UseLogin   = _state.UseLogin,
                     UseRLogin  = _state.UseRLogin,
@@ -1619,6 +1644,533 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
                 _parser.Feed($"\x1b[1;31m[DB open failed: {ex.Message}]\x1b[0m\r\n"));
         }
+    }
+
+    private Core.ModInterpreter? CurrentInterpreter => Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+
+    private void RebuildProxyMenu()
+    {
+        string gameName = _embeddedGameName ?? DeriveGameName();
+        bool hasGame = !string.IsNullOrWhiteSpace(gameName);
+        bool hasDatabase = _sessionDb != null;
+        bool hasInterpreter = CurrentInterpreter != null;
+        bool canPlayCapture = _gameInstance != null;
+
+        _proxyMenu.ItemsSource = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
+        _termCtrl.ContextMenu = new ContextMenu
+        {
+            ItemsSource = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture)
+        };
+        RefreshNativeAppMenu();
+    }
+
+    private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
+    {
+        var items = new List<object>
+        {
+            new MenuItem
+            {
+                Header = hasGame ? $"Current Game: {gameName}" : "No game selected",
+                IsEnabled = false,
+            },
+            new Separator(),
+        };
+
+        var loadScript = new MenuItem { Header = "_Load Script…", IsEnabled = hasInterpreter };
+        loadScript.Click += (_, _) => _ = OnProxyLoadScriptAsync();
+        items.Add(loadScript);
+
+        var stopNonSystem = new MenuItem { Header = "Stop All _Non-System Scripts", IsEnabled = hasInterpreter };
+        stopNonSystem.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: false);
+        items.Add(stopNonSystem);
+
+        var stopAll = new MenuItem { Header = "Stop _All Scripts", IsEnabled = hasInterpreter };
+        stopAll.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: true);
+        items.Add(stopAll);
+
+        var stopScriptMenu = new MenuItem { Header = "Stop _Script", IsEnabled = hasInterpreter };
+        stopScriptMenu.ItemsSource = BuildStopScriptItems();
+        items.Add(stopScriptMenu);
+        items.Add(new Separator());
+
+        var exportMenu = new MenuItem { Header = "_Export", IsEnabled = hasDatabase };
+        exportMenu.ItemsSource = BuildProxyExportItems(hasDatabase);
+        items.Add(exportMenu);
+
+        var importMenu = new MenuItem { Header = "_Import", IsEnabled = hasDatabase };
+        importMenu.ItemsSource = BuildProxyImportItems(hasDatabase);
+        items.Add(importMenu);
+
+        var loggingMenu = new MenuItem { Header = "_Logging", IsEnabled = hasGame };
+        loggingMenu.ItemsSource = BuildProxyLoggingItems(canPlayCapture, hasGame);
+        items.Add(loggingMenu);
+
+        var quickMenu = new MenuItem { Header = "_Quick", IsEnabled = hasInterpreter };
+        quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
+        items.Add(quickMenu);
+
+        var botMenu = new MenuItem { Header = "_Bots", IsEnabled = _gameInstance != null };
+        botMenu.ItemsSource = BuildBotMenuItems(_gameInstance != null);
+        items.Add(botMenu);
+
+        return items;
+    }
+
+    private List<object> BuildStopScriptItems()
+    {
+        var items = new List<object>();
+        var interpreter = CurrentInterpreter;
+        if (interpreter == null)
+        {
+            items.Add(new MenuItem { Header = "No proxy scripts active", IsEnabled = false });
+            return items;
+        }
+
+        var scripts = Core.ProxyGameOperations.GetRunningScripts(interpreter);
+        if (scripts.Count == 0)
+        {
+            items.Add(new MenuItem { Header = "No active scripts", IsEnabled = false });
+            return items;
+        }
+
+        foreach (var script in scripts)
+        {
+            int scriptId = script.Id;
+            var item = new MenuItem
+            {
+                Header = script.IsSystemScript ? $"{script.Name} (system)" : script.Name
+            };
+            item.Click += (_, _) => _ = OnProxyStopScriptAsync(scriptId);
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private List<object> BuildProxyExportItems(bool enabled)
+    {
+        var items = new List<object>();
+
+        var exportWarps = new MenuItem { Header = "Export _Warps", IsEnabled = enabled };
+        exportWarps.Click += (_, _) => _ = ExportWarpsAsync();
+        items.Add(exportWarps);
+
+        var exportBubbles = new MenuItem { Header = "Export _Bubbles", IsEnabled = enabled };
+        exportBubbles.Click += (_, _) => _ = ExportBubblesAsync();
+        items.Add(exportBubbles);
+
+        var exportDeadends = new MenuItem { Header = "Export _Deadends", IsEnabled = enabled };
+        exportDeadends.Click += (_, _) => _ = ExportDeadendsAsync();
+        items.Add(exportDeadends);
+
+        var exportTwx = new MenuItem { Header = "Export _TWX", IsEnabled = enabled };
+        exportTwx.Click += (_, _) => _ = ExportTwxAsync();
+        items.Add(exportTwx);
+
+        return items;
+    }
+
+    private List<object> BuildProxyImportItems(bool enabled)
+    {
+        var items = new List<object>();
+
+        var importWarps = new MenuItem { Header = "Import _Warps", IsEnabled = enabled };
+        importWarps.Click += (_, _) => _ = ImportWarpsAsync();
+        items.Add(importWarps);
+
+        var importTwx = new MenuItem { Header = "Import T_WX", IsEnabled = enabled };
+        importTwx.Click += (_, _) => _ = ImportTwxAsync();
+        items.Add(importTwx);
+
+        return items;
+    }
+
+    private List<object> BuildProxyLoggingItems(bool canPlayCapture, bool hasGame)
+    {
+        var items = new List<object>();
+
+        var playCapture = new MenuItem { Header = "_Play Capture…", IsEnabled = canPlayCapture };
+        playCapture.Click += (_, _) => _ = PlayCaptureAsync();
+        items.Add(playCapture);
+
+        var history = new MenuItem { Header = "_History…", IsEnabled = hasGame && _gameInstance != null };
+        history.Click += (_, _) => _ = ShowProxyHistoryAsync();
+        items.Add(history);
+
+        return items;
+    }
+
+    private List<object> BuildQuickMenuItems(bool enabled)
+    {
+        var items = new List<object>();
+        if (!enabled)
+        {
+            items.Add(new MenuItem { Header = "Proxy scripts are not active", IsEnabled = false });
+            return items;
+        }
+
+        string scriptDirectory = GetEffectiveProxyScriptDirectory();
+        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+        var groups = Core.ProxyMenuCatalog.BuildQuickLoadGroups(programDir, scriptDirectory);
+        if (groups.Count == 0)
+        {
+            items.Add(new MenuItem { Header = "No quick-load scripts found", IsEnabled = false });
+            return items;
+        }
+
+        foreach (var group in groups)
+        {
+            var groupMenu = new MenuItem { Header = group.Name };
+            var groupItems = new List<object>();
+            foreach (var entry in group.Entries)
+            {
+                string relativePath = entry.RelativePath;
+                var item = new MenuItem { Header = entry.DisplayName };
+                item.Click += (_, _) => _ = LoadQuickScriptAsync(relativePath);
+                groupItems.Add(item);
+            }
+
+            groupMenu.ItemsSource = groupItems;
+            items.Add(groupMenu);
+        }
+
+        return items;
+    }
+
+    private List<object> BuildBotMenuItems(bool enabled)
+    {
+        var items = new List<object>();
+        if (!enabled || _gameInstance == null)
+        {
+            items.Add(new MenuItem { Header = "Proxy is not running", IsEnabled = false });
+            return items;
+        }
+
+        var bots = _gameInstance.GetBotList();
+        if (bots.Count == 0)
+        {
+            items.Add(new MenuItem { Header = "No bots configured", IsEnabled = false });
+            return items;
+        }
+
+        foreach (string botName in bots)
+        {
+            Core.BotConfig? botConfig = _gameInstance.GetBotConfig(botName);
+            string caption = botName;
+            if (_gameInstance.ActiveBotName.Equals(botName, StringComparison.OrdinalIgnoreCase))
+                caption += " (active)";
+
+            var item = new MenuItem
+            {
+                Header = caption,
+            };
+            item.Click += (_, _) => _ = SwitchBotAsync(botName);
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private string GetEffectiveProxyScriptDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(CurrentInterpreter?.ScriptDirectory))
+            return CurrentInterpreter.ScriptDirectory;
+
+        if (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
+            return _appPrefs.ScriptsDirectory;
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+    }
+
+    private static string GetEffectiveProxyProgramDir(string scriptDirectory)
+    {
+        string trimmed = scriptDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return Path.GetDirectoryName(trimmed) ?? trimmed;
+    }
+
+    private async Task OnProxyLoadScriptAsync()
+    {
+        var interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return;
+
+        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage == null)
+            return;
+
+        IStorageFolder? start = null;
+        string preferred = !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
+            ? _appPrefs.ScriptsDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+
+        try
+        {
+            start = await storage.TryGetFolderFromPathAsync(preferred);
+        }
+        catch { }
+
+        var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Load TWX Script",
+            SuggestedStartLocation = start,
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("TWX Scripts") { Patterns = ["*.ts", "*.cts"] },
+                new FilePickerFileType("All Files") { Patterns = ["*"] },
+            ],
+        });
+
+        if (files.Count == 0)
+            return;
+
+        string fullPath = files[0].Path.LocalPath;
+        string scriptPath = fullPath;
+        if (!string.IsNullOrWhiteSpace(interpreter.ScriptDirectory))
+        {
+            string fullRoot = Path.GetFullPath(interpreter.ScriptDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(fullPath);
+            if (candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                scriptPath = Path.GetRelativePath(interpreter.ScriptDirectory, fullPath).Replace('\\', '/');
+        }
+
+        try
+        {
+            Core.ProxyGameOperations.LoadScript(interpreter, scriptPath);
+            _parser.Feed($"\x1b[1;36m[Loaded script: {scriptPath}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Load Script Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+    }
+
+    private async Task LoadQuickScriptAsync(string relativePath)
+    {
+        var interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return;
+
+        try
+        {
+            Core.ProxyGameOperations.LoadScript(interpreter, relativePath);
+            _parser.Feed($"\x1b[1;36m[Loaded quick script: {relativePath}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Quick Load Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+    }
+
+    private async Task SwitchBotAsync(string botName)
+    {
+        try
+        {
+            CurrentInterpreter?.SwitchBot(string.Empty, botName, stopBotScripts: true);
+            _parser.Feed($"\x1b[1;36m[Switched bot: {botName}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Switch Bot Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+    }
+
+    private async Task OnProxyStopAllScriptsAsync(bool includeSystemScripts)
+    {
+        try
+        {
+            Core.ProxyGameOperations.StopAllScripts(CurrentInterpreter, includeSystemScripts);
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Stop Scripts Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+    }
+
+    private async Task OnProxyStopScriptAsync(int scriptId)
+    {
+        try
+        {
+            if (!Core.ProxyGameOperations.StopScriptById(CurrentInterpreter, scriptId))
+                await ShowMessageAsync("Stop Script", $"Script ID {scriptId} was not found.");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Stop Script Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+    }
+
+    private async Task ExportWarpsAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string? path = await PickProxySavePathAsync("Export Warps", "warpspec", "txt", "Text file", "*.txt");
+        if (path == null)
+            return;
+
+        try
+        {
+            Core.ProxyGameOperations.ExportWarps(_sessionDb, path);
+            await ShowMessageAsync("Export Complete", $"Warp data exported to:\n{path}");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Export Failed", ex.Message);
+        }
+    }
+
+    private async Task ExportBubblesAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string? path = await PickProxySavePathAsync("Export Bubbles", "bubbles", "txt", "Text file", "*.txt");
+        if (path == null)
+            return;
+
+        try
+        {
+            int bubbleSize = _embeddedGameConfig?.BubbleSize ?? 25;
+            Core.ProxyGameOperations.ExportBubbles(_sessionDb, path, bubbleSize);
+            await ShowMessageAsync("Export Complete", $"Bubble data exported to:\n{path}");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Export Failed", ex.Message);
+        }
+    }
+
+    private async Task ExportDeadendsAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string? path = await PickProxySavePathAsync("Export Deadends", "deadends", "txt", "Text file", "*.txt");
+        if (path == null)
+            return;
+
+        try
+        {
+            Core.ProxyGameOperations.ExportDeadends(_sessionDb, path);
+            await ShowMessageAsync("Export Complete", $"Deadends exported to:\n{path}");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Export Failed", ex.Message);
+        }
+    }
+
+    private async Task ExportTwxAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string suggested = string.IsNullOrWhiteSpace(_sessionDb.DatabaseName) ? "game" : _sessionDb.DatabaseName;
+        string? path = await PickProxySavePathAsync("Export TWX", suggested, "twx", "TWX export", "*.twx");
+        if (path == null)
+            return;
+
+        try
+        {
+            Core.ProxyGameOperations.ExportTwx(_sessionDb, path);
+            await ShowMessageAsync("Export Complete", $"TWX export written to:\n{path}");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Export Failed", ex.Message);
+        }
+    }
+
+    private async Task ImportWarpsAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string? path = await PickProxyOpenPathAsync("Import Warps", "Text file", "*.txt");
+        if (path == null)
+            return;
+
+        try
+        {
+            int imported = Core.ProxyGameOperations.ImportWarps(_sessionDb, path);
+            await ShowMessageAsync("Import Complete", $"Imported {imported} warp rows.");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Import Failed", ex.Message);
+        }
+    }
+
+    private async Task ImportTwxAsync()
+    {
+        if (_sessionDb == null)
+            return;
+
+        string? path = await PickProxyOpenPathAsync("Import TWX", "TWX export", "*.twx");
+        if (path == null)
+            return;
+
+        bool keepRecent = await ShowConfirmAsync(
+            "Import TWX",
+            "Keep existing data when it is newer than the imported TWX data?",
+            "Keep Newer Data",
+            "Overwrite");
+
+        try
+        {
+            Core.ProxyGameOperations.ImportTwx(_sessionDb, path, keepRecent);
+            await ShowMessageAsync("Import Complete", "TWX import completed successfully.");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Import Failed", ex.Message);
+        }
+    }
+
+    private async Task PlayCaptureAsync()
+    {
+        if (_gameInstance == null)
+            return;
+
+        string? path = await PickProxyOpenPathAsync("Play Capture File", "Binary capture files", "*.cap");
+        if (path == null)
+            return;
+
+        bool started = _gameInstance.Logger.BeginPlayLog(path);
+        await ShowMessageAsync(
+            started ? "Playback Started" : "Playback Busy",
+            started ? "Capture playback has started." : "A capture is already playing.");
+    }
+
+    private async Task ShowProxyHistoryAsync()
+    {
+        if (_gameInstance == null)
+        {
+            await ShowMessageAsync("Proxy History", "Proxy history is only available while the embedded proxy is running.");
+            return;
+        }
+
+        var window = new HistoryWindow(
+            $"History - {DeriveGameName()}",
+            () => _gameInstance.History.GetSnapshot(),
+            type => _gameInstance.History.Clear(type));
+        await window.ShowDialog(this);
     }
 
     // ── Scripts menu ───────────────────────────────────────────────────────
@@ -1652,6 +2204,7 @@ public class MainWindow : Window
                 reloadItem, new Separator(),
                 new MenuItem { Header = msg, IsEnabled = false },
             };
+            RefreshNativeAppMenu();
             return;
         }
 
@@ -1676,6 +2229,7 @@ public class MainWindow : Window
                         BuildMenuItems(items, t.Result);
 
                     _scriptsMenu.ItemsSource = items;
+                    RefreshNativeAppMenu();
                 }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
@@ -1812,6 +2366,81 @@ public class MainWindow : Window
             items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
 
         _recentMenu.ItemsSource = items;
+        RefreshNativeAppMenu();
+    }
+
+    private void RefreshNativeAppMenu()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        var nativeMenu = new NativeMenu();
+        foreach (object? item in _menuBar.Items)
+        {
+            NativeMenuItemBase? nativeItem = ConvertToNativeMenuItem(item);
+            if (nativeItem != null)
+                nativeMenu.Add(nativeItem);
+        }
+
+        NativeMenu.SetMenu(this, nativeMenu);
+    }
+
+    private static NativeMenuItemBase? ConvertToNativeMenuItem(object? item)
+    {
+        if (item is Separator)
+            return new NativeMenuItemSeparator();
+
+        if (item is not MenuItem menuItem)
+            return null;
+
+        var nativeItem = new NativeMenuItem
+        {
+            Header = NormalizeNativeMenuHeader(menuItem.Header?.ToString()),
+            IsEnabled = menuItem.IsEnabled,
+            IsVisible = menuItem.IsVisible,
+        };
+
+        var children = GetMenuChildren(menuItem)
+            .Select(ConvertToNativeMenuItem)
+            .Where(child => child != null)
+            .Cast<NativeMenuItemBase>()
+            .ToList();
+
+        if (children.Count > 0)
+        {
+            var submenu = new NativeMenu();
+            foreach (NativeMenuItemBase child in children)
+                submenu.Add(child);
+            nativeItem.Menu = submenu;
+        }
+        else
+        {
+            nativeItem.Click += (_, _) =>
+                menuItem.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(MenuItem.ClickEvent));
+        }
+
+        return nativeItem;
+    }
+
+    private static IEnumerable<object?> GetMenuChildren(MenuItem menuItem)
+    {
+        if (menuItem.ItemsSource is IEnumerable source)
+        {
+            foreach (object? item in source)
+                yield return item;
+            yield break;
+        }
+
+        foreach (object? item in menuItem.Items)
+            yield return item;
+    }
+
+    private static string NormalizeNativeMenuHeader(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+            return string.Empty;
+
+        return header.Replace("_", string.Empty);
     }
 
     /// <summary>Opens a recently used .mtc file directly (no file picker, no connect).</summary>
@@ -1857,6 +2486,8 @@ public class MainWindow : Window
 
         ApplyProfile(dlg.Result);
 
+        await SyncEmbeddedProxySettingsAsync();
+
         // Auto-save in place if a profile file is already loaded.
         if (!string.IsNullOrEmpty(_currentProfilePath))
         {
@@ -1866,6 +2497,92 @@ public class MainWindow : Window
 
         _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
         _buffer.Dirty = true;
+    }
+
+    private async Task SyncEmbeddedProxySettingsAsync()
+    {
+        if (!_state.EmbeddedProxy)
+        {
+            if (_gameInstance != null)
+                await StopEmbeddedAsync();
+            return;
+        }
+
+        string gameName = GetEmbeddedGameName();
+        var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        string previousHost = gameConfig.Host;
+        int previousPort = gameConfig.Port;
+
+        bool configChanged =
+            !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
+            gameConfig.Host != _state.Host ||
+            gameConfig.Port != _state.Port ||
+            gameConfig.Sectors != _state.Sectors ||
+            gameConfig.UseLogin != _state.UseLogin ||
+            gameConfig.UseRLogin != _state.UseRLogin ||
+            !string.Equals(gameConfig.LoginScript, string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.LoginName, _state.LoginName, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.Password, _state.Password, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.GameLetter, _state.GameLetter, StringComparison.Ordinal);
+
+        gameConfig.Name = gameName;
+        gameConfig.Host = _state.Host;
+        gameConfig.Port = _state.Port;
+        gameConfig.Sectors = _state.Sectors;
+        gameConfig.UseLogin = _state.UseLogin;
+        gameConfig.UseRLogin = _state.UseRLogin;
+        gameConfig.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+        gameConfig.LoginName = _state.LoginName;
+        gameConfig.Password = _state.Password;
+        gameConfig.GameLetter = _state.GameLetter;
+
+        if (configChanged)
+            await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
+
+        _embeddedGameConfig = gameConfig;
+        _embeddedGameName = gameName;
+
+        if (_sessionDb != null)
+        {
+            var header = _sessionDb.DBHeader;
+            header.Address = _state.Host;
+            header.ServerPort = (ushort)_state.Port;
+            header.ListenPort = (ushort)gameConfig.ListenPort;
+            header.CommandChar = gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar;
+            header.UseLogin = _state.UseLogin;
+            header.UseRLogin = _state.UseRLogin;
+            header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+            header.LoginName = _state.LoginName;
+            header.Password = _state.Password;
+            header.Game = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+            _sessionDb.ReplaceHeader(header);
+            Core.ScriptRef.SetActiveDatabase(_sessionDb);
+        }
+
+        if (_gameInstance == null)
+            return;
+
+        _gameInstance.AutoReconnect = _state.AutoReconnect;
+        _gameInstance.ReconnectDelayMs = Math.Max(1, gameConfig.ReconnectDelaySeconds) * 1000;
+        _gameInstance.LocalEcho = gameConfig.LocalEcho;
+        _gameInstance.AcceptExternal = gameConfig.AcceptExternal;
+        _gameInstance.AllowLerkers = gameConfig.AllowLerkers;
+        _gameInstance.ExternalAddress = gameConfig.ExternalAddress ?? string.Empty;
+        _gameInstance.BroadCastMsgs = gameConfig.BroadcastMessages;
+        _gameInstance.Logger.LogEnabled = gameConfig.LogEnabled;
+        _gameInstance.Logger.LogData = gameConfig.LogEnabled;
+        _gameInstance.Logger.LogANSI = gameConfig.LogAnsi;
+        _gameInstance.Logger.BinaryLogs = gameConfig.LogBinary;
+        _gameInstance.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
+        _gameInstance.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
+        _gameInstance.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
+
+        bool endpointChanged = !string.Equals(previousHost, _state.Host, StringComparison.Ordinal) || previousPort != _state.Port;
+        if (!_gameInstance.IsConnected && endpointChanged)
+        {
+            await StopEmbeddedAsync();
+            await DoConnectEmbeddedAsync();
+        }
     }
 
     private async Task OnNewConnectionAsync()
@@ -1958,6 +2675,54 @@ public class MainWindow : Window
         return file?.Path.LocalPath;
     }
 
+    private async Task<string?> PickProxySavePathAsync(
+        string title,
+        string suggestedName,
+        string extension,
+        string typeName,
+        params string[] patterns)
+    {
+        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage == null) return null;
+
+        var home = await GetHomeFolderAsync(storage);
+        var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedStartLocation = home,
+            SuggestedFileName = suggestedName,
+            DefaultExtension = extension,
+            FileTypeChoices =
+            [
+                new FilePickerFileType(typeName) { Patterns = patterns },
+            ],
+        });
+        return file?.Path.LocalPath;
+    }
+
+    private async Task<string?> PickProxyOpenPathAsync(
+        string title,
+        string typeName,
+        params string[] patterns)
+    {
+        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage == null) return null;
+
+        var home = await GetHomeFolderAsync(storage);
+        var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            SuggestedStartLocation = home,
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType(typeName) { Patterns = patterns },
+                new FilePickerFileType("All Files") { Patterns = ["*"] },
+            ],
+        });
+        return files.Count > 0 ? files[0].Path.LocalPath : null;
+    }
+
     private static async Task<IStorageFolder?> GetHomeFolderAsync(IStorageProvider storage)
     {
         var homePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -1997,5 +2762,57 @@ public class MainWindow : Window
         };
         okBtn.Click += (_, _) => dlg.Close();
         await dlg.ShowDialog(this);
+    }
+
+    private async Task<bool> ShowConfirmAsync(string title, string message, string yesText, string noText)
+    {
+        bool result = false;
+        var yesBtn = new Button { Content = yesText, MinWidth = 110 };
+        var noBtn = new Button { Content = noText, MinWidth = 110 };
+
+        var dlg = new Window
+        {
+            Title = title,
+            Width = 520,
+            Height = 220,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = BgPanel,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 16,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = message,
+                        Foreground = FgKey,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        Spacing = 10,
+                        Children = { yesBtn, noBtn },
+                    },
+                },
+            },
+        };
+
+        yesBtn.Click += (_, _) =>
+        {
+            result = true;
+            dlg.Close();
+        };
+        noBtn.Click += (_, _) =>
+        {
+            result = false;
+            dlg.Close();
+        };
+
+        await dlg.ShowDialog(this);
+        return result;
     }
 }

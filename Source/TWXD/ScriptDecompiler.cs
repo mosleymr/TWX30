@@ -121,7 +121,7 @@ namespace TWXD
                 var segments = GetScriptSegments();
                 if (segments.Count == 0)
                 {
-                    DecompileSegment(new ScriptSegment(0, 0, _codeSize, GetScriptName(0)), filename, true, null);
+                    DecompileSegment(new ScriptSegment(0, 0, _codeSize, GetScriptName(0)), filename, false, true, null);
                     NormalizeElseWhileChains(filename);
                     if (CompactWhitespace)
                         NormalizeWhitespace(filename);
@@ -129,11 +129,18 @@ namespace TWXD
                     return generatedFiles;
                 }
 
-                ScriptSegment? mainSegment = segments.FirstOrDefault(segment => segment.ScriptID == 0);
-                if (_includeScriptList.Count <= 1 || segments.Count <= 1 || mainSegment == null)
+                var scriptGroups = segments
+                    .GroupBy(segment => segment.ScriptID)
+                    .OrderBy(group => group.First().Start)
+                    .ToList();
+
+                var mainGroup = scriptGroups.FirstOrDefault(group => group.Key == 0);
+                if (_includeScriptList.Count <= 1 || scriptGroups.Count <= 1 || mainGroup == null)
                 {
-                    var segment = mainSegment ?? segments[0];
-                    DecompileSegment(segment, filename, true, null);
+                    List<ScriptSegment> fallbackGroup = mainGroup != null
+                        ? mainGroup.ToList()
+                        : new List<ScriptSegment> { segments[0] };
+                    DecompileSegments(fallbackGroup, filename, true, null);
                     NormalizeElseWhileChains(filename);
                     if (CompactWhitespace)
                         NormalizeWhitespace(filename);
@@ -143,24 +150,74 @@ namespace TWXD
 
                 string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? Directory.GetCurrentDirectory();
                 var includeLines = new List<string>();
+                var includeVariants = new Dictionary<string, List<(string RelativePath, string FullPath, string Content)>>(StringComparer.OrdinalIgnoreCase);
 
-                foreach (var segment in segments.Where(segment => segment.ScriptID > 0))
+                foreach (var group in scriptGroups.Where(group => group.Key > 0))
                 {
-                    string relativePath = BuildIncludeRelativePath(segment.ScriptID);
-                    string fullPath = Path.Combine(outputDirectory, relativePath);
-                    string? includeDirectory = Path.GetDirectoryName(fullPath);
-                    if (!string.IsNullOrEmpty(includeDirectory))
-                        Directory.CreateDirectory(includeDirectory);
+                    string includeName = GetScriptName(group.Key);
+                    string baseName = Path.GetFileNameWithoutExtension(includeName);
+                    string tempPath = Path.Combine(outputDirectory, $".twxd-script-{group.Key}-{Guid.NewGuid():N}.tmp");
 
-                    DecompileSegment(segment, fullPath, false, null);
-                    NormalizeElseWhileChains(fullPath);
-                    if (CompactWhitespace)
-                        NormalizeWhitespace(fullPath);
-                    generatedFiles.Add(fullPath);
-                    includeLines.Add($"include \"{relativePath}\"");
+                    try
+                    {
+                        DecompileSegments(group.ToList(), tempPath, false, null);
+                        NormalizeElseWhileChains(tempPath);
+                        if (CompactWhitespace)
+                            NormalizeWhitespace(tempPath);
+
+                        string tempContent = File.ReadAllText(tempPath, Encoding.Latin1);
+                        if (!includeVariants.TryGetValue(baseName, out var variants))
+                        {
+                            variants = new List<(string RelativePath, string FullPath, string Content)>();
+                            includeVariants[baseName] = variants;
+                        }
+
+                        string relativePath;
+                        string fullPath;
+                        var existingVariant = variants.FirstOrDefault(variant => string.Equals(variant.Content, tempContent, StringComparison.Ordinal));
+                        if (!string.IsNullOrEmpty(existingVariant.RelativePath))
+                        {
+                            relativePath = existingVariant.RelativePath;
+                            fullPath = existingVariant.FullPath;
+                        }
+                        else
+                        {
+                            relativePath = variants.Count == 0
+                                ? BuildIncludeRelativePath(group.Key)
+                                : BuildDuplicateIncludeRelativePath(baseName, variants.Count + 1);
+                            fullPath = Path.Combine(outputDirectory, relativePath);
+                            string? includeDirectory = Path.GetDirectoryName(fullPath);
+                            if (!string.IsNullOrEmpty(includeDirectory))
+                                Directory.CreateDirectory(includeDirectory);
+
+                            if (File.Exists(fullPath))
+                                File.Delete(fullPath);
+
+                            File.Move(tempPath, fullPath);
+                            generatedFiles.Add(fullPath);
+                            variants.Add((relativePath, fullPath, tempContent));
+                            tempPath = string.Empty;
+                        }
+
+                        includeLines.Add($"include \"{relativePath}\"");
+                    }
+                    finally
+                    {
+                        if (!string.IsNullOrEmpty(tempPath) && File.Exists(tempPath))
+                            File.Delete(tempPath);
+                    }
                 }
 
-                DecompileSegment(mainSegment, filename, true, includeLines);
+                foreach (string fullPath in includeVariants
+                    .SelectMany(entry => entry.Value)
+                    .Select(variant => variant.FullPath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!File.Exists(fullPath))
+                        continue;
+                }
+
+                DecompileSegments(mainGroup.ToList(), filename, true, includeLines);
                 NormalizeElseWhileChains(filename);
                 if (CompactWhitespace)
                     NormalizeWhitespace(filename);
@@ -186,11 +243,24 @@ namespace TWXD
             }
         }
 
-        private void DecompileSegment(ScriptSegment segment, string filename, bool includeDescription, IReadOnlyList<string>? includeLines)
+        private void DecompileSegments(IReadOnlyList<ScriptSegment> segments, string filename, bool includeDescription, IReadOnlyList<string>? includeLines)
         {
-            using (var output = new StreamWriter(filename, false, Encoding.Latin1))
+            for (int i = 0; i < segments.Count; i++)
+            {
+                bool append = i > 0;
+                bool writeDescription = includeDescription && i == 0;
+                IReadOnlyList<string>? lines = i == segments.Count - 1 ? includeLines : null;
+                DecompileSegment(segments[i], filename, append, writeDescription, lines);
+            }
+        }
+
+        private void DecompileSegment(ScriptSegment segment, string filename, bool append, bool includeDescription, IReadOnlyList<string>? includeLines)
+        {
+            using (var output = new StreamWriter(filename, append, Encoding.Latin1))
             {
                 int outputLine = 0;
+                if (append && File.Exists(filename))
+                    outputLine = File.ReadAllLines(filename, Encoding.Latin1).Length;
 
                 void WriteTrackedLine(string text = "")
                 {
@@ -204,7 +274,7 @@ namespace TWXD
                         WriteTrackedLine();
                 }
 
-                if (includeDescription && !string.IsNullOrEmpty(_description))
+                if (!append && includeDescription && !string.IsNullOrEmpty(_description))
                 {
                     foreach (var line in _description.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
                     {
@@ -646,7 +716,7 @@ namespace TWXD
                     WriteTrackedLine($"{Indent(indent)}end");
                 }
 
-                if (includeLines != null && includeLines.Count > 0)
+                if (!append && includeLines != null && includeLines.Count > 0)
                 {
                     if (outputLine > 0)
                         WriteTrackedLine();
@@ -917,6 +987,12 @@ namespace TWXD
             string includeBaseName = Path.GetFileNameWithoutExtension(includeName);
             string safeBaseName = SanitizePathSegment(includeBaseName);
             return Path.Combine("include", safeBaseName + ".ts");
+        }
+
+        private string BuildDuplicateIncludeRelativePath(string includeBaseName, int variantIndex)
+        {
+            string safeBaseName = SanitizePathSegment(includeBaseName);
+            return Path.Combine("include", $"{safeBaseName}_{variantIndex}", safeBaseName + ".ts");
         }
 
         private static string SanitizePathSegment(string value)

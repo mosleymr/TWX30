@@ -11,6 +11,7 @@ public class GameConfigViewModel : BaseViewModel
     private readonly IDirectoryPickerService _directoryPickerService;
     private readonly Action<GameConfigViewModel>? _onRemove;
     private GameStatus _status;
+    private MenuFlyout? _proxyContextFlyout;
 
     public GameConfig Config { get; }
 
@@ -74,6 +75,20 @@ public class GameConfigViewModel : BaseViewModel
         }
     }
 
+    public string CommandKey
+    {
+        get => Config.CommandChar.ToString();
+        set
+        {
+            char next = string.IsNullOrWhiteSpace(value) ? '$' : value.Trim()[0];
+            if (Config.CommandChar != next)
+            {
+                Config.CommandChar = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public int Sectors
     {
         get => Config.Sectors;
@@ -126,6 +141,33 @@ public class GameConfigViewModel : BaseViewModel
         }
     }
 
+    public bool AutoReconnect
+    {
+        get => Config.AutoReconnect;
+        set
+        {
+            if (Config.AutoReconnect != value)
+            {
+                Config.AutoReconnect = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public int ReconnectDelaySeconds
+    {
+        get => Config.ReconnectDelaySeconds;
+        set
+        {
+            int next = Math.Max(1, value);
+            if (Config.ReconnectDelaySeconds != next)
+            {
+                Config.ReconnectDelaySeconds = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public bool NativeHaggleEnabled
     {
         get => Config.NativeHaggleEnabled;
@@ -134,6 +176,192 @@ public class GameConfigViewModel : BaseViewModel
             if (Config.NativeHaggleEnabled != value)
             {
                 Config.NativeHaggleEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool UseCache
+    {
+        get => Config.UseCache;
+        set
+        {
+            if (Config.UseCache != value)
+            {
+                Config.UseCache = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public int BubbleSize
+    {
+        get => Config.BubbleSize;
+        set
+        {
+            int next = Math.Max(1, value);
+            if (Config.BubbleSize != next)
+            {
+                Config.BubbleSize = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool LocalEcho
+    {
+        get => Config.LocalEcho;
+        set
+        {
+            if (Config.LocalEcho != value)
+            {
+                Config.LocalEcho = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool LogEnabled
+    {
+        get => Config.LogEnabled;
+        set
+        {
+            if (Config.LogEnabled != value)
+            {
+                Config.LogEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool LogAnsi
+    {
+        get => Config.LogAnsi;
+        set
+        {
+            if (Config.LogAnsi != value)
+            {
+                Config.LogAnsi = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool LogBinary
+    {
+        get => Config.LogBinary;
+        set
+        {
+            if (Config.LogBinary != value)
+            {
+                Config.LogBinary = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool NotifyPlayCuts
+    {
+        get => Config.NotifyPlayCuts;
+        set
+        {
+            if (Config.NotifyPlayCuts != value)
+            {
+                Config.NotifyPlayCuts = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public int MaxPlayDelay
+    {
+        get => Config.MaxPlayDelay;
+        set
+        {
+            int next = Math.Max(1, value);
+            if (Config.MaxPlayDelay != next)
+            {
+                Config.MaxPlayDelay = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool AcceptExternal
+    {
+        get => Config.AcceptExternal;
+        set
+        {
+            if (Config.AcceptExternal != value)
+            {
+                Config.AcceptExternal = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool AllowLerkers
+    {
+        get => Config.AllowLerkers;
+        set
+        {
+            if (Config.AllowLerkers != value)
+            {
+                Config.AllowLerkers = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool BroadcastMessages
+    {
+        get => Config.BroadcastMessages;
+        set
+        {
+            if (Config.BroadcastMessages != value)
+            {
+                Config.BroadcastMessages = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool StreamingMode
+    {
+        get => Config.StreamingMode;
+        set
+        {
+            if (Config.StreamingMode != value)
+            {
+                Config.StreamingMode = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string ExternalAddress
+    {
+        get => Config.ExternalAddress;
+        set
+        {
+            string next = value?.Trim() ?? string.Empty;
+            if (Config.ExternalAddress != next)
+            {
+                Config.ExternalAddress = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string LerkerAddress
+    {
+        get => Config.LerkerAddress;
+        set
+        {
+            string next = value?.Trim() ?? string.Empty;
+            if (Config.LerkerAddress != next)
+            {
+                Config.LerkerAddress = next;
                 OnPropertyChanged();
             }
         }
@@ -262,6 +490,12 @@ public class GameConfigViewModel : BaseViewModel
 
     public bool CanStart => Status == GameStatus.Stopped || Status == GameStatus.Error;
     public bool CanStop => Status == GameStatus.Running || Status == GameStatus.Starting;
+
+    public MenuFlyout? ProxyContextFlyout
+    {
+        get => _proxyContextFlyout;
+        set => SetProperty(ref _proxyContextFlyout, value);
+    }
 
     public ICommand StartCommand { get; }
     public ICommand StopCommand { get; }

@@ -36,7 +36,8 @@
         <!-- Games List -->
         <ScrollView Grid.Row="1">
             <CollectionView ItemsSource="{Binding Games}"
-                           SelectionMode="None">
+                           SelectionMode="Single"
+                           SelectedItem="{Binding SelectedGame, Mode=TwoWay}">
                 <CollectionView.ItemTemplate>
                     <DataTemplate x:DataType="vm:GameConfigViewModel">
                         <Border Margin="0,0,0,10"
@@ -89,6 +90,10 @@
 
                                 <!-- Control Buttons -->
                                 <HorizontalStackLayout Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Spacing="8" VerticalOptions="Center">
+                                    <Button Text="⋯"
+                                            WidthRequest="48"
+                                            HeightRequest="36"
+                                            FlyoutBase.ContextFlyout="{Binding ProxyContextFlyout}"/>
                                     <Button Text="Start"
                                             Command="{Binding StartCommand}"
                                             IsEnabled="{Binding CanStart}"

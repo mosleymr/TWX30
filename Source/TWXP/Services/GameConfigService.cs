@@ -41,6 +41,24 @@ public class GameConfigService : IGameConfigService
         {
             config.LoginScript = "0_Login.cts";
         }
+
+        if (config.CommandChar == '\0')
+            config.CommandChar = '$';
+
+        if (config.ListenPort == 0)
+            config.ListenPort = 2300;
+
+        if (config.Sectors <= 0)
+            config.Sectors = 1000;
+
+        if (config.BubbleSize <= 0)
+            config.BubbleSize = 25;
+
+        if (config.ReconnectDelaySeconds <= 0)
+            config.ReconnectDelaySeconds = 5;
+
+        if (config.MaxPlayDelay <= 0)
+            config.MaxPlayDelay = 10000;
     }
 
     // -------------------------------------------------------------------------

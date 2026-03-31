@@ -40,6 +40,8 @@ namespace TWXProxy.Core
         private readonly int _listenPort;
         private char _commandChar;
         private readonly ModInterpreter? _interpreter;
+        private readonly Dictionary<string, string> _quickTexts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, BotConfig> _botConfigs = new(StringComparer.OrdinalIgnoreCase);
         
         // ITWXServer / IModServer properties
         public bool AllowLerkers { get; set; } = true;
@@ -82,9 +84,15 @@ namespace TWXProxy.Core
 
         // Auto-reconnect: true by default, set to false by "disconnect disable"
         private bool _autoReconnect = true;
+        private int _reconnectDelayMs = 5000;
         private int _reconnectLoopRunning = 0; // Interlocked guard — only one loop at a time
         private int _disconnectHandling = 0;   // Interlocked guard — emit disconnect UI/event once
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
+        public int ReconnectDelayMs
+        {
+            get => _reconnectDelayMs;
+            set => _reconnectDelayMs = Math.Max(1000, value);
+        }
 
         /// <summary>
         /// When false, suppresses all Console.WriteLine diagnostic output.
@@ -123,6 +131,7 @@ namespace TWXProxy.Core
         public bool IsProxyMenuActive => _menuHandler.IsActive;
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
         public ModLog Logger => _log;
+        public ProxyHistoryBuffer History { get; } = new();
         public bool LogDataEnabled
         {
             get => _log.LogData;
@@ -159,6 +168,12 @@ namespace TWXProxy.Core
                 (payload, token) => SendPlaybackToLocalAsync(payload, token),
                 message => SendMessageAsync(message).GetAwaiter().GetResult());
             GlobalModules.TWXLog = _log;
+
+            string programDir = !string.IsNullOrWhiteSpace(scriptDirectory)
+                ? (Path.GetDirectoryName(scriptDirectory) ?? AppContext.BaseDirectory)
+                : GlobalModules.ProgramDir;
+            foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
+                _botConfigs[bot.Name] = bot;
         }
 
         /// <summary>
@@ -609,9 +624,9 @@ namespace TWXProxy.Core
 
         private async Task ReconnectLoopAsync(CancellationToken token)
         {
-            const int reconnectDelay = 5000; // 5 seconds between attempts
             while (!token.IsCancellationRequested && _autoReconnect)
             {
+                int reconnectDelay = _reconnectDelayMs;
                 try { await Task.Delay(reconnectDelay, token); } catch (OperationCanceledException) { return; }
                 if (token.IsCancellationRequested) return;
                 if (_serverClient?.Connected == true) return; // already reconnected
@@ -1123,12 +1138,21 @@ namespace TWXProxy.Core
 
         public void AddQuickText(string key, string value)
         {
-            // Quick text not implemented yet
+            if (string.IsNullOrWhiteSpace(key))
+                return;
+
+            _quickTexts[key] = value ?? string.Empty;
         }
 
         public void ClearQuickText(string? key = null)
         {
-            // Quick text not implemented yet
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                _quickTexts.Clear();
+                return;
+            }
+
+            _quickTexts.Remove(key);
         }
 
         public ClientType GetClientType(int index)
@@ -1143,27 +1167,45 @@ namespace TWXProxy.Core
 
         public void RegisterBot(string botName, string scriptFile, string description = "")
         {
-            // Bot registration not implemented yet
+            if (string.IsNullOrWhiteSpace(botName) || string.IsNullOrWhiteSpace(scriptFile))
+                return;
+
+            _botConfigs[botName] = new BotConfig
+            {
+                Name = botName,
+                ScriptFile = scriptFile.Replace('\\', '/'),
+                Description = description ?? string.Empty,
+            };
         }
 
         public void UnregisterBot(string botName)
         {
-            // Bot unregistration not implemented yet
+            if (string.IsNullOrWhiteSpace(botName))
+                return;
+
+            _botConfigs.Remove(botName);
+            if (string.Equals(ActiveBotName, botName, StringComparison.OrdinalIgnoreCase))
+                ActiveBotName = string.Empty;
         }
 
         public List<string> GetBotList()
         {
-            return new List<string>(); // Empty for now
+            return _botConfigs.Keys
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         public BotConfig? GetBotConfig(string botName)
         {
-            return null; // Not implemented yet
+            if (string.IsNullOrWhiteSpace(botName))
+                return null;
+
+            return _botConfigs.TryGetValue(botName, out BotConfig? config) ? config : null;
         }
 
         public object? GetActiveBot()
         {
-            return null; // Not implemented yet
+            return _interpreter?.GetActiveBot();
         }
 
         #endregion

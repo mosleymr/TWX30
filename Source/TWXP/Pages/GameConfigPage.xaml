@@ -23,6 +23,9 @@
             
             <Label Text="Listen Port"/>
             <Entry Text="{Binding ListenPort}" Keyboard="Numeric" Placeholder="2300"/>
+
+            <Label Text="Proxy Menu Key"/>
+            <Entry Text="{Binding CommandKey}" MaxLength="1" Placeholder="$"/>
             
             <Label Text="Sectors"/>
             <Entry Text="{Binding Sectors}" Keyboard="Numeric" Placeholder="1000"/>
@@ -43,9 +46,30 @@
             </HorizontalStackLayout>
 
             <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding AutoReconnect}"/>
+                <Label Text="Auto-reconnect to the server" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <Label Text="Reconnect Delay (seconds)"/>
+            <Entry Text="{Binding ReconnectDelaySeconds}" Keyboard="Numeric" Placeholder="5"/>
+
+            <HorizontalStackLayout Spacing="10">
                 <CheckBox IsChecked="{Binding NativeHaggleEnabled}"/>
                 <Label Text="Enable native haggle by default" VerticalOptions="Center"/>
             </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding UseCache}"/>
+                <Label Text="Use database cache" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding LocalEcho}"/>
+                <Label Text="Enable local echo" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <Label Text="Bubble Size"/>
+            <Entry Text="{Binding BubbleSize}" Keyboard="Numeric" Placeholder="25"/>
 
             <Label Text="Login Automation" FontAttributes="Bold" FontSize="18" Margin="0,20,0,0"/>
 
@@ -72,6 +96,59 @@
                 <Label Text="Game Letter"/>
                 <Entry Text="{Binding GameLetter}" Placeholder="A"/>
             </VerticalStackLayout>
+
+            <Label Text="Logging" FontAttributes="Bold" FontSize="18" Margin="0,20,0,0"/>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding LogEnabled}"/>
+                <Label Text="Enable session logging" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding LogAnsi}"/>
+                <Label Text="Store ANSI in logs" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding LogBinary}"/>
+                <Label Text="Write binary capture files" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding NotifyPlayCuts}"/>
+                <Label Text="Notify when playback is shortened" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <Label Text="Maximum Playback Delay (ms)"/>
+            <Entry Text="{Binding MaxPlayDelay}" Keyboard="Numeric" Placeholder="10000"/>
+
+            <Label Text="Proxy / External" FontAttributes="Bold" FontSize="18" Margin="0,20,0,0"/>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding AcceptExternal}"/>
+                <Label Text="Accept external connections" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding AllowLerkers}"/>
+                <Label Text="Allow lerkers" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding BroadcastMessages}"/>
+                <Label Text="Broadcast proxy messages" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding StreamingMode}"/>
+                <Label Text="Streaming mode" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <Label Text="External Address"/>
+            <Entry Text="{Binding ExternalAddress}" Placeholder="Optional external address"/>
+
+            <Label Text="Lerker Address"/>
+            <Entry Text="{Binding LerkerAddress}" Placeholder="Optional lerker address"/>
 
             <!-- Action Buttons -->
             <Grid ColumnDefinitions="*,*" ColumnSpacing="10" Margin="0,30,0,0">

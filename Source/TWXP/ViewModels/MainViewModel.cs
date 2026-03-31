@@ -10,8 +10,14 @@ public class MainViewModel : BaseViewModel
     private readonly IGameConfigService _configService;
     private readonly IProxyService _proxyService;
     private readonly IDirectoryPickerService _directoryPickerService;
+    private GameConfigViewModel? _selectedGame;
 
     public ObservableCollection<GameConfigViewModel> Games { get; } = new();
+    public GameConfigViewModel? SelectedGame
+    {
+        get => _selectedGame;
+        set => SetProperty(ref _selectedGame, value);
+    }
 
     public ICommand AddGameCommand { get; }
     public ICommand LoadGameCommand { get; }
@@ -59,6 +65,8 @@ public class MainViewModel : BaseViewModel
                 var vm = new GameConfigViewModel(config, _configService, _proxyService, _directoryPickerService, RemoveGame);
                 Games.Add(vm);
             }
+
+            SelectedGame ??= Games.FirstOrDefault();
         }
         finally
         {
@@ -75,6 +83,7 @@ public class MainViewModel : BaseViewModel
         };
 
         var vm = new GameConfigViewModel(newConfig, _configService, _proxyService, _directoryPickerService, RemoveGame);
+        SelectedGame = vm;
         var page = new GameConfigPage
         {
             BindingContext = vm
@@ -135,6 +144,7 @@ public class MainViewModel : BaseViewModel
                 {
                     var vm = new GameConfigViewModel(config, _configService, _proxyService, _directoryPickerService, RemoveGame);
                     Games.Add(vm);
+                    SelectedGame = vm;
                 }
                 
                 System.Diagnostics.Debug.WriteLine("Game added to list");
@@ -162,5 +172,7 @@ public class MainViewModel : BaseViewModel
     private void RemoveGame(GameConfigViewModel game)
     {
         Games.Remove(game);
+        if (ReferenceEquals(SelectedGame, game))
+            SelectedGame = Games.FirstOrDefault();
     }
 }

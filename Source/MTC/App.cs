@@ -10,6 +10,7 @@ public class App : Application
 {
     public override void Initialize()
     {
+        Name = "MTC";
         Styles.Add(new FluentTheme());
         RequestedThemeVariant = ThemeVariant.Dark;
 

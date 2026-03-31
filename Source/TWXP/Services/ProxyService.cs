@@ -12,6 +12,20 @@ public interface IProxyService
     Task ResetGameAsync(string gameId);
     GameStatus GetGameStatus(string gameId);
     Task ConnectAutoStartGamesAsync(IEnumerable<GameConfig> configs);
+    Task<IReadOnlyList<RunningScriptInfo>> GetRunningScriptsAsync(string gameId);
+    Task LoadScriptAsync(string gameId, string scriptPath);
+    Task SwitchBotAsync(string gameId, string botName);
+    Task StopScriptAsync(string gameId, int scriptId);
+    Task StopAllScriptsAsync(string gameId, bool includeSystemScripts);
+    Task<HistorySnapshot> GetHistoryAsync(string gameId);
+    Task ClearHistoryAsync(string gameId, HistoryType? type = null);
+    Task ExportWarpsAsync(string gameId, string outputPath);
+    Task<int> ImportWarpsAsync(string gameId, string inputPath);
+    Task ExportBubblesAsync(string gameId, string outputPath);
+    Task ExportDeadendsAsync(string gameId, string outputPath);
+    Task ExportTwxAsync(string gameId, string outputPath);
+    Task ImportTwxAsync(string gameId, string inputPath, bool keepRecent);
+    Task<bool> BeginLogPlaybackAsync(string gameId, string capturePath);
 }
 
 public class GameStatusChangedEventArgs : EventArgs
@@ -80,6 +94,19 @@ public class ProxyService : IProxyService
             );
             gameInstance.Logger.LogDirectory = AppPaths.LogsDir;
             gameInstance.Logger.SetLogIdentity(config.Name);
+            gameInstance.AutoReconnect = config.AutoReconnect;
+            gameInstance.ReconnectDelayMs = Math.Max(1, config.ReconnectDelaySeconds) * 1000;
+            gameInstance.LocalEcho = config.LocalEcho;
+            gameInstance.AcceptExternal = config.AcceptExternal;
+            gameInstance.AllowLerkers = config.AllowLerkers;
+            gameInstance.ExternalAddress = config.ExternalAddress ?? string.Empty;
+            gameInstance.BroadCastMsgs = config.BroadcastMessages;
+            gameInstance.Logger.LogEnabled = config.LogEnabled;
+            gameInstance.Logger.LogData = config.LogEnabled;
+            gameInstance.Logger.LogANSI = config.LogAnsi;
+            gameInstance.Logger.BinaryLogs = config.LogBinary;
+            gameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
+            gameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
             gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
             gameInstance.NativeHaggleChanged += enabled =>
             {
@@ -127,6 +154,7 @@ public class ProxyService : IProxyService
                 if (File.Exists(dbPath))
                 {
                     sessionDb.OpenDatabase(dbPath);
+                    sessionDb.UseCache = config.UseCache;
                     // Sync all runtime-owned header fields, including login automation settings.
                     var header = sessionDb.DBHeader;
                     var updates = BuildHeader(config);
@@ -148,6 +176,7 @@ public class ProxyService : IProxyService
                 else
                 {
                     sessionDb.CreateDatabase(dbPath, BuildHeader(config));
+                    sessionDb.UseCache = config.UseCache;
                     TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Created new database: {dbPath} ({config.Sectors} sectors)\n");
                 }
 
@@ -287,6 +316,8 @@ public class ProxyService : IProxyService
                         {
                             TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine);
                         }
+
+                        gameInstance.History.ProcessLine(strippedLine);
 
                         // Fire text triggers and text line triggers for scripts (all lines, including blank)
                         if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
@@ -481,6 +512,137 @@ public class ProxyService : IProxyService
         }
     }
 
+    public Task<IReadOnlyList<RunningScriptInfo>> GetRunningScriptsAsync(string gameId)
+    {
+        if (_runningGames.TryGetValue(gameId, out var instance))
+            return Task.FromResult(ProxyGameOperations.GetRunningScripts(instance.Interpreter));
+
+        return Task.FromResult<IReadOnlyList<RunningScriptInfo>>(Array.Empty<RunningScriptInfo>());
+    }
+
+    public Task LoadScriptAsync(string gameId, string scriptPath)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        ProxyGameOperations.LoadScript(instance.Interpreter, scriptPath);
+        return Task.CompletedTask;
+    }
+
+    public Task SwitchBotAsync(string gameId, string botName)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        if (string.IsNullOrWhiteSpace(botName))
+            throw new InvalidOperationException("Bot name is required.");
+
+        instance.Interpreter.SwitchBot(string.Empty, botName, stopBotScripts: true);
+        return Task.CompletedTask;
+    }
+
+    public Task StopScriptAsync(string gameId, int scriptId)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        if (!ProxyGameOperations.StopScriptById(instance.Interpreter, scriptId))
+            throw new InvalidOperationException($"Script {scriptId} was not found.");
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAllScriptsAsync(string gameId, bool includeSystemScripts)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        ProxyGameOperations.StopAllScripts(instance.Interpreter, includeSystemScripts);
+        return Task.CompletedTask;
+    }
+
+    public Task<HistorySnapshot> GetHistoryAsync(string gameId)
+    {
+        if (_runningGames.TryGetValue(gameId, out var instance))
+            return Task.FromResult(instance.GameInstance.History.GetSnapshot());
+
+        return Task.FromResult(new HistorySnapshot(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()));
+    }
+
+    public Task ClearHistoryAsync(string gameId, HistoryType? type = null)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        instance.GameInstance.History.Clear(type);
+        return Task.CompletedTask;
+    }
+
+    public Task ExportWarpsAsync(string gameId, string outputPath)
+    {
+        return WithDatabaseAsync(gameId, database =>
+        {
+            ProxyGameOperations.ExportWarps(database, outputPath);
+            return Task.CompletedTask;
+        });
+    }
+
+    public async Task<int> ImportWarpsAsync(string gameId, string inputPath)
+    {
+        int imported = 0;
+        await WithDatabaseAsync(gameId, database =>
+        {
+            imported = ProxyGameOperations.ImportWarps(database, inputPath);
+            return Task.CompletedTask;
+        });
+        return imported;
+    }
+
+    public async Task ExportBubblesAsync(string gameId, string outputPath)
+    {
+        int bubbleSize = await GetBubbleSizeAsync(gameId);
+        await WithDatabaseAsync(gameId, database =>
+        {
+            ProxyGameOperations.ExportBubbles(database, outputPath, bubbleSize);
+            return Task.CompletedTask;
+        });
+    }
+
+    public Task ExportDeadendsAsync(string gameId, string outputPath)
+    {
+        return WithDatabaseAsync(gameId, database =>
+        {
+            ProxyGameOperations.ExportDeadends(database, outputPath);
+            return Task.CompletedTask;
+        });
+    }
+
+    public Task ExportTwxAsync(string gameId, string outputPath)
+    {
+        return WithDatabaseAsync(gameId, database =>
+        {
+            ProxyGameOperations.ExportTwx(database, outputPath);
+            return Task.CompletedTask;
+        });
+    }
+
+    public Task ImportTwxAsync(string gameId, string inputPath, bool keepRecent)
+    {
+        return WithDatabaseAsync(gameId, database =>
+        {
+            ProxyGameOperations.ImportTwx(database, inputPath, keepRecent);
+            return Task.CompletedTask;
+        });
+    }
+
+    public Task<bool> BeginLogPlaybackAsync(string gameId, string capturePath)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            throw new InvalidOperationException("Game is not running.");
+
+        return Task.FromResult(instance.GameInstance.Logger.BeginPlayLog(capturePath));
+    }
+
     private void NotifyStatusChanged(string gameId, GameStatus status, string? message = null)
     {
         if (_runningGames.TryGetValue(gameId, out var instance))
@@ -516,6 +678,81 @@ public class ProxyService : IProxyService
     private static bool PathsEqual(string left, string right)
     {
         return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<GameConfig> GetRequiredConfigAsync(string gameId)
+    {
+        var config = await _configService.GetConfigAsync(gameId);
+        if (config == null)
+            throw new InvalidOperationException($"Game '{gameId}' was not found.");
+        return config;
+    }
+
+    private async Task WithDatabaseAsync(string gameId, Func<TWXProxy.Core.ModDatabase, Task> action)
+    {
+        if (_runningGames.TryGetValue(gameId, out var running))
+        {
+            await action(running.Database);
+            return;
+        }
+
+        GameConfig config = await GetRequiredConfigAsync(gameId);
+        using var database = OpenDetachedDatabase(config);
+        await action(database);
+        database.SaveDatabase();
+    }
+
+    private ModDatabase OpenDetachedDatabase(GameConfig config)
+    {
+        string sharedDbPath = AppPaths.DatabasePathForGame(config.Name);
+        string legacyDbPath = AppPaths.LegacyDatabasePathForGame(config.Name);
+        bool hasAbsoluteConfigPath = !string.IsNullOrWhiteSpace(config.DatabasePath)
+            && Path.IsPathRooted(config.DatabasePath);
+        bool usesLegacyDefaultPath = hasAbsoluteConfigPath
+            && PathsEqual(config.DatabasePath, legacyDbPath);
+
+        string dbPath = hasAbsoluteConfigPath && !usesLegacyDefaultPath
+            ? config.DatabasePath
+            : sharedDbPath;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+
+        var database = new ModDatabase();
+        if (File.Exists(dbPath))
+        {
+            database.OpenDatabase(dbPath);
+            database.UseCache = config.UseCache;
+            var header = database.DBHeader;
+            var updates = BuildHeader(config);
+            header.Sectors = updates.Sectors;
+            header.Address = updates.Address;
+            header.ServerPort = updates.ServerPort;
+            header.ListenPort = updates.ListenPort;
+            header.CommandChar = updates.CommandChar;
+            header.Description = updates.Description;
+            header.UseLogin = updates.UseLogin;
+            header.UseRLogin = updates.UseRLogin;
+            header.LoginScript = updates.LoginScript;
+            header.LoginName = updates.LoginName;
+            header.Password = updates.Password;
+            header.Game = updates.Game;
+            database.ReplaceHeader(header);
+        }
+        else
+        {
+            database.CreateDatabase(dbPath, BuildHeader(config));
+            database.UseCache = config.UseCache;
+        }
+
+        return database;
+    }
+
+    private async Task<int> GetBubbleSizeAsync(string gameId)
+    {
+        if (_runningGames.TryGetValue(gameId, out var running))
+            return Math.Max(1, running.Config.BubbleSize);
+
+        return Math.Max(1, (await GetRequiredConfigAsync(gameId)).BubbleSize);
     }
 
     private class ProxyGameInstance
