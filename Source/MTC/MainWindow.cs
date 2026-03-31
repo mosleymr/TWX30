@@ -53,6 +53,9 @@ public class MainWindow : Window
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
     private Menu            _menuBar       = new();
+    private readonly NativeMenu _nativeAppMenu = new();
+    private bool _nativeAppMenuReady;
+    private bool _nativeAppMenuAttached;
     private readonly ToggleSwitch _haggleToggle = new()
     {
         OffContent = "Off",
@@ -173,8 +176,7 @@ public class MainWindow : Window
                 _parser.Feed("\x1b[33m[not connected]\x1b[0m\r\n");
         };
 
-        _haggleToggle.Checked += (_, _) => OnHaggleToggleRequested();
-        _haggleToggle.Unchecked += (_, _) => OnHaggleToggleRequested();
+        _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
 
         Content = BuildLayout();
 
@@ -193,8 +195,23 @@ public class MainWindow : Window
         _refreshTimer.Tick += (_, _) => _termCtrl.RequestRedraw();
         _refreshTimer.Start();
 
+        Opened += (_, _) =>
+        {
+            _nativeAppMenuReady = true;
+            _nativeAppMenuAttached = false;
+            RefreshNativeAppMenu();
+        };
         Activated += (_, _) => _termCtrl.Focus();
-        Closed    += (_, _) => { _refreshTimer.Stop(); _telnet.Disconnect(); _proxyCts?.Cancel(); if (_gameInstance != null) _ = _gameInstance.StopAsync(); _sessionLog.Dispose(); };
+        Closed    += (_, _) =>
+        {
+            _nativeAppMenuReady = false;
+            _nativeAppMenuAttached = false;
+            _refreshTimer.Stop();
+            _telnet.Disconnect();
+            _proxyCts?.Cancel();
+            if (_gameInstance != null) _ = _gameInstance.StopAsync();
+            _sessionLog.Dispose();
+        };
     }
 
     // ── Layout ─────────────────────────────────────────────────────────────
@@ -2374,15 +2391,22 @@ public class MainWindow : Window
         if (!OperatingSystem.IsMacOS())
             return;
 
-        var nativeMenu = new NativeMenu();
+        if (!_nativeAppMenuReady)
+            return;
+
+        _nativeAppMenu.Items.Clear();
         foreach (object? item in _menuBar.Items)
         {
             NativeMenuItemBase? nativeItem = ConvertToNativeMenuItem(item);
             if (nativeItem != null)
-                nativeMenu.Add(nativeItem);
+                _nativeAppMenu.Add(nativeItem);
         }
 
-        NativeMenu.SetMenu(this, nativeMenu);
+        if (!_nativeAppMenuAttached)
+        {
+            NativeMenu.SetMenu(this, _nativeAppMenu);
+            _nativeAppMenuAttached = true;
+        }
     }
 
     private static NativeMenuItemBase? ConvertToNativeMenuItem(object? item)

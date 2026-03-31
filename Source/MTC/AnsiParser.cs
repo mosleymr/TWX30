@@ -32,8 +32,7 @@ public class AnsiParser
     private bool _bold;
     private int  _fgIndex = 7;
     private int  _bgIndex = 0;
-    private bool _fgIs256, _bgIs256;
-    private int  _fg256, _bg256;
+    private bool _fgIs256;
     // 256/true-color accumulation state
     private bool _nextIsFgColor, _nextIsBgColor;
     private int  _colorStage; // 0=waiting for type, 1=waiting for index
@@ -298,7 +297,6 @@ public class AnsiParser
                 // Standard bg 40-47
                 case int n when n >= 40 && n <= 47:
                     _bgIndex = n - 40;
-                    _bgIs256 = false;
                     _buf.CurrentBg = AnsiColor.ToColor(_bgIndex);
                     break;
 
@@ -309,7 +307,7 @@ public class AnsiParser
 
                 // Default bg
                 case 49:
-                    _bgIndex = 0; _bgIs256 = false;
+                    _bgIndex = 0;
                     _buf.CurrentBg = AnsiColor.ToColor(0);
                     break;
 
@@ -323,7 +321,6 @@ public class AnsiParser
                 // Bright bg 100-107
                 case int n when n >= 100 && n <= 107:
                     _bgIndex = n - 100 + 8;
-                    _bgIs256 = false;
                     _buf.CurrentBg = AnsiColor.ToColor(_bgIndex);
                     break;
             }
@@ -335,7 +332,7 @@ public class AnsiParser
     {
         _bold = false;
         _fgIndex = 7; _bgIndex = 0;
-        _fgIs256 = false; _bgIs256 = false;
+        _fgIs256 = false;
         _nextIsFgColor = _nextIsBgColor = false;
         _buf.CurrentBlink = false;
         ApplyAttributes();

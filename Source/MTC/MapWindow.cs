@@ -137,7 +137,7 @@ public class MapWindow : Window
         _zoomSlider.ValueChanged += (_, e) =>
         {
             _zoom = SliderToZoom((float)e.NewValue);
-            _canvas.InvalidateVisual();
+            _canvas?.InvalidateVisual();
         };
 
         _sectorBox = new TextBox
