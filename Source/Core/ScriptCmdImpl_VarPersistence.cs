@@ -220,6 +220,18 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Inject or override a value in the current game's in-memory loadvar cache
+        /// without persisting it to disk.
+        /// </summary>
+        public static void SetCurrentGameVar(string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+
+            _currentGameVars[name] = value;
+        }
+
+        /// <summary>
         /// Remove the in-memory variable cache for a single script.
         /// Call this whenever a script is stopped or killed so its vars don't
         /// bleed across into a fresh run of the same (or another) script.

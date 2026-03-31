@@ -49,13 +49,16 @@ public class MainWindow : Window
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
+    private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
     private Menu            _menuBar       = new();
     private readonly NativeMenu _nativeAppMenu = new();
+    private readonly NativeMenu _nativeDockMenu = new();
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
+    private bool _nativeDockMenuAttached;
     private readonly ToggleSwitch _haggleToggle = new()
     {
         OffContent = "Off",
@@ -199,13 +202,16 @@ public class MainWindow : Window
         {
             _nativeAppMenuReady = true;
             _nativeAppMenuAttached = false;
+            _nativeDockMenuAttached = false;
             RefreshNativeAppMenu();
+            RefreshNativeDockMenu();
         };
         Activated += (_, _) => _termCtrl.Focus();
         Closed    += (_, _) =>
         {
             _nativeAppMenuReady = false;
             _nativeAppMenuAttached = false;
+            _nativeDockMenuAttached = false;
             _refreshTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
@@ -360,7 +366,7 @@ public class MainWindow : Window
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _quickMenu, mapMenu, viewMenu, helpMenu },
         };
 
         return menu;
@@ -1673,12 +1679,12 @@ public class MainWindow : Window
         bool hasInterpreter = CurrentInterpreter != null;
         bool canPlayCapture = _gameInstance != null;
 
-        _proxyMenu.ItemsSource = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
-        _termCtrl.ContextMenu = new ContextMenu
-        {
-            ItemsSource = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture)
-        };
+        var proxyItems = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
+        _proxyMenu.ItemsSource = proxyItems;
+        _quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
+        _quickMenu.IsEnabled = true;
         RefreshNativeAppMenu();
+        RefreshNativeDockMenu();
     }
 
     private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
@@ -2407,6 +2413,41 @@ public class MainWindow : Window
             NativeMenu.SetMenu(this, _nativeAppMenu);
             _nativeAppMenuAttached = true;
         }
+    }
+
+    private void RefreshNativeDockMenu()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        if (!_nativeAppMenuReady)
+            return;
+
+        _nativeDockMenu.Items.Clear();
+        AddDockRoot(_scriptsMenu, "_Scripts");
+        AddDockRoot(_proxyMenu, "_Proxy");
+        AddDockRoot(_quickMenu, "_Quick");
+
+        if (!_nativeDockMenuAttached)
+        {
+            NativeDock.SetMenu(this, _nativeDockMenu);
+            _nativeDockMenuAttached = true;
+        }
+    }
+
+    private void AddDockRoot(MenuItem sourceMenu, string header)
+    {
+        var dockRoot = new MenuItem
+        {
+            Header = header,
+            ItemsSource = sourceMenu.ItemsSource,
+            IsEnabled = sourceMenu.IsEnabled,
+            IsVisible = sourceMenu.IsVisible,
+        };
+
+        NativeMenuItemBase? nativeItem = ConvertToNativeMenuItem(dockRoot);
+        if (nativeItem != null)
+            _nativeDockMenu.Add(nativeItem);
     }
 
     private static NativeMenuItemBase? ConvertToNativeMenuItem(object? item)

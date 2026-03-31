@@ -238,6 +238,7 @@ namespace TWXProxy.Core
         public void Load(string filename, bool silent)
         {
             GlobalModules.DebugLog($"[ModInterpreter.Load] Starting load of '{filename}', silent={silent}\n");
+            string eventScriptName = filename;
 
             // Normalise separators and resolve case-insensitively so scripts written
             // on Windows (with backslashes and arbitrary casing) work on macOS/Linux.
@@ -259,6 +260,7 @@ namespace TWXProxy.Core
             Directory.SetCurrentDirectory(_programDir);
             var script = new Script(this);
             script.Silent = silent;
+            script.LoadEventName = eventScriptName;
             _scriptList.Add(script);
 
             _lastScript = filename;
@@ -321,7 +323,7 @@ namespace TWXProxy.Core
             
             if (!error)
             {
-                ProgramEvent("SCRIPT LOADED", filename, true);
+                ProgramEvent("SCRIPT LOADED", eventScriptName, true);
                 // TWXServer.NotifyScriptLoad();
 
                 // Add menu option for script
@@ -371,6 +373,9 @@ namespace TWXProxy.Core
                         Console.WriteLine($"[ModInterpreter] Script iteration {iterations} - continuing...");
                         GlobalModules.DebugLog($"[DEBUG] Continuing to iteration {iterations + 1}...\n");
                     }
+
+                    if (completed && !script.Paused && _scriptList.Contains(script))
+                        StopByHandle(script);
                     
                     if (iterations >= maxIterations)
                     {
@@ -457,7 +462,7 @@ namespace TWXProxy.Core
         {
             var script = _scriptList[index];
             // Match Pascal: ProgramEvent('SCRIPT STOPPED', Script.Cmp.ScriptFile, TRUE)
-            string scriptName = script.Compiler?.ScriptFile ?? string.Empty;
+            string scriptName = script.LoadEventName ?? script.Compiler?.ScriptFile ?? string.Empty;
 
             GlobalModules.DebugLog($"[Script.Stop] Stopping script[{index}]='{scriptName}', remaining after={_scriptList.Count - 1}\n");
             GlobalModules.FlushDebugLog();
@@ -765,7 +770,9 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (!_scriptList[i].ProgramEvent(eventName, matchText, exclusive))
+                if (_scriptList[i].ProgramEvent(eventName, matchText, exclusive))
+                    Stop(i);
+                else
                     i++;
             }
         }
@@ -818,7 +825,9 @@ namespace TWXProxy.Core
             {
                 if (_scriptList[i].WaitingForInput)
                 {
-                    _scriptList[i].LocalInputEvent(inputText);
+                    bool completed = _scriptList[i].LocalInputEvent(inputText);
+                    if (completed)
+                        Stop(i);
                     consumed = true;
                     break; // only one script gets the input
                 }
@@ -861,7 +870,9 @@ namespace TWXProxy.Core
             while (i < _scriptList.Count)
             {
                 bool handled = false;
-                if (!_scriptList[i].TextOutEvent(text, ref handled))
+                if (_scriptList[i].TextOutEvent(text, ref handled))
+                    Stop(i);
+                else
                     i++;
 
                 if (handled)
@@ -882,7 +893,9 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (!_scriptList[i].TextEvent(text, forceTrigger))
+                if (_scriptList[i].TextEvent(text, forceTrigger))
+                    Stop(i);
+                else
                     i++;
             }
         }
@@ -896,7 +909,9 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (!_scriptList[i].TextLineEvent(text, forceTrigger))
+                if (_scriptList[i].TextLineEvent(text, forceTrigger))
+                    Stop(i);
+                else
                     i++;
             }
         }
@@ -908,7 +923,9 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (!_scriptList[i].AutoTextEvent(text, forceTrigger))
+                if (_scriptList[i].AutoTextEvent(text, forceTrigger))
+                    Stop(i);
+                else
                     i++;
             }
         }
@@ -3615,12 +3632,16 @@ namespace TWXProxy.Core
                     }
                 }
 
-                // When Z is pressed in single-key mode (config menu), force $doRelog=1
-                // so the Z handler's ::5258 check succeeds and jumps to the connect path.
+                // When Z is pressed in single-key mode (config menu), force the relog
+                // flag into both the current script and the transient per-game loadvar
+                // cache so the separately loaded relog script sees it.
                 if (trimmed.Equals("Z", StringComparison.OrdinalIgnoreCase) && _keypressMode)
                 {
                     SetScriptVar("$doRelog", "1");
-                    GlobalModules.DebugLog("[Z-KEY] Set $doRelog='1' to trigger connect\n");
+                    SetScriptVar("$BOT~DORELOG", "1");
+                    ScriptRef.SetCurrentGameVar("$doRelog", "1");
+                    ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "1");
+                    GlobalModules.DebugLog("[Z-KEY] Set relog flags to '1' for current and next script\n");
                 }
                 
                 // Clear waiting state
@@ -3750,6 +3771,7 @@ namespace TWXProxy.Core
         public bool HasActiveTriggers =>
             _waitForActive ||
             _triggers.Values.Any(list => list.Count > 0);
+        public string? LoadEventName { get; set; }
         public bool PreferPreparedExecution { get; set; } = false;
         public IExecutionObserver? ExecutionObserver { get; set; }
         public int DecimalPrecision { get; set; }
