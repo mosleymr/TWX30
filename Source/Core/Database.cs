@@ -189,7 +189,7 @@ namespace TWXProxy.Core
         public string Description { get; set; } = string.Empty;
         public ushort ServerPort { get; set; }
         public ushort ListenPort { get; set; }
-        public string LoginScript { get; set; } = string.Empty;
+        public string LoginScript { get; set; } = "0_Login.cts";
         public string Password { get; set; } = string.Empty;
         public string LoginName { get; set; } = string.Empty;
         public char Game { get; set; }

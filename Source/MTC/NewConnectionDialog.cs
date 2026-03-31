@@ -81,15 +81,78 @@ public class NewConnectionDialog : Window
             Foreground  = FgNormal,
             BorderBrush = BdInput,
         };
+        var chkUseLogin = new CheckBox
+        {
+            Content = "Run login script after connect",
+            IsChecked = profile.UseLogin,
+            Foreground = FgNormal,
+        };
+        var chkUseRLogin = new CheckBox
+        {
+            Content = "Use RLogin handshake",
+            IsChecked = profile.UseRLogin,
+            Foreground = FgNormal,
+        };
+        var txtLoginScript = new TextBox
+        {
+            Text = string.IsNullOrWhiteSpace(profile.LoginScript) ? "0_Login.cts" : profile.LoginScript,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+        };
+        var txtLoginName = new TextBox
+        {
+            Text = profile.LoginName,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+        };
+        var txtPassword = new TextBox
+        {
+            Text = profile.Password,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+        };
+        var txtGameLetter = new TextBox
+        {
+            Text = profile.GameLetter,
+            Width = 80,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+        };
         var sectorsRow = BuildRow("Sectors:", txtSectors);
+        var loginScriptRow = BuildRow("Login script:", txtLoginScript);
+        var loginNameRow = BuildRow("Username:", txtLoginName);
+        var passwordRow = BuildRow("Password:", txtPassword);
+        var gameLetterRow = BuildRow("Game letter:", txtGameLetter);
         sectorsRow.IsVisible     = profile.EmbeddedProxy;   // only relevant for embedded proxy
         chkAutoReconnect.IsVisible = profile.EmbeddedProxy;
+        chkUseLogin.IsVisible = profile.EmbeddedProxy;
+        chkUseRLogin.IsVisible = profile.EmbeddedProxy;
+
+        void RefreshEmbeddedLoginVisibility()
+        {
+            bool embedded = chkEmbedded.IsChecked == true;
+            bool showDetails = embedded && (chkUseLogin.IsChecked == true || chkUseRLogin.IsChecked == true);
+            sectorsRow.IsVisible = embedded;
+            chkAutoReconnect.IsVisible = embedded;
+            chkUseLogin.IsVisible = embedded;
+            chkUseRLogin.IsVisible = embedded;
+            loginScriptRow.IsVisible = showDetails;
+            loginNameRow.IsVisible = showDetails;
+            passwordRow.IsVisible = showDetails;
+            gameLetterRow.IsVisible = showDetails;
+        }
 
         chkEmbedded.IsCheckedChanged += (_, _) =>
         {
-            sectorsRow.IsVisible       = chkEmbedded.IsChecked == true;
-            chkAutoReconnect.IsVisible = chkEmbedded.IsChecked == true;
+            RefreshEmbeddedLoginVisibility();
         };
+        chkUseLogin.IsCheckedChanged += (_, _) => RefreshEmbeddedLoginVisibility();
+        chkUseRLogin.IsCheckedChanged += (_, _) => RefreshEmbeddedLoginVisibility();
+        RefreshEmbeddedLoginVisibility();
         var btnOk = new Button
         {
             Content                    = "OK",
@@ -125,6 +188,15 @@ public class NewConnectionDialog : Window
                 EmbeddedProxy   = chkEmbedded.IsChecked == true,
                 AutoReconnect   = chkAutoReconnect.IsChecked == true,
                 Sectors         = sectors,
+                UseLogin        = chkUseLogin.IsChecked == true,
+                UseRLogin       = chkUseRLogin.IsChecked == true,
+                LoginScript     = string.IsNullOrWhiteSpace(txtLoginScript.Text) ? "0_Login.cts" : txtLoginScript.Text.Trim(),
+                LoginName       = txtLoginName.Text?.Trim() ?? string.Empty,
+                Password        = txtPassword.Text ?? string.Empty,
+                GameLetter      = string.IsNullOrWhiteSpace(txtGameLetter.Text)
+                    ? string.Empty
+                    : txtGameLetter.Text.Trim().Substring(0, 1).ToUpperInvariant(),
+                LoginSettingsConfigured = chkEmbedded.IsChecked == true,
                 // Preserve scrollback setting from the profile being edited
                 ScrollbackLines = profile.ScrollbackLines,
             };
@@ -155,6 +227,12 @@ public class NewConnectionDialog : Window
                 chkEmbedded,
                 chkAutoReconnect,
                 sectorsRow,
+                chkUseLogin,
+                chkUseRLogin,
+                loginScriptRow,
+                loginNameRow,
+                passwordRow,
+                gameLetterRow,
                 btnRow,
             },
         };

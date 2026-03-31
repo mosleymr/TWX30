@@ -21,6 +21,12 @@ internal class EmbeddedGameConfig
     public int    Port    { get; set; } = 23;
     public int    Sectors { get; set; } = 1000;
     public bool   NativeHaggleEnabled { get; set; } = true;
+    public bool   UseLogin { get; set; }
+    public bool   UseRLogin { get; set; }
+    public string LoginScript { get; set; } = "0_Login.cts";
+    public string LoginName { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string GameLetter { get; set; } = string.Empty;
 
     /// <summary>Variables persisted by <c>savevar</c> / retrieved by <c>loadvar</c>.</summary>
     public Dictionary<string, string> Variables { get; set; } = new();

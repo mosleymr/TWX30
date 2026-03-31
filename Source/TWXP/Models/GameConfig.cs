@@ -15,6 +15,12 @@ public class GameConfig
     public string ScriptDirectory { get; set; } = string.Empty;
     public bool AutoConnect { get; set; }
     public bool NativeHaggleEnabled { get; set; } = true;
+    public bool UseLogin { get; set; }
+    public bool UseRLogin { get; set; }
+    public string LoginScript { get; set; } = "0_Login.cts";
+    public string LoginName { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string GameLetter { get; set; } = string.Empty;
     
     // Runtime status - not persisted
     [JsonIgnore]

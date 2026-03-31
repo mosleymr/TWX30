@@ -420,6 +420,39 @@ namespace TWXProxy.Core
             return fileDirectory;
         }
 
+        public string ResolveScriptPath(string scriptName)
+        {
+            if (string.IsNullOrWhiteSpace(scriptName))
+                scriptName = "0_Login.cts";
+
+            string fullPath;
+            if (Path.IsPathRooted(scriptName))
+            {
+                fullPath = scriptName;
+            }
+            else
+            {
+                string baseDir = !string.IsNullOrWhiteSpace(_scriptDirectory)
+                    ? _scriptDirectory
+                    : Directory.GetCurrentDirectory();
+                fullPath = Path.Combine(baseDir, scriptName);
+            }
+
+            string resolved = ResolveFilePath(fullPath, _programDir);
+            if (!string.IsNullOrEmpty(Path.GetExtension(resolved)))
+                return resolved;
+
+            string ctsPath = resolved + ".cts";
+            if (File.Exists(ctsPath))
+                return ctsPath;
+
+            string tsPath = resolved + ".ts";
+            if (File.Exists(tsPath))
+                return tsPath;
+
+            return ctsPath;
+        }
+
         public void Stop(int index)
         {
             var script = _scriptList[index];
@@ -642,6 +675,44 @@ namespace TWXProxy.Core
             {
                 if (!_scriptList[i].ProgramEvent(eventName, matchText, exclusive))
                     i++;
+            }
+        }
+
+        public void HandleConnectionAccepted()
+        {
+            ModDatabase? db = ScriptRef.GetActiveDatabase();
+            DataHeader? header = db?.DBHeader;
+            GlobalModules.DebugLog($"[ModInterpreter.HandleConnectionAccepted] useLogin={header?.UseLogin}, loginScript='{header?.LoginScript}', activeDb={(db != null ? db.DatabaseName : "<none>")}\n");
+
+            ProgramEvent("Connection accepted", string.Empty, false);
+
+            if (header == null || !header.UseLogin)
+                return;
+
+            string configuredScript = string.IsNullOrWhiteSpace(header.LoginScript)
+                ? "0_Login.cts"
+                : header.LoginScript;
+            bool defaultLoginScript =
+                configuredScript.IndexOf("0_", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                configuredScript.IndexOf("0_login", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (ActiveLoginDisabled && !defaultLoginScript)
+                return;
+
+            string loginScript = !defaultLoginScript && !string.IsNullOrWhiteSpace(ActiveLoginScript)
+                ? ActiveLoginScript
+                : configuredScript;
+
+            try
+            {
+                StopAll(false);
+                GlobalModules.DebugLog($"[ModInterpreter.HandleConnectionAccepted] Loading login script '{loginScript}'\n");
+                Load(ResolveScriptPath(loginScript), true);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[ModInterpreter.HandleConnectionAccepted] Failed to load login script '{loginScript}': {ex}\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Login script failed: {ex.Message}\r\n");
             }
         }
 

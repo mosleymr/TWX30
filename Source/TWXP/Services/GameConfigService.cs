@@ -36,6 +36,11 @@ public class GameConfigService : IGameConfigService
         {
             config.ScriptDirectory = GetDefaultScriptDirectory();
         }
+
+        if (string.IsNullOrWhiteSpace(config.LoginScript))
+        {
+            config.LoginScript = "0_Login.cts";
+        }
     }
 
     // -------------------------------------------------------------------------

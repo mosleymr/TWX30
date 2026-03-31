@@ -38,6 +38,22 @@ namespace TWXC
             return filename;
         }
 
+        static string GetUniqueArchiveFilename(string ctsFile)
+        {
+            if (!File.Exists(ctsFile))
+                return ctsFile;
+
+            string baseName = ctsFile;
+            int counter = 1;
+            while (true)
+            {
+                string filename = $"{baseName}_{counter}";
+                if (!File.Exists(filename))
+                    return filename;
+                counter++;
+            }
+        }
+
         static void Main(string[] args)
         {
             if (args.Length == 0)
@@ -55,6 +71,10 @@ namespace TWXC
                 Console.WriteLine("             Description files have no effect on the operation of the script,");
                 Console.WriteLine("             but may provide useful information to users.");
                 Console.WriteLine();
+                Console.WriteLine("If the target .cts file already exists and compilation succeeds,");
+                Console.WriteLine("TWXC archives the previous file to .cts_1, .cts_2, etc. and writes");
+                Console.WriteLine("the new output to the current .cts filename.");
+                Console.WriteLine();
                 return;
             }
 
@@ -62,7 +82,6 @@ namespace TWXC
             var scriptCmp = new ScriptCmp(scriptRef);
             bool compileOk = false;
             string fileOut = StripFileExtension(args[0]);
-            string ctsFile = fileOut + ".cts";
             
             Console.WriteLine($"Compiling script '{fileOut}' ...");
 
@@ -75,26 +94,57 @@ namespace TWXC
             catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
-                
-                // Remove .cts file if it exists after compilation failure
-                if (File.Exists(ctsFile))
-                {
-                    try
-                    {
-                        File.Delete(ctsFile);
-                    }
-                    catch
-                    {
-                        // Silently ignore if we can't delete the file
-                    }
-                }
             }
 
             if (compileOk)
             {
-                scriptCmp.WriteToFile(ctsFile);
+                string ctsFile = fileOut + ".cts";
+                string outputDir = Path.GetDirectoryName(Path.GetFullPath(ctsFile)) ?? Directory.GetCurrentDirectory();
+                string tempFile = Path.Combine(outputDir, $".{Path.GetFileName(ctsFile)}.{Guid.NewGuid():N}.tmp");
+                string? archivedFile = null;
+
+                try
+                {
+                    scriptCmp.WriteToFile(tempFile);
+
+                    if (File.Exists(ctsFile))
+                    {
+                        archivedFile = GetUniqueArchiveFilename(ctsFile);
+                        File.Move(ctsFile, archivedFile);
+                    }
+
+                    File.Move(tempFile, ctsFile);
+                }
+                catch
+                {
+                    try
+                    {
+                        if (File.Exists(tempFile))
+                            File.Delete(tempFile);
+                    }
+                    catch
+                    {
+                    }
+
+                    if (archivedFile != null && File.Exists(archivedFile) && !File.Exists(ctsFile))
+                    {
+                        try
+                        {
+                            File.Move(archivedFile, ctsFile);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    throw;
+                }
+
                 Console.WriteLine("Compilation successful.");
                 Console.WriteLine();
+                Console.WriteLine($"Output file: {ctsFile}");
+                if (archivedFile != null)
+                    Console.WriteLine($"Archived previous output: {archivedFile}");
                 Console.WriteLine($"Code Size: {scriptCmp.CodeSize}");
                 Console.WriteLine($"Lines: {scriptCmp.LineCount}");
                 Console.WriteLine($"Definitions: {scriptCmp.ParamCount}");

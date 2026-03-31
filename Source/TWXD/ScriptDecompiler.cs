@@ -1388,12 +1388,6 @@ namespace TWXD
             if (string.IsNullOrEmpty(value))
                 return true;
 
-            // Variable or program-var — no quotes
-            if ((value[0] == '$' || value[0] == '%') &&
-                value.Length > 1 &&
-                (char.IsLetterOrDigit(value[1]) || value[1] == '$' || value[1] == '_'))
-                return false;
-
             // Char literal: #13, #32, etc. — no quotes only if followed by digits
             if (value[0] == '#' && value.Length > 1 && value.Substring(1).All(char.IsDigit))
                 return false;
@@ -1410,19 +1404,6 @@ namespace TWXD
             // Negative integers are quoted (e.g. "-1") so the leading minus isn't mistaken for subtraction.
             if (int.TryParse(value, out int iv))
                 return iv < 0;
-
-            // System constant name passed as a string literal (e.g. TRUE, FALSE, CONNECTED) — no quotes.
-            // These appear in conditions like IF $X = TRUE where no quotes are needed.
-            if (BareScriptConsts.Contains(value))
-                return false;
-
-            // Array-indexed sysconst base name (e.g. "SECTOR.WARPS[x]") — no quotes if base is known.
-            if (value.Contains('[') && value.Contains(']'))
-            {
-                string baseName = value.Substring(0, value.IndexOf('['));
-                if (BareScriptConsts.Contains(baseName))
-                    return false;
-            }
 
             // Everything else (strings, single letters like "Y"/"N", keyword args like "OFF") — quote.
             return true;

@@ -127,8 +127,22 @@ public class ProxyService : IProxyService
                 if (File.Exists(dbPath))
                 {
                     sessionDb.OpenDatabase(dbPath);
-                    // Sync any config fields that may have changed since last session.
-                    sessionDb.UpdateHeader(BuildHeader(config));
+                    // Sync all runtime-owned header fields, including login automation settings.
+                    var header = sessionDb.DBHeader;
+                    var updates = BuildHeader(config);
+                    header.Sectors = updates.Sectors;
+                    header.Address = updates.Address;
+                    header.ServerPort = updates.ServerPort;
+                    header.ListenPort = updates.ListenPort;
+                    header.CommandChar = updates.CommandChar;
+                    header.Description = updates.Description;
+                    header.UseLogin = updates.UseLogin;
+                    header.UseRLogin = updates.UseRLogin;
+                    header.LoginScript = updates.LoginScript;
+                    header.LoginName = updates.LoginName;
+                    header.Password = updates.Password;
+                    header.Game = updates.Game;
+                    sessionDb.ReplaceHeader(header);
                     TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Opened existing database: {dbPath}\n");
                 }
                 else
@@ -313,13 +327,6 @@ public class ProxyService : IProxyService
             gameInstance.Connected += (sender, e) =>
             {
                 NotifyStatusChanged(config.Id, GameStatus.Running, "Connected to server");
-                // Fire the Pascal-equivalent 'Connection accepted' program event so scripts
-                // that registered setEventTrigger handlers can respond (e.g. login sequence).
-                if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interp)
-                {
-                    TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Firing ProgramEvent 'Connection accepted'\n");
-                    interp.ProgramEvent("Connection accepted", "", false);
-                }
             };
             
             gameInstance.Disconnected += (sender, e) =>
@@ -498,6 +505,12 @@ public class ProxyService : IProxyService
         ListenPort   = (ushort)config.ListenPort,
         CommandChar  = config.CommandChar,
         Description  = config.Name,
+        UseLogin     = config.UseLogin,
+        UseRLogin    = config.UseRLogin,
+        LoginScript  = string.IsNullOrWhiteSpace(config.LoginScript) ? "0_Login.cts" : config.LoginScript,
+        LoginName    = config.LoginName ?? string.Empty,
+        Password     = config.Password ?? string.Empty,
+        Game         = string.IsNullOrWhiteSpace(config.GameLetter) ? '\0' : char.ToUpperInvariant(config.GameLetter[0]),
     };
 
     private static bool PathsEqual(string left, string right)

@@ -974,6 +974,13 @@ public class MainWindow : Window
         EmbeddedProxy   = _state.EmbeddedProxy,
         Sectors         = _state.Sectors,
         AutoReconnect   = _state.AutoReconnect,
+        UseLogin        = _state.UseLogin,
+        UseRLogin       = _state.UseRLogin,
+        LoginScript     = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
+        LoginName       = _state.LoginName,
+        Password        = _state.Password,
+        GameLetter      = _state.GameLetter,
+        LoginSettingsConfigured = _state.EmbeddedProxy,
         ScrollbackLines = _buffer.ScrollbackLines,
         // Trader
         TraderName      = _state.TraderName,
@@ -1015,6 +1022,20 @@ public class MainWindow : Window
     /// <summary>Applies a profile to GameState and the terminal buffer.</summary>
     private void ApplyProfile(ConnectionProfile p)
     {
+        if (p.EmbeddedProxy && !HasExplicitEmbeddedLoginSettings(p))
+        {
+            var sharedConfig = TryLoadEmbeddedGameConfigForGame(GetEmbeddedGameName(p));
+            if (sharedConfig != null)
+            {
+                p.UseLogin = sharedConfig.UseLogin;
+                p.UseRLogin = sharedConfig.UseRLogin;
+                p.LoginScript = sharedConfig.LoginScript;
+                p.LoginName = sharedConfig.LoginName;
+                p.Password = sharedConfig.Password;
+                p.GameLetter = sharedConfig.GameLetter;
+            }
+        }
+
         // Connection
         _state.Host           = p.Server;
         _state.Port           = p.Port;
@@ -1024,6 +1045,14 @@ public class MainWindow : Window
         _state.EmbeddedProxy   = p.EmbeddedProxy;
         _state.Sectors         = p.Sectors;
         _state.AutoReconnect   = p.AutoReconnect;
+        _state.UseLogin        = p.UseLogin;
+        _state.UseRLogin       = p.UseRLogin;
+        _state.LoginScript     = string.IsNullOrWhiteSpace(p.LoginScript) ? "0_Login.cts" : p.LoginScript;
+        _state.LoginName       = p.LoginName;
+        _state.Password        = p.Password;
+        _state.GameLetter      = string.IsNullOrWhiteSpace(p.GameLetter)
+            ? string.Empty
+            : p.GameLetter.Trim().Substring(0, 1).ToUpperInvariant();
         _buffer.ScrollbackLines = p.ScrollbackLines;
         // Trader
         _state.TraderName     = p.TraderName;
@@ -1063,6 +1092,37 @@ public class MainWindow : Window
         _state.NotifyChanged();
     }
 
+    private static bool HasExplicitEmbeddedLoginSettings(ConnectionProfile profile)
+    {
+        return profile.LoginSettingsConfigured;
+    }
+
+    private string GetEmbeddedGameName(ConnectionProfile? profile = null)
+    {
+        string gameName = !string.IsNullOrEmpty(_currentProfilePath)
+            ? System.IO.Path.GetFileNameWithoutExtension(_currentProfilePath)
+            : $"{(profile?.Server ?? _state.Host)}_{(profile?.Port ?? _state.Port)}";
+        gameName = string.Concat(gameName.Split(System.IO.Path.GetInvalidFileNameChars()));
+        return string.IsNullOrWhiteSpace(gameName) ? "game" : gameName;
+    }
+
+    private static EmbeddedGameConfig? TryLoadEmbeddedGameConfigForGame(string gameName)
+    {
+        try
+        {
+            string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+            if (!File.Exists(path))
+                return null;
+
+            var json = File.ReadAllText(path);
+            return System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>Connects using the current Host/Port already set in state.</summary>
     private void DoConnect()
     {
@@ -1094,15 +1154,32 @@ public class MainWindow : Window
             await StopEmbeddedAsync();
 
         // Derive game name first (needed for the game config path and database path).
-        string gameName = !string.IsNullOrEmpty(_currentProfilePath)
-            ? System.IO.Path.GetFileNameWithoutExtension(_currentProfilePath)
-            : $"{_state.Host}_{_state.Port}";
-        gameName = string.Concat(gameName.Split(System.IO.Path.GetInvalidFileNameChars()));
-        if (string.IsNullOrWhiteSpace(gameName)) gameName = "game";
+        string gameName = GetEmbeddedGameName();
 
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        bool configChanged =
+            gameConfig.Host != _state.Host ||
+            gameConfig.Port != _state.Port ||
+            gameConfig.Sectors != _state.Sectors ||
+            gameConfig.UseLogin != _state.UseLogin ||
+            gameConfig.UseRLogin != _state.UseRLogin ||
+            !string.Equals(gameConfig.LoginScript, string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.LoginName, _state.LoginName, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.Password, _state.Password, StringComparison.Ordinal) ||
+            !string.Equals(gameConfig.GameLetter, _state.GameLetter, StringComparison.Ordinal);
+        gameConfig.Host = _state.Host;
+        gameConfig.Port = _state.Port;
+        gameConfig.Sectors = _state.Sectors;
+        gameConfig.UseLogin = _state.UseLogin;
+        gameConfig.UseRLogin = _state.UseRLogin;
+        gameConfig.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+        gameConfig.LoginName = _state.LoginName;
+        gameConfig.Password = _state.Password;
+        gameConfig.GameLetter = _state.GameLetter;
+        if (configChanged)
+            await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         _embeddedGameConfig = gameConfig;
         _embeddedGameName = gameName;
 
@@ -1290,9 +1367,6 @@ public class MainWindow : Window
         // update game-connection state (status bar, _state.Connected) here.
         gi.Connected += (_, _) =>
         {
-            // Fire the Pascal 'Connection accepted' program event so scripts that
-            // registered setEventTrigger handlers can respond (e.g. login sequence).
-            interpreter.ProgramEvent("Connection accepted", "", false);
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = true;
@@ -1439,6 +1513,12 @@ public class MainWindow : Window
             Port    = _state.Port,
             Sectors = _state.Sectors,
             NativeHaggleEnabled = true,
+            UseLogin = _state.UseLogin,
+            UseRLogin = _state.UseRLogin,
+            LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
+            LoginName = _state.LoginName,
+            Password = _state.Password,
+            GameLetter = _state.GameLetter,
         };
         await SaveEmbeddedGameConfigAsync(gameName, newCfg);
         return newCfg;
@@ -1501,11 +1581,16 @@ public class MainWindow : Window
             if (File.Exists(dbPath))
             {
                 db.OpenDatabase(dbPath);
-                db.UpdateHeader(new Core.DataHeader
-                {
-                    Address    = _state.Host,
-                    ServerPort = (ushort)_state.Port,
-                });
+                var header = db.DBHeader;
+                header.Address = _state.Host;
+                header.ServerPort = (ushort)_state.Port;
+                header.UseLogin = _state.UseLogin;
+                header.UseRLogin = _state.UseRLogin;
+                header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+                header.LoginName = _state.LoginName;
+                header.Password = _state.Password;
+                header.Game = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+                db.ReplaceHeader(header);
             }
             else
             {
@@ -1514,6 +1599,12 @@ public class MainWindow : Window
                     Address    = _state.Host,
                     ServerPort = (ushort)_state.Port,
                     Sectors    = sectors,
+                    UseLogin   = _state.UseLogin,
+                    UseRLogin  = _state.UseRLogin,
+                    LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
+                    LoginName  = _state.LoginName,
+                    Password   = _state.Password,
+                    Game       = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]),
                 });
             }
 

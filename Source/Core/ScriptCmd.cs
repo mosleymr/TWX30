@@ -535,8 +535,8 @@ namespace TWXProxy.Core
             AddSysConstant("GAME", (indexes) => GetGame()); // 21
             AddSysConstant("GAMENAME", (indexes) => GetGameName()); // 22
             AddSysConstant("LICENSENAME", (indexes) => string.Empty); // 23
-            AddSysConstant("LOGINNAME", (indexes) => string.Empty); // 24
-            AddSysConstant("PASSWORD", (indexes) => string.Empty); // 25
+            AddSysConstant("LOGINNAME", (indexes) => GetLoginName()); // 24
+            AddSysConstant("PASSWORD", (indexes) => GetPassword()); // 25
             
             // 26-37: Port information (indexed by sector number: PORT.CLASS[$CurSector])
             AddSysConstant("PORT.CLASS", (indexes) => {
@@ -1002,6 +1002,26 @@ namespace TWXProxy.Core
             var db = GetActiveDatabase();
             if (db == null) return string.Empty;
             return db.DatabaseName;
+        }
+
+        /// <summary>
+        /// Get login username from database header
+        /// </summary>
+        public static string GetLoginName()
+        {
+            var db = GetActiveDatabase();
+            if (db == null) return string.Empty;
+            return db.DBHeader.LoginName ?? string.Empty;
+        }
+
+        /// <summary>
+        /// Get login password from database header
+        /// </summary>
+        public static string GetPassword()
+        {
+            var db = GetActiveDatabase();
+            if (db == null) return string.Empty;
+            return db.DBHeader.Password ?? string.Empty;
         }
         
         /// <summary>

@@ -31,6 +31,16 @@ public class ConnectionProfile
     public int        Sectors         { get; set; } = 1000;
     /// <summary>When true the embedded proxy automatically reconnects to the server after a disconnect.</summary>
     public bool       AutoReconnect   { get; set; } = false;
+    /// <summary>Run the configured login script after the embedded proxy connects.</summary>
+    public bool       UseLogin        { get; set; } = false;
+    /// <summary>Use Pascal-style RLogin handshake when the embedded proxy connects.</summary>
+    public bool       UseRLogin       { get; set; } = false;
+    public string     LoginScript     { get; set; } = "0_Login.cts";
+    public string     LoginName       { get; set; } = string.Empty;
+    public string     Password        { get; set; } = string.Empty;
+    public string     GameLetter      { get; set; } = string.Empty;
+    /// <summary>True once the profile has explicitly stored embedded login automation settings.</summary>
+    public bool       LoginSettingsConfigured { get; set; } = false;
 
     // ── Terminal settings ──────────────────────────────────────────────────
     /// <summary>Maximum number of lines retained in the off-screen scrollback buffer.</summary>
@@ -89,6 +99,13 @@ public class ConnectionProfile
                 new XElement("TwxProxyDbPath",  TwxProxyDbPath),
                 new XElement("EmbeddedProxy",   EmbeddedProxy),
                 new XElement("AutoReconnect",   AutoReconnect),
+                new XElement("UseLogin",        UseLogin),
+                new XElement("UseRLogin",       UseRLogin),
+                new XElement("LoginScript",     LoginScript),
+                new XElement("LoginName",       LoginName),
+                new XElement("Password",        Password),
+                new XElement("GameLetter",      GameLetter),
+                new XElement("LoginSettingsConfigured", LoginSettingsConfigured),
                 new XElement("ScrollbackLines", ScrollbackLines),
                 // Trader info
                 new XElement("TraderName",      TraderName),
@@ -151,6 +168,13 @@ public class ConnectionProfile
         p.TwxProxyDbPath  = S("TwxProxyDbPath");
         p.EmbeddedProxy   = B("EmbeddedProxy", false);
         p.AutoReconnect   = B("AutoReconnect",  false);
+        p.UseLogin        = B("UseLogin", false);
+        p.UseRLogin       = B("UseRLogin", false);
+        p.LoginScript     = S("LoginScript", "0_Login.cts");
+        p.LoginName       = S("LoginName");
+        p.Password        = S("Password");
+        p.GameLetter      = S("GameLetter");
+        p.LoginSettingsConfigured = B("LoginSettingsConfigured", false);
         p.ScrollbackLines = I("ScrollbackLines", 2000);
         // Trader
         p.TraderName    = S("TraderName");

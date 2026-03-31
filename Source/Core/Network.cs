@@ -302,7 +302,9 @@ namespace TWXProxy.Core
                 }
 
                 System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
-                
+
+                await SendInitialHandshakeAsync(token);
+                _interpreter?.HandleConnectionAccepted();
                 Connected?.Invoke(this, EventArgs.Empty);
 
                 // Start reading from server
@@ -313,6 +315,37 @@ namespace TWXProxy.Core
                 Log($"[{_gameName}] Failed to connect to server: {ex.Message}");
                 throw;
             }
+        }
+
+        private DataHeader? GetActiveHeader()
+        {
+            if (ScriptRef.GetActiveDatabase() is ModDatabase activeDb)
+                return activeDb.DBHeader;
+            return GlobalModules.TWXDatabase is ModDatabase globalDb ? globalDb.DBHeader : null;
+        }
+
+        private async Task SendInitialHandshakeAsync(CancellationToken token)
+        {
+            if (_serverStream == null || _serverClient?.Connected != true)
+                return;
+
+            DataHeader? header = GetActiveHeader();
+            byte[] handshake;
+
+            if (header?.UseRLogin == true)
+            {
+                string loginName = header.LoginName ?? string.Empty;
+                handshake = Encoding.ASCII.GetBytes("\0" + loginName + "\0\0\0");
+                GlobalModules.DebugLog($"[GameInstance] Sending RLogin handshake for '{loginName}'\n");
+            }
+            else
+            {
+                handshake = new byte[] { IAC, DO, 246 };
+                GlobalModules.DebugLog("[GameInstance] Sending telnet login handshake\n");
+            }
+
+            await _serverStream.WriteAsync(handshake, 0, handshake.Length, token);
+            await _serverStream.FlushAsync(token);
         }
 
         /// <summary>

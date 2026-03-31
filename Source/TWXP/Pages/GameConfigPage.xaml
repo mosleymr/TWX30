@@ -47,6 +47,32 @@
                 <Label Text="Enable native haggle by default" VerticalOptions="Center"/>
             </HorizontalStackLayout>
 
+            <Label Text="Login Automation" FontAttributes="Bold" FontSize="18" Margin="0,20,0,0"/>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding UseLogin}"/>
+                <Label Text="Run login script after connect" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <HorizontalStackLayout Spacing="10">
+                <CheckBox IsChecked="{Binding UseRLogin}"/>
+                <Label Text="Use RLogin handshake" VerticalOptions="Center"/>
+            </HorizontalStackLayout>
+
+            <VerticalStackLayout Spacing="10" IsVisible="{Binding ShowLoginDetails}">
+                <Label Text="Login Script"/>
+                <Entry Text="{Binding LoginScript}" Placeholder="0_Login.cts"/>
+
+                <Label Text="Username"/>
+                <Entry Text="{Binding LoginName}" Placeholder="Trader name"/>
+
+                <Label Text="Password"/>
+                <Entry Text="{Binding Password}" IsPassword="True" Placeholder="Password"/>
+
+                <Label Text="Game Letter"/>
+                <Entry Text="{Binding GameLetter}" Placeholder="A"/>
+            </VerticalStackLayout>
+
             <!-- Action Buttons -->
             <Grid ColumnDefinitions="*,*" ColumnSpacing="10" Margin="0,30,0,0">
                 <Button Grid.Column="0" 

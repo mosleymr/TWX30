@@ -139,6 +139,92 @@ public class GameConfigViewModel : BaseViewModel
         }
     }
 
+    public bool UseLogin
+    {
+        get => Config.UseLogin;
+        set
+        {
+            if (Config.UseLogin != value)
+            {
+                Config.UseLogin = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ShowLoginDetails));
+            }
+        }
+    }
+
+    public bool UseRLogin
+    {
+        get => Config.UseRLogin;
+        set
+        {
+            if (Config.UseRLogin != value)
+            {
+                Config.UseRLogin = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ShowLoginDetails));
+            }
+        }
+    }
+
+    public string LoginScript
+    {
+        get => Config.LoginScript;
+        set
+        {
+            string next = string.IsNullOrWhiteSpace(value) ? "0_Login.cts" : value.Trim();
+            if (Config.LoginScript != next)
+            {
+                Config.LoginScript = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string LoginName
+    {
+        get => Config.LoginName;
+        set
+        {
+            if (Config.LoginName != value)
+            {
+                Config.LoginName = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string Password
+    {
+        get => Config.Password;
+        set
+        {
+            if (Config.Password != value)
+            {
+                Config.Password = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public string GameLetter
+    {
+        get => Config.GameLetter;
+        set
+        {
+            string next = string.IsNullOrWhiteSpace(value)
+                ? string.Empty
+                : value.Trim().Substring(0, 1).ToUpperInvariant();
+            if (Config.GameLetter != next)
+            {
+                Config.GameLetter = next;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool ShowLoginDetails => UseLogin || UseRLogin;
+
     public GameStatus Status
     {
         get => _status;

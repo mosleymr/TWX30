@@ -53,6 +53,12 @@ public class GameState
     public bool   EmbeddedProxy   { get; set; } = false;
     public int    Sectors         { get; set; } = 1000;
     public bool   AutoReconnect   { get; set; } = false;
+    public bool   UseLogin        { get; set; } = false;
+    public bool   UseRLogin       { get; set; } = false;
+    public string LoginScript     { get; set; } = "0_Login.cts";
+    public string LoginName       { get; set; } = string.Empty;
+    public string Password        { get; set; } = string.Empty;
+    public string GameLetter      { get; set; } = string.Empty;
     public bool   Connected       { get; set; } = false;
     public string ShipName  { get; set; } = "-";
     public int    Corp      { get; set; } = 0;
