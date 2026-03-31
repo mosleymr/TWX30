@@ -1975,6 +1975,10 @@ public class MainWindow : Window
 
     private async Task LoadQuickScriptAsync(string relativePath)
     {
+        // Let the menu close before running synchronous proxy work that can
+        // update the terminal and rebuild menus.
+        await Task.Yield();
+
         var interpreter = CurrentInterpreter;
         if (interpreter == null)
             return;
@@ -1991,10 +1995,15 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
+        _termCtrl.Focus();
     }
 
     private async Task SwitchBotAsync(string botName)
     {
+        // Let the menu close before running synchronous bot-switch logic on
+        // the UI thread, otherwise the dropdown can remain visually stuck.
+        await Task.Yield();
+
         try
         {
             CurrentInterpreter?.SwitchBot(string.Empty, botName, stopBotScripts: true);
@@ -2007,10 +2016,13 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
+        _termCtrl.Focus();
     }
 
     private async Task OnProxyStopAllScriptsAsync(bool includeSystemScripts)
     {
+        await Task.Yield();
+
         try
         {
             Core.ProxyGameOperations.StopAllScripts(CurrentInterpreter, includeSystemScripts);
@@ -2021,10 +2033,13 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
+        _termCtrl.Focus();
     }
 
     private async Task OnProxyStopScriptAsync(int scriptId)
     {
+        await Task.Yield();
+
         try
         {
             if (!Core.ProxyGameOperations.StopScriptById(CurrentInterpreter, scriptId))
@@ -2036,6 +2051,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
+        _termCtrl.Focus();
     }
 
     private async Task ExportWarpsAsync()
