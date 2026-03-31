@@ -240,10 +240,16 @@ namespace TWXProxy.Core
     /// </summary>
     public class BotConfig
     {
+        public string Alias { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
         public string ScriptFile { get; set; } = string.Empty;
+        public List<string> ScriptFiles { get; set; } = new List<string>();
         public string Description { get; set; } = string.Empty;
         public bool AutoStart { get; set; } = true;
+        public string NameVar { get; set; } = string.Empty;
+        public string CommsVar { get; set; } = string.Empty;
+        public string LoginScript { get; set; } = string.Empty;
+        public string Theme { get; set; } = string.Empty;
         public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>();
     }
 

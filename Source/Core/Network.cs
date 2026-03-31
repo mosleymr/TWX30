@@ -40,8 +40,10 @@ namespace TWXProxy.Core
         private readonly int _listenPort;
         private char _commandChar;
         private readonly ModInterpreter? _interpreter;
-        private readonly Dictionary<string, string> _quickTexts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<(string Search, string Replace)> _systemQuickTexts = new();
+        private readonly List<(string Search, string Replace)> _userQuickTexts = new();
         private readonly Dictionary<string, BotConfig> _botConfigs = new(StringComparer.OrdinalIgnoreCase);
+        private readonly List<BotConfig> _botOrder = new();
         
         // ITWXServer / IModServer properties
         public bool AllowLerkers { get; set; } = true;
@@ -168,12 +170,13 @@ namespace TWXProxy.Core
                 (payload, token) => SendPlaybackToLocalAsync(payload, token),
                 message => SendMessageAsync(message).GetAwaiter().GetResult());
             GlobalModules.TWXLog = _log;
+            InitializeSystemQuickTexts();
 
             string programDir = !string.IsNullOrWhiteSpace(scriptDirectory)
                 ? (Path.GetDirectoryName(scriptDirectory) ?? AppContext.BaseDirectory)
                 : GlobalModules.ProgramDir;
             foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
-                _botConfigs[bot.Name] = bot;
+                RegisterBotConfig(bot);
         }
 
         /// <summary>
@@ -1038,8 +1041,104 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task SendMessageAsync(string message)
         {
+            message = ApplyQuickText(message);
             var data = Encoding.ASCII.GetBytes(message);
             await SendToLocalAsync(data);
+        }
+
+        public string ApplyQuickText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            text = text.Replace("~~", "\u00FF", StringComparison.Ordinal);
+
+            if (text.Contains("~_", StringComparison.Ordinal))
+            {
+                string botTag = _interpreter?.ActiveBotTag ?? string.Empty;
+                int tagLength = _interpreter?.ActiveBotTagLength ?? 0;
+                string filler = new string('-', Math.Max(0, 67 - tagLength));
+                text = text.Replace("~_", filler + botTag + "--", StringComparison.Ordinal);
+            }
+
+            foreach ((string Search, string Replace) in _userQuickTexts)
+                text = text.Replace(Search, Replace, StringComparison.Ordinal);
+
+            foreach ((string Search, string Replace) in _systemQuickTexts)
+                text = text.Replace(Search, Replace, StringComparison.Ordinal);
+
+            text = text.Replace("\u00FF", "~", StringComparison.Ordinal);
+            return text.Replace("^[", "\u001b[", StringComparison.Ordinal);
+        }
+
+        private void AddSystemQuickText(string key, string value)
+        {
+            _systemQuickTexts.Add((key, value));
+        }
+
+        private void InitializeSystemQuickTexts()
+        {
+            AddSystemQuickText("~a", "^[0;30m");
+            AddSystemQuickText("~b", "^[0;31m");
+            AddSystemQuickText("~c", "^[0;32m");
+            AddSystemQuickText("~d", "^[0;33m");
+            AddSystemQuickText("~e", "^[0;34m");
+            AddSystemQuickText("~f", "^[0;35m");
+            AddSystemQuickText("~g", "^[0;36m");
+            AddSystemQuickText("~h", "^[0;37m");
+            AddSystemQuickText("~A", "^[1;30m");
+            AddSystemQuickText("~B", "^[1;31m");
+            AddSystemQuickText("~C", "^[1;32m");
+            AddSystemQuickText("~D", "^[1;33m");
+            AddSystemQuickText("~E", "^[1;34m");
+            AddSystemQuickText("~F", "^[1;35m");
+            AddSystemQuickText("~G", "^[1;36m");
+            AddSystemQuickText("~H", "^[1;37m");
+            AddSystemQuickText("~i", "^[40m");
+            AddSystemQuickText("~j", "^[41m");
+            AddSystemQuickText("~k", "^[42m");
+            AddSystemQuickText("~l", "^[43m");
+            AddSystemQuickText("~m", "^[44m");
+            AddSystemQuickText("~n", "^[45m");
+            AddSystemQuickText("~o", "^[46m");
+            AddSystemQuickText("~p", "^[47m");
+            AddSystemQuickText("~I", "^[5;40m");
+            AddSystemQuickText("~J", "^[5;41m");
+            AddSystemQuickText("~K", "^[5;42m");
+            AddSystemQuickText("~L", "^[5;43m");
+            AddSystemQuickText("~M", "^[5;44m");
+            AddSystemQuickText("~N", "^[5;45m");
+            AddSystemQuickText("~O", "^[5;46m");
+            AddSystemQuickText("~P", "^[5;47m");
+            AddSystemQuickText("~!", "^[2J^[H");
+            AddSystemQuickText("~@", "\r^[0m^[0K");
+            AddSystemQuickText("~0", "^[0m");
+            AddSystemQuickText("~1", "^[0m^[1;36m");
+            AddSystemQuickText("~2", "^[0m^[1;33m");
+            AddSystemQuickText("~3", "^[0m^[35m");
+            AddSystemQuickText("~4", "^[0m^[1;44m");
+            AddSystemQuickText("~5", "^[0m^[32m");
+            AddSystemQuickText("~6", "^[0m^[1;5;37m");
+            AddSystemQuickText("~7", "^[0m^[1;37m");
+            AddSystemQuickText("~8", "^[0m^[1;5;31m");
+            AddSystemQuickText("~9", "^[0m^[30;47m");
+            AddSystemQuickText("~s", "\u001b[s");
+            AddSystemQuickText("~u", "\u001b[u");
+            AddSystemQuickText("~-", "---------------------------------------------------------------------");
+            AddSystemQuickText("~=", "=====================================================================");
+            AddSystemQuickText("~+", "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-");
+        }
+
+        private void RegisterBotConfig(BotConfig config)
+        {
+            if (string.IsNullOrWhiteSpace(config.Name))
+                return;
+
+            if (_botConfigs.TryGetValue(config.Name, out BotConfig? existing))
+                _botOrder.Remove(existing);
+
+            _botConfigs[config.Name] = config;
+            _botOrder.Add(config);
         }
 
         public bool ToggleNativeHaggle()
@@ -1141,18 +1240,19 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(key))
                 return;
 
-            _quickTexts[key] = value ?? string.Empty;
+            ClearQuickText(key);
+            _userQuickTexts.Add((key, ApplyQuickText(value ?? string.Empty)));
         }
 
         public void ClearQuickText(string? key = null)
         {
             if (string.IsNullOrWhiteSpace(key))
             {
-                _quickTexts.Clear();
+                _userQuickTexts.Clear();
                 return;
             }
 
-            _quickTexts.Remove(key);
+            _userQuickTexts.RemoveAll(entry => string.Equals(entry.Search, key, StringComparison.Ordinal));
         }
 
         public ClientType GetClientType(int index)
@@ -1170,12 +1270,13 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(botName) || string.IsNullOrWhiteSpace(scriptFile))
                 return;
 
-            _botConfigs[botName] = new BotConfig
+            RegisterBotConfig(new BotConfig
             {
                 Name = botName,
                 ScriptFile = scriptFile.Replace('\\', '/'),
+                ScriptFiles = new List<string> { scriptFile.Replace('\\', '/') },
                 Description = description ?? string.Empty,
-            };
+            });
         }
 
         public void UnregisterBot(string botName)
@@ -1183,16 +1284,19 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(botName))
                 return;
 
-            _botConfigs.Remove(botName);
-            if (string.Equals(ActiveBotName, botName, StringComparison.OrdinalIgnoreCase))
+            BotConfig? config = GetBotConfig(botName);
+            if (config == null)
+                return;
+
+            _botConfigs.Remove(config.Name);
+            _botOrder.Remove(config);
+            if (string.Equals(ActiveBotName, config.Name, StringComparison.OrdinalIgnoreCase))
                 ActiveBotName = string.Empty;
         }
 
         public List<string> GetBotList()
         {
-            return _botConfigs.Keys
-                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            return _botOrder.Select(bot => bot.Name).ToList();
         }
 
         public BotConfig? GetBotConfig(string botName)
@@ -1200,7 +1304,23 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(botName))
                 return null;
 
-            return _botConfigs.TryGetValue(botName, out BotConfig? config) ? config : null;
+            string selector = botName.Trim();
+            if (selector.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
+                selector = selector["bot:".Length..];
+
+            if (_botConfigs.TryGetValue(selector, out BotConfig? config))
+                return config;
+
+            config = _botOrder.FirstOrDefault(bot =>
+                string.Equals(bot.Alias, selector, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(bot.Name, selector, StringComparison.OrdinalIgnoreCase));
+            if (config != null)
+                return config;
+
+            return _botOrder.FirstOrDefault(bot =>
+                (!string.IsNullOrWhiteSpace(bot.ScriptFile) &&
+                 bot.ScriptFile.Contains(selector, StringComparison.OrdinalIgnoreCase)) ||
+                bot.ScriptFiles.Any(script => script.Contains(selector, StringComparison.OrdinalIgnoreCase)));
         }
 
         public object? GetActiveBot()

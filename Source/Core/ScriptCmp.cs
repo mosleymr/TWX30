@@ -640,8 +640,7 @@ namespace TWXProxy.Core
             _preparedProgram = null;
             _scriptFile = filename;
             _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
-            if (string.IsNullOrEmpty(_rootScriptDirectory))
-                _rootScriptDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
+            _rootScriptDirectory = _scriptDirectory;
             _ifLabelCount = 0;
             _waitOnCount = 0;
             _lineCount = 0;
@@ -649,7 +648,7 @@ namespace TWXProxy.Core
             _includeScriptList.Clear();
 
             // Read script file
-            var scriptText = new List<string>(File.ReadAllLines(filename, Encoding.Latin1));
+            var scriptText = LoadSourceLines(filename);
 
             // Read description file if provided
             if (!string.IsNullOrEmpty(descFile) && File.Exists(descFile))
@@ -1703,10 +1702,24 @@ namespace TWXProxy.Core
             }
             else
             {
-                // Match Pascal FetchScript behaviour first: resolve against the
-                // starting script root, then try a "scripts/" child under that root.
-                AddScriptPathCandidates(candidates, seen, searchRoot, filename);
-                AddScriptPathCandidates(candidates, seen, Path.Combine(searchRoot, "scripts"), filename);
+                // Match Pascal FetchScript behavior as closely as practical:
+                // start at the script root, then walk upward so scripts kept in
+                // nested folders can still resolve sibling "include/" trees.
+                string? probeRoot = searchRoot;
+                while (!string.IsNullOrWhiteSpace(probeRoot))
+                {
+                    AddScriptPathCandidates(candidates, seen, probeRoot, filename);
+                    AddScriptPathCandidates(candidates, seen, Path.Combine(probeRoot, "scripts"), filename);
+
+                    string? parent = Directory.GetParent(probeRoot)?.FullName;
+                    if (string.IsNullOrWhiteSpace(parent)
+                        || string.Equals(parent, probeRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    probeRoot = parent;
+                }
 
                 // Final compatibility fallback: resolve relative to the current
                 // include file directory for decompiled or ad-hoc layouts.
@@ -1729,7 +1742,7 @@ namespace TWXProxy.Core
         {
             string fullPath = ResolveIncludePath(filename);
 
-            var scriptText = new List<string>(File.ReadAllLines(fullPath, Encoding.Latin1));
+            var scriptText = LoadSourceLines(fullPath);
             
             // Get the actual filename from the filesystem (preserves correct case)
             // This is important because include statements may use different case than the actual file
@@ -1778,6 +1791,39 @@ namespace TWXProxy.Core
         #endregion
 
         #region File I/O Methods
+
+        private static List<string> SplitSourceLines(string text)
+        {
+            var lines = new List<string>();
+            using var reader = new StringReader(text);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+                lines.Add(line);
+
+            return lines;
+        }
+
+        private static string LoadSourceText(string filename)
+        {
+            byte[] bytes = File.ReadAllBytes(filename);
+
+            if (LegacyScriptEncryption.IsEncryptedIncludePath(filename))
+                return LegacyScriptEncryption.DecryptToString(bytes);
+
+            if (!LegacyScriptEncryption.LooksLikePlainText(bytes)
+                && LegacyScriptEncryption.TryDecryptToString(bytes, out string decrypted)
+                && LegacyScriptEncryption.LooksLikeScriptText(decrypted))
+            {
+                return decrypted;
+            }
+
+            return Encoding.Latin1.GetString(bytes);
+        }
+
+        private static List<string> LoadSourceLines(string filename)
+        {
+            return SplitSourceLines(LoadSourceText(filename));
+        }
 
         public void WriteToFile(string filename)
         {
@@ -1860,24 +1906,40 @@ namespace TWXProxy.Core
         ///   offset 20-23 : CodeSize  (Integer/int32, little-endian)
         /// Returns (progName, version, descSize, codeSize). Throws on bad magic or short file.
         /// </summary>
-        public static (string progName, int version, int descSize, int codeSize) ReadScriptFileHeader(BinaryReader reader)
+        public static (string progName, int version, int descSize, int codeSize, int headerSize) ReadScriptFileHeader(BinaryReader reader)
         {
+            long startPosition = reader.BaseStream.Position;
             byte[] hdr = reader.ReadBytes(24);
-            if (hdr.Length < 24)
+            if (hdr.Length < 21)
                 throw new Exception("File is too short to be a compiled TWX script");
 
-            byte nameLen = hdr[0];
-            string progName = nameLen <= 10
-                ? Encoding.ASCII.GetString(hdr, 1, nameLen)
-                : string.Empty;
-            int version  = BitConverter.ToUInt16(hdr, 12);
-            int descSize = BitConverter.ToInt32(hdr, 16);
-            int codeSize = BitConverter.ToInt32(hdr, 20);
+            reader.BaseStream.Seek(startPosition, SeekOrigin.Begin);
 
-            if (progName != "TWX SCRIPT")
-                throw new Exception("File is not a compiled TWX script");
+            if (hdr[0] == 10 && Encoding.ASCII.GetString(hdr, 1, 10) == "TWX SCRIPT")
+            {
+                reader.BaseStream.Seek(startPosition + 24, SeekOrigin.Begin);
+                return (
+                    "TWX SCRIPT",
+                    BitConverter.ToUInt16(hdr, 12),
+                    BitConverter.ToInt32(hdr, 16),
+                    BitConverter.ToInt32(hdr, 20),
+                    24);
+            }
 
-            return (progName, version, descSize, codeSize);
+            if (Encoding.ASCII.GetString(hdr, 0, 10) == "TWX SCRIPT" && hdr[10] == 0)
+            {
+                // Older compiled artifacts store a null-terminated header string
+                // instead of the Pascal shortstring byte length.
+                reader.BaseStream.Seek(startPosition + 21, SeekOrigin.Begin);
+                return (
+                    "TWX SCRIPT",
+                    BitConverter.ToUInt16(hdr, 11),
+                    BitConverter.ToInt32(hdr, 13),
+                    BitConverter.ToInt32(hdr, 17),
+                    21);
+            }
+
+            throw new Exception("File is not a compiled TWX script");
         }
 
         public void LoadFromFile(string filename)
@@ -1891,11 +1953,11 @@ namespace TWXProxy.Core
             {
                 GlobalModules.DebugLog($"[DEBUG] Loading file: {filename} ({fs.Length} bytes)\n");
 
-                var (progName, version, descSize, codeSize) = ReadScriptFileHeader(reader);
+                var (progName, version, descSize, codeSize, headerSize) = ReadScriptFileHeader(reader);
 
                 GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File: {filename}\n");
                 GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File size: {fs.Length} bytes\n");
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Header string: '{progName}', Version: {version}, DescSize: {descSize}, CodeSize: {codeSize}\n");
+                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Header string: '{progName}', Version: {version}, DescSize: {descSize}, CodeSize: {codeSize}, HeaderSize: {headerSize}\n");
 
                 if (version < 2 || version > ScriptConstants.CompiledScriptVersion)
                     throw new Exception($"Script file is an incorrect version ({version}); supported versions are 2-{ScriptConstants.CompiledScriptVersion}");

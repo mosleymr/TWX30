@@ -77,35 +77,45 @@ public static class ProxyMenuCatalog
             if (!sectionName.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
                 continue;
 
+            string alias = sectionName["bot:".Length..].Trim();
             if (!values.TryGetValue("Name", out string? botName) || string.IsNullOrWhiteSpace(botName))
                 continue;
 
             if (!values.TryGetValue("Script", out string? scriptList) || string.IsNullOrWhiteSpace(scriptList))
                 continue;
 
-            string? firstScript = scriptList
+            List<string> normalizedScripts = scriptList
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .FirstOrDefault();
+                .Select(script => script.Replace('\\', '/'))
+                .Where(script => !string.IsNullOrWhiteSpace(script))
+                .ToList();
+
+            string? firstScript = normalizedScripts.FirstOrDefault();
             if (string.IsNullOrWhiteSpace(firstScript))
                 continue;
 
-            string normalizedScript = firstScript.Replace('\\', '/');
-            string candidatePath = Path.Combine(scriptsRoot, normalizedScript.Replace('/', Path.DirectorySeparatorChar));
+            string candidatePath = Path.Combine(scriptsRoot, firstScript.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(candidatePath))
                 continue;
 
+            var properties = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
             bots.Add(new BotConfig
             {
+                Alias = alias,
                 Name = botName.Trim(),
-                ScriptFile = normalizedScript,
+                ScriptFile = firstScript,
+                ScriptFiles = normalizedScripts,
                 Description = values.TryGetValue("Description", out string? description) ? description : string.Empty,
                 AutoStart = !values.TryGetValue("AutoStart", out string? autoStart) || ParseBool(autoStart, true),
+                NameVar = values.TryGetValue("NameVar", out string? nameVar) ? nameVar : string.Empty,
+                CommsVar = values.TryGetValue("CommsVar", out string? commsVar) ? commsVar : string.Empty,
+                LoginScript = values.TryGetValue("LoginScript", out string? loginScript) ? loginScript : string.Empty,
+                Theme = values.TryGetValue("Theme", out string? theme) ? theme : string.Empty,
+                Properties = properties,
             });
         }
 
-        return bots
-            .OrderBy(bot => bot.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return bots.ToArray();
     }
 
     private static void AddQuickEntry(

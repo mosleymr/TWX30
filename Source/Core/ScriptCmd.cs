@@ -825,35 +825,12 @@ namespace TWXProxy.Core
                 }
                 return string.Empty;
             });
-            AddSysConstant("ACTIVEBOT", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
-            AddSysConstant("ACTIVEBOTS", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
-            AddSysConstant("ACTIVEBOTDIR", (indexes) =>
-            {
-                var server = GlobalModules.TWXServer;
-                if (server != null)
-                {
-                    var bot = server.GetActiveBot();
-                    if (bot is Script scriptObj)
-                    {
-                        return scriptObj.ProgramDir;
-                    }
-                }
-                return string.Empty;
-            });
-            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) =>
-            {
-                var server = GlobalModules.TWXServer;
-                if (server != null)
-                {
-                    var bot = server.GetActiveBot();
-                    if (bot is Script scriptObj)
-                    {
-                        return scriptObj.ScriptName;
-                    }
-                }
-                return string.Empty;
-            });
-            AddSysConstant("ACTIVEBOTNAME", (indexes) => GlobalModules.TWXServer?.ActiveBotName ?? string.Empty);
+            AddSysConstant("ACTIVEBOT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBot ?? string.Empty);
+            AddSysConstant("ACTIVEBOTS", (indexes) =>
+                (GlobalModules.TWXServer?.GetBotList().Count ?? 0).ToString(CultureInfo.InvariantCulture));
+            AddSysConstant("ACTIVEBOTDIR", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotDir ?? string.Empty);
+            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotScript ?? string.Empty);
+            AddSysConstant("ACTIVEBOTNAME", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotName ?? string.Empty);
             AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
             AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
             AddSysConstant("TWGSVER", (indexes) => string.Empty);

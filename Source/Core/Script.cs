@@ -509,86 +509,105 @@ namespace TWXProxy.Core
 
         public void SwitchBot(string scriptName, string botName, bool stopBotScripts)
         {
-            // Switch to a different bot configuration - loads the bot script if not running
-            var server = GlobalModules.TWXServer;
-            if (server != null)
-            {
-                var botConfig = server.GetBotConfig(botName);
-                if (botConfig != null)
-                {
-                    // Stop the currently active bot if requested
-                    if (stopBotScripts)
-                    {
-                        var currentBot = FindBot(_activeBot);
-                        if (currentBot != null)
-                        {
-                            StopBot(_activeBot);
-                        }
-                    }
-                    
-                    // Update active bot information
-                    _activeBot = botName;
-                    _activeBotScript = !string.IsNullOrEmpty(scriptName) ? scriptName : botConfig.ScriptFile;
-                    
-                    // Set the active bot on the server
-                    server.ActiveBotName = botName;
-                    
-                    // Start the new bot if it's not already running
-                    var existingBot = FindBot(botName);
-                    if (existingBot == null)
-                    {
-                        StartBot(botName, _activeBotScript);
-                    }
-                    
-                    Console.WriteLine($"[SwitchBot] Switched to bot '{botName}' with script '{_activeBotScript}'");
-                }
-                else
-                {
-                    Console.WriteLine($"[SwitchBot] Bot '{botName}' not found");
-                }
-            }
-            else
+            ITWXServer? server = GlobalModules.TWXServer;
+            if (server == null)
             {
                 Console.WriteLine("[SwitchBot] Server not available");
+                return;
             }
+
+            string lastBotName = GetActiveBotName();
+            BotConfig? botConfig = !string.IsNullOrWhiteSpace(scriptName)
+                ? server.GetBotConfig(scriptName)
+                : null;
+            string requestedBotName = botName;
+
+            if (botConfig == null && string.IsNullOrWhiteSpace(scriptName) && !string.IsNullOrWhiteSpace(botName))
+            {
+                BotConfig? namedConfig = server.GetBotConfig(botName);
+                if (namedConfig != null)
+                {
+                    botConfig = namedConfig;
+                    requestedBotName = string.Empty;
+                }
+            }
+
+            botConfig ??= ResolveNextBotConfig(server);
+            if (botConfig == null)
+            {
+                Console.WriteLine("[SwitchBot] No bot configurations are available");
+                return;
+            }
+
+            if (stopBotScripts)
+            {
+                for (int index = _scriptList.Count - 1; index >= 0; index--)
+                {
+                    if (_scriptList[index].IsBot)
+                        Stop(index);
+                }
+            }
+
+            _activeBot = botConfig.Name;
+            _activeBotScript = string.Join(",", GetBotScripts(botConfig));
+            _activeBotNameVar = botConfig.NameVar ?? string.Empty;
+            _activeCommsVar = botConfig.CommsVar ?? string.Empty;
+            _activeLoginScript = botConfig.LoginScript ?? string.Empty;
+            _activeBotTag = string.Empty;
+            _activeBotTagLength = 0;
+
+            ApplyBotTheme(botConfig);
+
+            if (string.IsNullOrWhiteSpace(requestedBotName))
+            {
+                string currentBotName = GetActiveBotName();
+                if ((string.IsNullOrWhiteSpace(currentBotName) || currentBotName == "0") &&
+                    !string.IsNullOrWhiteSpace(lastBotName) &&
+                    lastBotName != "0")
+                {
+                    requestedBotName = lastBotName;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(requestedBotName))
+                PersistActiveBotName(requestedBotName);
+
+            server.ActiveBotName = botConfig.Name;
+
+            foreach (string scriptFile in GetBotScripts(botConfig))
+                StartBot(botConfig.Name, scriptFile);
+
+            Console.WriteLine($"[SwitchBot] Switched to bot '{botConfig.Name}' with script '{_activeBotScript}'");
         }
 
         public void StartBot(string botName, string scriptFile)
         {
-            // Load and start a bot script as a system script
-            if (string.IsNullOrEmpty(scriptFile))
+            if (string.IsNullOrWhiteSpace(scriptFile))
             {
                 Console.WriteLine($"[StartBot] Error: No script file specified for bot '{botName}'");
                 return;
             }
 
-            // Check if bot is already running
-            var existingBot = FindBot(botName);
+            string resolvedScriptPath = ResolveScriptPath(scriptFile);
+            var existingBot = FindBotScript(botName, resolvedScriptPath);
             if (existingBot != null)
-            {
-                Console.WriteLine($"[StartBot] Bot '{botName}' is already running");
                 return;
-            }
 
-            // Load the script as a system/bot script
             Directory.SetCurrentDirectory(_programDir);
-            var script = new Script(this);
-            script.System = true;
-            script.Silent = true; // Bots run silently by default
-            script.IsBot = true;
-            script.BotName = botName;
+            var script = new Script(this)
+            {
+                System = true,
+                Silent = true,
+                IsBot = true,
+                BotName = botName,
+            };
             _scriptList.Add(script);
 
             try
             {
-                string extension = Path.GetExtension(scriptFile).ToUpperInvariant();
+                string extension = Path.GetExtension(resolvedScriptPath).ToUpperInvariant();
                 bool compile = extension == ".TS";
-                
-                script.GetFromFile(scriptFile, compile);
-                
-                Console.WriteLine($"[StartBot] Started bot '{botName}' from script '{scriptFile}'");
-                
-                // Execute the bot script
+                script.GetFromFile(resolvedScriptPath, compile);
                 script.Execute();
             }
             catch (Exception ex)
@@ -601,56 +620,129 @@ namespace TWXProxy.Core
 
         public void StopBot(string botName)
         {
-            // Stop a running bot script — route through Stop(index) so that triggers/timers
-            // are disposed and ProgramEvent("SCRIPT STOPPED") fires for any listening scripts.
-            var bot = FindBot(botName);
-            if (bot != null)
+            bool stoppedAny = false;
+            for (int index = _scriptList.Count - 1; index >= 0; index--)
             {
-                Console.WriteLine($"[StopBot] Stopping bot '{botName}'");
-                int index = _scriptList.IndexOf(bot);
-                if (index >= 0)
+                if (_scriptList[index].IsBot &&
+                    _scriptList[index].BotName.Equals(botName, StringComparison.OrdinalIgnoreCase))
+                {
                     Stop(index);
-                else
-                    bot.Dispose(); // already removed from list somehow — clean up directly
+                    stoppedAny = true;
+                }
             }
-            else
-            {
+
+            if (!stoppedAny)
                 Console.WriteLine($"[StopBot] Bot '{botName}' not found");
-            }
         }
 
         public Script? FindBot(string botName)
         {
-            // Find a running bot by name
             return _scriptList.FirstOrDefault(s => s.IsBot && s.BotName.Equals(botName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private Script? FindBotScript(string botName, string scriptFile)
+        {
+            return _scriptList.FirstOrDefault(script =>
+                script.IsBot &&
+                script.BotName.Equals(botName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    Path.GetFullPath(script.Compiler?.ScriptFile ?? string.Empty),
+                    Path.GetFullPath(scriptFile),
+                    StringComparison.OrdinalIgnoreCase));
         }
 
         public Script? GetActiveBot()
         {
-            // Get the currently active bot script
-            if (!string.IsNullOrEmpty(_activeBot))
-            {
-                return FindBot(_activeBot);
-            }
-            return null;
+            return !string.IsNullOrEmpty(_activeBot) ? FindBot(_activeBot) : null;
         }
 
         public void StartAllBots()
         {
-            // Auto-start all registered bots that are configured to auto-start
-            var server = GlobalModules.TWXServer;
-            if (server != null)
+            ITWXServer? server = GlobalModules.TWXServer;
+            if (server == null)
+                return;
+
+            foreach (string botName in server.GetBotList())
             {
-                var botList = server.GetBotList();
-                foreach (var botName in botList)
+                BotConfig? botConfig = server.GetBotConfig(botName);
+                if (botConfig?.AutoStart != true)
+                    continue;
+
+                foreach (string scriptFile in GetBotScripts(botConfig))
+                    StartBot(botConfig.Name, scriptFile);
+            }
+        }
+
+        private BotConfig? ResolveNextBotConfig(ITWXServer server)
+        {
+            List<string> botNames = server.GetBotList();
+            if (botNames.Count == 0)
+                return null;
+
+            if (string.IsNullOrWhiteSpace(_activeBotScript))
+                return server.GetBotConfig(botNames[0]);
+
+            for (int index = 0; index < botNames.Count; index++)
+            {
+                BotConfig? candidate = server.GetBotConfig(botNames[index]);
+                if (candidate == null)
+                    continue;
+
+                if (!BotMatchesActiveScript(candidate))
+                    continue;
+
+                int nextIndex = index < botNames.Count - 1 ? index + 1 : 0;
+                return server.GetBotConfig(botNames[nextIndex]);
+            }
+
+            return server.GetBotConfig(botNames[0]);
+        }
+
+        private static IReadOnlyList<string> GetBotScripts(BotConfig config)
+        {
+            if (config.ScriptFiles.Count > 0)
+                return config.ScriptFiles;
+
+            if (!string.IsNullOrWhiteSpace(config.ScriptFile))
+                return new[] { config.ScriptFile };
+
+            return Array.Empty<string>();
+        }
+
+        private bool BotMatchesActiveScript(BotConfig config)
+        {
+            string activeScript = _activeBotScript ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(activeScript))
+                return false;
+
+            foreach (string script in GetBotScripts(config))
+            {
+                if (!string.IsNullOrWhiteSpace(script) &&
+                    activeScript.Contains(script, StringComparison.OrdinalIgnoreCase))
                 {
-                    var botConfig = server.GetBotConfig(botName);
-                    if (botConfig?.AutoStart == true)
-                    {
-                        StartBot(botName, botConfig.ScriptFile);
-                    }
+                    return true;
                 }
             }
+
+            return false;
+        }
+
+        private void ApplyBotTheme(BotConfig config)
+        {
+            if (string.IsNullOrWhiteSpace(config.Theme) || GlobalModules.TWXServer == null)
+                return;
+
+            string[] parts = config.Theme.Split('|', StringSplitOptions.None);
+            if (parts.Length <= 1)
+                return;
+
+            _activeBotTagLength = int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int tagLength)
+                ? tagLength
+                : 0;
+            _activeBotTag = parts[1];
+
+            for (int index = 2; index < parts.Length; index++)
+                GlobalModules.TWXServer.AddQuickText("~" + (index - 1).ToString(CultureInfo.InvariantCulture), parts[index]);
         }
 
         public List<Script> GetRunningBots()
@@ -890,7 +982,7 @@ namespace TWXProxy.Core
         public int Count => _scriptList.Count;
         public string LastScript => _lastScript;
         public string ActiveBot => _activeBot;
-        public string ActiveBotDir => _activeBotScript.Replace(_programDir, string.Empty, StringComparison.OrdinalIgnoreCase);
+        public string ActiveBotDir => GetActiveBotDir();
         public string ActiveBotScript => _activeBotScript;
         public string ActiveBotName => GetActiveBotName();
         public string ActiveBotTag => _activeBotTag;
@@ -929,15 +1021,192 @@ namespace TWXProxy.Core
             ScriptRef.SetProgVar(progVarName, value);
         }
 
+        public string GetConfiguredBotName(BotConfig config)
+        {
+            if (config == null || string.IsNullOrWhiteSpace(config.NameVar))
+                return string.Empty;
+
+            if (!IsFileBackedBotValue(config.NameVar))
+            {
+                string? cfgPath = GetBotStateConfigPath();
+                if (string.IsNullOrWhiteSpace(cfgPath))
+                    return string.Empty;
+
+                return ReadIniValue(cfgPath, "Variables", config.NameVar, "0");
+            }
+
+            string filePath = ResolveBotValueFilePath(config.NameVar);
+            if (!File.Exists(filePath))
+                return string.Empty;
+
+            try
+            {
+                return File.ReadLines(filePath).FirstOrDefault() ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private string GetActiveBotDir()
+        {
+            if (string.IsNullOrWhiteSpace(_activeBotScript))
+                return string.Empty;
+
+            string firstScript = _activeBotScript
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(firstScript))
+                return string.Empty;
+
+            string resolved = ResolveScriptPath(firstScript);
+            string directory = Path.GetDirectoryName(resolved) ?? string.Empty;
+            return directory.Replace(_programDir, string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
         private string GetActiveBotName()
         {
-            // Get active bot name from the running bot script
-            var bot = GetActiveBot();
-            if (bot != null)
+            return GetConfiguredBotName(new BotConfig { NameVar = _activeBotNameVar });
+        }
+
+        private bool IsFileBackedBotValue(string valueName)
+        {
+            return valueName.StartsWith("FILE:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string ResolveBotValueFilePath(string valueName)
+        {
+            string fileName = valueName["FILE:".Length..];
+            ModDatabase? db = ScriptRef.GetActiveDatabase();
+            string gameName = Path.GetFileNameWithoutExtension(db?.DatabasePath ?? db?.DatabaseName ?? string.Empty);
+            fileName = fileName.Replace("{GAME}", gameName, StringComparison.OrdinalIgnoreCase);
+            fileName = fileName.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+            return Path.GetFullPath(Path.Combine(_programDir, fileName));
+        }
+
+        private string? GetBotStateConfigPath()
+        {
+            ModDatabase? db = ScriptRef.GetActiveDatabase();
+            string? dbPath = db?.DatabasePath;
+            if (string.IsNullOrWhiteSpace(dbPath))
+                return null;
+            return Path.ChangeExtension(dbPath, ".cfg");
+        }
+
+        private void PersistActiveBotName(string botName)
+        {
+            if (string.IsNullOrWhiteSpace(_activeBotNameVar) || string.IsNullOrWhiteSpace(botName))
+                return;
+
+            if (!IsFileBackedBotValue(_activeBotNameVar))
             {
-                return bot.BotName;
+                string? cfgPath = GetBotStateConfigPath();
+                if (!string.IsNullOrWhiteSpace(cfgPath))
+                    WriteIniValue(cfgPath, "Variables", _activeBotNameVar, botName);
+                return;
             }
-            return _activeBot;
+
+            if (!string.IsNullOrWhiteSpace(_activeCommsVar))
+            {
+                string? cfgPath = GetBotStateConfigPath();
+                if (!string.IsNullOrWhiteSpace(cfgPath))
+                    WriteIniValue(cfgPath, "Variables", _activeCommsVar, botName);
+            }
+
+            string filePath = ResolveBotValueFilePath(_activeBotNameVar);
+            string? directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            File.WriteAllLines(filePath, new[] { botName, string.Empty });
+        }
+
+        private static string ReadIniValue(string path, string section, string key, string fallback)
+        {
+            foreach ((string sectionName, Dictionary<string, string> values) in ReadIniSections(path))
+            {
+                if (!sectionName.Equals(section, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                return values.TryGetValue(key, out string? value) ? value : fallback;
+            }
+
+            return fallback;
+        }
+
+        private static void WriteIniValue(string path, string section, string key, string value)
+        {
+            var sections = ReadIniSections(path);
+            Dictionary<string, string>? values = null;
+
+            for (int index = 0; index < sections.Count; index++)
+            {
+                if (!sections[index].SectionName.Equals(section, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                values = sections[index].Values;
+                break;
+            }
+
+            if (values == null)
+            {
+                values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                sections.Add((section, values));
+            }
+
+            values[key] = value;
+
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            using var writer = new StreamWriter(path, false, Encoding.UTF8);
+            foreach ((string sectionName, Dictionary<string, string> sectionValues) in sections)
+            {
+                writer.Write('[');
+                writer.Write(sectionName);
+                writer.WriteLine(']');
+                foreach ((string entryKey, string entryValue) in sectionValues)
+                    writer.WriteLine($"{entryKey}={entryValue}");
+                writer.WriteLine();
+            }
+        }
+
+        private static List<(string SectionName, Dictionary<string, string> Values)> ReadIniSections(string path)
+        {
+            var sections = new List<(string SectionName, Dictionary<string, string> Values)>();
+            if (!File.Exists(path))
+                return sections;
+
+            Dictionary<string, string>? currentValues = null;
+
+            foreach (string rawLine in File.ReadLines(path))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith(";", StringComparison.Ordinal) || line.StartsWith("#", StringComparison.Ordinal))
+                    continue;
+
+                if (line.StartsWith("[", StringComparison.Ordinal) && line.EndsWith("]", StringComparison.Ordinal))
+                {
+                    string sectionName = line[1..^1].Trim();
+                    currentValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    sections.Add((sectionName, currentValues));
+                    continue;
+                }
+
+                if (currentValues == null)
+                    continue;
+
+                int equalsIndex = line.IndexOf('=');
+                if (equalsIndex <= 0)
+                    continue;
+
+                string key = line[..equalsIndex].Trim();
+                string value = line[(equalsIndex + 1)..].Trim();
+                currentValues[key] = value;
+            }
+
+            return sections;
         }
 
         // IObserver implementation

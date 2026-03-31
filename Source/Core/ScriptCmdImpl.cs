@@ -2674,50 +2674,62 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdSwitchBot(object script, CmdParam[] parameters)
         {
-            // CMD: switchbot [script] [bot]
-            // Switch to a different bot configuration and start the bot script
+            // CMD: switchbot [selector] [botName]
+            // Switch to the requested bot, or cycle to the next configured bot when no
+            // selector is provided. The optional second argument sets the active bot name.
             if (script is Script scriptObj)
             {
-                string scriptFile = parameters.Length > 0 ? parameters[0].Value : string.Empty;
+                string selector = parameters.Length > 0 ? parameters[0].Value : string.Empty;
                 string botName = parameters.Length > 1 ? parameters[1].Value : string.Empty;
-                
-                if (string.IsNullOrEmpty(botName))
-                {
-                    Console.WriteLine("[SWITCHBOT] Error: Bot name required");
-                    return CmdAction.None;
-                }
-
-                // Call the ModInterpreter's SwitchBot method
-                // Third parameter: true means stop currently running bot scripts
-                scriptObj.Controller.SwitchBot(scriptFile, botName, stopBotScripts: true);
+                scriptObj.Controller.SwitchBot(selector, botName, stopBotScripts: false);
             }
             return CmdAction.None;
         }
 
         private static CmdAction CmdGetBotList(object script, CmdParam[] parameters)
         {
-            // CMD: getbotlist var
-            // Get list of available bot configurations
             var server = GlobalModules.TWXServer;
+            var interpreter = GlobalModules.TWXInterpreter;
+            var results = new System.Collections.Generic.List<string>();
+
             if (server != null)
             {
-                var botList = server.GetBotList();
-                
-                if (parameters[0] is VarParam varParam)
+                foreach (string botName in server.GetBotList())
                 {
-                    varParam.SetArrayFromStrings(botList);
-                    Console.WriteLine($"[GETBOTLIST] Retrieved {botList.Count} bot(s): {string.Join(", ", botList)}");
+                    BotConfig? botConfig = server.GetBotConfig(botName);
+                    if (botConfig == null)
+                        continue;
+
+                    string alias = string.IsNullOrWhiteSpace(botConfig.Alias) ? botConfig.Name : botConfig.Alias;
+                    string botDisplayName = "~f{~c~f}";
+                    string activeName = interpreter is ModInterpreter modInterpreter
+                        ? modInterpreter.GetConfiguredBotName(botConfig)
+                        : string.Empty;
+
+                    if (!string.IsNullOrWhiteSpace(activeName) && activeName != "0")
+                        botDisplayName = $"~f{{~c{activeName}~f}}";
+
+                    bool isActive = interpreter is ModInterpreter mi &&
+                        (mi.ActiveBot.Equals(botConfig.Name, StringComparison.OrdinalIgnoreCase) ||
+                         (!string.IsNullOrWhiteSpace(botConfig.ScriptFile) &&
+                          mi.ActiveBotScript.Contains(botConfig.ScriptFile, StringComparison.OrdinalIgnoreCase)));
+
+                    string line = string.Format(
+                        CultureInfo.InvariantCulture,
+                        isActive ? "{0,-14} ~G{1,-6} ~F{2} ~B<ACTIVE>" : "{0,-14} ~G{1,-6} ~F{2}",
+                        botDisplayName,
+                        alias,
+                        botConfig.Name);
+                    results.Add(line);
                 }
             }
-            else
+
+            if (parameters[0] is VarParam varParam)
             {
-                // No server - return empty list
-                if (parameters[0] is VarParam varParam)
-                {
-                    varParam.SetArrayFromStrings(new System.Collections.Generic.List<string>());
-                    Console.WriteLine("[GETBOTLIST] Server not available, returning empty list");
-                }
+                varParam.SetArrayFromStrings(results);
+                parameters[0].Value = results.Count.ToString(CultureInfo.InvariantCulture);
             }
+
             return CmdAction.None;
         }
 

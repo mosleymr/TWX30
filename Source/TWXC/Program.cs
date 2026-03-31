@@ -64,12 +64,15 @@ namespace TWXC
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
                 Console.WriteLine("Usage: TWXC script [descfile]");
+                Console.WriteLine("   or: TWXC --precompile script [outfile]");
                 Console.WriteLine();
                 Console.WriteLine("script     - Filename of the script to be compiled, this is usually a .ts file.");
                 Console.WriteLine("[descfile] - Optional filename of a description text file to be included in the");
                 Console.WriteLine("             compilation.");
                 Console.WriteLine("             Description files have no effect on the operation of the script,");
                 Console.WriteLine("             but may provide useful information to users.");
+                Console.WriteLine("[outfile]  - Optional output filename for --precompile. Defaults to .inc.");
+                Console.WriteLine("--precompile - Produce a Pascal-compatible encrypted .inc include file.");
                 Console.WriteLine();
                 Console.WriteLine("If the target .cts file already exists and compilation succeeds,");
                 Console.WriteLine("TWXC archives the previous file to .cts_1, .cts_2, etc. and writes");
@@ -78,17 +81,67 @@ namespace TWXC
                 return;
             }
 
+            bool precompileMode = false;
+            var positionalArgs = new System.Collections.Generic.List<string>();
+            foreach (string arg in args)
+            {
+                if (string.Equals(arg, "--precompile", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--encrypt-include", StringComparison.OrdinalIgnoreCase))
+                {
+                    precompileMode = true;
+                    continue;
+                }
+
+                positionalArgs.Add(arg);
+            }
+
+            if (precompileMode)
+            {
+                if (positionalArgs.Count < 1 || positionalArgs.Count > 2)
+                {
+                    Console.WriteLine("Usage: TWXC --precompile script [outfile]");
+                    return;
+                }
+
+                string inputFile = positionalArgs[0];
+                string outputFile = positionalArgs.Count > 1
+                    ? positionalArgs[1]
+                    : StripFileExtension(inputFile) + ".inc";
+
+                Console.WriteLine($"Precompiling and encrypting '{inputFile}' ...");
+
+                try
+                {
+                    LegacyScriptEncryption.WriteEncryptedIncludeFile(inputFile, outputFile);
+                    Console.WriteLine("Precompilation and encryption successful.");
+                    Console.WriteLine();
+                    Console.WriteLine($"Output file: {outputFile}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
+                }
+
+                return;
+            }
+
+            if (positionalArgs.Count < 1 || positionalArgs.Count > 2)
+            {
+                Console.WriteLine("Usage: TWXC script [descfile]");
+                return;
+            }
+
             var scriptRef = new ScriptRef();
             var scriptCmp = new ScriptCmp(scriptRef);
             bool compileOk = false;
-            string fileOut = StripFileExtension(args[0]);
+            string fileOut = StripFileExtension(positionalArgs[0]);
             
             Console.WriteLine($"Compiling script '{fileOut}' ...");
 
             try
             {
-                string descFile = args.Length > 1 ? args[1] : string.Empty;
-                scriptCmp.CompileFromFile(args[0], descFile);
+                string descFile = positionalArgs.Count > 1 ? positionalArgs[1] : string.Empty;
+                scriptCmp.CompileFromFile(positionalArgs[0], descFile);
                 compileOk = true;
             }
             catch (Exception ex)
