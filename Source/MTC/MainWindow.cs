@@ -36,6 +36,7 @@ public class MainWindow : Window
     private AppPreferences  _appPrefs = new();
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
+    private Core.ExpansionModuleHost?      _moduleHost;
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
     private readonly Core.ModLog           _sessionLog = new();
@@ -215,6 +216,8 @@ public class MainWindow : Window
             _refreshTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
+            if (_moduleHost != null)
+                _ = _moduleHost.DisposeAsync().AsTask();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
         };
@@ -1481,6 +1484,26 @@ public class MainWindow : Window
         _gameInstance = gi;
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
         OnNativeHaggleChanged(gi.NativeHaggleEnabled);
+        AppPaths.EnsureDirectories();
+        AppPaths.EnsureSharedModulesDir();
+        _moduleHost = await Core.ExpansionModuleHost.CreateAsync(new Core.ExpansionModuleHostOptions
+        {
+            HostTargets = Core.ExpansionHostTargets.Mtc,
+            HostName = "MTC",
+            GameName = gameName,
+            ProgramDir = programDir,
+            ScriptDirectory = effectiveScriptDir,
+            ModuleDataRootDirectory = AppPaths.ModuleDataDir,
+            ModuleDirectories = new[]
+            {
+                AppPaths.ModulesDir,
+                AppPaths.SharedModulesDir,
+                Path.Combine(programDir, "modules"),
+            },
+            GameInstance = gi,
+            Interpreter = interpreter,
+            Database = _sessionDb,
+        });
 
         // The proxy is now running. Scripts can execute and communicate with the user
         // before any server connection is made. The server connection is triggered by
@@ -1500,10 +1523,14 @@ public class MainWindow : Window
 
         var gi = _gameInstance;
         _gameInstance = null;
+        var moduleHost = _moduleHost;
+        _moduleHost = null;
         if (gi != null)
             gi.NativeHaggleChanged -= OnNativeHaggleChanged;
         if (gi != null)
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
+        if (moduleHost != null)
+            await moduleHost.DisposeAsync();
 
         Core.ScriptRef.SetActiveGameInstance(null);
         Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game

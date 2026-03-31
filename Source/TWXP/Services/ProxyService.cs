@@ -447,6 +447,25 @@ public class ProxyService : IProxyService
             TWXProxy.Core.ScriptRef.SetActiveGameInstance(gameInstance);
             Console.WriteLine($"[ProxyService] Set active game instance for {config.Name}");
 
+            proxyInstance.ModuleHost = await ExpansionModuleHost.CreateAsync(new ExpansionModuleHostOptions
+            {
+                HostTargets = ExpansionHostTargets.Twxp,
+                HostName = "TWXP",
+                GameName = config.Name,
+                ProgramDir = programDir,
+                ScriptDirectory = scriptDirectory,
+                ModuleDataRootDirectory = AppPaths.ModuleDataDir,
+                ModuleDirectories = new[]
+                {
+                    AppPaths.ModulesDir,
+                    AppPaths.SharedModulesDir,
+                    Path.Combine(programDir, "modules"),
+                },
+                GameInstance = gameInstance,
+                Interpreter = interpreter,
+                Database = sessionDb,
+            });
+
             // Add to running games collection
             _runningGames[config.Id] = proxyInstance;
             
@@ -480,6 +499,8 @@ public class ProxyService : IProxyService
             
             // Stop the game instance (stops listening, closes connections)
             await instance.GameInstance.StopAsync();
+            if (instance.ModuleHost != null)
+                await instance.ModuleHost.DisposeAsync();
             instance.GameInstance.Dispose();
             
             _runningGames.Remove(gameId);
@@ -761,6 +782,7 @@ public class ProxyService : IProxyService
         public required TWXProxy.Core.GameInstance GameInstance { get; init; }
         public required TWXProxy.Core.ModInterpreter Interpreter { get; init; }
         public required TWXProxy.Core.ModDatabase Database { get; init; }
+        public ExpansionModuleHost? ModuleHost { get; set; }
         public GameStatus Status { get; set; }
         public string InputBuffer { get; set; } = string.Empty;
         public required System.Text.StringBuilder ServerLineBuffer { get; init; }

@@ -34,47 +34,82 @@ namespace TWXProxy.Core
     /// </summary>
     public class GameInstance : IDisposable, ITWXServer
     {
+        private sealed class ClientSession
+        {
+            public TcpClient? TcpClient { get; init; }
+            public Stream WriteStream { get; init; } = Stream.Null;
+            public Stream ReadStream { get; init; } = Stream.Null;
+            public bool IsDirect { get; init; }
+            public string RemoteAddress { get; set; } = string.Empty;
+            public ClientType Type { get; set; } = ClientType.Standard;
+            public bool EchoMarks { get; set; }
+            public MenuHandler MenuHandler { get; init; } = null!;
+            public Task? ReadTask { get; set; }
+            public bool IsConnected => IsDirect ? WriteStream != Stream.Null : (TcpClient?.Connected ?? false);
+        }
+
+        private sealed class ClientContextScope : IDisposable
+        {
+            private readonly AsyncLocal<int?> _slot;
+            private readonly int? _previous;
+
+            public ClientContextScope(AsyncLocal<int?> slot, int? next)
+            {
+                _slot = slot;
+                _previous = slot.Value;
+                _slot.Value = next;
+            }
+
+            public void Dispose()
+            {
+                _slot.Value = _previous;
+            }
+        }
+
         private readonly string _gameName;
         private readonly string _serverAddress;
         private readonly int _serverPort;
         private readonly int _listenPort;
+        private readonly string _scriptDirectory;
         private char _commandChar;
         private readonly ModInterpreter? _interpreter;
         private readonly List<(string Search, string Replace)> _systemQuickTexts = new();
         private readonly List<(string Search, string Replace)> _userQuickTexts = new();
         private readonly Dictionary<string, BotConfig> _botConfigs = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<BotConfig> _botOrder = new();
+        private readonly List<ClientSession> _clients = new();
+        private readonly object _clientLock = new();
+        private readonly AsyncLocal<int?> _preferredClientIndex = new();
         
         // ITWXServer / IModServer properties
+        public bool StreamEnabled { get; set; }
         public bool AllowLerkers { get; set; } = true;
+        public string LerkerAddress { get; set; } = string.Empty;
         public bool AcceptExternal { get; set; } = true;
         public string ExternalAddress { get; set; } = string.Empty;
         public bool BroadCastMsgs { get; set; } = true;
         public bool LocalEcho { get; set; } = true;
-        public int ClientCount => 1; // Single client for now
+        public int ClientCount
+        {
+            get
+            {
+                lock (_clientLock)
+                    return _clients.Count;
+            }
+        }
         public string ActiveBotName { get; set; } = string.Empty;
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
-        private TcpClient? _localClient;
-        
         private NetworkStream? _serverStream;
-        private Stream? _localStream;      // write-to-terminal (or full-duplex NetworkStream in TCP mode)
-        private Stream? _localReadStream;  // non-null only in direct (embedded) mode — separate read stream
-        private bool _directMode;          // true when ConnectDirectClient() was used instead of a TCP listener
         
         private CancellationTokenSource? _cancellationSource;
         private Task? _serverReadTask;
-        private Task? _localReadTask;
         private Task? _acceptTask;
         
         private bool _isRunning;
-
-        // True when there is a live "local client" — whether TCP or in-process pipe.
-        private bool LocalIsConnected => _directMode ? (_localStream != null) : (_localClient?.Connected == true);
-        private bool _inCommandMode;
         private readonly object _stateLock = new();
-        private readonly MenuHandler _menuHandler;
+        private readonly MenuHandler _directMenuHandler;
         private readonly NativeHaggleEngine _nativeHaggle = new();
         private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
         private readonly ModLog _log = new();
@@ -130,7 +165,14 @@ namespace TWXProxy.Core
         public bool IsRunning => _isRunning;
         public bool IsConnected => _serverClient?.Connected ?? false;
         public char CommandChar => _commandChar;
-        public bool IsProxyMenuActive => _menuHandler.IsActive;
+        public bool IsProxyMenuActive
+        {
+            get
+            {
+                lock (_clientLock)
+                    return _clients.Any(client => client.MenuHandler.IsActive);
+            }
+        }
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
         public ModLog Logger => _log;
         public ProxyHistoryBuffer History { get; } = new();
@@ -151,6 +193,7 @@ namespace TWXProxy.Core
             _serverAddress = serverAddress;
             _serverPort = serverPort;
             _interpreter = interpreter;
+            _scriptDirectory = scriptDirectory ?? Path.Combine(AppContext.BaseDirectory, "scripts");
             
             // Register this instance as the global TWXServer for script access
             if (_interpreter != null)
@@ -161,7 +204,7 @@ namespace TWXProxy.Core
             }
             _listenPort = listenPort;
             _commandChar = commandChar;
-            _menuHandler = new MenuHandler(this, interpreter, scriptDirectory);
+            _directMenuHandler = new MenuHandler(this, interpreter, _scriptDirectory, () => 0);
             _nativeHaggle.SetEnabled(true);
             _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
             _log.ProgramDir = GlobalModules.ProgramDir;
@@ -177,6 +220,193 @@ namespace TWXProxy.Core
                 : GlobalModules.ProgramDir;
             foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
                 RegisterBotConfig(bot);
+        }
+
+        public IDisposable PushClientContext(int clientIndex)
+        {
+            return new ClientContextScope(_preferredClientIndex, clientIndex >= 0 ? clientIndex : null);
+        }
+
+        public string GetClientAddress(int index)
+        {
+            ClientSession? client = GetClientSession(index);
+            return client?.RemoteAddress ?? string.Empty;
+        }
+
+        public void NotifyScriptLoad()
+        {
+            _ = SendEchoMarkAsync(2);
+        }
+
+        public void NotifyScriptStop()
+        {
+            _ = SendEchoMarkAsync(3);
+            if (_interpreter != null && _interpreter.Count == 0)
+            {
+                lock (_clientLock)
+                {
+                    foreach (ClientSession client in _clients)
+                    {
+                        if (client.Type != ClientType.Rejected)
+                            client.Type = ClientType.Standard;
+                    }
+                }
+            }
+        }
+
+        private async Task SendEchoMarkAsync(byte mark)
+        {
+            List<ClientSession> targets;
+            lock (_clientLock)
+                targets = _clients.Where(client => client.EchoMarks).ToList();
+
+            byte[] payload = new byte[] { 255, mark };
+            foreach (ClientSession client in targets)
+            {
+                try
+                {
+                    await client.WriteStream.WriteAsync(payload, 0, payload.Length);
+                    await client.WriteStream.FlushAsync();
+                }
+                catch
+                {
+                    // Ignore stale clients here; disconnect cleanup will remove them.
+                }
+            }
+        }
+
+        private ClientSession? GetClientSession(int index)
+        {
+            lock (_clientLock)
+            {
+                if (index < 0 || index >= _clients.Count)
+                    return null;
+                return _clients[index];
+            }
+        }
+
+        private int GetClientIndex(ClientSession session)
+        {
+            lock (_clientLock)
+                return _clients.IndexOf(session);
+        }
+
+        private IReadOnlyList<ClientSession> GetClientSnapshot()
+        {
+            lock (_clientLock)
+                return _clients.ToList();
+        }
+
+        private void AddClientSession(ClientSession session)
+        {
+            lock (_clientLock)
+                _clients.Add(session);
+        }
+
+        private void RemoveClientSession(ClientSession session)
+        {
+            lock (_clientLock)
+                _clients.Remove(session);
+        }
+
+        private static bool IsPrivateClientAddress(string remoteAddress)
+        {
+            if (string.IsNullOrWhiteSpace(remoteAddress))
+                return false;
+
+            if (remoteAddress.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                remoteAddress.Equals("::1", StringComparison.OrdinalIgnoreCase) ||
+                remoteAddress.StartsWith("192.168.", StringComparison.OrdinalIgnoreCase) ||
+                remoteAddress.StartsWith("10.", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (remoteAddress.StartsWith("172.", StringComparison.OrdinalIgnoreCase))
+            {
+                string[] parts = remoteAddress.Split('.');
+                if (parts.Length > 1 && int.TryParse(parts[1], out int octet))
+                    return octet is >= 16 and <= 31;
+            }
+
+            return false;
+        }
+
+        private static bool AddressMatchesList(string remoteAddress, string addressList)
+        {
+            if (string.IsNullOrWhiteSpace(remoteAddress) || string.IsNullOrWhiteSpace(addressList))
+                return false;
+
+            string[] parts = addressList
+                .Split(new[] { ' ', ',', ';', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string part in parts)
+            {
+                if (part == "*" || part == "*.*.*.*")
+                    return true;
+
+                string prefix = part.Replace(".*", string.Empty, StringComparison.OrdinalIgnoreCase);
+                if (remoteAddress.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool ShouldAcceptClient(string remoteAddress, out bool localClient, out bool lerker)
+        {
+            localClient = IsPrivateClientAddress(remoteAddress) || AddressMatchesList(remoteAddress, ExternalAddress);
+            lerker = AddressMatchesList(remoteAddress, LerkerAddress);
+
+            return remoteAddress.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                   remoteAddress.Equals("::1", StringComparison.OrdinalIgnoreCase) ||
+                   (AcceptExternal && localClient) ||
+                   (AllowLerkers && lerker);
+        }
+
+        private ClientType DetermineClientType(string remoteAddress, bool localClient)
+        {
+            if ((localClient && AcceptExternal) ||
+                remoteAddress.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+                remoteAddress.Equals("::1", StringComparison.OrdinalIgnoreCase))
+            {
+                return ClientType.Standard;
+            }
+
+            return StreamEnabled ? ClientType.Stream : ClientType.Mute;
+        }
+
+        private static string DescribeClientType(ClientType type) => type switch
+        {
+            ClientType.Standard => "STANDARD",
+            ClientType.Mute => "VIEW ONLY",
+            ClientType.Deaf => "DEAF",
+            ClientType.Stream => "STREAMING",
+            ClientType.Rejected => "REJECTED",
+            _ => type.ToString().ToUpperInvariant()
+        };
+
+        private static byte[] ApplyStreamMask(byte[] data)
+        {
+            byte[] masked = new byte[data.Length];
+            Array.Copy(data, masked, data.Length);
+
+            bool inAnsi = false;
+            for (int i = 0; i < masked.Length; i++)
+            {
+                byte b = masked[i];
+                if (b == 27)
+                {
+                    inAnsi = true;
+                    continue;
+                }
+
+                if (!inAnsi && b >= (byte)'0' && b <= (byte)'9')
+                    masked[i] = (byte)'1';
+
+                if ((b >= (byte)'A' && b <= (byte)'Z') || (b >= (byte)'a' && b <= (byte)'z'))
+                    inAnsi = false;
+            }
+
+            return masked;
         }
 
         /// <summary>
@@ -238,8 +468,8 @@ namespace TWXProxy.Core
                 // Wait for tasks to complete
                 var tasks = new List<Task>();
                 if (_serverReadTask != null) tasks.Add(_serverReadTask);
-                if (_localReadTask != null) tasks.Add(_localReadTask);
                 if (_acceptTask != null) tasks.Add(_acceptTask);
+                tasks.AddRange(GetClientSnapshot().Select(client => client.ReadTask).Where(task => task != null)!);
 
                 await Task.WhenAll(tasks.Where(t => t != null));
             }
@@ -275,15 +505,22 @@ namespace TWXProxy.Core
         /// </summary>
         public void ConnectDirectClient(Stream toTerminal, Stream fromTerminal)
         {
-            _localStream     = toTerminal;
-            _localReadStream = fromTerminal;
-            _directMode      = true;
-
             _cancellationSource ??= new CancellationTokenSource();
             lock (_stateLock) { _isRunning = true; }
 
             var token = _cancellationSource.Token;
-            _localReadTask = Task.Run(() => ReadFromLocalAsync(token), token);
+            var session = new ClientSession
+            {
+                IsDirect = true,
+                RemoteAddress = "127.0.0.1",
+                Type = ClientType.Standard,
+                WriteStream = toTerminal,
+                ReadStream = fromTerminal,
+                MenuHandler = _directMenuHandler,
+            };
+
+            AddClientSession(session);
+            session.ReadTask = Task.Run(() => ReadFromClientAsync(session, token), token);
         }
 
         /// <summary>
@@ -421,27 +658,61 @@ namespace TWXProxy.Core
                 while (!token.IsCancellationRequested && _localListener != null)
                 {
                     var client = await _localListener.AcceptTcpClientAsync(token);
-                    
-                    // If we already have a local client, close the old one
-                    if (_localClient != null)
+                    client.NoDelay = true;
+
+                    string remoteAddress = ((IPEndPoint?)client.Client.RemoteEndPoint)?.Address.ToString() ?? "unknown";
+                    bool allowed = ShouldAcceptClient(remoteAddress, out bool localClient, out _);
+                    NetworkStream stream = client.GetStream();
+
+                    if (!allowed)
                     {
-                        Log($"[{_gameName}] Replacing existing local connection");
-                        _localClient.Close();
+                        byte[] reject = Encoding.ASCII.GetBytes($"\r\nExternal connections are disabled. Goodbye {remoteAddress}!\r\n");
+                        await stream.WriteAsync(reject, 0, reject.Length, token);
+                        await stream.FlushAsync(token);
+                        client.Close();
+
+                        if (BroadCastMsgs)
+                            await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nRemote connection rejected from: {remoteAddress}\r\n"), broadcastDeaf: true, token: token);
+                        continue;
                     }
 
-                    _localClient = client;
-                    _localClient.NoDelay = true; // Disable Nagle algorithm for immediate transmission
-                    _localStream = client.GetStream();
-                    Log($"[{_gameName}] Local client connected");
+                    ClientSession? session = null;
+                    session = new ClientSession
+                    {
+                        TcpClient = client,
+                        WriteStream = stream,
+                        ReadStream = stream,
+                        RemoteAddress = remoteAddress,
+                        Type = DetermineClientType(remoteAddress, localClient),
+                        MenuHandler = new MenuHandler(this, _interpreter, _scriptDirectory, () => GetClientIndex(session!))
+                    };
 
-                    // Send telnet WILL ECHO to tell client not to echo locally
-                    // IAC (255) WILL (251) ECHO (1)
-                    await _localStream.WriteAsync(new byte[] { 255, 251, 1 }, 0, 3, token);
-                    await _localStream.FlushAsync(token);
-                    Log($"[{_gameName}] Sent telnet WILL ECHO to client");
+                    AddClientSession(session);
+                    Log($"[{_gameName}] Client connected from {remoteAddress} as {DescribeClientType(session.Type)}");
 
-                    // Start reading from local client
-                    _localReadTask = Task.Run(async () => await ReadFromLocalAsync(token), token);
+                    await stream.WriteAsync(new byte[] { 255, 251, 1 }, 0, 3, token);
+                    await stream.FlushAsync(token);
+
+                    string banner = $"\r\nTWX Proxy Server v{Constants.ProgramVersion}{Constants.ReleaseNumber} ({Constants.ReleaseVersion})\r\n";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(banner), token);
+
+                    if (session.Type == ClientType.Mute || session.Type == ClientType.Stream)
+                    {
+                        string viewOnly = "\r\nYou are locked in view only mode\r\n\r\n";
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes(viewOnly), token);
+                    }
+                    else
+                    {
+                        string prompt = $"\r\nPress {_commandChar} to activate terminal menu\r\n\r\n";
+                        await stream.WriteAsync(Encoding.ASCII.GetBytes(prompt), token);
+                    }
+                    await stream.FlushAsync(token);
+
+                    if (BroadCastMsgs)
+                        await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nActive connection detected from: {remoteAddress}\r\n"), broadcastDeaf: true, token: token);
+
+                    _interpreter?.ProgramEvent("Client connected", string.Empty, false);
+                    session.ReadTask = Task.Run(() => ReadFromClientAsync(session, token), token);
                 }
             }
             catch (OperationCanceledException)
@@ -471,22 +742,16 @@ namespace TWXProxy.Core
                         if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
                             break;
                         
-                        // Notify local client if connected
-                        if (_localStream != null && LocalIsConnected)
+                        try
                         {
-                            try
-                            {
-                                string disconnectText = _autoReconnect && !token.IsCancellationRequested
-                                    ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
-                                    : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
-                                var message = Encoding.ASCII.GetBytes(disconnectText);
-                                await _localStream.WriteAsync(message, 0, message.Length, token);
-                                await _localStream.FlushAsync(token);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log($"[{_gameName}] Could not send disconnect message to client: {ex.Message}");
-                            }
+                            string disconnectText = _autoReconnect && !token.IsCancellationRequested
+                                ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
+                                : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
+                            await SendToLocalAsync(Encoding.ASCII.GetBytes(disconnectText), broadcastDeaf: true, token: token);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[{_gameName}] Could not send disconnect message to clients: {ex.Message}");
                         }
                         
                         // Clean up server connection
@@ -560,20 +825,14 @@ namespace TWXProxy.Core
                         _log.RecordServerData(cleanData);
                     }
 
-                    // Pass through cleaned data to local client
-                    if (cleanData.Length > 0 && _localStream != null && LocalIsConnected)
-                    {
-                        await _localStream.WriteAsync(cleanData, 0, cleanData.Length, token);
-                        await _localStream.FlushAsync(token);
-                        LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local client");
-                    }
-                    else if (cleanData.Length == 0)
+                    if (cleanData.Length == 0)
                     {
                         Log($"[{_gameName}] -> Only telnet negotiation, nothing to forward");
                     }
                     else
                     {
-                        Log($"[{_gameName}] -> No local client connected, data discarded");
+                        await SendToLocalAsync(cleanData, token: token);
+                        LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
                 }
             }
@@ -601,21 +860,16 @@ namespace TWXProxy.Core
                     _clientBufferDuringNegotiation.Clear();
                 }
                 
-                if (_localStream != null && LocalIsConnected)
+                try
                 {
-                    try
-                    {
-                        string disconnectText = _autoReconnect && !token.IsCancellationRequested
-                            ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
-                            : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
-                        var message = Encoding.ASCII.GetBytes(disconnectText);
-                        await _localStream.WriteAsync(message, 0, message.Length, token);
-                        await _localStream.FlushAsync(token);
-                    }
-                    catch (Exception sendEx)
-                    {
-                        Log($"[{_gameName}] Could not send disconnect message to client: {sendEx.Message}");
-                    }
+                    string disconnectText = _autoReconnect && !token.IsCancellationRequested
+                        ? $"\r\n[twxp] Server disconnected.  Proxy auto-reconnecting...\r\n"
+                        : $"\r\n[twxp] Server disconnected.  Type {_commandChar}c to reconnect.\r\n";
+                    await SendToLocalAsync(Encoding.ASCII.GetBytes(disconnectText), broadcastDeaf: true, token: token);
+                }
+                catch (Exception sendEx)
+                {
+                    Log($"[{_gameName}] Could not send disconnect message to clients: {sendEx.Message}");
                 }
 
                 Disconnected?.Invoke(this, new DisconnectEventArgs(ex.Message));
@@ -669,178 +923,122 @@ namespace TWXProxy.Core
             }
         }
 
-        private async Task ReadFromLocalAsync(CancellationToken token)
+        private async Task ReadFromClientAsync(ClientSession session, CancellationToken token)
         {
             var buffer = new byte[8192];
             var commandBuffer = new StringBuilder();
+            bool inCommandMode = false;
 
             try
             {
-                // In direct mode _localReadStream is the read half; in TCP mode _localStream is full-duplex.
-                var readStream = _localReadStream ?? _localStream;
-
-                while (!token.IsCancellationRequested && readStream != null)
+                while (!token.IsCancellationRequested && session.IsConnected)
                 {
-                    int bytesRead = await readStream.ReadAsync(buffer, 0, buffer.Length, token);
-                    
+                    int bytesRead = await session.ReadStream.ReadAsync(buffer, 0, buffer.Length, token);
                     if (bytesRead == 0)
-                    {
-                        Log($"[{_gameName}] Local client disconnected");
-                        _localClient?.Close();
-                        _localClient = null;
-                        _localStream = null;
-                        _localReadStream = null;
                         break;
-                    }
 
-                    // Process each byte immediately for instant response
                     for (int i = 0; i < bytesRead; i++)
                     {
                         _log.NotifyUserInput();
 
                         byte b = buffer[i];
                         char c = (char)b;
-                        
+
+                        if (session.Type is ClientType.Mute or ClientType.Stream)
+                            continue;
+
                         if (c == _commandChar)
                         {
-                            // $ while in the proxy menu immediately exits the proxy menu.
-                            if (_menuHandler.IsActive)
+                            if (session.MenuHandler.IsActive)
                             {
-                                await _menuHandler.ExitMenuAsync();
+                                await session.MenuHandler.ExitMenuAsync();
                             }
-                            else if (_inCommandMode)
+                            else if (inCommandMode)
                             {
-                                // End command mode - execute command
-                                var command = commandBuffer.ToString();
+                                string command = commandBuffer.ToString();
                                 commandBuffer.Clear();
-                                _inCommandMode = false;
+                                inCommandMode = false;
 
-                                Log($"[{_gameName}] Command: {command}");
+                                Log($"[{_gameName}] Command from {session.RemoteAddress}: {command}");
+                                using var _ = PushClientContext(GetClientIndex(session));
                                 await HandleCommandAsync(command);
                             }
                             else
                             {
-                                // Enter menu mode with main menu
-                                _inCommandMode = false;
-                                await _menuHandler.HandleMenuCommandAsync(c);
+                                inCommandMode = false;
+                                await session.MenuHandler.HandleMenuCommandAsync(c);
                             }
                         }
-                        else if (_inCommandMode)
+                        else if (inCommandMode)
                         {
-                            // Old-style $COMMAND$ syntax - accumulate
                             commandBuffer.Append(c);
                         }
                         else
                         {
-                            // Check if script is waiting for input FIRST (GETINPUT takes priority over menus)
                             bool scriptWaitingForInput = _interpreter?.IsAnyScriptWaitingForInput() ?? false;
                             bool handledByScriptMenu = false;
-                            
-                            // [LocalChar] logging removed — too high-frequency for the debug log.
-                            
-                            if (!scriptWaitingForInput)
-                            {
-                                // Check if a script menu is open (only if GETINPUT not active)
-                                if (GlobalModules.TWXMenu is MenuManager menuMgr && menuMgr.IsMenuOpen())
-                                {
-                                    handledByScriptMenu = menuMgr.HandleMenuInput(c);
-                                }
-                            }
-                            
+
+                            if (!scriptWaitingForInput && GlobalModules.TWXMenu is MenuManager menuMgr && menuMgr.IsMenuOpen())
+                                handledByScriptMenu = menuMgr.HandleMenuInput(c);
+
                             if (!handledByScriptMenu)
                             {
-                                // Try input collection (it handles skipping \n after \r even when InputMode is None)
-                                bool handled = await _menuHandler.HandleInputCharAsync(c);
-                                
-                                if (!handled && _menuHandler.CurrentMenu != MenuState.None && !scriptWaitingForInput)
+                                bool handled = await session.MenuHandler.HandleInputCharAsync(c);
+
+                                if (!handled && session.MenuHandler.CurrentMenu != MenuState.None && !scriptWaitingForInput)
                                 {
-                                    // In menu mode - single character commands.
-                                    // Skip when a script is waiting for input: those chars belong
-                                    // to the script (getinput / getconsoleinput), not the proxy menu.
-                                    await _menuHandler.HandleMenuCommandAsync(c);
+                                    await session.MenuHandler.HandleMenuCommandAsync(c);
                                 }
                                 else if (!handled)
                                 {
                                     bool keypressMode = scriptWaitingForInput && (_interpreter?.HasKeypressInputWaiting ?? false);
-
-                                    // Pascal ProcessOutBound equivalent: fire TextOutEvent BEFORE
-                                    // deciding whether to forward to the server.  If a TextOut
-                                    // trigger consumes the character (returns true) the character
-                                    // must NOT be sent to the game — the script is handling it
-                                    // (e.g. the bot's character-by-character command prompt).
-                                    // Only do this when no GETINPUT is active; in that case the
-                                    // char is raw input data destined for the waiting script.
                                     bool textOutConsumed = false;
                                     if (_interpreter != null && !scriptWaitingForInput)
                                         textOutConsumed = _interpreter.TextOutEvent(c.ToString(), null);
 
-                                    // Send to server only when no trigger consumed the char
-                                    // and no script is waiting for input.  When GETINPUT is
-                                    // active the char belongs to the script buffer, not the server.
                                     bool sendToServer = !textOutConsumed && !scriptWaitingForInput;
-
                                     if (sendToServer && _serverStream != null && _serverClient?.Connected == true)
                                     {
-                                        // Check if telnet negotiation is still in progress
                                         bool negotiationInProgress;
                                         lock (_negotiationLock)
-                                        {
                                             negotiationInProgress = !_telnetNegotiationComplete;
-                                        }
-                                        
+
                                         if (negotiationInProgress)
                                         {
-                                            // Buffer data during telnet negotiation
                                             lock (_negotiationLock)
-                                            {
                                                 _clientBufferDuringNegotiation.Add(b);
-                                            }
+
                                             if (i == 0)
-                                            {
                                                 Log($"[{_gameName}] Buffering client data during telnet negotiation");
-                                            }
                                         }
                                         else
                                         {
-                                            // Send immediately after negotiation complete
                                             await _serverStream.WriteAsync(new byte[] { b }, 0, 1, token);
                                             await _serverStream.FlushAsync(token);
                                         }
                                     }
                                     else if (scriptWaitingForInput && !keypressMode)
                                     {
-                                        // Full-line GETINPUT (blocking, non-keypress): echo chars locally
-                                        // so the user can see what they type before pressing Enter.
-                                        if (_localStream != null)
+                                        if (b == 8 || b == 127)
                                         {
-                                            if (b == 8 || b == 127) // Backspace or DEL
-                                            {
-                                                // Echo backspace sequence: BS + SPACE + BS
-                                                await _localStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
-                                                await _localStream.FlushAsync(token);
-                                            }
-                                            else if (b != 13 && b != 10) // Don't echo CR/LF yet
-                                            {
-                                                await _localStream.WriteAsync(new byte[] { b }, 0, 1, token);
-                                                await _localStream.FlushAsync(token);
-                                            }
-                                            else if (b == 13) // CR - echo newline
-                                            {
-                                                await _localStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
-                                                await _localStream.FlushAsync(token);
-                                            }
+                                            await session.WriteStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
+                                            await session.WriteStream.FlushAsync(token);
+                                        }
+                                        else if (b != 13 && b != 10)
+                                        {
+                                            await session.WriteStream.WriteAsync(new byte[] { b }, 0, 1, token);
+                                            await session.WriteStream.FlushAsync(token);
+                                        }
+                                        else if (b == 13)
+                                        {
+                                            await session.WriteStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
+                                            await session.WriteStream.FlushAsync(token);
                                         }
                                     }
-                                
-                                // Raise event for input buffering / keypress / line-assembly
-                                // (ProxyService subscriber handles those cases).
-                                // Do NOT raise if TextOut consumed the char — the TextOut trigger handler
-                                // may have set _waitingForInput (e.g. getConsoleInput SINGLEKEY), and
-                                // raising LocalDataReceived would incorrectly deliver the triggering
-                                // character as the waiting script's input.
-                                if (!textOutConsumed)
-                                    LocalDataReceived?.Invoke(this, new DataReceivedEventArgs(new byte[] { b }));
-                            }
+
+                                    if (!textOutConsumed)
+                                        LocalDataReceived?.Invoke(this, new DataReceivedEventArgs(new byte[] { b }));
+                                }
                             }
                         }
                     }
@@ -852,7 +1050,43 @@ namespace TWXProxy.Core
             }
             catch (Exception ex)
             {
-                Log($"[{_gameName}] Error reading from local: {ex.Message}");
+                Log($"[{_gameName}] Error reading from client {session.RemoteAddress}: {ex.Message}");
+            }
+            finally
+            {
+                bool wasRejected = session.Type == ClientType.Rejected;
+                RemoveClientSession(session);
+
+                try { session.WriteStream.Close(); } catch { }
+                if (!ReferenceEquals(session.ReadStream, session.WriteStream))
+                {
+                    try { session.ReadStream.Close(); } catch { }
+                }
+                try { session.TcpClient?.Close(); } catch { }
+
+                if (!wasRejected)
+                {
+                    IReadOnlyList<ClientSession> remaining = GetClientSnapshot();
+                    byte[] notice = Encoding.ASCII.GetBytes($"\r\nConnection lost from: {session.RemoteAddress}\r\n");
+                    foreach (ClientSession other in remaining)
+                    {
+                        if (ReferenceEquals(other, session))
+                            continue;
+                        try
+                        {
+                            await other.WriteStream.WriteAsync(notice, 0, notice.Length, token);
+                            await other.WriteStream.FlushAsync(token);
+                        }
+                        catch
+                        {
+                            // Ignore stale peers here.
+                        }
+                    }
+
+                    _interpreter?.ProgramEvent("Client disconnected", string.Empty, false);
+                }
+
+                Log($"[{_gameName}] Client disconnected: {session.RemoteAddress}");
             }
         }
 
@@ -1007,33 +1241,48 @@ namespace TWXProxy.Core
         /// <summary>
         /// Send data to the local client
         /// </summary>
-        public async Task SendToLocalAsync(byte[] data)
+        public async Task SendToLocalAsync(byte[] data, bool broadcastDeaf = false, CancellationToken token = default)
         {
-            if (_localStream != null && LocalIsConnected)
+            IReadOnlyList<ClientSession> clients = GetClientSnapshot();
+            foreach (ClientSession client in clients)
             {
-                await _localStream.WriteAsync(data, 0, data.Length);
-                await _localStream.FlushAsync();
+                if (client.Type == ClientType.Rejected)
+                    continue;
+                if (!broadcastDeaf && client.Type == ClientType.Deaf)
+                    continue;
+
+                byte[] payload = client.Type == ClientType.Stream ? ApplyStreamMask(data) : data;
+
+                try
+                {
+                    await client.WriteStream.WriteAsync(payload, 0, payload.Length, token);
+                    await client.WriteStream.FlushAsync(token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log($"[SendToLocalAsync] Failed sending to client {client.RemoteAddress}: {ex.Message}");
+                }
             }
-            else
-            {
-                Log($"[SendToLocalAsync] Cannot send - localStream null: {_localStream == null}, localIsConnected: {LocalIsConnected}");
-            }
+        }
+
+        public async Task SendToClientAsync(int clientIndex, byte[] data, CancellationToken token = default)
+        {
+            ClientSession? client = GetClientSession(clientIndex);
+            if (client == null || client.Type == ClientType.Rejected)
+                return;
+
+            byte[] payload = client.Type == ClientType.Stream ? ApplyStreamMask(data) : data;
+            await client.WriteStream.WriteAsync(payload, 0, payload.Length, token);
+            await client.WriteStream.FlushAsync(token);
         }
 
         private async Task SendPlaybackToLocalAsync(byte[] data, CancellationToken token)
         {
-            if (_localStream == null || !LocalIsConnected)
-                return;
-
-            try
-            {
-                await _localStream.WriteAsync(data, 0, data.Length, token);
-                await _localStream.FlushAsync(token);
-            }
-            catch (OperationCanceledException)
-            {
-                // Playback was cancelled.
-            }
+            await SendToLocalAsync(data, token: token);
         }
 
         /// <summary>
@@ -1043,7 +1292,10 @@ namespace TWXProxy.Core
         {
             message = ApplyQuickText(message);
             var data = Encoding.ASCII.GetBytes(message);
-            await SendToLocalAsync(data);
+            if (_preferredClientIndex.Value is int clientIndex)
+                await SendToClientAsync(clientIndex, data);
+            else
+                await SendToLocalAsync(data);
         }
 
         public string ApplyQuickText(string text)
@@ -1205,34 +1457,39 @@ namespace TWXProxy.Core
         {
             _log.CloseLog();
 
-            _localStream?.Close();
-            _localReadStream?.Close();
             _serverStream?.Close();
-            _localClient?.Close();
             _serverClient?.Close();
             _localListener?.Stop();
 
-            _localStream = null;
-            _localReadStream = null;
             _serverStream = null;
-            _localClient = null;
             _serverClient = null;
             _localListener = null;
-            _directMode = false;
+
+            IReadOnlyList<ClientSession> clients = GetClientSnapshot();
+            foreach (ClientSession client in clients)
+            {
+                try { client.WriteStream.Close(); } catch { }
+                if (!ReferenceEquals(client.ReadStream, client.WriteStream))
+                {
+                    try { client.ReadStream.Close(); } catch { }
+                }
+                try { client.TcpClient?.Close(); } catch { }
+            }
+
+            lock (_clientLock)
+                _clients.Clear();
         }
 
         #region ITWXServer Implementation
 
         public void Broadcast(string message)
         {
-            // Send message to client (currently single client)
-            SendMessageAsync(message).Wait();
+            SendToLocalAsync(Encoding.ASCII.GetBytes(ApplyQuickText(message))).Wait();
         }
 
         public void ClientMessage(string message)
         {
-            // Send message to client
-            SendMessageAsync(message).Wait();
+            SendToLocalAsync(Encoding.ASCII.GetBytes(ApplyQuickText(message))).Wait();
         }
 
         public void AddQuickText(string key, string value)
@@ -1257,12 +1514,14 @@ namespace TWXProxy.Core
 
         public ClientType GetClientType(int index)
         {
-            return ClientType.Standard; // Default for now
+            return GetClientSession(index)?.Type ?? ClientType.Standard;
         }
 
         public void SetClientType(int index, ClientType type)
         {
-            // Client type management not implemented yet
+            ClientSession? client = GetClientSession(index);
+            if (client != null)
+                client.Type = type;
         }
 
         public void RegisterBot(string botName, string scriptFile, string description = "")

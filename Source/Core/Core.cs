@@ -232,7 +232,10 @@ namespace TWXProxy.Core
     public enum ClientType
     {
         Standard = 0,
-        Deaf = 1
+        Deaf = 1,
+        Rejected = 2,
+        Mute = 3,
+        Stream = 4
     }
 
     /// <summary>

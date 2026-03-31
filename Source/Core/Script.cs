@@ -324,7 +324,8 @@ namespace TWXProxy.Core
             if (!error)
             {
                 ProgramEvent("SCRIPT LOADED", eventScriptName, true);
-                // TWXServer.NotifyScriptLoad();
+                if (GlobalModules.TWXServer is GameInstance gameServer)
+                    gameServer.NotifyScriptLoad();
 
                 // Add menu option for script
                 // TWXGUI.AddScriptMenu(script);
@@ -488,7 +489,8 @@ namespace TWXProxy.Core
             // Trigger program event
             ProgramEvent("SCRIPT STOPPED", scriptName, true);
 
-            // TWXServer.NotifyScriptStop();
+            if (GlobalModules.TWXServer is GameInstance gameServer)
+                gameServer.NotifyScriptStop();
         }
 
         public void StopByHandle(Script script)

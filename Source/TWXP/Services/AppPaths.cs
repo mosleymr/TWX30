@@ -70,6 +70,15 @@ public static class AppPaths
     /// <summary>Directory where per-game debug logs are stored.</summary>
     public static string LogsDir => Path.Combine(AppDataDir, "logs");
 
+    /// <summary>Directory where TWXP-only expansion modules can be placed.</summary>
+    public static string ModulesDir => Path.Combine(AppDataDir, "modules");
+
+    /// <summary>Directory where TWXP expansion modules can persist per-module state.</summary>
+    public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data");
+
+    /// <summary>Directory where shared expansion modules can be placed for both apps.</summary>
+    public static string SharedModulesDir => TWXProxy.Core.SharedPaths.ModulesDir;
+
     /// <summary>Returns the debug log path for a given game name.</summary>
     public static string DebugLogPathForGame(string gameName)
     {
@@ -86,6 +95,9 @@ public static class AppPaths
         Directory.CreateDirectory(DatabaseDir);
         Directory.CreateDirectory(LegacyDatabaseDir);
         Directory.CreateDirectory(LogsDir);
+        Directory.CreateDirectory(ModulesDir);
+        Directory.CreateDirectory(ModuleDataDir);
+        TWXProxy.Core.SharedPaths.EnsureModuleDir();
         // Do NOT auto-create DefaultScriptDir — it may be a shared system path
         // that already exists or requires admin rights to create.
     }

@@ -22,11 +22,20 @@ public static class AppPaths
     /// <summary>Directory where session/capture logs are stored.</summary>
     public static string LogDir => Path.Combine(AppDataDir, "logs");
 
+    /// <summary>Directory where MTC-only expansion modules can be placed.</summary>
+    public static string ModulesDir => Path.Combine(AppDataDir, "modules");
+
+    /// <summary>Directory where MTC expansion modules can persist per-module state.</summary>
+    public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data");
+
     /// <summary>
     /// Directory where embedded-proxy mode shares databases with the standalone proxy.
     /// On macOS this is ~/Library/twxproxy/databases.
     /// </summary>
     public static string TwxproxyDatabaseDir => Core.SharedPaths.DatabaseDir;
+
+    /// <summary>Directory where shared expansion modules can be placed for both MTC and TWXP.</summary>
+    public static string SharedModulesDir => Core.SharedPaths.ModulesDir;
 
     /// <summary>Returns the .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
@@ -45,11 +54,18 @@ public static class AppPaths
     {
         Directory.CreateDirectory(DatabaseDir);
         Directory.CreateDirectory(LogDir);
+        Directory.CreateDirectory(ModulesDir);
+        Directory.CreateDirectory(ModuleDataDir);
     }
 
     public static void EnsureTwxproxyDatabaseDir()
     {
         Core.SharedPaths.EnsureDatabaseDir();
+    }
+
+    public static void EnsureSharedModulesDir()
+    {
+        Core.SharedPaths.EnsureModuleDir();
     }
 
     /// <summary>

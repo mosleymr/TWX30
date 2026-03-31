@@ -91,21 +91,21 @@ namespace TWXProxy.Core
         private readonly GameInstance _gameInstance;
         private readonly ModInterpreter? _interpreter;
         private readonly string _scriptDirectory;
+        private readonly Func<int>? _currentClientIndexProvider;
         private MenuState _currentMenu = MenuState.None;
         private InputMode _inputMode = InputMode.None;
         private readonly StringBuilder _inputBuffer = new();
         private string _lastBurst = string.Empty;
         private string _lastScript = string.Empty;
-        private bool _streamingMode;
-        private bool _deafMode;
         private bool _skipNextLineFeed;
         private int _pendingNumber;
         private readonly List<string> _workflowArgs = new();
 
-        public MenuHandler(GameInstance gameInstance, ModInterpreter? interpreter = null, string? scriptDirectory = null)
+        public MenuHandler(GameInstance gameInstance, ModInterpreter? interpreter = null, string? scriptDirectory = null, Func<int>? currentClientIndexProvider = null)
         {
             _gameInstance = gameInstance;
             _interpreter = interpreter;
+            _currentClientIndexProvider = currentClientIndexProvider;
 
             string baseDir = AppContext.BaseDirectory;
             if (string.IsNullOrWhiteSpace(baseDir))
@@ -114,12 +114,15 @@ namespace TWXProxy.Core
             _scriptDirectory = scriptDirectory ?? Path.Combine(baseDir, "scripts");
         }
 
+        private int CurrentClientIndex => Math.Max(0, _currentClientIndexProvider?.Invoke() ?? 0);
+
         public MenuState CurrentMenu => _currentMenu;
         public InputMode CurrentInputMode => _inputMode;
         public bool IsActive => _currentMenu != MenuState.None || _inputMode != InputMode.None;
 
         public async Task ExitMenuAsync()
         {
+            using var _ = _gameInstance.PushClientContext(CurrentClientIndex);
             _currentMenu = MenuState.None;
             _inputMode = InputMode.None;
             _inputBuffer.Clear();
@@ -138,6 +141,7 @@ namespace TWXProxy.Core
 
         public async Task<bool> HandleMenuCommandAsync(char command)
         {
+            using var _ = _gameInstance.PushClientContext(CurrentClientIndex);
             if (command < 32 && command != '\r')
                 return true;
 
@@ -185,15 +189,24 @@ namespace TWXProxy.Core
                     await ShowAllClientsAsync();
                     return true;
                 case '/':
-                    _streamingMode = !_streamingMode;
-                    await _gameInstance.SendMessageAsync($"\r\nStreaming mode {(_streamingMode ? "enabled" : "disabled")}.\r\n");
+                {
+                    int clientIndex = CurrentClientIndex;
+                    _gameInstance.SetClientType(clientIndex, ClientType.Stream);
+                    await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is now in Streaming Mode.\r\n");
                     await ShowMenuPromptAsync();
                     return true;
+                }
                 case '=':
-                    _deafMode = !_deafMode;
-                    await _gameInstance.SendMessageAsync($"\r\nDeaf client {(_deafMode ? "enabled" : "disabled")}.\r\n");
+                {
+                    int clientIndex = CurrentClientIndex;
+                    ClientType nextType = _gameInstance.GetClientType(clientIndex) == ClientType.Standard
+                        ? ClientType.Deaf
+                        : ClientType.Standard;
+                    _gameInstance.SetClientType(clientIndex, nextType);
+                    await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is {(nextType == ClientType.Deaf ? "now deaf" : "no longer deaf")}.\r\n");
                     await ShowMenuPromptAsync();
                     return true;
+                }
                 case 'B':
                     await EnterInputModeAsync("\r\nEnter text to burst: ", InputMode.BurstInput);
                     return true;
@@ -723,7 +736,36 @@ namespace TWXProxy.Core
 
         private async Task ShowAllClientsAsync()
         {
-            await _gameInstance.SendMessageAsync($"\r\nConnected clients: 1 ({_gameInstance.GameName})\r\n");
+            var output = new StringBuilder();
+            output.Append("\r\n#   Address:        Type:\r\n\r\n");
+
+            int currentClient = CurrentClientIndex;
+            for (int i = 0; i < _gameInstance.ClientCount; i++)
+            {
+                string index = i.ToString();
+                string address = _gameInstance.GetClientAddress(i);
+                string type = _gameInstance.GetClientType(i) switch
+                {
+                    ClientType.Standard => "STANDARD",
+                    ClientType.Mute => "VIEW ONLY",
+                    ClientType.Deaf => "DEAF",
+                    ClientType.Stream => "STREAMING",
+                    ClientType.Rejected => "REJECTED",
+                    _ => "UNKNOWN"
+                };
+
+                output.Append(index);
+                output.Append(' ', Math.Max(0, 4 - index.Length));
+                output.Append(address);
+                output.Append(' ', Math.Max(0, 16 - address.Length));
+                output.Append(type);
+                if (i == currentClient)
+                    output.Append("  <");
+                output.Append("\r\n");
+            }
+
+            output.Append("\r\n");
+            await _gameInstance.SendMessageAsync(output.ToString());
             await ShowMenuPromptAsync();
         }
 
@@ -826,6 +868,7 @@ namespace TWXProxy.Core
 
         public async Task<bool> HandleInputCharAsync(char c)
         {
+            using var _ = _gameInstance.PushClientContext(CurrentClientIndex);
             int charCode = c;
 
             if (charCode == 0)

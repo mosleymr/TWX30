@@ -35,6 +35,7 @@
     <Compile Remove="TWXC/**" />
     <Compile Remove="TWXD/**" />
     <Compile Remove="MTC/**" />
+    <Compile Remove="Modules/**" />
   </ItemGroup>
 
 </Project>
