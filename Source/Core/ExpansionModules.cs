@@ -28,6 +28,34 @@ public interface IExpansionModule
     Task ShutdownAsync(CancellationToken cancellationToken);
 }
 
+public sealed class ExpansionChatMessage
+{
+    public string Role { get; init; } = string.Empty;
+    public string Content { get; init; } = string.Empty;
+    public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
+}
+
+public sealed class ExpansionChatRequest
+{
+    public string Prompt { get; init; } = string.Empty;
+    public IReadOnlyList<ExpansionChatMessage> Conversation { get; init; } = Array.Empty<ExpansionChatMessage>();
+}
+
+public sealed class ExpansionChatReply
+{
+    public string Content { get; init; } = string.Empty;
+    public string? Status { get; init; }
+    public bool IsError { get; init; }
+}
+
+public interface IExpansionChatModule : IExpansionModule
+{
+    string ChatTitle { get; }
+    string ChatWelcomeText { get; }
+    string ChatInputPlaceholder { get; }
+    Task<ExpansionChatReply> AskAsync(ExpansionChatRequest request, CancellationToken cancellationToken);
+}
+
 public sealed class ExpansionModuleContext
 {
     internal ExpansionModuleContext(
@@ -99,6 +127,13 @@ public sealed class LoadedExpansionModuleInfo
     public required string TypeName { get; init; }
 }
 
+public sealed class ExpansionModuleBinding<T> where T : class
+{
+    public required T Module { get; init; }
+    public required ExpansionModuleContext Context { get; init; }
+    public required LoadedExpansionModuleInfo Info { get; init; }
+}
+
 public sealed class ExpansionModuleHost : IAsyncDisposable, IDisposable
 {
     private sealed class LoadedExpansionModule
@@ -149,6 +184,21 @@ public sealed class ExpansionModuleHost : IAsyncDisposable, IDisposable
     }
 
     public IReadOnlyList<LoadedExpansionModuleInfo> LoadedModules => _loadedInfos;
+
+    public IReadOnlyList<ExpansionModuleBinding<T>> GetModules<T>() where T : class
+    {
+        return _loadedModules
+            .Where(loaded => loaded.Module is T)
+            .Select(loaded => new ExpansionModuleBinding<T>
+            {
+                Module = (T)loaded.Module,
+                Context = loaded.Context,
+                Info = _loadedInfos.First(info =>
+                    string.Equals(info.AssemblyPath, loaded.AssemblyPath, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(info.TypeName, loaded.TypeName, StringComparison.Ordinal)),
+            })
+            .ToList();
+    }
 
     public static async Task<ExpansionModuleHost> CreateAsync(
         ExpansionModuleHostOptions options,

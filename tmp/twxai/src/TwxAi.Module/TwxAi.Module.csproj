@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>TwxAi.Module</AssemblyName>
+    <RootNamespace>TwxAi.Module</RootNamespace>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('../../../../Source/TWXProxy.csproj')">
+    <ProjectReference Include="../../../../Source/TWXProxy.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('../../../../Source/TWXProxy.csproj') and Exists('../../../TWX30/Source/TWXProxy.csproj')">
+    <ProjectReference Include="../../../TWX30/Source/TWXProxy.csproj" />
+  </ItemGroup>
+
+</Project>

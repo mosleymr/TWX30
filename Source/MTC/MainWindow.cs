@@ -42,6 +42,7 @@ public class MainWindow : Window
     private readonly Core.ModLog           _sessionLog = new();
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
+    private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented             = true,
@@ -51,6 +52,7 @@ public class MainWindow : Window
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
+    private MenuItem        _aiMenu        = new() { Header = "_AI" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
@@ -189,6 +191,7 @@ public class MainWindow : Window
         RebuildRecentMenu();
         RebuildProxyMenu();
         RebuildScriptsMenu();
+        RebuildAiMenu();
         _parser.Feed("\x1b[2J\x1b[H");
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
@@ -218,6 +221,9 @@ public class MainWindow : Window
             _proxyCts?.Cancel();
             if (_moduleHost != null)
                 _ = _moduleHost.DisposeAsync().AsTask();
+            foreach (AiAssistantWindow window in _assistantWindows.Values.ToList())
+                window.Close();
+            _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
         };
@@ -369,7 +375,7 @@ public class MainWindow : Window
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _quickMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _quickMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
         };
 
         return menu;
@@ -1710,8 +1716,16 @@ public class MainWindow : Window
         _proxyMenu.ItemsSource = proxyItems;
         _quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
         _quickMenu.IsEnabled = true;
+        RebuildAiMenu();
         RefreshNativeAppMenu();
         RefreshNativeDockMenu();
+    }
+
+    private void RebuildAiMenu()
+    {
+        var items = BuildAiMenuItems();
+        _aiMenu.ItemsSource = items;
+        _aiMenu.IsEnabled = items.OfType<MenuItem>().Any(item => item.IsEnabled);
     }
 
     private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
@@ -1887,6 +1901,31 @@ public class MainWindow : Window
         return items;
     }
 
+    private List<object> BuildAiMenuItems()
+    {
+        var items = new List<object>();
+        var modules = _moduleHost?.GetModules<Core.IExpansionChatModule>() ?? Array.Empty<Core.ExpansionModuleBinding<Core.IExpansionChatModule>>();
+
+        if (modules.Count == 0)
+        {
+            items.Add(new MenuItem { Header = "No AI modules loaded", IsEnabled = false });
+            return items;
+        }
+
+        foreach (Core.ExpansionModuleBinding<Core.IExpansionChatModule> binding in modules)
+        {
+            string moduleId = binding.Info.Id;
+            var item = new MenuItem
+            {
+                Header = binding.Info.DisplayName,
+            };
+            item.Click += (_, _) => _ = OpenAiAssistantAsync(moduleId);
+            items.Add(item);
+        }
+
+        return items;
+    }
+
     private List<object> BuildBotMenuItems(bool enabled)
     {
         var items = new List<object>();
@@ -1919,6 +1958,32 @@ public class MainWindow : Window
         }
 
         return items;
+    }
+
+    private async Task OpenAiAssistantAsync(string moduleId)
+    {
+        var binding = _moduleHost?
+            .GetModules<Core.IExpansionChatModule>()
+            .FirstOrDefault(module => string.Equals(module.Info.Id, moduleId, StringComparison.OrdinalIgnoreCase));
+
+        if (binding == null)
+        {
+            await ShowMessageAsync("AI Assistant", "The selected AI module is not currently loaded.");
+            return;
+        }
+
+        if (_assistantWindows.TryGetValue(moduleId, out AiAssistantWindow? existing))
+        {
+            existing.Show();
+            existing.Activate();
+            return;
+        }
+
+        var window = new AiAssistantWindow(binding.Module, _embeddedGameName ?? DeriveGameName());
+        window.Closed += (_, _) => _assistantWindows.Remove(moduleId);
+        _assistantWindows[moduleId] = window;
+        window.Show();
+        window.Activate();
     }
 
     private string GetEffectiveProxyScriptDirectory()
@@ -2470,6 +2535,7 @@ public class MainWindow : Window
         AddDockRoot(_scriptsMenu, "_Scripts");
         AddDockRoot(_proxyMenu, "_Proxy");
         AddDockRoot(_quickMenu, "_Quick");
+        AddDockRoot(_aiMenu, "_AI");
 
         if (!_nativeDockMenuAttached)
         {

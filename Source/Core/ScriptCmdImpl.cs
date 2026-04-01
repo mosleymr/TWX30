@@ -965,13 +965,8 @@ namespace TWXProxy.Core
         private static CmdAction CmdFileExists(object script, CmdParam[] parameters)
         {
             // CMD: fileexists var <filename>
-            // Normalize Windows-style backslash paths for macOS/Linux, then resolve
-            // relative paths against ProgramDir (matches original Pascal TWX behaviour
-            // where all paths were relative to the proxy install folder).
             string raw = parameters[1].Value;
-            string path = raw.Replace('\\', Path.DirectorySeparatorChar);
-            if (!Path.IsPathRooted(path))
-                path = Path.Combine(GlobalModules.ProgramDir, path);
+            string path = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
             bool found = File.Exists(path);
             GlobalModules.DebugLog($"[FILEEXISTS] '{raw}' -> '{path}' => {(found ? "1" : "0")}\n");
             parameters[0].Value = found ? "1" : "0";
@@ -982,9 +977,7 @@ namespace TWXProxy.Core
         {
             // CMD: direxists var <dirname>
             string raw = parameters[1].Value;
-            string path = raw.Replace('\\', Path.DirectorySeparatorChar);
-            if (!Path.IsPathRooted(path))
-                path = Path.Combine(GlobalModules.ProgramDir, path);
+            string path = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
             bool found = Directory.Exists(path);
             GlobalModules.DebugLog($"[DIREXISTS] '{raw}' -> '{path}' => {(found ? "1" : "0")}\n");
             parameters[0].Value = found ? "1" : "0";
@@ -994,11 +987,12 @@ namespace TWXProxy.Core
         private static CmdAction CmdDelete(object script, CmdParam[] parameters)
         {
             // CMD: delete <filename>
-            string filename = parameters[0].Value;
-            if (!filename.StartsWith(".."))
+            string raw = parameters[0].Value;
+            if (!raw.StartsWith(".."))
             {
                 try
                 {
+                    string filename = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
                     if (File.Exists(filename))
                         File.Delete(filename);
                 }
@@ -1015,7 +1009,12 @@ namespace TWXProxy.Core
             // CMD: rename <oldname> <newname>
             try
             {
-                File.Move(parameters[0].Value, parameters[1].Value);
+                string source = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                string destination = Utility.ResolvePlatformPath(parameters[1].Value, GlobalModules.ProgramDir);
+                string? directory = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                File.Move(source, destination);
             }
             catch
             {
@@ -1031,7 +1030,8 @@ namespace TWXProxy.Core
             // This is the sentinel used by while ($var <> "EOF") loops.
             try
             {
-                string[] lines = File.ReadAllLines(parameters[0].Value);
+                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                string[] lines = File.ReadAllLines(path);
                 int lineNum = (int)parameters[2].DecValue;
                 
                 if (lineNum >= 1 && lineNum <= lines.Length)
@@ -1051,7 +1051,11 @@ namespace TWXProxy.Core
             // CMD: write <filename> <text>
             try
             {
-                File.AppendAllText(parameters[0].Value, parameters[1].Value + Environment.NewLine);
+                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                string? directory = Path.GetDirectoryName(path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                File.AppendAllText(path, parameters[1].Value + Environment.NewLine);
             }
             catch
             {
@@ -1065,7 +1069,8 @@ namespace TWXProxy.Core
             // CMD: readtoarray <filename> var
             try
             {
-                string[] lines = File.ReadAllLines(parameters[0].Value);
+                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                string[] lines = File.ReadAllLines(path);
                 if (parameters[1] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(lines.ToList());
@@ -1085,7 +1090,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdGetFileList(object script, CmdParam[] parameters)
         {
             // CMD: getfilelist var [path]
-            string path = parameters.Length > 1 ? parameters[1].Value : ".";
+            string path = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
             try
             {
                 string[] files = Directory.GetFiles(path).Select(Path.GetFileName).OfType<string>().ToArray();
@@ -1107,7 +1112,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdGetDirList(object script, CmdParam[] parameters)
         {
             // CMD: getdirlist var [path]
-            string path = parameters.Length > 1 ? parameters[1].Value : ".";
+            string path = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
             try
             {
                 string[] dirs = Directory.GetDirectories(path).Select(Path.GetFileName).OfType<string>().ToArray();
@@ -1131,7 +1136,8 @@ namespace TWXProxy.Core
             // CMD: makedir <dirname>
             try
             {
-                Directory.CreateDirectory(parameters[0].Value);
+                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                Directory.CreateDirectory(path);
             }
             catch
             {
@@ -1145,7 +1151,8 @@ namespace TWXProxy.Core
             // CMD: removedir <dirname>
             try
             {
-                Directory.Delete(parameters[0].Value);
+                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                Directory.Delete(path);
             }
             catch
             {

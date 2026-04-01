@@ -177,6 +177,33 @@ namespace TWXProxy.Core
             s = s.Replace(a, b);
         }
 
+        public static string NormalizePathSeparators(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return path;
+
+            return Path.DirectorySeparatorChar == '\\'
+                ? path.Replace('/', Path.DirectorySeparatorChar)
+                : path.Replace('\\', Path.DirectorySeparatorChar);
+        }
+
+        public static string ResolvePlatformPath(string path, string? baseDir = null)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return path;
+
+            string normalized = NormalizePathSeparators(path);
+            if (!Path.IsPathRooted(normalized))
+            {
+                string root = string.IsNullOrWhiteSpace(baseDir)
+                    ? Directory.GetCurrentDirectory()
+                    : baseDir;
+                normalized = Path.Combine(root, normalized);
+            }
+
+            return normalized;
+        }
+
         public static string GetTelnetLogin(string inStr)
         {
             // get telnet commands from this line

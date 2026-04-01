@@ -1100,8 +1100,7 @@ namespace TWXProxy.Core
             ModDatabase? db = ScriptRef.GetActiveDatabase();
             string gameName = Path.GetFileNameWithoutExtension(db?.DatabasePath ?? db?.DatabaseName ?? string.Empty);
             fileName = fileName.Replace("{GAME}", gameName, StringComparison.OrdinalIgnoreCase);
-            fileName = fileName.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
-            return Path.GetFullPath(Path.Combine(_programDir, fileName));
+            return Path.GetFullPath(Utility.ResolvePlatformPath(fileName, _programDir));
         }
 
         private string? GetBotStateConfigPath()
@@ -1142,6 +1141,7 @@ namespace TWXProxy.Core
 
         private static string ReadIniValue(string path, string section, string key, string fallback)
         {
+            path = Utility.ResolvePlatformPath(path);
             foreach ((string sectionName, Dictionary<string, string> values) in ReadIniSections(path))
             {
                 if (!sectionName.Equals(section, StringComparison.OrdinalIgnoreCase))
@@ -1155,6 +1155,7 @@ namespace TWXProxy.Core
 
         private static void WriteIniValue(string path, string section, string key, string value)
         {
+            path = Utility.ResolvePlatformPath(path);
             var sections = ReadIniSections(path);
             Dictionary<string, string>? values = null;
 
@@ -1193,6 +1194,7 @@ namespace TWXProxy.Core
 
         private static List<(string SectionName, Dictionary<string, string> Values)> ReadIniSections(string path)
         {
+            path = Utility.ResolvePlatformPath(path);
             var sections = new List<(string SectionName, Dictionary<string, string> Values)>();
             if (!File.Exists(path))
                 return sections;
