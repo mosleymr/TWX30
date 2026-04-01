@@ -61,3 +61,15 @@ model `llama3.2`.
 
 Additional gameplay or reference notes can be dropped into the `knowledge`
 directory as `.md`, `.txt`, or `.html` files.
+
+## MTC usage
+
+After the module is installed and MTC is restarted:
+
+1. open a game as usual
+2. use the top-level `AI` menu
+3. choose `TWX AI Assistant`
+
+The first pass is question-and-answer only. It observes the live game and uses
+that context when answering, but it does not yet send gameplay commands on its
+own.

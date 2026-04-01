@@ -82,6 +82,10 @@ Useful helpers:
 - `SendToServerAsync(...)`
 - `Log(...)`
 
+For interactive assistants, the host also supports
+[`IExpansionChatModule`](/Users/mosleym/Code/twxproxy/TWX30/Source/Core/ExpansionModules.cs).
+In MTC, any loaded chat-capable module appears in the top-level `AI` menu.
+
 `ModuleDataDirectory` is per app, per game, per module, so a future GPT module can keep conversation state, embeddings, summaries, or tool-specific caches there without colliding with other modules.
 
 ## Isolation model
