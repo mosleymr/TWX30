@@ -219,6 +219,9 @@ public static class ProxyMenuCatalog
 
     private static string ResolveConfigPath(string? programDir)
     {
+        if (File.Exists(SharedPaths.TwxpConfigPath))
+            return SharedPaths.TwxpConfigPath;
+
         string root = string.IsNullOrWhiteSpace(programDir)
             ? AppContext.BaseDirectory
             : programDir;

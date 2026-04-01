@@ -763,9 +763,7 @@ public class MainWindow : Window
             // Auto-save ship state back to the open profile file
             if (_currentProfilePath != null)
             {
-                var savePath = _currentProfilePath;
-                try { BuildProfileFromState().SaveXml(savePath); }
-                catch { /* best-effort */ }
+                _ = SaveCurrentGameConfigAsync();
             }
         });
     }
@@ -872,9 +870,11 @@ public class MainWindow : Window
     /// <summary>Derives a filesystem-safe game name for log/DB file naming.</summary>
     private string DeriveGameName()
     {
-        string name = !string.IsNullOrEmpty(_currentProfilePath)
-            ? Path.GetFileNameWithoutExtension(_currentProfilePath)
-            : $"{_state.Host}_{_state.Port}";
+        string name = !string.IsNullOrWhiteSpace(_state.GameName)
+            ? _state.GameName
+            : (!string.IsNullOrEmpty(_currentProfilePath)
+                ? Path.GetFileNameWithoutExtension(_currentProfilePath)
+                : $"{_state.Host}_{_state.Port}");
         name = string.Concat(name.Split(Path.GetInvalidFileNameChars()));
         return string.IsNullOrWhiteSpace(name) ? "game" : name;
     }
@@ -1003,6 +1003,7 @@ public class MainWindow : Window
     /// <summary>Builds a <see cref="ConnectionProfile"/> from the current live state.</summary>
     private ConnectionProfile BuildProfileFromState() => new ConnectionProfile
     {
+        Name            = DeriveGameName(),
         // Connection
         Server          = _state.Host,
         Port            = _state.Port,
@@ -1057,6 +1058,227 @@ public class MainWindow : Window
         ScannerP        = _state.ScannerP,
     };
 
+    private ConnectionProfile BuildProfileFromConfig(EmbeddedGameConfig config)
+    {
+        EmbeddedMtcConfig mtc = config.Mtc ?? new EmbeddedMtcConfig();
+        EmbeddedMtcState state = mtc.State ?? new EmbeddedMtcState();
+        return new ConnectionProfile
+        {
+            Name = string.IsNullOrWhiteSpace(config.Name) ? DeriveGameName() : config.Name,
+            Server = config.Host,
+            Port = config.Port,
+            Protocol = Enum.TryParse<TwProtocol>(mtc.Protocol, true, out TwProtocol protocol)
+                ? protocol
+                : TwProtocol.Telnet,
+            LocalTwxProxy = mtc.LocalTwxProxy,
+            TwxProxyDbPath = mtc.TwxProxyDbPath,
+            EmbeddedProxy = mtc.EmbeddedProxy,
+            Sectors = config.Sectors,
+            AutoReconnect = config.AutoReconnect,
+            UseLogin = config.UseLogin,
+            UseRLogin = config.UseRLogin,
+            LoginScript = string.IsNullOrWhiteSpace(config.LoginScript) ? "0_Login.cts" : config.LoginScript,
+            LoginName = config.LoginName,
+            Password = config.Password,
+            GameLetter = config.GameLetter,
+            LoginSettingsConfigured = mtc.EmbeddedProxy,
+            ScrollbackLines = mtc.ScrollbackLines <= 0 ? 2000 : mtc.ScrollbackLines,
+            TraderName = state.TraderName,
+            Sector = state.Sector,
+            Turns = state.Turns,
+            Experience = state.Experience,
+            Alignment = string.IsNullOrWhiteSpace(state.Alignment) ? "0" : state.Alignment,
+            Credits = state.Credits,
+            Corp = state.Corp,
+            ShipName = string.IsNullOrWhiteSpace(state.ShipName) ? "-" : state.ShipName,
+            HoldsTotal = state.HoldsTotal,
+            FuelOre = state.FuelOre,
+            Organics = state.Organics,
+            Equipment = state.Equipment,
+            Colonists = state.Colonists,
+            HoldsEmpty = state.HoldsEmpty,
+            Fighters = state.Fighters,
+            Shields = state.Shields,
+            TurnsPerWarp = state.TurnsPerWarp,
+            Etheral = state.Etheral,
+            Beacon = state.Beacon,
+            Disruptor = state.Disruptor,
+            Photon = state.Photon,
+            Armor = state.Armor,
+            Limpet = state.Limpet,
+            Genesis = state.Genesis,
+            Atomic = state.Atomic,
+            Corbomite = state.Corbomite,
+            Cloak = state.Cloak,
+            TranswarpDrive1 = state.TranswarpDrive1,
+            TranswarpDrive2 = state.TranswarpDrive2,
+            ScannerD = state.ScannerD,
+            ScannerH = state.ScannerH,
+            ScannerP = state.ScannerP,
+        };
+    }
+
+    private EmbeddedMtcState BuildEmbeddedMtcState()
+    {
+        return new EmbeddedMtcState
+        {
+            TraderName = _state.TraderName,
+            Sector = _state.Sector,
+            Turns = _state.Turns,
+            Experience = _state.Experience,
+            Alignment = _state.Alignment,
+            Credits = _state.Credits,
+            Corp = _state.Corp,
+            ShipName = _state.ShipName,
+            HoldsTotal = _state.HoldsTotal,
+            FuelOre = _state.FuelOre,
+            Organics = _state.Organics,
+            Equipment = _state.Equipment,
+            Colonists = _state.Colonists,
+            HoldsEmpty = _state.HoldsEmpty,
+            Fighters = _state.Fighters,
+            Shields = _state.Shields,
+            TurnsPerWarp = _state.TurnsPerWarp,
+            Etheral = _state.Etheral,
+            Beacon = _state.Beacon,
+            Disruptor = _state.Disruptor,
+            Photon = _state.Photon,
+            Armor = _state.Armor,
+            Limpet = _state.Limpet,
+            Genesis = _state.Genesis,
+            Atomic = _state.Atomic,
+            Corbomite = _state.Corbomite,
+            Cloak = _state.Cloak,
+            TranswarpDrive1 = _state.TranswarpDrive1,
+            TranswarpDrive2 = _state.TranswarpDrive2,
+            ScannerD = _state.ScannerD,
+            ScannerH = _state.ScannerH,
+            ScannerP = _state.ScannerP,
+        };
+    }
+
+    private EmbeddedGameConfig BuildEmbeddedGameConfigFromState(string gameName, EmbeddedGameConfig? existing = null)
+    {
+        EmbeddedGameConfig config = existing ?? new EmbeddedGameConfig();
+        config.Name = gameName;
+        config.Host = _state.Host;
+        config.Port = _state.Port;
+        config.Sectors = _state.Sectors;
+        config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
+            ? AppPaths.TwxproxyDatabasePathForGame(gameName)
+            : config.DatabasePath;
+        config.ScriptDirectory = string.IsNullOrWhiteSpace(config.ScriptDirectory)
+            ? (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty)
+            : config.ScriptDirectory;
+        config.AutoReconnect = _state.AutoReconnect;
+        config.UseLogin = _state.UseLogin;
+        config.UseRLogin = _state.UseRLogin;
+        config.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+        config.LoginName = _state.LoginName;
+        config.Password = _state.Password;
+        config.GameLetter = _state.GameLetter;
+        config.Mtc ??= new EmbeddedMtcConfig();
+        config.Mtc.Protocol = _state.Protocol.ToString();
+        config.Mtc.LocalTwxProxy = _state.LocalTwxProxy;
+        config.Mtc.TwxProxyDbPath = _state.TwxProxyDbPath;
+        config.Mtc.EmbeddedProxy = _state.EmbeddedProxy;
+        config.Mtc.ScrollbackLines = _buffer.ScrollbackLines;
+        config.Mtc.State = BuildEmbeddedMtcState();
+        config.Variables ??= new Dictionary<string, string>();
+        return config;
+    }
+
+    private static EmbeddedMtcState BuildEmbeddedMtcState(ConnectionProfile profile)
+    {
+        return new EmbeddedMtcState
+        {
+            TraderName = profile.TraderName,
+            Sector = profile.Sector,
+            Turns = profile.Turns,
+            Experience = profile.Experience,
+            Alignment = profile.Alignment,
+            Credits = profile.Credits,
+            Corp = profile.Corp,
+            ShipName = profile.ShipName,
+            HoldsTotal = profile.HoldsTotal,
+            FuelOre = profile.FuelOre,
+            Organics = profile.Organics,
+            Equipment = profile.Equipment,
+            Colonists = profile.Colonists,
+            HoldsEmpty = profile.HoldsEmpty,
+            Fighters = profile.Fighters,
+            Shields = profile.Shields,
+            TurnsPerWarp = profile.TurnsPerWarp,
+            Etheral = profile.Etheral,
+            Beacon = profile.Beacon,
+            Disruptor = profile.Disruptor,
+            Photon = profile.Photon,
+            Armor = profile.Armor,
+            Limpet = profile.Limpet,
+            Genesis = profile.Genesis,
+            Atomic = profile.Atomic,
+            Corbomite = profile.Corbomite,
+            Cloak = profile.Cloak,
+            TranswarpDrive1 = profile.TranswarpDrive1,
+            TranswarpDrive2 = profile.TranswarpDrive2,
+            ScannerD = profile.ScannerD,
+            ScannerH = profile.ScannerH,
+            ScannerP = profile.ScannerP,
+        };
+    }
+
+    private EmbeddedGameConfig BuildEmbeddedGameConfigFromProfile(
+        ConnectionProfile profile,
+        string databasePath,
+        EmbeddedGameConfig? existing = null)
+    {
+        EmbeddedGameConfig config = existing ?? new EmbeddedGameConfig();
+        config.Name = NormalizeGameName(profile.Name);
+        config.Host = profile.Server;
+        config.Port = profile.Port;
+        config.Sectors = profile.Sectors;
+        config.DatabasePath = databasePath;
+        if (string.IsNullOrWhiteSpace(config.ScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
+            config.ScriptDirectory = _appPrefs.ScriptsDirectory;
+        config.AutoReconnect = profile.AutoReconnect;
+        config.UseLogin = profile.UseLogin;
+        config.UseRLogin = profile.UseRLogin;
+        config.LoginScript = string.IsNullOrWhiteSpace(profile.LoginScript) ? "0_Login.cts" : profile.LoginScript;
+        config.LoginName = profile.LoginName;
+        config.Password = profile.Password;
+        config.GameLetter = profile.GameLetter;
+        config.Mtc ??= new EmbeddedMtcConfig();
+        config.Mtc.Protocol = profile.Protocol.ToString();
+        config.Mtc.LocalTwxProxy = profile.LocalTwxProxy;
+        config.Mtc.TwxProxyDbPath = profile.TwxProxyDbPath;
+        config.Mtc.EmbeddedProxy = profile.EmbeddedProxy;
+        config.Mtc.ScrollbackLines = profile.ScrollbackLines;
+        config.Mtc.State = BuildEmbeddedMtcState(profile);
+        config.Variables ??= new Dictionary<string, string>();
+        return config;
+    }
+
+    private static string NormalizeGameName(string? value)
+    {
+        string name = string.Concat((value ?? string.Empty).Split(Path.GetInvalidFileNameChars())).Trim();
+        return string.IsNullOrWhiteSpace(name) ? "game" : name;
+    }
+
+    private bool GameNameConflicts(string gameName, string? currentConfigPath = null, string? currentDatabasePath = null)
+    {
+        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        if (File.Exists(configPath) &&
+            !string.Equals(configPath, currentConfigPath, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string databasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        if (File.Exists(databasePath) &&
+            !string.Equals(databasePath, currentDatabasePath, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
     /// <summary>Applies a profile to GameState and the terminal buffer.</summary>
     private void ApplyProfile(ConnectionProfile p)
     {
@@ -1075,6 +1297,7 @@ public class MainWindow : Window
         }
 
         // Connection
+        _state.GameName       = NormalizeGameName(p.Name);
         _state.Host           = p.Server;
         _state.Port           = p.Port;
         _state.Protocol       = p.Protocol;
@@ -1137,11 +1360,14 @@ public class MainWindow : Window
 
     private string GetEmbeddedGameName(ConnectionProfile? profile = null)
     {
+        if (!string.IsNullOrWhiteSpace(profile?.Name))
+            return NormalizeGameName(profile.Name);
+        if (!string.IsNullOrWhiteSpace(_state.GameName))
+            return NormalizeGameName(_state.GameName);
         string gameName = !string.IsNullOrEmpty(_currentProfilePath)
             ? System.IO.Path.GetFileNameWithoutExtension(_currentProfilePath)
             : $"{(profile?.Server ?? _state.Host)}_{(profile?.Port ?? _state.Port)}";
-        gameName = string.Concat(gameName.Split(System.IO.Path.GetInvalidFileNameChars()));
-        return string.IsNullOrWhiteSpace(gameName) ? "game" : gameName;
+        return NormalizeGameName(gameName);
     }
 
     private static EmbeddedGameConfig? TryLoadEmbeddedGameConfigForGame(string gameName)
@@ -1153,7 +1379,16 @@ public class MainWindow : Window
                 return null;
 
             var json = File.ReadAllText(path);
-            return System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
+            EmbeddedGameConfig? config = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
+            if (config == null)
+                return null;
+            config.Name = string.IsNullOrWhiteSpace(config.Name) ? NormalizeGameName(gameName) : NormalizeGameName(config.Name);
+            config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
+                ? AppPaths.TwxproxyDatabasePathForGame(config.Name)
+                : config.DatabasePath;
+            config.Mtc ??= new EmbeddedMtcConfig();
+            config.Mtc.State ??= new EmbeddedMtcState();
+            return config;
         }
         catch
         {
@@ -1198,24 +1433,19 @@ public class MainWindow : Window
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         bool configChanged =
+            !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
             gameConfig.Host != _state.Host ||
             gameConfig.Port != _state.Port ||
             gameConfig.Sectors != _state.Sectors ||
+            !string.Equals(gameConfig.DatabasePath, AppPaths.TwxproxyDatabasePathForGame(gameName), StringComparison.OrdinalIgnoreCase) ||
             gameConfig.UseLogin != _state.UseLogin ||
             gameConfig.UseRLogin != _state.UseRLogin ||
             !string.Equals(gameConfig.LoginScript, string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript, StringComparison.Ordinal) ||
             !string.Equals(gameConfig.LoginName, _state.LoginName, StringComparison.Ordinal) ||
             !string.Equals(gameConfig.Password, _state.Password, StringComparison.Ordinal) ||
             !string.Equals(gameConfig.GameLetter, _state.GameLetter, StringComparison.Ordinal);
-        gameConfig.Host = _state.Host;
-        gameConfig.Port = _state.Port;
-        gameConfig.Sectors = _state.Sectors;
-        gameConfig.UseLogin = _state.UseLogin;
-        gameConfig.UseRLogin = _state.UseRLogin;
-        gameConfig.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
-        gameConfig.LoginName = _state.LoginName;
-        gameConfig.Password = _state.Password;
-        gameConfig.GameLetter = _state.GameLetter;
+        gameConfig = BuildEmbeddedGameConfigFromState(gameName, gameConfig);
+        gameConfig.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
         if (configChanged)
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         _embeddedGameConfig = gameConfig;
@@ -1228,9 +1458,11 @@ public class MainWindow : Window
         // TrimEnd removes any trailing separator so Path.GetDirectoryName returns the
         // true parent folder rather than the same folder (which happens when the stored
         // path ends with '/').
-        string effectiveScriptDir = (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
-            ? _appPrefs.ScriptsDirectory
-            : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments))
+        string effectiveScriptDir = (!string.IsNullOrWhiteSpace(gameConfig.ScriptDirectory)
+            ? gameConfig.ScriptDirectory
+            : (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
+                ? _appPrefs.ScriptsDirectory
+                : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments)))
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         // Create the script interpreter.
@@ -1576,7 +1808,16 @@ public class MainWindow : Window
             {
                 var json = await File.ReadAllTextAsync(path);
                 var cfg  = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
-                if (cfg != null) return cfg;
+                if (cfg != null)
+                {
+                    cfg.Name = string.IsNullOrWhiteSpace(cfg.Name) ? NormalizeGameName(gameName) : NormalizeGameName(cfg.Name);
+                    cfg.DatabasePath = string.IsNullOrWhiteSpace(cfg.DatabasePath)
+                        ? AppPaths.TwxproxyDatabasePathForGame(cfg.Name)
+                        : cfg.DatabasePath;
+                    cfg.Mtc ??= new EmbeddedMtcConfig();
+                    cfg.Mtc.State ??= new EmbeddedMtcState();
+                    return cfg;
+                }
             }
             catch { }
         }
@@ -1588,6 +1829,8 @@ public class MainWindow : Window
             Host    = _state.Host,
             Port    = _state.Port,
             Sectors = _state.Sectors,
+            DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName),
+            ScriptDirectory = !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty,
             NativeHaggleEnabled = true,
             UseLogin = _state.UseLogin,
             UseRLogin = _state.UseRLogin,
@@ -1595,6 +1838,15 @@ public class MainWindow : Window
             LoginName = _state.LoginName,
             Password = _state.Password,
             GameLetter = _state.GameLetter,
+            Mtc = new EmbeddedMtcConfig
+            {
+                Protocol = _state.Protocol.ToString(),
+                LocalTwxProxy = _state.LocalTwxProxy,
+                TwxProxyDbPath = _state.TwxProxyDbPath,
+                EmbeddedProxy = _state.EmbeddedProxy,
+                ScrollbackLines = _buffer.ScrollbackLines,
+                State = BuildEmbeddedMtcState(),
+            },
         };
         await SaveEmbeddedGameConfigAsync(gameName, newCfg);
         return newCfg;
@@ -1611,6 +1863,279 @@ public class MainWindow : Window
             await File.WriteAllTextAsync(path, json);
         }
         catch { }
+    }
+
+    private async Task SaveCurrentGameConfigAsync()
+    {
+        string gameName = DeriveGameName();
+        if (string.IsNullOrWhiteSpace(gameName))
+            return;
+
+        EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        config = BuildEmbeddedGameConfigFromState(gameName, config);
+        if (string.IsNullOrWhiteSpace(config.DatabasePath))
+            config.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        if (string.IsNullOrWhiteSpace(config.ScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
+            config.ScriptDirectory = _appPrefs.ScriptsDirectory;
+        await SaveEmbeddedGameConfigAsync(gameName, config);
+        _embeddedGameConfig = config;
+        _embeddedGameName = gameName;
+        _currentProfilePath ??= AppPaths.TwxproxyGameConfigFileFor(gameName);
+    }
+
+    private async Task OpenPathAsync(string path, bool addToRecent)
+    {
+        string extension = Path.GetExtension(path);
+        if (extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            EmbeddedGameConfig? config = await TryLoadGameConfigAsync(path);
+            if (config == null)
+            {
+                await ShowMessageAsync("Load Error", $"Could not read game config:\n{path}");
+                return;
+            }
+
+            string sharedConfigPath = AppPaths.TwxproxyGameConfigFileFor(config.Name);
+            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(sharedConfigPath), StringComparison.OrdinalIgnoreCase))
+            {
+                await ApplyLoadedGameConfigAsync(config, path, addToRecent);
+                return;
+            }
+
+            ConnectionProfile importedProfile = BuildProfileFromConfig(config);
+            ConnectionProfile? uniqueProfile = await EnsureUniqueProfileAsync(
+                importedProfile,
+                currentConfigPath: path,
+                currentDatabasePath: config.DatabasePath);
+            if (uniqueProfile == null)
+                return;
+
+            importedProfile = uniqueProfile;
+            string gameName = importedProfile.Name;
+            string importedDatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+            if (!string.IsNullOrWhiteSpace(config.DatabasePath) && File.Exists(config.DatabasePath))
+            {
+                if (!await ImportDatabaseIntoSharedStoreAsync(config.DatabasePath, gameName))
+                    return;
+            }
+
+            EmbeddedGameConfig importedConfig = BuildEmbeddedGameConfigFromProfile(importedProfile, importedDatabasePath, config);
+            importedConfig.Variables = config.Variables ?? new Dictionary<string, string>();
+            if (!string.IsNullOrWhiteSpace(config.ScriptDirectory))
+                importedConfig.ScriptDirectory = config.ScriptDirectory;
+            await SaveEmbeddedGameConfigAsync(gameName, importedConfig);
+            await ApplyLoadedGameConfigAsync(importedConfig, AppPaths.TwxproxyGameConfigFileFor(gameName), addToRecent);
+            return;
+        }
+
+        if (extension.Equals(".xdb", StringComparison.OrdinalIgnoreCase))
+        {
+            await ImportDatabaseAsGameAsync(path, addToRecent);
+            return;
+        }
+
+        if (extension.Equals(".mtc", StringComparison.OrdinalIgnoreCase))
+        {
+            ConnectionProfile legacy;
+            try
+            {
+                legacy = ConnectionProfile.LoadXml(path);
+            }
+            catch (Exception ex)
+            {
+                await ShowMessageAsync("Load Error", ex.Message);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(legacy.Name))
+                legacy.Name = NormalizeGameName(Path.GetFileNameWithoutExtension(path));
+
+            ConnectionProfile? uniqueLegacy = await EnsureUniqueProfileAsync(legacy);
+            if (uniqueLegacy == null)
+                return;
+
+            legacy = uniqueLegacy;
+            string gameName = legacy.Name;
+            string sharedDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+            if (!string.IsNullOrWhiteSpace(legacy.TwxProxyDbPath) && File.Exists(legacy.TwxProxyDbPath))
+            {
+                if (!await ImportDatabaseIntoSharedStoreAsync(legacy.TwxProxyDbPath, gameName))
+                    return;
+            }
+
+            EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(legacy, sharedDbPath);
+            await SaveEmbeddedGameConfigAsync(gameName, config);
+            string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+            await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
+            return;
+        }
+
+        await ShowMessageAsync("Unsupported File", $"MTC can open .json game configs, .xdb databases, or legacy .mtc files.\n\n{path}");
+    }
+
+    private async Task ApplyLoadedGameConfigAsync(EmbeddedGameConfig config, string configPath, bool addToRecent)
+    {
+        _currentProfilePath = configPath;
+        _embeddedGameConfig = config;
+        _embeddedGameName = NormalizeGameName(config.Name);
+        ApplyProfile(BuildProfileFromConfig(config));
+        if (addToRecent)
+            AddToRecentAndSave(configPath);
+        OnGameSelected();
+
+        if (_state.EmbeddedProxy && _gameInstance == null)
+        {
+            await DoConnectEmbeddedAsync();
+        }
+        else
+        {
+            _parser.Feed($"\x1b[1;36m[Game loaded: {_state.Host}:{_state.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+    }
+
+    private async Task ImportDatabaseAsGameAsync(string databasePath, bool addToRecent)
+    {
+        ConnectionProfile draft = BuildProfileFromDatabase(databasePath);
+        string defaultGameName = NormalizeGameName(draft.Name);
+        string defaultSharedDatabasePath = AppPaths.TwxproxyDatabasePathForGame(defaultGameName);
+        string defaultConfigPath = AppPaths.TwxproxyGameConfigFileFor(defaultGameName);
+
+        if (File.Exists(defaultConfigPath))
+        {
+            EmbeddedGameConfig? existingConfig = await TryLoadGameConfigAsync(defaultConfigPath);
+            if (existingConfig != null)
+            {
+                string existingDbPath = string.IsNullOrWhiteSpace(existingConfig.DatabasePath)
+                    ? defaultSharedDatabasePath
+                    : existingConfig.DatabasePath;
+                if (string.Equals(Path.GetFullPath(databasePath), Path.GetFullPath(existingDbPath), StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Path.GetFullPath(databasePath), Path.GetFullPath(defaultSharedDatabasePath), StringComparison.OrdinalIgnoreCase))
+                {
+                    await ApplyLoadedGameConfigAsync(existingConfig, defaultConfigPath, addToRecent);
+                    return;
+                }
+            }
+        }
+
+        var dialog = new NewConnectionDialog(draft);
+        if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+            return;
+
+        ConnectionProfile? uniqueProfile = await EnsureUniqueProfileAsync(dialog.Result, currentDatabasePath: databasePath);
+        if (uniqueProfile == null)
+            return;
+
+        ConnectionProfile imported = uniqueProfile;
+        string gameName = imported.Name;
+        if (!await ImportDatabaseIntoSharedStoreAsync(databasePath, gameName))
+            return;
+
+        string sharedDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(imported, sharedDbPath);
+        await SaveEmbeddedGameConfigAsync(gameName, config);
+        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
+    }
+
+    private async Task<EmbeddedGameConfig?> TryLoadGameConfigAsync(string path)
+    {
+        try
+        {
+            string json = await File.ReadAllTextAsync(path);
+            EmbeddedGameConfig? config = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
+            if (config == null)
+                return null;
+            if (string.IsNullOrWhiteSpace(config.Name))
+                config.Name = NormalizeGameName(Path.GetFileNameWithoutExtension(path));
+            if (string.IsNullOrWhiteSpace(config.DatabasePath))
+                config.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(config.Name);
+            return config;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private ConnectionProfile BuildProfileFromDatabase(string databasePath)
+    {
+        string gameName = NormalizeGameName(Path.GetFileNameWithoutExtension(databasePath));
+        var profile = new ConnectionProfile
+        {
+            Name = gameName,
+            Server = _state.Host,
+            Port = _state.Port,
+            Protocol = TwProtocol.Telnet,
+            EmbeddedProxy = true,
+            LocalTwxProxy = true,
+            TwxProxyDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName),
+            Sectors = 1000,
+            ScrollbackLines = _buffer.ScrollbackLines,
+            LoginScript = "0_Login.cts",
+        };
+
+        try
+        {
+            var database = new Core.ModDatabase();
+            database.OpenDatabase(databasePath);
+            Core.DataHeader header = database.DBHeader;
+            profile.Server = string.IsNullOrWhiteSpace(header.Address) ? profile.Server : header.Address;
+            profile.Port = header.ServerPort == 0 ? profile.Port : header.ServerPort;
+            profile.Sectors = header.Sectors > 0 ? header.Sectors : profile.Sectors;
+            profile.UseLogin = header.UseLogin;
+            profile.UseRLogin = header.UseRLogin;
+            profile.LoginScript = string.IsNullOrWhiteSpace(header.LoginScript) ? "0_Login.cts" : header.LoginScript;
+            profile.LoginName = header.LoginName ?? string.Empty;
+            profile.Password = header.Password ?? string.Empty;
+            profile.GameLetter = header.Game == '\0' ? string.Empty : header.Game.ToString();
+            database.CloseDatabase();
+        }
+        catch
+        {
+        }
+
+        return profile;
+    }
+
+    private async Task<ConnectionProfile?> EnsureUniqueProfileAsync(ConnectionProfile profile, string? currentConfigPath = null, string? currentDatabasePath = null)
+    {
+        ConnectionProfile working = profile;
+        while (true)
+        {
+            working.Name = NormalizeGameName(working.Name);
+            if (!GameNameConflicts(working.Name, currentConfigPath, currentDatabasePath))
+                return working;
+
+            await ShowMessageAsync(
+                "Game Name In Use",
+                $"A game or database named '{working.Name}' already exists under the shared twxproxy folder.\n\nPlease choose a different game name.");
+
+            var dialog = new NewConnectionDialog(working);
+            if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+                return null;
+            working = dialog.Result;
+        }
+    }
+
+    private async Task<bool> ImportDatabaseIntoSharedStoreAsync(string sourceDatabasePath, string targetGameName)
+    {
+        string targetPath = AppPaths.TwxproxyDatabasePathForGame(targetGameName);
+        if (string.Equals(Path.GetFullPath(sourceDatabasePath), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        try
+        {
+            AppPaths.EnsureTwxproxyDatabaseDir();
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            File.Copy(sourceDatabasePath, targetPath, overwrite: false);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Database Import Error", ex.Message);
+            return false;
+        }
     }
 
     /// <summary>
@@ -1638,9 +2163,11 @@ public class MainWindow : Window
             if (useSharedProxyDatabase)
             {
                 AppPaths.EnsureTwxproxyDatabaseDir();
-                dbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+                dbPath = !string.IsNullOrWhiteSpace(_embeddedGameConfig?.DatabasePath)
+                    ? _embeddedGameConfig!.DatabasePath
+                    : AppPaths.TwxproxyDatabasePathForGame(gameName);
 
-                string legacyMtcDbPath = AppPaths.DatabasePathForGame(gameName);
+                string legacyMtcDbPath = AppPaths.LegacyDatabasePathForGame(gameName);
                 if (!File.Exists(dbPath) && File.Exists(legacyMtcDbPath))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
@@ -2617,7 +3144,7 @@ public class MainWindow : Window
         return header.Replace("_", string.Empty);
     }
 
-    /// <summary>Opens a recently used .mtc file directly (no file picker, no connect).</summary>
+    /// <summary>Opens a recently used game config or database directly (no file picker, no connect).</summary>
     private async Task OpenRecentAsync(string path)
     {
         _menuBar.Close();
@@ -2631,43 +3158,75 @@ public class MainWindow : Window
             return;
         }
 
-        ConnectionProfile profile;
-        try   { profile = ConnectionProfile.LoadXml(path); }
-        catch (Exception ex) { await ShowMessageAsync("Load Error", ex.Message); return; }
-
-        _currentProfilePath = path;
-        AddToRecentAndSave(path);
-        ApplyProfile(profile);
-        OnGameSelected();
-        if (profile.EmbeddedProxy && _gameInstance == null)
-        {
-            // Auto-start the embedded proxy (but not the server connection) when
-            // selecting a game that uses the embedded proxy from the recent list.
-            await DoConnectEmbeddedAsync();
-        }
-        else
-        {
-            _parser.Feed($"\x1b[1;36m[Game loaded: {profile.Server}:{profile.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
-            _buffer.Dirty = true;
-        }
+        await OpenPathAsync(path, addToRecent: true);
     }
 
-    /// <summary>File > New Connection: dialog → save picker → save XML → apply (no connect).</summary>
+    /// <summary>File > Edit Connection: update the shared game config in-place.</summary>
     private async Task OnEditConnectionAsync()
     {
+        string previousGameName = DeriveGameName();
+        string previousConfigPath = _currentProfilePath ?? AppPaths.TwxproxyGameConfigFileFor(previousGameName);
+        string previousDatabasePath = _embeddedGameConfig?.DatabasePath ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(previousDatabasePath))
+            previousDatabasePath = AppPaths.TwxproxyDatabasePathForGame(previousGameName);
+
         var dlg = new NewConnectionDialog(BuildProfileFromState());
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
 
-        ApplyProfile(dlg.Result);
+        ConnectionProfile? uniqueEditedProfile = await EnsureUniqueProfileAsync(
+            dlg.Result,
+            currentConfigPath: previousConfigPath,
+            currentDatabasePath: previousDatabasePath);
+        if (uniqueEditedProfile == null)
+            return;
 
-        await SyncEmbeddedProxySettingsAsync();
+        ConnectionProfile editedProfile = uniqueEditedProfile;
+        string resolvedGameName = editedProfile.Name;
 
-        // Auto-save in place if a profile file is already loaded.
-        if (!string.IsNullOrEmpty(_currentProfilePath))
+        string targetDatabasePath = previousDatabasePath;
+        string oldDefaultDatabasePath = AppPaths.TwxproxyDatabasePathForGame(previousGameName);
+        if (!string.Equals(previousGameName, resolvedGameName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(previousDatabasePath, oldDefaultDatabasePath, StringComparison.OrdinalIgnoreCase))
         {
-            try { dlg.Result.SaveXml(_currentProfilePath); }
-            catch { /* best-effort */ }
+            targetDatabasePath = AppPaths.TwxproxyDatabasePathForGame(resolvedGameName);
+            try
+            {
+                if (File.Exists(previousDatabasePath) && !File.Exists(targetDatabasePath))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(targetDatabasePath)!);
+                    File.Move(previousDatabasePath, targetDatabasePath);
+                }
+            }
+            catch
+            {
+                targetDatabasePath = previousDatabasePath;
+            }
         }
+
+        EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(
+            editedProfile,
+            string.IsNullOrWhiteSpace(targetDatabasePath) ? AppPaths.TwxproxyDatabasePathForGame(resolvedGameName) : targetDatabasePath,
+            _embeddedGameConfig);
+        await SaveEmbeddedGameConfigAsync(resolvedGameName, config);
+
+        string newConfigPath = AppPaths.TwxproxyGameConfigFileFor(resolvedGameName);
+        if (!string.IsNullOrWhiteSpace(previousConfigPath) &&
+            !string.Equals(previousConfigPath, newConfigPath, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (File.Exists(previousConfigPath))
+                    File.Delete(previousConfigPath);
+            }
+            catch { }
+        }
+
+        _currentProfilePath = newConfigPath;
+        _embeddedGameConfig = config;
+        _embeddedGameName = resolvedGameName;
+        ApplyProfile(BuildProfileFromConfig(config));
+        AddToRecentAndSave(newConfigPath);
+        await SyncEmbeddedProxySettingsAsync();
 
         _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
         _buffer.Dirty = true;
@@ -2764,21 +3323,29 @@ public class MainWindow : Window
         var dlg = new NewConnectionDialog();
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
 
-        var path = await PickSavePath(Path.GetFileName(_currentProfilePath));
-        if (path == null) return;
+        ConnectionProfile? uniqueNewProfile = await EnsureUniqueProfileAsync(dlg.Result);
+        if (uniqueNewProfile == null)
+            return;
 
-        try   { dlg.Result.SaveXml(path); }
-        catch (Exception ex) { await ShowMessageAsync("Save Error", ex.Message); return; }
+        ConnectionProfile newProfile = uniqueNewProfile;
+        string gameName = newProfile.Name;
+        string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(
+            newProfile,
+            AppPaths.TwxproxyDatabasePathForGame(gameName));
+        await SaveEmbeddedGameConfigAsync(gameName, config);
 
         _currentProfilePath = path;
-        ApplyProfile(dlg.Result);
+        _embeddedGameConfig = config;
+        _embeddedGameName = gameName;
+        ApplyProfile(BuildProfileFromConfig(config));
         AddToRecentAndSave(path);
         OnGameSelected();
-        _parser.Feed($"\x1b[1;36m[Game loaded: {dlg.Result.Server}:{dlg.Result.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
+        _parser.Feed($"\x1b[1;36m[Game loaded: {newProfile.Server}:{newProfile.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
         _buffer.Dirty = true;
     }
 
-    /// <summary>File > Open: file picker → load XML → apply (no connect).</summary>
+    /// <summary>File > Open: open or import a shared game JSON or a TWX database.</summary>
     private async Task OnOpenConnectionAsync()
     {
         var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
@@ -2787,66 +3354,72 @@ public class MainWindow : Window
         var home  = await GetHomeFolderAsync(storage);
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title                  = "Open MTC Connection",
+            Title                  = "Open Game",
             SuggestedStartLocation = home,
             AllowMultiple          = false,
             FileTypeFilter         =
             [
-                new FilePickerFileType("MTC Connection") { Patterns = ["*.mtc"] },
+                new FilePickerFileType("TWX Game Config") { Patterns = ["*.json"] },
+                new FilePickerFileType("TWX Database") { Patterns = ["*.xdb"] },
+                new FilePickerFileType("Legacy MTC Connection") { Patterns = ["*.mtc"] },
                 new FilePickerFileType("All Files")      { Patterns = ["*"]     },
             ],
         });
         if (files.Count == 0) return;
 
         string path = files[0].Path.LocalPath;
-        ConnectionProfile profile;
-        try   { profile = ConnectionProfile.LoadXml(path); }
-        catch (Exception ex) { await ShowMessageAsync("Load Error", ex.Message); return; }
-
-        _currentProfilePath = path;
-        ApplyProfile(profile);
-        AddToRecentAndSave(path);
-        OnGameSelected();
-        _parser.Feed($"\x1b[1;36m[Game loaded: {profile.Server}:{profile.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
-        _buffer.Dirty = true;
+        await OpenPathAsync(path, addToRecent: true);
     }
 
-    /// <summary>File > Save / Save As: save current connection settings to XML.</summary>
+    /// <summary>File > Save / Save As: persist the current shared game JSON.</summary>
     private async Task OnSaveConnectionAsync(bool saveAs = false)
     {
-        string? path = _currentProfilePath;
-        if (saveAs || path == null)
+        if (!saveAs)
         {
-            path = await PickSavePath(Path.GetFileName(_currentProfilePath));
-            if (path == null) return;
+            await SaveCurrentGameConfigAsync();
+            if (_currentProfilePath != null)
+                AddToRecentAndSave(_currentProfilePath);
+            return;
         }
 
-        try   { BuildProfileFromState().SaveXml(path); }
-        catch (Exception ex) { await ShowMessageAsync("Save Error", ex.Message); return; }
+        var dlg = new NewConnectionDialog(BuildProfileFromState());
+        if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null)
+            return;
 
-        _currentProfilePath = path;
-        AddToRecentAndSave(path);
-    }
+        ConnectionProfile? uniqueSaveAsProfile = await EnsureUniqueProfileAsync(
+            dlg.Result,
+            currentConfigPath: null,
+            currentDatabasePath: null);
+        if (uniqueSaveAsProfile == null)
+            return;
 
-    /// <summary>Opens the save-file picker for .mtc files, returns chosen path or null.</summary>
-    private async Task<string?> PickSavePath(string? suggestedName = null)
-    {
-        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
-        if (storage == null) return null;
-
-        var home = await GetHomeFolderAsync(storage);
-        var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+        ConnectionProfile saveAsProfile = uniqueSaveAsProfile;
+        string gameName = saveAsProfile.Name;
+        string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        string targetDatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        string currentDatabasePath = _embeddedGameConfig?.DatabasePath ?? AppPaths.TwxproxyDatabasePathForGame(DeriveGameName());
+        if (!string.IsNullOrWhiteSpace(currentDatabasePath) &&
+            File.Exists(currentDatabasePath) &&
+            !string.Equals(currentDatabasePath, targetDatabasePath, StringComparison.OrdinalIgnoreCase) &&
+            !File.Exists(targetDatabasePath))
         {
-            Title                  = "Save MTC Connection",
-            SuggestedStartLocation = home,
-            SuggestedFileName      = suggestedName ?? "connection",
-            DefaultExtension       = "mtc",
-            FileTypeChoices        =
-            [
-                new FilePickerFileType("MTC Connection") { Patterns = ["*.mtc"] },
-            ],
-        });
-        return file?.Path.LocalPath;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(targetDatabasePath)!);
+                File.Copy(currentDatabasePath, targetDatabasePath, overwrite: false);
+            }
+            catch { }
+        }
+        EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(
+            saveAsProfile,
+            targetDatabasePath,
+            _embeddedGameConfig);
+        await SaveEmbeddedGameConfigAsync(gameName, config);
+        _currentProfilePath = path;
+        _embeddedGameConfig = config;
+        _embeddedGameName = gameName;
+        ApplyProfile(BuildProfileFromConfig(config));
+        AddToRecentAndSave(path);
     }
 
     private async Task<string?> PickProxySavePathAsync(

@@ -68,7 +68,11 @@ public class GameConfigService : IGameConfigService
     private async Task<List<string>> LoadRegistryAsync()
     {
         if (!File.Exists(_registryFile))
+        {
+            if (File.Exists(AppPaths.LegacyGameConfigFile))
+                return await MigrateLegacyRegistryAsync(AppPaths.LegacyGameConfigFile);
             return new List<string>();
+        }
 
         try
         {
@@ -125,6 +129,53 @@ public class GameConfigService : IGameConfigService
 
         await SaveRegistryAsync(paths);
         return paths;
+    }
+
+    private async Task<List<string>> MigrateLegacyRegistryAsync(string legacyRegistryFile)
+    {
+        try
+        {
+            var json = await File.ReadAllTextAsync(legacyRegistryFile);
+            var trimmed = json.AsSpan().TrimStart();
+
+            if (trimmed.Length >= 2 && trimmed[1] == '{')
+            {
+                var oldConfigs = System.Text.Json.JsonSerializer.Deserialize(
+                    json, GameConfigJsonContext.Default.ListGameConfig);
+                if (oldConfigs != null)
+                    return await MigrateOldConfigsAsync(oldConfigs);
+                return new List<string>();
+            }
+
+            var oldPaths = System.Text.Json.JsonSerializer.Deserialize(
+                json, GameConfigJsonContext.Default.ListString) ?? new List<string>();
+
+            var migratedPaths = new List<string>();
+            foreach (string oldPath in oldPaths)
+            {
+                if (!File.Exists(oldPath))
+                    continue;
+
+                GameConfig? config = await ReadGameFileAsync(oldPath);
+                if (config == null)
+                    continue;
+
+                ApplyDefaults(config);
+                config.GameDataFilePath = AppPaths.GameDataFileFor(config.Name);
+                Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
+                var gameJson = System.Text.Json.JsonSerializer.Serialize(
+                    config, GameConfigJsonContext.Default.GameConfig);
+                await File.WriteAllTextAsync(config.GameDataFilePath, gameJson);
+                migratedPaths.Add(config.GameDataFilePath);
+            }
+
+            await SaveRegistryAsync(migratedPaths);
+            return migratedPaths;
+        }
+        catch
+        {
+            return new List<string>();
+        }
     }
 
     // -------------------------------------------------------------------------

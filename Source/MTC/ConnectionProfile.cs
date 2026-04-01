@@ -10,11 +10,13 @@ public enum TwProtocol { Telnet, Rlogin }
 /// <summary>
 /// All settings needed to establish and configure a game connection,
 /// including the last-known ship state so the sidebar is pre-populated
-/// when the file is re-opened.
-/// Serialised to/from a UTF-8 XML file with the ".mtc" extension.
+/// when the game config is re-opened.
+/// This class remains the MTC dialog/load/save DTO and can still import
+/// legacy UTF-8 XML ".mtc" files.
 /// </summary>
 public class ConnectionProfile
 {
+    public string     Name            { get; set; } = string.Empty;
     // ── Connection ─────────────────────────────────────────────────────────
     public string     Server          { get; set; } = string.Empty;
     public int        Port            { get; set; } = 2002;

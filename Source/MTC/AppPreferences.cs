@@ -11,7 +11,7 @@ public class AppPreferences
 {
     public const int MaxRecentFiles = 5;
 
-    /// <summary>Paths of recently opened .mtc files, newest first.</summary>
+    /// <summary>Paths of recently opened game configs or databases, newest first.</summary>
     public List<string> RecentFiles { get; } = [];
 
     /// <summary>Directory where the user stores TWX scripts. Empty = not configured.</summary>

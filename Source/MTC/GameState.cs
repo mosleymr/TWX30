@@ -47,6 +47,7 @@ public class GameState
     // ── Connection status ──────────────────────────────────────────────────
     public string Host            { get; set; } = string.Empty;
     public int    Port            { get; set; } = 2002;
+    public string GameName        { get; set; } = string.Empty;
     public TwProtocol Protocol    { get; set; } = TwProtocol.Telnet;
     public bool   LocalTwxProxy   { get; set; } = true;
     public string TwxProxyDbPath  { get; set; } = string.Empty;

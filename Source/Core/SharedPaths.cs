@@ -23,8 +23,14 @@ public static class SharedPaths
     /// <summary>Directory where shared proxy capture/log files are stored.</summary>
     public static string LogDir => Path.Combine(AppDataDir, "logs");
 
+    /// <summary>Directory where shared game JSON files are stored.</summary>
+    public static string GamesDir => Path.Combine(AppDataDir, "games");
+
     /// <summary>Directory where shared expansion-module DLLs can be dropped for both apps.</summary>
     public static string ModulesDir => Path.Combine(AppDataDir, "modules");
+
+    /// <summary>Legacy TWX proxy configuration file used for quick-load and bot metadata.</summary>
+    public static string TwxpConfigPath => Path.Combine(AppDataDir, "twxp.cfg");
 
     /// <summary>Returns the shared .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
@@ -33,8 +39,15 @@ public static class SharedPaths
         return Path.Combine(DatabaseDir, safe + ".xdb");
     }
 
+    public static string GameConfigPathForGame(string gameName)
+    {
+        string safe = SanitizeFileComponent(gameName);
+        return Path.Combine(GamesDir, safe + ".json");
+    }
+
     public static void EnsureDatabaseDir() => Directory.CreateDirectory(DatabaseDir);
     public static void EnsureLogDir() => Directory.CreateDirectory(LogDir);
+    public static void EnsureGamesDir() => Directory.CreateDirectory(GamesDir);
     public static void EnsureModuleDir() => Directory.CreateDirectory(ModulesDir);
 
     public static string SanitizeFileComponent(string value)

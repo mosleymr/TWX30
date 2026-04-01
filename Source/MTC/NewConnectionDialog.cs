@@ -34,6 +34,15 @@ public class NewConnectionDialog : Window
 
         var profile = defaults ?? new ConnectionProfile();
 
+        var txtName = new TextBox
+        {
+            Text = profile.Name,
+            Watermark = "game name",
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+        };
+
         // ── Input fields ──────────────────────────────────────────────────
         var txtServer = new TextBox
         {
@@ -168,6 +177,13 @@ public class NewConnectionDialog : Window
 
         btnOk.Click += (_, _) =>
         {
+            string name = txtName.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrEmpty(name))
+            {
+                txtName.Focus();
+                return;
+            }
+
             string server = txtServer.Text?.Trim() ?? string.Empty;
             if (string.IsNullOrEmpty(server))
             {
@@ -182,6 +198,7 @@ public class NewConnectionDialog : Window
 
             Result = new ConnectionProfile
             {
+                Name            = name,
                 Server          = server,
                 Port            = portVal,
                 Protocol        = cboProtocol.SelectedIndex == 1 ? TwProtocol.Rlogin : TwProtocol.Telnet,
@@ -221,6 +238,7 @@ public class NewConnectionDialog : Window
             Spacing  = 8,
             Children =
             {
+                BuildRow("Game name:",      txtName),
                 BuildRow("Server:",         txtServer),
                 BuildRow("Port:",           txtPort),
                 BuildRow("Protocol:",       cboProtocol),

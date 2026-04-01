@@ -22,6 +22,8 @@ internal class EmbeddedGameConfig
     public int    Sectors { get; set; } = 1000;
     public int    ListenPort { get; set; } = 2300;
     public char   CommandChar { get; set; } = '$';
+    public string DatabasePath { get; set; } = string.Empty;
+    public string ScriptDirectory { get; set; } = string.Empty;
     public bool   AutoReconnect { get; set; }
     public int    ReconnectDelaySeconds { get; set; } = 5;
     public bool   NativeHaggleEnabled { get; set; } = true;
@@ -49,7 +51,56 @@ internal class EmbeddedGameConfig
     /// <summary>Variables persisted by <c>savevar</c> / retrieved by <c>loadvar</c>.</summary>
     public Dictionary<string, string> Variables { get; set; } = new();
 
+    /// <summary>MTC-specific settings/state stored alongside the shared game config.</summary>
+    public EmbeddedMtcConfig Mtc { get; set; } = new();
+
     /// <summary>Preserves every TWXP GameConfig field not listed above.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+
+internal class EmbeddedMtcConfig
+{
+    public string Protocol { get; set; } = nameof(TwProtocol.Telnet);
+    public bool LocalTwxProxy { get; set; } = true;
+    public string TwxProxyDbPath { get; set; } = string.Empty;
+    public bool EmbeddedProxy { get; set; } = true;
+    public int ScrollbackLines { get; set; } = 2000;
+    public EmbeddedMtcState State { get; set; } = new();
+}
+
+internal class EmbeddedMtcState
+{
+    public string TraderName { get; set; } = string.Empty;
+    public int Sector { get; set; }
+    public int Turns { get; set; }
+    public int Experience { get; set; }
+    public string Alignment { get; set; } = "0";
+    public long Credits { get; set; }
+    public int Corp { get; set; }
+    public string ShipName { get; set; } = "-";
+    public int HoldsTotal { get; set; }
+    public int FuelOre { get; set; }
+    public int Organics { get; set; }
+    public int Equipment { get; set; }
+    public int Colonists { get; set; }
+    public int HoldsEmpty { get; set; }
+    public int Fighters { get; set; }
+    public int Shields { get; set; }
+    public int TurnsPerWarp { get; set; }
+    public int Etheral { get; set; }
+    public int Beacon { get; set; }
+    public int Disruptor { get; set; }
+    public int Photon { get; set; }
+    public int Armor { get; set; }
+    public int Limpet { get; set; }
+    public int Genesis { get; set; }
+    public int Atomic { get; set; }
+    public int Corbomite { get; set; }
+    public int Cloak { get; set; }
+    public int TranswarpDrive1 { get; set; }
+    public int TranswarpDrive2 { get; set; }
+    public bool ScannerD { get; set; }
+    public bool ScannerH { get; set; }
+    public bool ScannerP { get; set; }
 }

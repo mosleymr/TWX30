@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace TWXP.Models;
@@ -61,6 +62,9 @@ public class GameConfig
     /// </summary>
     [JsonIgnore]
     public string GameDataFilePath { get; set; } = string.Empty;
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 public enum GameStatus
