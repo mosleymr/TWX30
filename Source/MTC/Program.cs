@@ -5,9 +5,12 @@ using TWXProxy.Core;
 // Console.WriteLine calls in Core do not leak to the terminal.
 Console.SetOut(TextWriter.Null);
 
+var prefs = MTC.AppPreferences.Load();
 SharedPaths.EnsureLogDir();
-GlobalModules.DebugLogPath = Path.Combine(SharedPaths.LogDir, "mtc_debug.log");
-GlobalModules.InitializeDebugLog();
+GlobalModules.ConfigureDebugLogging(
+    Path.Combine(SharedPaths.LogDir, "mtc_debug.log"),
+    prefs.DebugLoggingEnabled,
+    prefs.VerboseDebugLogging);
 
 AppBuilder.Configure<MTC.App>()
     .UsePlatformDetect()

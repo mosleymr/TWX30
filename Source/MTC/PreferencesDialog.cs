@@ -83,6 +83,36 @@ public class PreferencesDialog : Window
 
         var scriptsRow = BuildRow("Scripts Directory:", inputRow);
 
+        var chkDebug = new CheckBox
+        {
+            Content = "Enable debug logging",
+            IsChecked = prefs.DebugLoggingEnabled,
+            Foreground = FgNormal,
+        };
+
+        var chkVerbose = new CheckBox
+        {
+            Content = "Enable verbose debug logging",
+            IsChecked = prefs.VerboseDebugLogging,
+            Foreground = FgNormal,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        chkDebug.IsCheckedChanged += (_, _) =>
+        {
+            bool debugEnabled = chkDebug.IsChecked == true;
+            chkVerbose.IsEnabled = debugEnabled;
+            if (!debugEnabled)
+                chkVerbose.IsChecked = false;
+        };
+        chkVerbose.IsEnabled = chkDebug.IsChecked == true;
+
+        var debugRow = BuildRow("Debug Logging:", new StackPanel
+        {
+            Spacing = 2,
+            Children = { chkDebug, chkVerbose },
+        });
+
         // ── OK / Cancel ──────────────────────────────────────────────────
         var btnSave = new Button
         {
@@ -106,6 +136,8 @@ public class PreferencesDialog : Window
         {
             prefs.ScriptsDirectory = txtScripts.Text?.Trim()
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            prefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
+            prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
             prefs.Save();
             Close(true);
         };
@@ -125,7 +157,7 @@ public class PreferencesDialog : Window
         {
             Margin   = new Thickness(16),
             Spacing  = 4,
-            Children = { scriptsRow, buttons },
+            Children = { scriptsRow, debugRow, buttons },
         };
     }
 

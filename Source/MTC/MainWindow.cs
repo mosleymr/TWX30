@@ -52,7 +52,7 @@ public class MainWindow : Window
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
-    private MenuItem        _aiMenu        = new() { Header = "_AI" };
+    private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
@@ -188,6 +188,7 @@ public class MainWindow : Window
 
         // Load persisted preferences (recent file list etc.)
         _appPrefs = AppPreferences.Load();
+        ApplyDebugLoggingPreferences();
         RebuildRecentMenu();
         RebuildProxyMenu();
         RebuildScriptsMenu();
@@ -993,9 +994,21 @@ public class MainWindow : Window
 
     private async Task OnPreferencesAsync()
     {
-        await new PreferencesDialog(_appPrefs).ShowDialog<bool>(this);
-        // Rebuild scripts menu in case the directory changed.
+        bool saved = await new PreferencesDialog(_appPrefs).ShowDialog<bool>(this);
+        if (!saved)
+            return;
+
+        ApplyDebugLoggingPreferences();
         RebuildScriptsMenu();
+    }
+
+    private void ApplyDebugLoggingPreferences()
+    {
+        Core.SharedPaths.EnsureLogDir();
+        Core.GlobalModules.ConfigureDebugLogging(
+            Path.Combine(Core.SharedPaths.LogDir, "mtc_debug.log"),
+            _appPrefs.DebugLoggingEnabled,
+            _appPrefs.VerboseDebugLogging);
     }
 
     // ── Connection profile helpers ──────────────────────────────────────────
@@ -2250,9 +2263,11 @@ public class MainWindow : Window
 
     private void RebuildAiMenu()
     {
-        var items = BuildAiMenuItems();
+        List<object> items = BuildAiMenuItems();
         _aiMenu.ItemsSource = items;
-        _aiMenu.IsEnabled = items.OfType<MenuItem>().Any(item => item.IsEnabled);
+        bool hasItems = items.OfType<MenuItem>().Any(item => item.IsEnabled);
+        _aiMenu.IsEnabled = hasItems;
+        _aiMenu.IsVisible = hasItems;
     }
 
     private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
@@ -2431,13 +2446,22 @@ public class MainWindow : Window
     private List<object> BuildAiMenuItems()
     {
         var items = new List<object>();
-        var modules = _moduleHost?.GetModules<Core.IExpansionChatModule>() ?? Array.Empty<Core.ExpansionModuleBinding<Core.IExpansionChatModule>>();
-
-        if (modules.Count == 0)
-        {
-            items.Add(new MenuItem { Header = "No AI modules loaded", IsEnabled = false });
+        if (_moduleHost == null)
             return items;
-        }
+
+        string localModuleRoot = Path.GetFullPath(Path.Combine(GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory()), "modules"));
+        var modules = _moduleHost
+            .GetModules<Core.IExpansionChatModule>()
+            .Where(binding =>
+            {
+                string assemblyPath = Path.GetFullPath(binding.Info.AssemblyPath);
+                return assemblyPath.StartsWith(localModuleRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(Path.GetDirectoryName(assemblyPath), localModuleRoot, StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+
+        if (modules.Length == 0)
+            return items;
 
         foreach (Core.ExpansionModuleBinding<Core.IExpansionChatModule> binding in modules)
         {
@@ -3038,6 +3062,9 @@ public class MainWindow : Window
         _nativeAppMenu.Items.Clear();
         foreach (object? item in _menuBar.Items)
         {
+            if (item is MenuItem menuItem && !menuItem.IsVisible)
+                continue;
+
             NativeMenuItemBase? nativeItem = ConvertToNativeMenuItem(item);
             if (nativeItem != null)
                 _nativeAppMenu.Add(nativeItem);
@@ -3073,6 +3100,9 @@ public class MainWindow : Window
 
     private void AddDockRoot(MenuItem sourceMenu, string header)
     {
+        if (!sourceMenu.IsVisible)
+            return;
+
         var dockRoot = new MenuItem
         {
             Header = header,

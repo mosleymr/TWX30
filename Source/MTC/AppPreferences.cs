@@ -4,8 +4,8 @@ namespace MTC;
 
 /// <summary>
 /// Lightweight application-level preferences (not per-connection).
-/// Persisted to <c>~/.config/MTC/prefs.xml</c>.
-/// Currently stores the recent-files list.
+/// Persisted under the shared twxproxy user-data root.
+/// Stores UI-level preferences such as recent files and scripts directory.
 /// </summary>
 public class AppPreferences
 {
@@ -17,14 +17,26 @@ public class AppPreferences
     /// <summary>Directory where the user stores TWX scripts. Empty = not configured.</summary>
     public string ScriptsDirectory { get; set; } = string.Empty;
 
+    /// <summary>When true, writes debug output to the shared MTC debug log.</summary>
+    public bool DebugLoggingEnabled { get; set; }
+
+    /// <summary>When true, includes very high-frequency diagnostic logging.</summary>
+    public bool VerboseDebugLogging { get; set; }
+
     // ── Paths ──────────────────────────────────────────────────────────────
 
     private static string DefaultPath()
     {
+        var dir = AppPaths.AppDataDir;
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "prefs.xml");
+    }
+
+    private static string LegacyDefaultPath()
+    {
         var dir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".config", "MTC");
-        Directory.CreateDirectory(dir);
         return Path.Combine(dir, "prefs.xml");
     }
 
@@ -52,6 +64,8 @@ public class AppPreferences
             var doc = new XDocument(
                 new XElement("MtcPrefs",
                     new XElement("ScriptsDirectory", ScriptsDirectory),
+                    new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
+                    new XElement("VerboseDebugLogging", VerboseDebugLogging),
                     new XElement("RecentFiles",
                         RecentFiles.Select(p => new XElement("File", p))
                     )
@@ -68,13 +82,24 @@ public class AppPreferences
         try
         {
             string path = DefaultPath();
-            if (!File.Exists(path)) return prefs;
+            if (!File.Exists(path))
+            {
+                string legacyPath = LegacyDefaultPath();
+                if (!File.Exists(legacyPath))
+                    return prefs;
+                path = legacyPath;
+            }
 
             var root = XDocument.Load(path).Root;
             if (root == null) return prefs;
 
             string? sd = (string?)root.Element("ScriptsDirectory");
             if (!string.IsNullOrWhiteSpace(sd)) prefs.ScriptsDirectory = sd;
+
+            if (bool.TryParse((string?)root.Element("DebugLoggingEnabled"), out bool debugEnabled))
+                prefs.DebugLoggingEnabled = debugEnabled;
+            if (bool.TryParse((string?)root.Element("VerboseDebugLogging"), out bool verboseEnabled))
+                prefs.VerboseDebugLogging = verboseEnabled;
 
             foreach (var el in root.Element("RecentFiles")?.Elements("File")
                                    ?? Enumerable.Empty<XElement>())

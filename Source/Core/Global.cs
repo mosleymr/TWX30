@@ -153,19 +153,28 @@ namespace TWXProxy.Core
         private static readonly object _debugLock = new object();
         private static StreamWriter? _debugWriter = null;
 
-        /// <summary>
-        /// Initialize/clear the debug log file. Call this at application startup.
-        /// </summary>
-        public static void InitializeDebugLog()
+        public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled)
         {
-            if (!DebugMode) return;
-
-            try
+            lock (_debugLock)
             {
-                lock (_debugLock)
+                if (!string.IsNullOrWhiteSpace(debugLogPath))
+                    DebugLogPath = debugLogPath;
+
+                DebugMode = enabled;
+                VerboseDebugMode = verboseEnabled;
+
+                _debugWriter?.Dispose();
+                _debugWriter = null;
+
+                if (!DebugMode)
+                    return;
+
+                try
                 {
-                    _debugWriter?.Dispose();
-                    // BufferedStream via StreamWriter with autoFlush=false; we flush manually.
+                    string? directory = Path.GetDirectoryName(DebugLogPath);
+                    if (!string.IsNullOrWhiteSpace(directory))
+                        Directory.CreateDirectory(directory);
+
                     _debugWriter = new StreamWriter(DebugLogPath, append: false, System.Text.Encoding.UTF8, bufferSize: 4096)
                     {
                         AutoFlush = true
@@ -173,11 +182,19 @@ namespace TWXProxy.Core
                     _debugWriter.WriteLine($"=== TWX Proxy Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
                     _debugWriter.Flush();
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DEBUG LOG INIT ERROR] {ex.Message}");
+                }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[DEBUG LOG INIT ERROR] {ex.Message}");
-            }
+        }
+
+        /// <summary>
+        /// Initialize/clear the debug log file. Call this at application startup.
+        /// </summary>
+        public static void InitializeDebugLog()
+        {
+            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode);
         }
 
         /// <summary>
