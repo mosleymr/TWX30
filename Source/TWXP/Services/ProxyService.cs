@@ -263,13 +263,14 @@ public class ProxyService : IProxyService
                         {
                             // Strip \n (LF) control bytes for ANSI content (they appear between
                             // protocol lines and are not part of display text).
-                            string remainderForAnsi = remainder.Replace("\n", "");
+                            string remainderForAnsi = TWXProxy.Core.AnsiCodes.NormalizeAnsiTerminalText(remainder.Replace("\n", ""));
                             
                             // Set CURRENTANSILINE (with ANSI codes, \n stripped)
                             TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
                             
                             // Set CURRENTLINE (stripped of ANSI codes)
-                            string strippedRemainder = TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r');
+                            string strippedRemainder = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
+                                TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r'));
                             TWXProxy.Core.ScriptRef.SetCurrentLine(strippedRemainder);
 
                             // Fire triggers for partial lines (prompts) too
@@ -299,7 +300,8 @@ public class ProxyService : IProxyService
                     // line's "text\r ESC[0m \n" terminator — strip \n (LF) bytes to concatenate them.
                     int lineStart = lastProcessedPos;
                     int lineLength = crPos - lastProcessedPos;
-                    string line = buffered.Substring(lineStart, lineLength).Replace("\n", "");
+                    string line = TWXProxy.Core.AnsiCodes.NormalizeAnsiTerminalText(
+                        buffered.Substring(lineStart, lineLength).Replace("\n", ""));
                     
                     // Pascal fires ProcessLine (and thus TextLineEvent) on every \r, including blank lines.
                     // A blank \r\n line must reach TextLineEvent("") — e.g. PlayerInfo's :line handler
@@ -309,7 +311,8 @@ public class ProxyService : IProxyService
                         TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(line);
                         
                         // Set CURRENTLINE (stripped of ANSI codes)
-                        string strippedLine = TWXProxy.Core.AnsiCodes.StripANSI(line).TrimEnd('\r');
+                        string strippedLine = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
+                            TWXProxy.Core.AnsiCodes.StripANSI(line).TrimEnd('\r'));
                         TWXProxy.Core.ScriptRef.SetCurrentLine(strippedLine);
                         
                         TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing line: '{strippedLine}'\n");

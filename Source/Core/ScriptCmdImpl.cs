@@ -441,6 +441,13 @@ namespace TWXProxy.Core
                 return CmdAction.None;
             }
 
+            if (length <= 0)
+            {
+                GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (len<=0)\n");
+                parameters[1].Value = string.Empty;
+                return CmdAction.None;
+            }
+
             string result = parameters[0].Value.Substring(start - 1, 
                 Math.Min(length, parameters[0].Value.Length - start + 1));
             GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");

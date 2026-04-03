@@ -1496,8 +1496,9 @@ namespace TWXProxy.Core
                         {
                             // Set CURRENTLINE to the text that triggered this handler
                             // This allows the handler to parse the triggering line
-                            GlobalModules.DebugLog($"[CheckTriggers] Setting CURRENTLINE to '{text}'\n");
-                            ScriptRef.SetCurrentLine(text);
+                            string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
+                            GlobalModules.DebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
+                            ScriptRef.SetCurrentLine(currentLine);
                             GlobalModules.DebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
                             
                             GotoLabel(labelName);
@@ -1609,6 +1610,30 @@ namespace TWXProxy.Core
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[CheckTriggers] Finished checking all triggers, returning {result}\n");
             return result;
+        }
+
+        private static string NormalizeTextOutCurrentLine(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var builder = new StringBuilder(text.Length);
+            foreach (char ch in text)
+            {
+                if (ch == '\b' || ch == (char)127)
+                {
+                    if (builder.Length > 0)
+                        builder.Length--;
+                    continue;
+                }
+
+                if (ch == '\r' || ch == '\n')
+                    continue;
+
+                builder.Append(ch);
+            }
+
+            return builder.ToString();
         }
 
         private bool TriggerExists(string name)

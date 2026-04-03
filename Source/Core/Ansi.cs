@@ -69,5 +69,86 @@ namespace TWXProxy.Core
             // clear codes intact and mangling text like "Long Range Scan".
             return System.Text.RegularExpressions.Regex.Replace(text, @"\x1B\[[0-9;]*[A-Za-z]", string.Empty);
         }
+
+        public static string NormalizeTerminalText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var builder = new System.Text.StringBuilder(text.Length);
+            foreach (char ch in text)
+            {
+                if (ch == '\b' || ch == (char)127)
+                {
+                    if (builder.Length > 0)
+                        builder.Length--;
+                    continue;
+                }
+
+                if (ch == '\r' || ch == '\n')
+                    continue;
+
+                builder.Append(ch);
+            }
+
+            return builder.ToString();
+        }
+
+        public static string NormalizeAnsiTerminalText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var builder = new System.Text.StringBuilder(text.Length);
+            var visibleCharStarts = new System.Collections.Generic.Stack<int>();
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+
+                if (ch == '\x1B')
+                {
+                    int seqStart = i;
+                    builder.Append(ch);
+
+                    if (i + 1 < text.Length)
+                    {
+                        i++;
+                        builder.Append(text[i]);
+
+                        if (text[i] == '[')
+                        {
+                            while (i + 1 < text.Length)
+                            {
+                                i++;
+                                builder.Append(text[i]);
+                                if (char.IsLetter(text[i]))
+                                    break;
+                            }
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (ch == '\b' || ch == (char)127)
+                {
+                    if (visibleCharStarts.Count > 0)
+                    {
+                        int removeAt = visibleCharStarts.Pop();
+                        builder.Length = removeAt;
+                    }
+                    continue;
+                }
+
+                if (ch == '\r' || ch == '\n')
+                    continue;
+
+                visibleCharStarts.Push(builder.Length);
+                builder.Append(ch);
+            }
+
+            return builder.ToString();
+        }
     }
 }

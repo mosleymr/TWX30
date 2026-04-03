@@ -1611,8 +1611,8 @@ public class MainWindow : Window
 
                     if (!string.IsNullOrEmpty(remainder))
                     {
-                        string remainderAnsi   = remainder.Replace("\n", "");
-                        string strippedRemainder = rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r');
+                        string remainderAnsi = Core.AnsiCodes.NormalizeAnsiTerminalText(remainder.Replace("\n", ""));
+                        string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r'));
                         _shipParser.FeedLine(strippedRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
                         if (!gi.IsProxyMenuActive)
@@ -1629,8 +1629,8 @@ public class MainWindow : Window
                 }
 
                 // Complete \r-terminated line.
-                string lineRaw     = buffered[lastProcessedPos..crPos].Replace("\n", "");
-                string lineStripped = rxAnsi.Replace(lineRaw, string.Empty).TrimEnd('\r');
+                string lineRaw = Core.AnsiCodes.NormalizeAnsiTerminalText(buffered[lastProcessedPos..crPos].Replace("\n", ""));
+                string lineStripped = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(lineRaw, string.Empty).TrimEnd('\r'));
 
                 if (!string.IsNullOrEmpty(lineStripped))
                 {
