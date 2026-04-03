@@ -11,6 +11,12 @@ public sealed record RunningScriptInfo(
     bool IsBot,
     bool Paused);
 
+public sealed record TwxImportResult(
+    int ImportedSectorRecords,
+    int ExpectedSectorRecords,
+    bool WasTruncated,
+    int SkippedInvalidWarps);
+
 /// <summary>
 /// Shared proxy-side operational helpers used by both the standalone UI and MTC.
 /// The goal is to keep import/export/script-control behavior in one place rather
@@ -245,7 +251,7 @@ public static class ProxyGameOperations
             stream.Write(record, 0, record.Length);
     }
 
-    public static void ImportTwx(ModDatabase database, string inputPath, bool keepRecent)
+    public static TwxImportResult ImportTwx(ModDatabase database, string inputPath, bool keepRecent)
     {
         EnsureOpenDatabase(database);
         if (!File.Exists(inputPath))
@@ -267,8 +273,16 @@ public static class ProxyGameOperations
             throw new InvalidDataException($"Unsupported TWX version: {version}");
 
         int crc = GetCrc(header, 0, header.Length);
-        byte[][] sectorRecords = new byte[sectors][];
-        for (int i = 0; i < sectors; i++)
+        long payloadBytes = Math.Max(0, stream.Length - 256);
+        int availableRecords = (int)(payloadBytes / 120);
+        int recordCount = Math.Min(sectors, availableRecords);
+        bool truncated = recordCount < sectors;
+
+        if (recordCount == 0)
+            throw new InvalidDataException("Incomplete TWX sector data.");
+
+        byte[][] sectorRecords = new byte[recordCount][];
+        for (int i = 0; i < recordCount; i++)
         {
             byte[] record = reader.ReadBytes(120);
             if (record.Length != 120)
@@ -277,21 +291,25 @@ public static class ProxyGameOperations
             crc ^= GetCrc(record, 0, record.Length);
         }
 
-        if (crc != 0)
+        if (!truncated && crc != 0)
             throw new InvalidDataException("TWX file checksum is invalid.");
 
-        for (int i = 1; i <= sectors; i++)
+        int skippedInvalidWarps = 0;
+        for (int i = 1; i <= recordCount; i++)
         {
-            ApplyTwxSectorRecord(database, i, sectorRecords[i - 1], keepRecent);
+            skippedInvalidWarps += ApplyTwxSectorRecord(database, i, sectorRecords[i - 1], keepRecent);
         }
 
         database.SaveDatabase();
+        return new TwxImportResult(recordCount, sectors, truncated, skippedInvalidWarps);
     }
 
-    private static void ApplyTwxSectorRecord(ModDatabase database, int sectorNumber, byte[] record, bool keepRecent)
+    private static int ApplyTwxSectorRecord(ModDatabase database, int sectorNumber, byte[] record, bool keepRecent)
     {
         var sector = database.GetSector(sectorNumber)
             ?? throw new InvalidDataException($"Sector {sectorNumber} not found.");
+
+        int skippedInvalidWarps = 0;
 
         sbyte info = unchecked((sbyte)record[0]);
         sbyte navHaz = unchecked((sbyte)record[1]);
@@ -331,6 +349,11 @@ public static class ProxyGameOperations
             int warp = BaseZero(warpSectors[index]);
             if (warp == 0)
                 break;
+            if (warp > database.DBHeader.Sectors)
+            {
+                skippedInvalidWarps++;
+                continue;
+            }
             AddWarpSorted(sector, (ushort)warp);
         }
 
@@ -410,6 +433,7 @@ public static class ProxyGameOperations
         }
 
         database.SaveSector(sector);
+        return skippedInvalidWarps;
     }
 
     private static Port EnsurePort(SectorData sector)

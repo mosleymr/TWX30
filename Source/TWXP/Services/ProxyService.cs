@@ -24,7 +24,7 @@ public interface IProxyService
     Task ExportBubblesAsync(string gameId, string outputPath);
     Task ExportDeadendsAsync(string gameId, string outputPath);
     Task ExportTwxAsync(string gameId, string outputPath);
-    Task ImportTwxAsync(string gameId, string inputPath, bool keepRecent);
+    Task<TwxImportResult> ImportTwxAsync(string gameId, string inputPath, bool keepRecent);
     Task<bool> BeginLogPlaybackAsync(string gameId, string capturePath);
 }
 
@@ -649,12 +649,11 @@ public class ProxyService : IProxyService
         });
     }
 
-    public Task ImportTwxAsync(string gameId, string inputPath, bool keepRecent)
+    public Task<TwxImportResult> ImportTwxAsync(string gameId, string inputPath, bool keepRecent)
     {
         return WithDatabaseAsync(gameId, database =>
         {
-            ProxyGameOperations.ImportTwx(database, inputPath, keepRecent);
-            return Task.CompletedTask;
+            return Task.FromResult(ProxyGameOperations.ImportTwx(database, inputPath, keepRecent));
         });
     }
 

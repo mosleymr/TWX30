@@ -567,8 +567,17 @@ public partial class MainPage : ContentPage
                 "Keep Newer Data",
                 "Overwrite");
 
-            await _proxyService.ImportTwxAsync(selected.Config.Id, result.FullPath, keepRecent);
-            await DisplayAlert("TWX Import Complete", "Import completed successfully.", "OK");
+            var importResult = await _proxyService.ImportTwxAsync(selected.Config.Id, result.FullPath, keepRecent);
+            string message = importResult.WasTruncated || importResult.SkippedInvalidWarps > 0
+                ? $"Imported {importResult.ImportedSectorRecords} of {importResult.ExpectedSectorRecords} sector records."
+                : "Import completed successfully.";
+
+            if (importResult.WasTruncated)
+                message += " The file ended before all header-declared sector records were present.";
+            if (importResult.SkippedInvalidWarps > 0)
+                message += $" Skipped {importResult.SkippedInvalidWarps} out-of-range warp entries.";
+
+            await DisplayAlert("TWX Import Complete", message, "OK");
         }
         catch (Exception ex)
         {

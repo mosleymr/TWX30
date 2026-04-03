@@ -2823,8 +2823,17 @@ public class MainWindow : Window
 
         try
         {
-            Core.ProxyGameOperations.ImportTwx(_sessionDb, path, keepRecent);
-            await ShowMessageAsync("Import Complete", "TWX import completed successfully.");
+            Core.TwxImportResult result = Core.ProxyGameOperations.ImportTwx(_sessionDb, path, keepRecent);
+            string message = result.WasTruncated || result.SkippedInvalidWarps > 0
+                ? $"Imported {result.ImportedSectorRecords} of {result.ExpectedSectorRecords} sector records."
+                : "TWX import completed successfully.";
+
+            if (result.WasTruncated)
+                message += " The file ended before all header-declared sector records were present.";
+            if (result.SkippedInvalidWarps > 0)
+                message += $" Skipped {result.SkippedInvalidWarps} out-of-range warp entries.";
+
+            await ShowMessageAsync("Import Complete", message);
         }
         catch (Exception ex)
         {
