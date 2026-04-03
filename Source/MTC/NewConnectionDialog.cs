@@ -1,5 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Layout;
 using Avalonia.Media;
 
@@ -162,6 +164,16 @@ public class NewConnectionDialog : Window
         chkUseLogin.IsCheckedChanged += (_, _) => RefreshEmbeddedLoginVisibility();
         chkUseRLogin.IsCheckedChanged += (_, _) => RefreshEmbeddedLoginVisibility();
         RefreshEmbeddedLoginVisibility();
+
+        WireDialogClipboard(txtName);
+        WireDialogClipboard(txtServer);
+        WireDialogClipboard(txtPort);
+        WireDialogClipboard(txtSectors);
+        WireDialogClipboard(txtLoginScript);
+        WireDialogClipboard(txtLoginName);
+        WireDialogClipboard(txtPassword);
+        WireDialogClipboard(txtGameLetter);
+
         var btnOk = new Button
         {
             Content                    = "OK",
@@ -278,5 +290,83 @@ public class NewConnectionDialog : Window
         grid.Children.Add(lbl);
         grid.Children.Add(input);
         return grid;
+    }
+
+    private static void WireDialogClipboard(TextBox textBox)
+    {
+        textBox.KeyDown += async (_, e) =>
+        {
+            if (!e.KeyModifiers.HasFlag(KeyModifiers.Control))
+                return;
+
+            switch (e.Key)
+            {
+                case Key.A:
+                {
+                    string current = textBox.Text ?? string.Empty;
+                    textBox.SelectionStart = 0;
+                    textBox.SelectionEnd = current.Length;
+                    textBox.CaretIndex = current.Length;
+                    e.Handled = true;
+                    break;
+                }
+
+                case Key.C:
+                {
+                    string selected = textBox.SelectedText ?? string.Empty;
+                    if (selected.Length > 0)
+                    {
+                        var clipboard = TopLevel.GetTopLevel(textBox)?.Clipboard;
+                        if (clipboard != null)
+                            await clipboard.SetTextAsync(selected);
+                    }
+                    e.Handled = true;
+                    break;
+                }
+
+                case Key.X:
+                {
+                    string selected = textBox.SelectedText ?? string.Empty;
+                    if (selected.Length > 0)
+                    {
+                        var clipboard = TopLevel.GetTopLevel(textBox)?.Clipboard;
+                        if (clipboard != null)
+                            await clipboard.SetTextAsync(selected);
+                        ReplaceSelection(textBox, string.Empty);
+                    }
+                    e.Handled = true;
+                    break;
+                }
+
+                case Key.V:
+                {
+                    var clipboard = TopLevel.GetTopLevel(textBox)?.Clipboard;
+                    if (clipboard != null)
+                    {
+                        string? pasted = await ClipboardExtensions.TryGetTextAsync(clipboard);
+                        if (!string.IsNullOrEmpty(pasted))
+                            ReplaceSelection(textBox, pasted);
+                    }
+                    e.Handled = true;
+                    break;
+                }
+            }
+        };
+    }
+
+    private static void ReplaceSelection(TextBox textBox, string replacement)
+    {
+        string current = textBox.Text ?? string.Empty;
+        int start = Math.Min(textBox.SelectionStart, textBox.SelectionEnd);
+        int end = Math.Max(textBox.SelectionStart, textBox.SelectionEnd);
+        start = Math.Clamp(start, 0, current.Length);
+        end = Math.Clamp(end, 0, current.Length);
+
+        string updated = current.Substring(0, start) + replacement + current.Substring(end);
+        int caret = start + replacement.Length;
+        textBox.Text = updated;
+        textBox.SelectionStart = caret;
+        textBox.SelectionEnd = caret;
+        textBox.CaretIndex = caret;
     }
 }
