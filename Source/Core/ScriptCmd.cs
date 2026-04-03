@@ -465,8 +465,8 @@ namespace TWXProxy.Core
             // Commands added in 2.06 / TWX27+ (must remain in Pascal order)
             AddCommand("GETDEAFCLIENTS", 1, 1, CmdGetDeafClients, new[] { ParamKind.Variable }, ParamKind.Value); // 115
             AddCommand("SETDEAFCLIENTS", 0, 1, CmdSetDeafClients, Array.Empty<ParamKind>(), ParamKind.Value); // 116
-            AddCommand("SAVEGLOBAL", 1, 1, CmdSaveGlobal, Array.Empty<ParamKind>(), ParamKind.Value); // 117
-            AddCommand("LOADGLOBAL", 1, 1, CmdLoadGlobal, Array.Empty<ParamKind>(), ParamKind.Value); // 118
+            AddCommand("SAVEGLOBAL", 1, 1, CmdSaveGlobal, new[] { ParamKind.Variable }, ParamKind.Value); // 117
+            AddCommand("LOADGLOBAL", 1, 1, CmdLoadGlobal, new[] { ParamKind.Variable }, ParamKind.Value); // 118
             AddCommand("CLEARGLOBALS", 0, 0, CmdClearGlobals, Array.Empty<ParamKind>(), ParamKind.Value); // 119
             AddCommand("SWITCHBOT", 0, 2, CmdSwitchBot, Array.Empty<ParamKind>(), ParamKind.Value); // 120
             AddCommand("STRIPANSI", 2, 2, CmdStripANSI, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 121
@@ -497,7 +497,7 @@ namespace TWXProxy.Core
             AddCommand("STOPALL", 0, 1, CmdStopAll, Array.Empty<ParamKind>(), ParamKind.Value); // 146
             AddCommand("CONCAT", 2, -1, CmdConcat, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 147
             AddCommand("SAVEHELP", 2, 5, CmdSaveHelp, Array.Empty<ParamKind>(), ParamKind.Value); // 148
-            AddCommand("LISTGLOBALS", 2, 2, CmdListGlobals, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 149
+            AddCommand("LISTGLOBALS", 2, 2, CmdListGlobals, new[] { ParamKind.Variable, ParamKind.Variable }, ParamKind.Value); // 149
             AddCommand("ECHOEX", 1, -1, CmdEchoEx, Array.Empty<ParamKind>(), ParamKind.Value); // 150
             AddCommand("LIBCMD", 1, -1, CmdLibCmd, Array.Empty<ParamKind>(), ParamKind.Value); // 151
 

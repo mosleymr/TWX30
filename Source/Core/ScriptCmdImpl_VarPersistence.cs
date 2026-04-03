@@ -17,8 +17,14 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
+        private sealed class GlobalVarEntry
+        {
+            public string Value { get; set; } = "0";
+            public List<string>? Data { get; set; }
+        }
+
         // Global variable storage (shared across all scripts)
-        private static readonly Dictionary<string, string> _globalVars = new();
+        private static readonly Dictionary<string, GlobalVarEntry> _globalVars = new();
         
         // Program variables (internal proxy settings)
         private static readonly Dictionary<string, string> _progVars = new();
@@ -89,28 +95,50 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdLoadGlobal_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: loadglobal <name> var
-            // Load global variable (shared across all scripts)
-            string name = parameters[0].Value;
-            
-            if (_globalVars.TryGetValue(name, out var value) && parameters[1] is VarParam varParam)
+            // CMD: loadglobal var
+            if (parameters[0] is VarParam varParam &&
+                _globalVars.TryGetValue(varParam.Name, out var entry))
             {
-                varParam.Value = value;
+                if (entry.Data is { Count: > 0 })
+                {
+                    varParam.SetArrayFromStrings(entry.Data);
+                }
+                else
+                {
+                    varParam.Value = entry.Value;
+                }
             }
             return CmdAction.None;
         }
 
         private static CmdAction CmdSaveGlobal_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: saveglobal <name> var
-            // Save global variable (shared across all scripts)
-            string name = parameters[0].Value;
-            
-            if (parameters[1] is VarParam varParam)
+            // CMD: saveglobal var
+            if (parameters[0] is VarParam varParam)
             {
-                _globalVars[name] = varParam.Value;
+                if (varParam.ArraySize > 0)
+                {
+                    var data = new List<string>(varParam.ArraySize);
+                    for (int i = 1; i <= varParam.ArraySize; i++)
+                    {
+                        data.Add(varParam.GetIndexVar(new[] { i.ToString() }).Value);
+                    }
+
+                    _globalVars[varParam.Name] = new GlobalVarEntry
+                    {
+                        Value = string.Empty,
+                        Data = data
+                    };
+                }
+                else
+                {
+                    _globalVars[varParam.Name] = new GlobalVarEntry
+                    {
+                        Value = varParam.Value,
+                        Data = null
+                    };
+                }
             }
-            
             return CmdAction.None;
         }
 
@@ -124,16 +152,16 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdListGlobals_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: listglobals var <pattern>
-            // List global variables matching pattern
-            if (parameters[0] is VarParam varParam)
+            // CMD: listglobals varNames varValues
+            if (parameters[0] is VarParam namesVar && parameters[1] is VarParam valuesVar)
             {
-                string pattern = parameters.Length > 1 ? parameters[1].Value : "*";
-                var matchingVars = _globalVars.Keys
-                    .Where(key => MatchesPattern(key, pattern))
-                    .ToList();
-                
-                varParam.SetArrayFromStrings(matchingVars);
+                var names = _globalVars.Keys.ToList();
+                var values = _globalVars.Values.Select(v => v.Data is { Count: > 0 } ? string.Empty : v.Value).ToList();
+
+                namesVar.Value = names.Count.ToString();
+                namesVar.SetArrayFromStrings(names);
+                valuesVar.Value = values.Count.ToString();
+                valuesVar.SetArrayFromStrings(values);
             }
             return CmdAction.None;
         }
@@ -357,7 +385,7 @@ namespace TWXProxy.Core
                 if (File.Exists(_globalVarsPath))
                 {
                     var json = File.ReadAllText(_globalVarsPath);
-                    var loaded = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+                    var loaded = JsonSerializer.Deserialize<Dictionary<string, GlobalVarEntry>>(json);
                     if (loaded != null)
                     {
                         _globalVars.Clear();
