@@ -17,9 +17,6 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
-        // Variable persistence storage (per-script)
-        private static readonly Dictionary<string, Dictionary<string, string>> _scriptVars = new();
-        
         // Global variable storage (shared across all scripts)
         private static readonly Dictionary<string, string> _globalVars = new();
         
@@ -38,7 +35,6 @@ namespace TWXProxy.Core
         public static Action<string, string>? OnVariableSaved;
         
         // Persistence file paths
-        private static string _variablePersistencePath = "variables.json";
         private static string _globalVarsPath = "globals.json";
         private static string _progVarsPath = "progvars.json";
         private static string _credentialsPath = Path.Combine(AppContext.BaseDirectory, "credentials.json");
@@ -51,27 +47,17 @@ namespace TWXProxy.Core
         private static CmdAction CmdLoadVar_Impl(object script, CmdParam[] parameters)
         {
             // CMD: loadvar var
-            // Load variable value from persistent storage
+            // Pascal-compatible behavior: load directly from the current game's
+            // persistent variable store by exact variable name.
             if (parameters[0] is VarParam varParam)
             {
                 string scriptId = GetScriptId(script);
                 string varName = varParam.Name;
-                
-                if (_scriptVars.TryGetValue(scriptId, out var vars) &&
-                    vars.TryGetValue(varName, out var value))
+
+                if (TryGetCompatibleVarValue(_currentGameVars, varName, out var gameValue, out var resolvedGameName))
                 {
-                    varParam.Value = value;
-                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='script-cache' value='{value}'\n");
-                }
-                else if (_currentGameVars.TryGetValue(varName, out var gameValue))
-                {
-                    // Fallback to per-game persistent storage loaded at game start.
                     varParam.Value = gameValue;
-                    // Prime the per-script cache so subsequent in-memory lookups hit.
-                    if (!_scriptVars.ContainsKey(scriptId))
-                        _scriptVars[scriptId] = new Dictionary<string, string>();
-                    _scriptVars[scriptId][varName] = gameValue;
-                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='game-cache' value='{gameValue}'\n");
+                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='game-store' resolved='{resolvedGameName}' value='{gameValue}'\n");
                 }
                 else
                 {
@@ -84,17 +70,14 @@ namespace TWXProxy.Core
         private static CmdAction CmdSaveVar_Impl(object script, CmdParam[] parameters)
         {
             // CMD: savevar var
-            // Save variable value to persistent storage
+            // Pascal-compatible behavior: persist into the current game's
+            // shared variable store by exact variable name.
             if (parameters[0] is VarParam varParam)
             {
                 string scriptId = GetScriptId(script);
                 string varName = varParam.Name;
                 string value = varParam.Value;
-                
-                if (!_scriptVars.ContainsKey(scriptId))
-                    _scriptVars[scriptId] = new Dictionary<string, string>();
-                
-                _scriptVars[scriptId][varName] = value;
+
                 GlobalModules.DebugLog($"[SAVEVAR] scriptId='{scriptId}' var='{varName}' value='{value}'\n");
 
                 // Persist to the per-game data file via ProxyService callback.
@@ -177,6 +160,41 @@ namespace TWXProxy.Core
             return script.GetHashCode().ToString();
         }
 
+        private static bool TryGetCompatibleVarValue(Dictionary<string, string> vars, string varName, out string value, out string resolvedName)
+        {
+            if (vars.TryGetValue(varName, out value!))
+            {
+                resolvedName = varName;
+                return true;
+            }
+
+            string? fallbackName = GetCompatibleFallbackVarName(varName);
+            if (!string.IsNullOrEmpty(fallbackName) && vars.TryGetValue(fallbackName, out value!))
+            {
+                resolvedName = fallbackName;
+                return true;
+            }
+
+            resolvedName = varName;
+            value = string.Empty;
+            return false;
+        }
+
+        private static string? GetCompatibleFallbackVarName(string varName)
+        {
+            if (string.IsNullOrWhiteSpace(varName))
+                return null;
+
+            int prefixLength = (varName[0] == '$' || varName[0] == '%') ? 1 : 0;
+            int separatorIndex = varName.LastIndexOf('~');
+            if (separatorIndex <= prefixLength || separatorIndex >= varName.Length - 1)
+                return null;
+
+            string prefix = prefixLength == 1 ? varName.Substring(0, 1) : string.Empty;
+            string suffix = varName[(separatorIndex + 1)..];
+            return prefix + suffix;
+        }
+
         private static bool MatchesPattern(string text, string pattern)
         {
             // Simple wildcard matching (* and ?)
@@ -238,13 +256,8 @@ namespace TWXProxy.Core
         /// </summary>
         public static void ClearVarsForScript(string scriptId)
         {
-            if (!string.IsNullOrEmpty(scriptId))
-            {
-                bool existed = _scriptVars.TryGetValue(scriptId, out var vars);
-                int count = existed ? vars!.Count : 0;
-                _scriptVars.Remove(scriptId);
-                GlobalModules.DebugLog($"[VARCACHE] ClearVarsForScript scriptId='{scriptId}' existed={existed} count={count}\n");
-            }
+            // Pascal loadvar/savevar state is shared per game, not per script.
+            GlobalModules.DebugLog($"[VARCACHE] ClearVarsForScript scriptId='{scriptId}' skipped='per-game'\n");
         }
 
         /// <summary>
@@ -254,7 +267,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void ClearAllScriptVars()
         {
-            _scriptVars.Clear();
+            // No per-script loadvar/savevar cache in Pascal-compatible mode.
         }
 
         #endregion
@@ -266,7 +279,6 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetPersistencePath(string path)
         {
-            _variablePersistencePath = Path.Combine(path, "variables.json");
             _globalVarsPath = Path.Combine(path, "globals.json");
             _progVarsPath = Path.Combine(path, "progvars.json");
             _credentialsPath = Path.Combine(path, "credentials.json");
@@ -341,21 +353,6 @@ namespace TWXProxy.Core
         {
             try
             {
-                // Load script variables
-                if (File.Exists(_variablePersistencePath))
-                {
-                    var json = File.ReadAllText(_variablePersistencePath);
-                    var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(json);
-                    if (loaded != null)
-                    {
-                        _scriptVars.Clear();
-                        foreach (var kvp in loaded)
-                        {
-                            _scriptVars[kvp.Key] = kvp.Value;
-                        }
-                    }
-                }
-
                 // Load global variables
                 if (File.Exists(_globalVarsPath))
                 {
@@ -400,10 +397,6 @@ namespace TWXProxy.Core
             try
             {
                 var options = new JsonSerializerOptions { WriteIndented = true };
-
-                // Save script variables
-                var scriptJson = JsonSerializer.Serialize(_scriptVars, options);
-                File.WriteAllText(_variablePersistencePath, scriptJson);
 
                 // Save global variables
                 var globalJson = JsonSerializer.Serialize(_globalVars, options);

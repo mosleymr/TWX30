@@ -553,47 +553,22 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetWord(object script, CmdParam[] parameters)
         {
-            // CMD: getword <value> var <wordIndex> [delimiter]
-            string delimiter = parameters.Length > 3 ? parameters[3].Value : " ";
+            // CMD: getword <line> var <index> <default>
             int index = (int)parameters[2].DecValue;
 
             string oldValue = parameters[1].Value;
             string varName = (parameters[1] is VarParam vp) ? vp.Name : "???";
-            string newValue;
-
-            if (string.IsNullOrEmpty(delimiter) || delimiter == "0")
+            string newValue = Utility.GetParameter(parameters[0].Value, index);
+            if (newValue.Length == 0)
             {
-                // Pascal TWX behaviour: "0" or empty delimiter = space-delimited, return the
-                // full Nth word (not just its first character).  Scripts use delimiter "0"
-                // to request word N without specifying a custom delimiter.
-                string[] spaceWords = parameters[0].Value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (index >= 1 && index <= spaceWords.Length)
-                    newValue = spaceWords[index - 1];
-                else
-                    newValue = "0";
-
-                string srcName0 = (parameters[0] is VarParam sv0) ? $"[src={sv0.Name}]" : (parameters[0] is ProgVarParam pv0) ? $"[src=PV:{pv0.Name}]" : "";
-                string destHash0 = (parameters[1] is VarParam dvh0) ? $"@{dvh0.GetHashCode():X6}" : "";
-                GlobalModules.DebugLog($"[GETWORD] {varName}{destHash0}{srcName0}: source='{parameters[0].Value}', index={index}, delimiter='{delimiter}' => '{oldValue}' → '{newValue}'\n");
-                parameters[1].Value = newValue;
-                return CmdAction.None;
+                newValue = parameters.Length > 3 ? parameters[3].Value : "0";
             }
 
-            string[] words;
-            words = parameters[0].Value.Split(new[] { delimiter }, StringSplitOptions.RemoveEmptyEntries);
-            
-            // Pascal TWX returned "0" (the default variable value) for out-of-range word index.
-            // Scripts such as PlayerInfo use  if ($word = "0")  as the loop terminator.
-            if (index < 1 || index > words.Length)
-                newValue = "0";
-            else
-                newValue = words[index - 1];
-            
             string srcName = (parameters[0] is VarParam sv) ? $"[src={sv.Name}]" : (parameters[0] is ProgVarParam pvs) ? $"[src=PV:{pvs.Name}]" : "";
             string destHash = (parameters[1] is VarParam dvh) ? $"@{dvh.GetHashCode():X6}" : "";
-            GlobalModules.DebugLog($"[GETWORD] {varName}{destHash}{srcName}: source='{parameters[0].Value}', index={index}, delimiter='{delimiter}' => '{oldValue}' → '{newValue}'\n");
+            string defaultValue = parameters.Length > 3 ? parameters[3].Value : "0";
+            GlobalModules.DebugLog($"[GETWORD] {varName}{destHash}{srcName}: source='{parameters[0].Value}', index={index}, default='{defaultValue}' => '{oldValue}' → '{newValue}'\n");
             parameters[1].Value = newValue;
-            
             return CmdAction.None;
         }
 
@@ -1092,14 +1067,26 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetFileList(object script, CmdParam[] parameters)
         {
-            // CMD: getfilelist var [path]
-            string path = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
+            // CMD: getfilelist varArray <fileMask>
+            string mask = parameters.Length > 1 ? parameters[1].Value.Replace('\r', '*') : "*";
+            string resolvedMask = Utility.ResolvePlatformPath(mask, GlobalModules.ProgramDir);
+            string directory = Path.GetDirectoryName(resolvedMask) ?? GlobalModules.ProgramDir;
+            string fileMask = Path.GetFileName(resolvedMask);
+            if (string.IsNullOrWhiteSpace(fileMask))
+                fileMask = "*";
+
             try
             {
-                string[] files = Directory.GetFiles(path).Select(Path.GetFileName).OfType<string>().ToArray();
+                string[] files = Directory.GetFiles(directory, fileMask)
+                    .Select(Path.GetFileName)
+                    .Where(f => !string.IsNullOrEmpty(f))
+                    .Cast<string>()
+                    .ToArray();
+
                 if (parameters[0] is VarParam varParam)
                 {
-                    varParam.SetArrayFromStrings(files.Where(f => f != null).Select(f => f!).ToList());
+                    varParam.SetArrayFromStrings(files.ToList());
+                    varParam.Value = files.Length.ToString();
                 }
             }
             catch
@@ -1107,6 +1094,7 @@ namespace TWXProxy.Core
                 if (parameters[0] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(new System.Collections.Generic.List<string>());
+                    varParam.Value = "0";
                 }
             }
             return CmdAction.None;
@@ -1114,14 +1102,22 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetDirList(object script, CmdParam[] parameters)
         {
-            // CMD: getdirlist var [path]
-            string path = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
+            // CMD: getdirlist varArray <path> <fileMask>
+            string directory = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
+            string mask = parameters.Length > 2 ? parameters[2].Value.Replace('\r', '*') : "*";
+
             try
             {
-                string[] dirs = Directory.GetDirectories(path).Select(Path.GetFileName).OfType<string>().ToArray();
+                string[] dirs = Directory.GetDirectories(directory, mask)
+                    .Select(Path.GetFileName)
+                    .Where(d => !string.IsNullOrEmpty(d) && d != "." && d != "..")
+                    .Cast<string>()
+                    .ToArray();
+
                 if (parameters[0] is VarParam varParam)
                 {
-                    varParam.SetArrayFromStrings(dirs.Where(d => d != null).Select(d => d!).ToList());
+                    varParam.SetArrayFromStrings(dirs.ToList());
+                    varParam.Value = dirs.Length.ToString();
                 }
             }
             catch
@@ -1129,6 +1125,7 @@ namespace TWXProxy.Core
                 if (parameters[0] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(new System.Collections.Generic.List<string>());
+                    varParam.Value = "0";
                 }
             }
             return CmdAction.None;
