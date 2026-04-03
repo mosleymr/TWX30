@@ -2570,6 +2570,8 @@ public class MainWindow : Window
 
     private async Task OnProxyLoadScriptAsync()
     {
+        await Task.Yield();
+
         var interpreter = CurrentInterpreter;
         if (interpreter == null)
             return;
@@ -2628,6 +2630,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
+        _termCtrl.Focus();
     }
 
     private async Task LoadQuickScriptAsync(string relativePath)
@@ -2713,6 +2716,8 @@ public class MainWindow : Window
 
     private async Task ExportWarpsAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2729,10 +2734,17 @@ public class MainWindow : Window
         {
             await ShowMessageAsync("Export Failed", ex.Message);
         }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
     }
 
     private async Task ExportBubblesAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2750,10 +2762,17 @@ public class MainWindow : Window
         {
             await ShowMessageAsync("Export Failed", ex.Message);
         }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
     }
 
     private async Task ExportDeadendsAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2770,10 +2789,17 @@ public class MainWindow : Window
         {
             await ShowMessageAsync("Export Failed", ex.Message);
         }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
     }
 
     private async Task ExportTwxAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2791,10 +2817,17 @@ public class MainWindow : Window
         {
             await ShowMessageAsync("Export Failed", ex.Message);
         }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
     }
 
     private async Task ImportWarpsAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2811,10 +2844,17 @@ public class MainWindow : Window
         {
             await ShowMessageAsync("Import Failed", ex.Message);
         }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
     }
 
     private async Task ImportTwxAsync()
     {
+        await Task.Yield();
+
         if (_sessionDb == null)
             return;
 
@@ -2845,6 +2885,11 @@ public class MainWindow : Window
         catch (Exception ex)
         {
             await ShowMessageAsync("Import Failed", ex.Message);
+        }
+        finally
+        {
+            RebuildProxyMenu();
+            _termCtrl.Focus();
         }
     }
 
