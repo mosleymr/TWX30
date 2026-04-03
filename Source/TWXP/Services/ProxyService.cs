@@ -265,6 +265,7 @@ public class ProxyService : IProxyService
                             string scriptRemainder = TWXProxy.Core.AnsiCodes.PrepareScriptText(remainder);
                             string strippedRemainder = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
                                 TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r'));
+                            gameInstance.FeedShipStatusLine(strippedRemainder);
                             TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
                             TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
 
@@ -273,6 +274,8 @@ public class ProxyService : IProxyService
                             {
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing partial line (prompt): '{strippedRemainder}'\n");
                                 TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
+                                if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                                    TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
 
                                 // Restore CURRENTLINE to the actual prompt before firing
                                 TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
@@ -312,11 +315,14 @@ public class ProxyService : IProxyService
                         TWXProxy.Core.ScriptRef.SetCurrentLine(strippedLine);
                         
                         TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing line: '{strippedLine}'\n");
+                        gameInstance.FeedShipStatusLine(strippedLine);
                         
                         // Update sector database from game text before firing script triggers (non-blank only)
                         if (!string.IsNullOrEmpty(strippedLine))
                         {
                             TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine);
+                            if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                                TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         }
 
                         gameInstance.History.ProcessLine(strippedLine);

@@ -18,6 +18,8 @@ public class ShipStatus
     // ── Ship ──────────────────────────────────────────────────────────────
     public string ShipName    { get; set; } = string.Empty;
     public string ShipType    { get; set; } = string.Empty; // "Attack Ship" etc.
+    public int    ShipNumber  { get; set; }
+    public string ShipClass   { get; set; } = string.Empty;
 
     // ── Navigation ────────────────────────────────────────────────────────
     public int CurrentSector  { get; set; }

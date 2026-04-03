@@ -32,8 +32,10 @@ namespace TWXProxy.Core
         private readonly List<int> _densityScanSectors = new();
 
         // Sector-display position: tracks which continuation-line type we're inside
-        private enum SectorPos { None, Mines, Planets }
+        private enum SectorPos { None, Mines, Ports, Planets, Traders, Ships }
         private SectorPos _sectorPos;
+        private readonly Trader _currentTrader = new();
+        private readonly Ship _currentShip = new();
 
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
@@ -51,6 +53,7 @@ namespace TWXProxy.Core
         private int  _portReportSector;   // Sector whose port is being updated
         private bool _portReportHasFuel;  // Fuel Ore line was received
         private bool _portReportHasOrg;   // Organics line was received
+        private int  _pendingPortReportSectorOverride;
 
         // CIM (Computer Information Menu) download state.
         // Pascal: TDisplay dCIM → dPortCIM or dWarpCIM.
@@ -61,6 +64,7 @@ namespace TWXProxy.Core
         private bool _inCIM;              // Waiting to identify first data line
         private bool _inPortCIM;          // Processing port CIM lines
         private bool _inWarpCIM;          // Processing warp CIM lines
+        private bool _inFigScan;          // Processing deployed fighter scan lines
 
         // ── Empty-density-scan detection ──────────────────────────────────────
         // ── Public API ─────────────────────────────────────────────────────────
@@ -103,6 +107,9 @@ namespace TWXProxy.Core
         // Leading optional whitespace handles indented holo-scan display format.
         private static readonly Regex _rxPort = new(
             @"^\s*Ports\s+:\s+(.+),\s+Class\s+(\d+)(?:\s*\(([BSbs]{3})\))?", RegexOptions.Compiled);
+
+        private static readonly Regex _rxPortDestroyed = new(
+            @"^\s*Ports\s+:\s+.*<=-DANGER-=>", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // "Beacon  : FedSpace, FedLaw Enforced"
         private static readonly Regex _rxBeacon = new(
@@ -153,6 +160,13 @@ namespace TWXProxy.Core
             @"^\s+:\s+(\d+)\s+\(Type\s+\d+\s+(Armid|Limpet)\)\s*(.*)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // "How many fighters do you want defending this sector?  30280516"
+        // This echoed prompt appears after q f z <total> and reflects the new total
+        // defenders that will remain in the current sector once the command completes.
+        private static readonly Regex _rxSectorDefensePrompt = new(
+            @"^How many fighters do you want defending this sector\?\s*([\d,]+)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // "Planets : <<<< (L) Romulus >>>> (Shielded)"  — first planet on the line
         private static readonly Regex _rxPlanets = new(
             @"^Planets?\s+:\s+(.*)", RegexOptions.Compiled);
@@ -172,6 +186,26 @@ namespace TWXProxy.Core
         private static readonly Regex _rxPlanetDetail = new(
             @"^Planet\s+#(\d+)\s+in\s+sector\s+(\d+)\s*:\s*(.*)", RegexOptions.Compiled);
 
+        private static readonly Regex _rxTraderLine = new(
+            @"^\s*Traders\s+:\s+(.+?),\s+w/\s+([\d,]+)\s+ftrs",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxShipLine = new(
+            @"^\s*Ships\s+:\s+(.+?)\s+\[Owned by\]\s+(.+?),\s+w/\s+([\d,]+)\s+ftrs,",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPortSectorPrompt = new(
+            @"^What sector is the port in\?\s*(?:\[(\d+)\])?",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxStardock = new(
+            @"StarDock.*sector\s+(\d+)\.",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxFigScanSector = new(
+            @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // ── Public API ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -181,19 +215,22 @@ namespace TWXProxy.Core
         {
             if (string.IsNullOrWhiteSpace(line)) return;
 
+            string rawLine = line.TrimEnd('\r', '\n');
+            string trimmedLine = rawLine.Trim();
+
             // Log any line that looks warp-related so we can trace what the game sends
-            if (line.IndexOf("Warp", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                line.IndexOf("Long Range", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                line.IndexOf("Holo", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                line.IndexOf("Sector", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (rawLine.IndexOf("Warp", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rawLine.IndexOf("Long Range", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rawLine.IndexOf("Holo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rawLine.IndexOf("Sector", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] RAW inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport} lastSect={_lastSector}: '{line}'\n");
+                GlobalModules.DebugLog($"[AutoRecorder] RAW inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport} lastSect={_lastSector}: '{rawLine}'\n");
             }
 
             var db = ScriptRef.ActiveDatabase;
             if (db == null)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] SKIPPED (db==null): '{line}'\n");
+                GlobalModules.DebugLog($"[AutoRecorder] SKIPPED (db==null): '{rawLine}'\n");
                 return;
             }
 
@@ -201,19 +238,17 @@ namespace TWXProxy.Core
             // Pascal: Copy(Line, 1, 19) = 'The shortest path (' or Copy(Line, 1, 7) = '  TO > '
             // Pascal never trims, so '  TO > ' carries its leading spaces.  We must check
             // before calling Trim() or the spaces are lost and the match always fails.
-            if (line.StartsWith("The shortest path (") || line.StartsWith("  TO > "))
+            if (rawLine.StartsWith("The shortest path (") || rawLine.StartsWith("  TO > "))
             {
-                GlobalModules.DebugLog($"[AutoRecorder] WarpLane STARTED: '{line}'\n");
+                GlobalModules.DebugLog($"[AutoRecorder] WarpLane STARTED: '{rawLine}'\n");
                 _inWarpLane       = true;
                 _lastWarpLaneSect = 0;
                 return;
             }
 
-            line = line.Trim();
-
             // ── Command prompt always clears warp-lane mode ───────────────────
             // Safety net: if a Command prompt appears while _inWarpLane is set, clear it.
-            if (_inWarpLane && line.StartsWith("Command [TL="))
+            if (_inWarpLane && trimmedLine.StartsWith("Command [TL="))
             {
                 GlobalModules.DebugLog($"[AutoRecorder] WarpLane cleared by Command prompt\n");
                 _inWarpLane       = false;
@@ -225,13 +260,13 @@ namespace TWXProxy.Core
             if (_inWarpLane)
             {
                 // ': ' is the ZTM re-query prompt — it signals end of the current route.
-                if (line == ":")
+                if (trimmedLine == ":")
                 {
                     _inWarpLane       = false;
                     _lastWarpLaneSect = 0;
                     return;
                 }
-                ProcessWarpLaneLine(db, line);
+                ProcessWarpLaneLine(db, rawLine);
                 return;
             }
 
@@ -239,7 +274,7 @@ namespace TWXProxy.Core
             // Pascal: Copy(Line, 1, 2) = ': ' → FCurrentDisplay := dCIM
             // After Trim(), this is simply ":". The CIM prompt is always a lone colon
             // with no other content on the line.
-            if (line == ":")
+            if (trimmedLine == ":")
             {
                 _inCIM     = true;
                 _inPortCIM = false;
@@ -250,18 +285,19 @@ namespace TWXProxy.Core
             // ── CIM type identification (first data line) ──────────────────────
             if (_inCIM)
             {
-                if (line.Length > 2)
+                if (trimmedLine.Length > 2)
                 {
                     _inCIM = false;
-                    if (line.EndsWith("%"))
+                    if (trimmedLine.EndsWith("%"))
                     {
                         _inPortCIM = true;
-                        ParsePortCIMLine(db, line);
+                        db.DBHeader.LastPortCIM = DateTime.Now;
+                        ParsePortCIMLine(db, trimmedLine);
                     }
                     else
                     {
                         _inWarpCIM = true;
-                        ParseWarpCIMLine(db, line);
+                        ParseWarpCIMLine(db, trimmedLine);
                     }
                 }
                 return;
@@ -270,18 +306,18 @@ namespace TWXProxy.Core
             // ── CIM data lines ─────────────────────────────────────────────────
             if (_inPortCIM)
             {
-                ParsePortCIMLine(db, line);
+                ParsePortCIMLine(db, trimmedLine);
                 return;
             }
             if (_inWarpCIM)
             {
-                ParseWarpCIMLine(db, line);
+                ParseWarpCIMLine(db, trimmedLine);
                 return;
             }
 
             // ── Planet land-list (L command) ───────────────────────────────────
             // Header line triggers the mode; entries supply planet ID + name.
-            if (line.StartsWith("Registry# and Planet Name", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Registry# and Planet Name", StringComparison.OrdinalIgnoreCase))
             {
                 _inLandList   = true;
                 _landListSector = _currentSector;
@@ -289,8 +325,8 @@ namespace TWXProxy.Core
             }
             if (_inLandList)
             {
-                if (line.StartsWith("---")) return;  // separator
-                var le = _rxLandEntry.Match(line);
+                if (trimmedLine.StartsWith("---")) return;  // separator
+                var le = _rxLandEntry.Match(rawLine);
                 if (le.Success && int.TryParse(le.Groups[1].Value, out int planetId))
                 {
                     string pname = le.Groups[2].Value.Trim();
@@ -298,14 +334,14 @@ namespace TWXProxy.Core
                     return;
                 }
                 // Blank or non-entry line ends the list
-                if (string.IsNullOrWhiteSpace(line)) { _inLandList = false; return; }
+                if (string.IsNullOrWhiteSpace(trimmedLine)) { _inLandList = false; return; }
                 return;  // skip "Owned by:" continuation lines etc.
             }
 
             // ── Planet detail page ─────────────────────────────────────────────
             // "Planet #55 in sector 12545: ."
             {
-                var pd = _rxPlanetDetail.Match(line);
+                var pd = _rxPlanetDetail.Match(trimmedLine);
                 if (pd.Success
                     && int.TryParse(pd.Groups[1].Value, out int pid)
                     && int.TryParse(pd.Groups[2].Value, out int psector))
@@ -317,8 +353,8 @@ namespace TWXProxy.Core
             }
 
             // ── Mode switching ─────────────────────────────────────────────────
-            if (line.StartsWith("Relative Density Scan", StringComparison.OrdinalIgnoreCase) ||
-                line.StartsWith("                          Relative Density Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Relative Density Scan", StringComparison.OrdinalIgnoreCase) ||
+                rawLine.StartsWith("                          Relative Density Scan", StringComparison.OrdinalIgnoreCase))
             {
                 _inWarpLane    = false;
                 _inDensityScan = true;
@@ -328,7 +364,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            if (line.StartsWith("Long Range Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Long Range Scan", StringComparison.OrdinalIgnoreCase))
             {
                 // We are NOW inside a holo scan.  Set the flag immediately so that
                 // the "Sector  : NNNN" lines in the scan body do NOT update
@@ -341,15 +377,15 @@ namespace TWXProxy.Core
                 return;
             }
 
-            if (line.StartsWith("Select (H)olo Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Select (H)olo Scan", StringComparison.OrdinalIgnoreCase))
                 return;
 
             // Separator / decoration lines
-            if (line.StartsWith("---") || line.StartsWith("==="))
+            if (trimmedLine.StartsWith("---") || trimmedLine.StartsWith("==="))
                 return;
 
             // Command prompt resets scan state
-            if (line.StartsWith("Command [TL="))
+            if (trimmedLine.StartsWith("Command [TL="))
             {
                 _inWarpLane = false;
 
@@ -362,12 +398,14 @@ namespace TWXProxy.Core
                 _inDensityScan = false;
                 _inHoloScan    = false;
                 _inPortReport  = false;
+                _pendingPortReportSectorOverride = 0;
                 _inCIM         = false;
                 _inPortCIM     = false;
                 _inWarpCIM     = false;
+                _inFigScan     = false;
 
                 // Track current sector from the prompt ("Command [TL=...]:[$N]")
-                var mc = _rxCommandSector.Match(line);
+                var mc = _rxCommandSector.Match(trimmedLine);
                 if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
                 {
                     _currentSector = csn;
@@ -380,7 +418,7 @@ namespace TWXProxy.Core
             // ── Density scan lines ────────────────────────────────────────────
             if (_inDensityScan)
             {
-                var m = _rxDensityLine.Match(line);
+                var m = _rxDensityLine.Match(trimmedLine);
                 if (m.Success)
                 {
                     int sn = ParseDensityLine(db, m);
@@ -392,7 +430,7 @@ namespace TWXProxy.Core
 
             // ── Sector display header ─────────────────────────────────────────
             {
-                var m = _rxSector.Match(line);
+                var m = _rxSector.Match(rawLine);
                 if (m.Success && int.TryParse(m.Groups[1].Value, out int sn))
                 {
                     GlobalModules.DebugLog($"[AutoRecorder] lastSector {_lastSector}→{sn} inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport}\n");
@@ -408,6 +446,19 @@ namespace TWXProxy.Core
                     _lastSector = sn;
                     _sectorPos  = SectorPos.None;
 
+                    // Clear volatile sector data to be re-populated from following lines.
+                    var sec = GetOrCreate(db, sn);
+                    if (sec != null)
+                    {
+                        sec.Fighters    = new SpaceObject();
+                        sec.MinesArmid  = new SpaceObject();
+                        sec.MinesLimpet = new SpaceObject();
+                        sec.PlanetNames.Clear();
+                        sec.Ships.Clear();
+                        sec.Traders.Clear();
+                        // Don't null the port here — it is only overwritten when a Ports line arrives.
+                    }
+
                     // If we were NOT already inside a holo scan, this "Sector  : NNNN" line
                     // is from a D-command display or an autopilot interim stop — update
                     // _currentSector so it stays accurate for density-scan tracking.
@@ -415,17 +466,6 @@ namespace TWXProxy.Core
                     {
                         _currentSector = sn;
                         GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
-
-                        // Clear volatile sector data to be re-populated from following lines.
-                        var sec = GetOrCreate(db, sn);
-                        if (sec != null)
-                        {
-                            sec.Fighters    = new SpaceObject();
-                            sec.MinesArmid  = new SpaceObject();
-                            sec.MinesLimpet = new SpaceObject();
-                            sec.PlanetNames.Clear();
-                            // Don't null the port here — it is only overwritten when a Ports line arrives.
-                        }
                     }
 
                     // Always capture constellation name when present (works for both
@@ -435,11 +475,11 @@ namespace TWXProxy.Core
                         string constName = m.Groups[2].Value.Trim();
                         if (!string.IsNullOrEmpty(constName))
                         {
-                            var sec = GetOrCreate(db, sn);
-                            if (sec != null)
+                            var constellationSector = GetOrCreate(db, sn);
+                            if (constellationSector != null)
                             {
-                                sec.Constellation = constName;
-                                db.SaveSector(sec);
+                                constellationSector.Constellation = constName;
+                                db.SaveSector(constellationSector);
                                 GlobalModules.DebugLog($"[AutoRecorder] Sector {sn} constellation = {constName}\n");
                             }
                         }
@@ -450,15 +490,72 @@ namespace TWXProxy.Core
                 }
             }
 
+            {
+                var stardock = _rxStardock.Match(trimmedLine);
+                if (stardock.Success && int.TryParse(stardock.Groups[1].Value, out int dockSector))
+                {
+                    if (dockSector > 0 && dockSector <= db.SectorCount &&
+                        (db.DBHeader.StarDock == 0 || db.DBHeader.StarDock == 65535))
+                    {
+                        db.DBHeader.StarDock = (ushort)dockSector;
+
+                        var dock = GetOrCreate(db, dockSector);
+                        if (dock != null)
+                        {
+                            dock.Constellation = "The Federation";
+                            dock.Beacon = "FedSpace, FedLaw Enforced";
+                            dock.SectorPort ??= new Port();
+                            dock.SectorPort.Dead = false;
+                            dock.SectorPort.BuildTime = 0;
+                            dock.SectorPort.Name = "Stargate Alpha I";
+                            dock.SectorPort.ClassIndex = 9;
+                            dock.Explored = ExploreType.Calc;
+                            dock.Update = DateTime.Now;
+                            db.SaveSector(dock);
+                        }
+
+                        ScriptRef.SetCurrentGameVar("$STARDOCK", dockSector.ToString());
+                        ScriptRef.OnVariableSaved?.Invoke("$STARDOCK", dockSector.ToString());
+                        GlobalModules.DebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
+                    }
+                    return;
+                }
+            }
+
             // ── Commerce report detection ──────────────────────────────────────
             {
-                var m = _rxCommerceReport.Match(line);
+                var m = _rxPortSectorPrompt.Match(trimmedLine);
+                if (m.Success)
+                {
+                    int promptSector = _currentSector;
+                    int bracket = trimmedLine.IndexOf(']');
+                    if (bracket >= 0 && bracket + 1 < trimmedLine.Length)
+                    {
+                        string tail = trimmedLine[(bracket + 1)..].Trim();
+                        if (int.TryParse(tail, out int typedSector) && typedSector > 0)
+                            promptSector = typedSector;
+                        else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
+                            promptSector = bracketSector;
+                    }
+                    else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
+                    {
+                        promptSector = bracketSector;
+                    }
+
+                    _pendingPortReportSectorOverride = promptSector;
+                    GlobalModules.DebugLog($"[AutoRecorder] Port report sector prompt -> {_pendingPortReportSectorOverride}\n");
+                    return;
+                }
+            }
+            {
+                var m = _rxCommerceReport.Match(trimmedLine);
                 if (m.Success)
                 {
                     _inPortReport      = true;
-                    _portReportSector  = _currentSector;
+                    _portReportSector  = _pendingPortReportSectorOverride > 0 ? _pendingPortReportSectorOverride : _currentSector;
                     _portReportHasFuel = false;
                     _portReportHasOrg  = false;
+                    _pendingPortReportSectorOverride = 0;
                     // Set port name now; product lines will fill BuyProduct/Amount/Percent
                     var sec = GetOrCreate(db, _portReportSector);
                     if (sec != null)
@@ -475,7 +572,7 @@ namespace TWXProxy.Core
             }
             if (_inPortReport)
             {
-                var pm = _rxProductLine.Match(line);
+                var pm = _rxProductLine.Match(trimmedLine);
                 if (pm.Success)
                 {
                     ParseProductLine(db, pm);
@@ -485,44 +582,89 @@ namespace TWXProxy.Core
                 return;
             }
 
+            if (trimmedLine.Contains("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
+            {
+                _inFigScan = true;
+                return;
+            }
+
+            if (_inFigScan)
+            {
+                ProcessFigScanLine(db, trimmedLine);
+                return;
+            }
+
+            // Sector defense prompt: keep the current sector's fighter quantity in sync
+            // during burst unload flows like movefig, which depend on the DB total on the
+            // very next run.
+            {
+                var m = _rxSectorDefensePrompt.Match(trimmedLine);
+                if (m.Success)
+                {
+                    int sectorNum = _currentSector > 0 ? _currentSector : _lastSector;
+                    if (sectorNum > 0)
+                    {
+                        var sector = GetOrCreate(db, sectorNum);
+                        if (sector != null)
+                        {
+                            string qtyStr = m.Groups[1].Value.Replace(",", "");
+                            if (int.TryParse(qtyStr, out int qty))
+                            {
+                                sector.Fighters.Quantity = qty;
+                                db.SaveSector(sector);
+                                GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={qty}\n");
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+
             // ── Data lines that belong to _lastSector ─────────────────────────
             if (_lastSector <= 0)
             {
-                if (line.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
-                    GlobalModules.DebugLog($"[AutoRecorder] DROPPED warp line (_lastSector=0): '{line}'\n");
+                if (trimmedLine.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
+                    GlobalModules.DebugLog($"[AutoRecorder] DROPPED warp line (_lastSector=0): '{trimmedLine}'\n");
                 return;
             }
 
             // Warps
             {
-                var m = _rxWarps.Match(line);
+                var m = _rxWarps.Match(rawLine);
                 if (m.Success)
                 {
                     ParseWarpsLine(db, _lastSector, m.Groups[1].Value);
                     return;
                 }
                 // Log if line looks like it should match but didn't
-                if (line.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: warp line not matched by regex for sect={_lastSector}: '{line}'\n");
+                if (trimmedLine.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
+                    GlobalModules.DebugLog($"[AutoRecorder] WARN: warp line not matched by regex for sect={_lastSector}: '{trimmedLine}'\n");
             }
 
             // Port
             {
-                var m = _rxPort.Match(line);
+                if (_rxPortDestroyed.IsMatch(rawLine))
+                {
+                    MarkDestroyedPort(db, _lastSector);
+                    _sectorPos = SectorPos.Ports;
+                    return;
+                }
+
+                var m = _rxPort.Match(rawLine);
                 if (m.Success)
                 {
                     ParsePortLine(db, _lastSector, m);
-                    _sectorPos = SectorPos.None;
+                    _sectorPos = SectorPos.Ports;
                     return;
                 }
                 // Warn if a line looks like a port line but the regex didn't match
-                if (line.StartsWith("Port", StringComparison.OrdinalIgnoreCase))
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: port-like line not matched for sector {_lastSector}: '{line}'\n");
+                if (trimmedLine.StartsWith("Port", StringComparison.OrdinalIgnoreCase))
+                    GlobalModules.DebugLog($"[AutoRecorder] WARN: port-like line not matched for sector {_lastSector}: '{trimmedLine}'\n");
             }
 
             // NavHaz  :  15%
             {
-                var m = _rxNavHaz.Match(line);
+                var m = _rxNavHaz.Match(trimmedLine);
                 if (m.Success)
                 {
                     var sector = GetOrCreate(db, _lastSector);
@@ -539,7 +681,7 @@ namespace TWXProxy.Core
 
             // Beacon (federation space etc.)
             {
-                var m = _rxBeacon.Match(line);
+                var m = _rxBeacon.Match(rawLine);
                 if (m.Success)
                 {
                     var sector = GetOrCreate(db, _lastSector);
@@ -555,7 +697,7 @@ namespace TWXProxy.Core
 
             // Fighters
             {
-                var m = _rxFighters.Match(line);
+                var m = _rxFighters.Match(trimmedLine);
                 if (m.Success)
                 {
                     ParseFightersLine(db, _lastSector, m);
@@ -566,7 +708,7 @@ namespace TWXProxy.Core
 
             // Mines (first line)
             {
-                var m = _rxMines.Match(line);
+                var m = _rxMines.Match(trimmedLine);
                 if (m.Success)
                 {
                     ParseMinesLine(db, _lastSector, m);
@@ -578,7 +720,7 @@ namespace TWXProxy.Core
             // Mines continuation line: "        : 3 (Type 2 Limpet) ..."
             if (_sectorPos == SectorPos.Mines)
             {
-                var m = _rxMinesCont.Match(line);
+                var m = _rxMinesCont.Match(rawLine);
                 if (m.Success)
                 {
                     ParseMinesLine(db, _lastSector, m);
@@ -588,7 +730,7 @@ namespace TWXProxy.Core
 
             // Planets (first line): record name in PlanetNames on the sector
             {
-                var m = _rxPlanets.Match(line);
+                var m = _rxPlanets.Match(trimmedLine);
                 if (m.Success)
                 {
                     var sector = GetOrCreate(db, _lastSector);
@@ -607,7 +749,7 @@ namespace TWXProxy.Core
             // Planet continuation lines (indented <<<< ... >>>>
             if (_sectorPos == SectorPos.Planets)
             {
-                var m = _rxPlanetCont.Match(line);
+                var m = _rxPlanetCont.Match(rawLine);
                 if (m.Success)
                 {
                     var sector = GetOrCreate(db, _lastSector);
@@ -621,9 +763,244 @@ namespace TWXProxy.Core
                 // Any non-planet-looking line ends the planets block
                 _sectorPos = SectorPos.None;
             }
+
+            {
+                var m = _rxTraderLine.Match(trimmedLine);
+                if (m.Success)
+                {
+                    ParseTraderSummary(m);
+                    _sectorPos = SectorPos.Traders;
+                    return;
+                }
+            }
+
+            if (_sectorPos == SectorPos.Traders && rawLine.StartsWith("        ", StringComparison.Ordinal))
+            {
+                ParseTraderContinuation(db, _lastSector, rawLine);
+                return;
+            }
+
+            {
+                var m = _rxShipLine.Match(trimmedLine);
+                if (m.Success)
+                {
+                    ParseShipSummary(m);
+                    _sectorPos = SectorPos.Ships;
+                    return;
+                }
+            }
+
+            if (_sectorPos == SectorPos.Ships && rawLine.StartsWith("        ", StringComparison.Ordinal))
+            {
+                ParseShipContinuation(db, _lastSector, rawLine);
+                return;
+            }
+
+            if (_sectorPos == SectorPos.Ports && rawLine.StartsWith("        ", StringComparison.Ordinal))
+            {
+                ParsePortContinuation(db, _lastSector, rawLine);
+                return;
+            }
         }
 
         // ── Private helpers ────────────────────────────────────────────────────
+
+        private void MarkDestroyedPort(ModDatabase db, int sectorNum)
+        {
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector == null) return;
+
+            sector.SectorPort ??= new Port();
+            sector.SectorPort.Dead = true;
+            db.SaveSector(sector);
+            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port marked destroyed\n");
+        }
+
+        private static void ParsePortContinuation(ModDatabase db, int sectorNum, string line)
+        {
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector?.SectorPort == null) return;
+
+            foreach (string token in line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (byte.TryParse(token, out byte buildTime))
+                {
+                    sector.SectorPort.BuildTime = buildTime;
+                    db.SaveSector(sector);
+                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port buildtime={buildTime}\n");
+                    return;
+                }
+            }
+        }
+
+        private void ParseTraderSummary(Match m)
+        {
+            _currentTrader.Name = m.Groups[1].Value.Trim();
+            _currentTrader.ShipName = string.Empty;
+            _currentTrader.ShipType = string.Empty;
+            _currentTrader.Fighters = ParseCommaInt(m.Groups[2].Value);
+        }
+
+        private void ParseTraderContinuation(ModDatabase db, int sectorNum, string line)
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+            {
+                int open = trimmed.IndexOf('(');
+                int close = trimmed.IndexOf(')', open + 1);
+                if (open > 3 && close > open)
+                {
+                    var sector = GetOrCreate(db, sectorNum);
+                    if (sector == null) return;
+
+                    sector.Traders.Add(new Trader
+                    {
+                        Name = _currentTrader.Name,
+                        Fighters = _currentTrader.Fighters,
+                        ShipName = trimmed.Substring(3, open - 4).Trim(),
+                        ShipType = trimmed.Substring(open + 1, close - open - 1).Trim()
+                    });
+                    db.SaveSector(sector);
+                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} trader={_currentTrader.Name} ship={sector.Traders[^1].ShipName} type={sector.Traders[^1].ShipType} figs={_currentTrader.Fighters}\n");
+                }
+                return;
+            }
+
+            var m = _rxTraderLine.Match(trimmed);
+            if (m.Success)
+                ParseTraderSummary(m);
+        }
+
+        private void ParseShipSummary(Match m)
+        {
+            _currentShip.Name = m.Groups[1].Value.Trim();
+            _currentShip.Owner = m.Groups[2].Value.Trim();
+            _currentShip.ShipType = string.Empty;
+            _currentShip.Fighters = ParseCommaInt(m.Groups[3].Value);
+        }
+
+        private void ParseShipContinuation(ModDatabase db, int sectorNum, string line)
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith("(", StringComparison.Ordinal))
+            {
+                int close = trimmed.IndexOf(')');
+                if (close > 1)
+                {
+                    var sector = GetOrCreate(db, sectorNum);
+                    if (sector == null) return;
+
+                    sector.Ships.Add(new Ship
+                    {
+                        Name = _currentShip.Name,
+                        Owner = _currentShip.Owner,
+                        Fighters = _currentShip.Fighters,
+                        ShipType = trimmed.Substring(1, close - 1).Trim()
+                    });
+                    db.SaveSector(sector);
+                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} ship={_currentShip.Name} owner={_currentShip.Owner} type={sector.Ships[^1].ShipType} figs={_currentShip.Fighters}\n");
+                }
+                return;
+            }
+
+            var m = _rxShipLine.Match(trimmed);
+            if (m.Success)
+                ParseShipSummary(m);
+        }
+
+        private void ProcessFigScanLine(ModDatabase db, string line)
+        {
+            if (line.StartsWith("No fighters deployed", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetFigDatabase(db);
+                _inFigScan = false;
+                return;
+            }
+
+            var m = _rxFigScanSector.Match(line);
+            if (!m.Success)
+                return;
+
+            if (!int.TryParse(m.Groups[1].Value, out int sectorNum) || sectorNum <= 0)
+                return;
+
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector == null) return;
+
+            sector.Fighters.Owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
+                ? "yours"
+                : "belong to your Corp";
+
+            sector.Fighters.Quantity = ParseDisplayedFighterCount(m.Groups[2].Value, sector.Fighters.Quantity);
+            string figType = m.Groups[4].Value;
+            sector.Fighters.FigType = figType.Equals("Defensive", StringComparison.OrdinalIgnoreCase)
+                ? FighterType.Defensive
+                : figType.Equals("Toll", StringComparison.OrdinalIgnoreCase)
+                    ? FighterType.Toll
+                    : FighterType.Offensive;
+
+            db.SaveSector(sector);
+            GlobalModules.DebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={sector.Fighters.Quantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+        }
+
+        private static void ResetFigDatabase(ModDatabase db)
+        {
+            int maxSector = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
+            for (int i = 11; i <= maxSector; i++)
+            {
+                if (i == db.DBHeader.StarDock)
+                    continue;
+
+                var sector = db.GetSector(i);
+                if (sector == null)
+                    continue;
+
+                if (sector.Fighters.Owner.Equals("yours", StringComparison.OrdinalIgnoreCase) ||
+                    sector.Fighters.Owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase))
+                {
+                    sector.Fighters.Owner = string.Empty;
+                    sector.Fighters.FigType = FighterType.None;
+                    sector.Fighters.Quantity = 0;
+                    db.SaveSector(sector);
+                }
+            }
+        }
+
+        private static int ParseDisplayedFighterCount(string text, int existingValue)
+        {
+            string normalized = text.Replace(",", string.Empty, StringComparison.Ordinal).Trim();
+            if (int.TryParse(normalized, out int exact))
+                return exact;
+
+            if (normalized.Length < 2)
+                return existingValue;
+
+            char suffix = char.ToUpperInvariant(normalized[^1]);
+            if (!double.TryParse(normalized[..^1], out double baseValue))
+                return existingValue;
+
+            double multiplier = suffix switch
+            {
+                'T' => 1_000d,
+                'M' => 1_000_000d,
+                'B' => 1_000_000_000d,
+                _ => 0d
+            };
+
+            if (multiplier <= 0)
+                return existingValue;
+
+            int approx = (int)(baseValue * multiplier);
+            int margin = (int)(multiplier / 2d);
+            if (existingValue < approx - margin || existingValue > approx + margin)
+                return approx;
+            return existingValue;
+        }
+
+        private static int ParseCommaInt(string text)
+        {
+            return int.TryParse(text.Replace(",", string.Empty, StringComparison.Ordinal), out int value) ? value : 0;
+        }
 
         // Returns the sector number on success (so caller can collect it), 0 on failure.
         private static int ParseDensityLine(ModDatabase db, Match m)
@@ -720,6 +1097,8 @@ namespace TWXProxy.Core
 
             sector.SectorPort ??= new Port();
             sector.SectorPort.Name = m.Groups[1].Value.Trim();
+            sector.SectorPort.Dead = false;
+            sector.SectorPort.BuildTime = 0;
 
             if (byte.TryParse(m.Groups[2].Value, out byte cls))
                 sector.SectorPort.ClassIndex = cls;

@@ -113,6 +113,9 @@ namespace TWXProxy.Core
         private readonly NativeHaggleEngine _nativeHaggle = new();
         private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
         private readonly ModLog _log = new();
+        private readonly ShipInfoParser _shipInfoParser = new();
+        private readonly object _shipStatusLock = new();
+        private ShipStatus _currentShipStatus = new();
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -160,6 +163,7 @@ namespace TWXProxy.Core
         public event EventHandler<DisconnectEventArgs>? Disconnected;
         public event EventHandler? ClearInputBufferRequested;
         public event Action<bool>? NativeHaggleChanged;
+        public event Action<ShipStatus>? ShipStatusUpdated;
 
         public string GameName => _gameName;
         public bool IsRunning => _isRunning;
@@ -185,6 +189,15 @@ namespace TWXProxy.Core
         {
             get => _log.LogANSI;
             set => _log.LogANSI = value;
+        }
+
+        public ShipStatus CurrentShipStatus
+        {
+            get
+            {
+                lock (_shipStatusLock)
+                    return CloneShipStatus(_currentShipStatus);
+            }
         }
 
         public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
@@ -214,6 +227,13 @@ namespace TWXProxy.Core
                 message => SendMessageAsync(message).GetAwaiter().GetResult());
             GlobalModules.TWXLog = _log;
             InitializeSystemQuickTexts();
+            _shipInfoParser.Updated += status =>
+            {
+                ShipStatus snapshot = CloneShipStatus(status);
+                lock (_shipStatusLock)
+                    _currentShipStatus = snapshot;
+                ShipStatusUpdated?.Invoke(CloneShipStatus(snapshot));
+            };
 
             string programDir = !string.IsNullOrWhiteSpace(scriptDirectory)
                 ? (Path.GetDirectoryName(scriptDirectory) ?? GetDefaultProgramDir())
@@ -239,6 +259,56 @@ namespace TWXProxy.Core
         {
             return new ClientContextScope(_preferredClientIndex, clientIndex >= 0 ? clientIndex : null);
         }
+
+        public void FeedShipStatusLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            _shipInfoParser.FeedLine(line);
+        }
+
+        private static ShipStatus CloneShipStatus(ShipStatus status) => new()
+        {
+            TraderName = status.TraderName,
+            Experience = status.Experience,
+            Alignment = status.Alignment,
+            AlignText = status.AlignText,
+            TimesBlownUp = status.TimesBlownUp,
+            Corp = status.Corp,
+            ShipName = status.ShipName,
+            ShipType = status.ShipType,
+            ShipNumber = status.ShipNumber,
+            ShipClass = status.ShipClass,
+            CurrentSector = status.CurrentSector,
+            Turns = status.Turns,
+            TurnsPerWarp = status.TurnsPerWarp,
+            TotalHolds = status.TotalHolds,
+            FuelOre = status.FuelOre,
+            Organics = status.Organics,
+            Equipment = status.Equipment,
+            Colonists = status.Colonists,
+            HoldsEmpty = status.HoldsEmpty,
+            Fighters = status.Fighters,
+            Shields = status.Shields,
+            Photons = status.Photons,
+            ArmidMines = status.ArmidMines,
+            LimpetMines = status.LimpetMines,
+            GenesisTorps = status.GenesisTorps,
+            AtomicDet = status.AtomicDet,
+            Corbomite = status.Corbomite,
+            Cloaks = status.Cloaks,
+            Beacons = status.Beacons,
+            EtherProbes = status.EtherProbes,
+            MineDisruptors = status.MineDisruptors,
+            PsychProbe = status.PsychProbe,
+            PlanetScanner = status.PlanetScanner,
+            LRSType = status.LRSType,
+            TransWarp1 = status.TransWarp1,
+            TransWarp2 = status.TransWarp2,
+            Interdictor = status.Interdictor,
+            Credits = status.Credits
+        };
 
         public string GetClientAddress(int index)
         {

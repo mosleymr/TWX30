@@ -136,7 +136,14 @@ public class ShipInfoParser
             else if (TrySlash(tok, "Aln ",    out long aln))    _s.Alignment      = aln;
             else if (TrySlash(tok, "Exp ",    out long exp))    _s.Experience     = exp;
             else if (TrySlash(tok, "Corp ",   out long corp))   _s.Corp           = (int)corp;
-            // "Ship 9 Other" – ship number, ignore or could store in ShipType
+            else if (TrySlash(tok, "Ship ", out string shipInfo))
+            {
+                string[] shipParts = shipInfo.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (shipParts.Length > 0 && int.TryParse(shipParts[0], out int shipNumber))
+                    _s.ShipNumber = shipNumber;
+                if (shipParts.Length > 1)
+                    _s.ShipClass = shipParts[1].Trim();
+            }
         }
 
         return any;
@@ -209,6 +216,8 @@ public class ShipInfoParser
 
             case "Ship Info":
                 _s.ShipType = val;
+                if (string.IsNullOrWhiteSpace(_s.ShipClass))
+                    _s.ShipClass = val;
                 break;
 
             case "Turns to Warp":

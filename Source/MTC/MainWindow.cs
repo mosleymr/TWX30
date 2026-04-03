@@ -164,6 +164,7 @@ public class MainWindow : Window
         Core.GlobalModules.GlobalAutoRecorder.CurrentSectorChanged += sn =>
             Dispatcher.UIThread.Post(() =>
             {
+                Core.ScriptRef.SetCurrentSector(sn);
                 if (_state.Sector != sn)
                 {
                     _state.Sector = sn;
@@ -1614,8 +1615,11 @@ public class MainWindow : Window
                         string remainderAnsi = Core.AnsiCodes.PrepareScriptAnsiText(remainder);
                         string scriptRemainder = Core.AnsiCodes.PrepareScriptText(remainder);
                         string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r'));
+                        gi.FeedShipStatusLine(strippedRemainder);
                         _shipParser.FeedLine(strippedRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
+                        if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                            Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         if (!gi.IsProxyMenuActive)
                         {
                             Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
@@ -1636,8 +1640,11 @@ public class MainWindow : Window
 
                 if (!string.IsNullOrEmpty(lineStripped))
                 {
+                    gi.FeedShipStatusLine(lineStripped);
                     _shipParser.FeedLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped);
+                    if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                        Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                 }
 
                 gi.History.ProcessLine(lineStripped);

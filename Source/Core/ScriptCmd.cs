@@ -753,8 +753,8 @@ namespace TWXProxy.Core
             AddSysConstant("RYLOS", (indexes) => GetRylos()); // 67
             
             // 68-74: Added in 2.04a
-            AddSysConstant("PORT.BUILDTIME", (indexes) => string.Empty); // 68
-            AddSysConstant("PORT.UPDATED", (indexes) => string.Empty); // 69
+            AddSysConstant("PORT.BUILDTIME", (indexes) => GetPortBuildTime(indexes)); // 68
+            AddSysConstant("PORT.UPDATED", (indexes) => GetPortUpdated(indexes)); // 69
             AddSysConstant("RAWPACKET", (indexes) => GetRawPacket()); // 70
             AddSysConstant("SECTOR.BEACON", (indexes) => { // 71
                 var s = GetSectorByIndex(indexes);
@@ -781,39 +781,39 @@ namespace TWXProxy.Core
                 return s?.Anomaly == true ? "1" : "0";
             });
             
-            AddSysConstant("TURNS", (indexes) => "0");
-            AddSysConstant("CREDITS", (indexes) => "0");
-            AddSysConstant("FIGHTERS", (indexes) => "0");
-            AddSysConstant("SHIELDS", (indexes) => "0");
-            AddSysConstant("TOTALHOLDS", (indexes) => "0");
-            AddSysConstant("OREHOLDS", (indexes) => "0");
-            AddSysConstant("ORGHOLDS", (indexes) => "0");
-            AddSysConstant("EQUHOLDS", (indexes) => "0");
-            AddSysConstant("COLHOLDS", (indexes) => "0");
-            AddSysConstant("EMPTYHOLDS", (indexes) => "0");
-            AddSysConstant("PHOTONS", (indexes) => "0");
-            AddSysConstant("ARMIDS", (indexes) => "0");
-            AddSysConstant("LIMPETS", (indexes) => "0");
-            AddSysConstant("GENTORPS", (indexes) => "0");
-            AddSysConstant("TWARPTYPE", (indexes) => "0");
-            AddSysConstant("CLOAKS", (indexes) => "0");
-            AddSysConstant("BEACONS", (indexes) => "0");
-            AddSysConstant("ATOMICS", (indexes) => "0");
-            AddSysConstant("CORBOMITE", (indexes) => "0");
-            AddSysConstant("EPROBES", (indexes) => "0");
-            AddSysConstant("MINEDISR", (indexes) => "0");
-            AddSysConstant("PSYCHICPROBE", (indexes) => "No");
-            AddSysConstant("PLANETSCANNER", (indexes) => "No");
-            AddSysConstant("SCANTYPE", (indexes) => "None");
-            AddSysConstant("ALIGNMENT", (indexes) => "0");
-            AddSysConstant("EXPERIENCE", (indexes) => "0");
-            AddSysConstant("CORP", (indexes) => "0");
-            AddSysConstant("SHIPNUMBER", (indexes) => "0");
-            AddSysConstant("SHIPCLASS", (indexes) => "0");
-            AddSysConstant("ANSIQUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("QUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("QS", (indexes) => string.Empty);
-            AddSysConstant("QSTAT", (indexes) => string.Empty);
+            AddSysConstant("TURNS", (indexes) => GetCurrentTurns());
+            AddSysConstant("CREDITS", (indexes) => GetCurrentCredits());
+            AddSysConstant("FIGHTERS", (indexes) => GetCurrentFighters());
+            AddSysConstant("SHIELDS", (indexes) => GetCurrentShields());
+            AddSysConstant("TOTALHOLDS", (indexes) => GetCurrentTotalHolds());
+            AddSysConstant("OREHOLDS", (indexes) => GetCurrentOreHolds());
+            AddSysConstant("ORGHOLDS", (indexes) => GetCurrentOrgHolds());
+            AddSysConstant("EQUHOLDS", (indexes) => GetCurrentEquHolds());
+            AddSysConstant("COLHOLDS", (indexes) => GetCurrentColHolds());
+            AddSysConstant("EMPTYHOLDS", (indexes) => GetCurrentEmptyHolds());
+            AddSysConstant("PHOTONS", (indexes) => GetCurrentPhotons());
+            AddSysConstant("ARMIDS", (indexes) => GetCurrentArmids());
+            AddSysConstant("LIMPETS", (indexes) => GetCurrentLimpets());
+            AddSysConstant("GENTORPS", (indexes) => GetCurrentGenTorps());
+            AddSysConstant("TWARPTYPE", (indexes) => GetCurrentTwarpType());
+            AddSysConstant("CLOAKS", (indexes) => GetCurrentCloaks());
+            AddSysConstant("BEACONS", (indexes) => GetCurrentBeacons());
+            AddSysConstant("ATOMICS", (indexes) => GetCurrentAtomics());
+            AddSysConstant("CORBOMITE", (indexes) => GetCurrentCorbomite());
+            AddSysConstant("EPROBES", (indexes) => GetCurrentEprobes());
+            AddSysConstant("MINEDISR", (indexes) => GetCurrentMineDisr());
+            AddSysConstant("PSYCHICPROBE", (indexes) => GetCurrentPsychicProbe());
+            AddSysConstant("PLANETSCANNER", (indexes) => GetCurrentPlanetScanner());
+            AddSysConstant("SCANTYPE", (indexes) => GetCurrentScanType());
+            AddSysConstant("ALIGNMENT", (indexes) => GetCurrentAlignment());
+            AddSysConstant("EXPERIENCE", (indexes) => GetCurrentExperience());
+            AddSysConstant("CORP", (indexes) => GetCurrentCorp());
+            AddSysConstant("SHIPNUMBER", (indexes) => GetCurrentShipNumber());
+            AddSysConstant("SHIPCLASS", (indexes) => GetCurrentShipClass());
+            AddSysConstant("ANSIQUICKSTATS", (indexes) => GetCurrentAnsiQuickStats());
+            AddSysConstant("QUICKSTATS", (indexes) => GetCurrentQuickStats());
+            AddSysConstant("QS", (indexes) => GetCurrentQs());
+            AddSysConstant("QSTAT", (indexes) => GetCurrentQStat());
             AddSysConstant("GAMEDATA", (indexes) => GetGameData());
             AddSysConstant("BOTLIST", (indexes) =>
             {
@@ -842,39 +842,39 @@ namespace TWXProxy.Core
                 if (warpCount == 0) warpCount = s.WarpCount;
                 return warpCount == 1 ? "1" : "0";
             });
-            AddSysConstant("CURRENTTURNS", (indexes) => "0");
-            AddSysConstant("CURRENTCREDITS", (indexes) => "0");
-            AddSysConstant("CURRENTFIGHTERS", (indexes) => "0");
-            AddSysConstant("CURRENTSHIELDS", (indexes) => "0");
-            AddSysConstant("CURRENTTOTALHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTOREHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTORGHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTEQUHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTCOLHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTEMPTYHOLDS", (indexes) => "0");
-            AddSysConstant("CURRENTPHOTONS", (indexes) => "0");
-            AddSysConstant("CURRENTARMIDS", (indexes) => "0");
-            AddSysConstant("CURRENTLIMPETS", (indexes) => "0");
-            AddSysConstant("CURRENTGENTORPS", (indexes) => "0");
-            AddSysConstant("CURRENTTWARPTYPE", (indexes) => "0");
-            AddSysConstant("CURRENTCLOAKS", (indexes) => "0");
-            AddSysConstant("CURRENTBEACONS", (indexes) => "0");
-            AddSysConstant("CURRENTATOMICS", (indexes) => "0");
-            AddSysConstant("CURRENTCORBOMITE", (indexes) => "0");
-            AddSysConstant("CURRENTEPROBES", (indexes) => "0");
-            AddSysConstant("CURRENTMINEDISR", (indexes) => "0");
-            AddSysConstant("CURRENTPSYCHICPROBE", (indexes) => "No");
-            AddSysConstant("CURRENTPLANETSCANNER", (indexes) => "No");
-            AddSysConstant("CURRENTSCANTYPE", (indexes) => "None");
-            AddSysConstant("CURRENTALIGNMENT", (indexes) => "0");
-            AddSysConstant("CURRENTEXPERIENCE", (indexes) => "0");
-            AddSysConstant("CURRENTCORP", (indexes) => "0");
-            AddSysConstant("CURRENTSHIPNUMBER", (indexes) => "0");
-            AddSysConstant("CURRENTSHIPCLASS", (indexes) => "0");
-            AddSysConstant("CURRENTANSIQUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQUICKSTATS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQS", (indexes) => string.Empty);
-            AddSysConstant("CURRENTQSTAT", (indexes) => string.Empty);
+            AddSysConstant("CURRENTTURNS", (indexes) => GetCurrentTurns());
+            AddSysConstant("CURRENTCREDITS", (indexes) => GetCurrentCredits());
+            AddSysConstant("CURRENTFIGHTERS", (indexes) => GetCurrentFighters());
+            AddSysConstant("CURRENTSHIELDS", (indexes) => GetCurrentShields());
+            AddSysConstant("CURRENTTOTALHOLDS", (indexes) => GetCurrentTotalHolds());
+            AddSysConstant("CURRENTOREHOLDS", (indexes) => GetCurrentOreHolds());
+            AddSysConstant("CURRENTORGHOLDS", (indexes) => GetCurrentOrgHolds());
+            AddSysConstant("CURRENTEQUHOLDS", (indexes) => GetCurrentEquHolds());
+            AddSysConstant("CURRENTCOLHOLDS", (indexes) => GetCurrentColHolds());
+            AddSysConstant("CURRENTEMPTYHOLDS", (indexes) => GetCurrentEmptyHolds());
+            AddSysConstant("CURRENTPHOTONS", (indexes) => GetCurrentPhotons());
+            AddSysConstant("CURRENTARMIDS", (indexes) => GetCurrentArmids());
+            AddSysConstant("CURRENTLIMPETS", (indexes) => GetCurrentLimpets());
+            AddSysConstant("CURRENTGENTORPS", (indexes) => GetCurrentGenTorps());
+            AddSysConstant("CURRENTTWARPTYPE", (indexes) => GetCurrentTwarpType());
+            AddSysConstant("CURRENTCLOAKS", (indexes) => GetCurrentCloaks());
+            AddSysConstant("CURRENTBEACONS", (indexes) => GetCurrentBeacons());
+            AddSysConstant("CURRENTATOMICS", (indexes) => GetCurrentAtomics());
+            AddSysConstant("CURRENTCORBOMITE", (indexes) => GetCurrentCorbomite());
+            AddSysConstant("CURRENTEPROBES", (indexes) => GetCurrentEprobes());
+            AddSysConstant("CURRENTMINEDISR", (indexes) => GetCurrentMineDisr());
+            AddSysConstant("CURRENTPSYCHICPROBE", (indexes) => GetCurrentPsychicProbe());
+            AddSysConstant("CURRENTPLANETSCANNER", (indexes) => GetCurrentPlanetScanner());
+            AddSysConstant("CURRENTSCANTYPE", (indexes) => GetCurrentScanType());
+            AddSysConstant("CURRENTALIGNMENT", (indexes) => GetCurrentAlignment());
+            AddSysConstant("CURRENTEXPERIENCE", (indexes) => GetCurrentExperience());
+            AddSysConstant("CURRENTCORP", (indexes) => GetCurrentCorp());
+            AddSysConstant("CURRENTSHIPNUMBER", (indexes) => GetCurrentShipNumber());
+            AddSysConstant("CURRENTSHIPCLASS", (indexes) => GetCurrentShipClass());
+            AddSysConstant("CURRENTANSIQUICKSTATS", (indexes) => GetCurrentAnsiQuickStats());
+            AddSysConstant("CURRENTQUICKSTATS", (indexes) => GetCurrentQuickStats());
+            AddSysConstant("CURRENTQS", (indexes) => GetCurrentQs());
+            AddSysConstant("CURRENTQSTAT", (indexes) => GetCurrentQStat());
             AddSysConstant("LIBPARM", (indexes) => string.Empty);
             AddSysConstant("LIBPARMS", (indexes) => string.Empty);
             AddSysConstant("LIBPARMCOUNT", (indexes) => "0");
@@ -951,6 +951,184 @@ namespace TWXProxy.Core
             if (indexes.Length == 0) return null;
             if (!int.TryParse(indexes[0], out int sn) || sn < 1) return null;
             return GetActiveDatabase()?.GetSector(sn);
+        }
+
+        private static ShipStatus GetCurrentShipStatus()
+        {
+            return _activeGameInstance?.CurrentShipStatus ?? new ShipStatus();
+        }
+
+        private static string GetPortBuildTime(string[] indexes)
+        {
+            var s = GetSectorByIndex(indexes);
+            return s?.SectorPort != null ? s.SectorPort.BuildTime.ToString(CultureInfo.InvariantCulture) : string.Empty;
+        }
+
+        private static string GetPortUpdated(string[] indexes)
+        {
+            var s = GetSectorByIndex(indexes);
+            if (s?.SectorPort == null || s.SectorPort.Update == default)
+                return string.Empty;
+            return s.SectorPort.Update.ToString(CultureInfo.CurrentCulture);
+        }
+
+        private static string GetCurrentTurns() => GetCurrentShipStatus().Turns.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentCredits() => GetCurrentShipStatus().Credits.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentFighters() => GetCurrentShipStatus().Fighters.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentShields() => GetCurrentShipStatus().Shields.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentTotalHolds() => GetCurrentShipStatus().TotalHolds.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentOreHolds() => GetCurrentShipStatus().FuelOre.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentOrgHolds() => GetCurrentShipStatus().Organics.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentEquHolds() => GetCurrentShipStatus().Equipment.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentColHolds() => GetCurrentShipStatus().Colonists.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentEmptyHolds()
+        {
+            var s = GetCurrentShipStatus();
+            int empty = s.TotalHolds - s.FuelOre - s.Organics - s.Equipment - s.Colonists;
+            if (empty < 0) empty = 0;
+            return empty.ToString(CultureInfo.InvariantCulture);
+        }
+        private static string GetCurrentPhotons() => GetCurrentShipStatus().Photons.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentArmids() => GetCurrentShipStatus().ArmidMines.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentLimpets() => GetCurrentShipStatus().LimpetMines.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentGenTorps() => GetCurrentShipStatus().GenesisTorps.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentTwarpType()
+        {
+            int value = GetCurrentShipStatus().TurnsPerWarp;
+            return value == 0 ? "No" : value.ToString(CultureInfo.InvariantCulture);
+        }
+        private static string GetCurrentCloaks() => GetCurrentShipStatus().Cloaks.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentBeacons() => GetCurrentShipStatus().Beacons.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentAtomics() => GetCurrentShipStatus().AtomicDet.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentCorbomite() => GetCurrentShipStatus().Corbomite.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentEprobes() => GetCurrentShipStatus().EtherProbes.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentMineDisr() => GetCurrentShipStatus().MineDisruptors.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentPsychicProbe() => GetCurrentShipStatus().PsychProbe ? "Yes" : "No";
+        private static string GetCurrentPlanetScanner() => GetCurrentShipStatus().PlanetScanner ? "Yes" : "No";
+        private static string GetCurrentScanType()
+        {
+            string lrs = GetCurrentShipStatus().LRSType;
+            if (string.IsNullOrWhiteSpace(lrs))
+                return "None";
+            if (lrs.Contains("Holo", StringComparison.OrdinalIgnoreCase))
+                return "Holo";
+            if (lrs.Contains("Dens", StringComparison.OrdinalIgnoreCase) ||
+                lrs.Contains("Density", StringComparison.OrdinalIgnoreCase))
+                return "Dens";
+            if (lrs.Contains("None", StringComparison.OrdinalIgnoreCase))
+                return "None";
+            return lrs.Trim();
+        }
+        private static string GetCurrentAlignment() => GetCurrentShipStatus().Alignment.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentExperience() => GetCurrentShipStatus().Experience.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentCorp() => GetCurrentShipStatus().Corp.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentShipNumber() => GetCurrentShipStatus().ShipNumber.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentShipClass()
+        {
+            var s = GetCurrentShipStatus();
+            return !string.IsNullOrWhiteSpace(s.ShipClass) ? s.ShipClass : s.ShipType;
+        }
+
+        private static string GetCurrentAnsiQuickStats()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "~0~5SECT  ~2= ~1{0,-11}~3|~5HLD ~2= ~1{1,-4}~3|~5FIGS ~2= ~1{2,-6}~3|~5ARMID ~2= ~1{3,-4}~3|~5TWARP ~2= ~1{4}" + "\r" +
+                "~5TURNS ~2= ~1{5,-11}~3|~5ORE ~2= ~1{6,-4}~3|~5SHLD ~2= ~1{7,-6}~3|~5LMPIT ~2= ~1{8,-4}~3|~5PLSCN ~2= ~1{9}" + "\r" +
+                "~5CREDS ~2= ~1{10,-11}~3|~5ORG ~2= ~1{11,-4}~3|~5PHOT ~2= ~1{12,-6}~3|~5GTORP ~2= ~1{13,-4}~3|~5LRS   ~2= ~1{14}" + "\r" +
+                "~5ALN   ~2= ~1{15,-11}~3|~5EQU ~2= ~1{16,-4}~3|~5CRBO ~2= ~1{17,-6}~3|~5ATMDT ~2= ~1{18,-4}~3|~5PSPRB ~2= ~1{19}" + "\r" +
+                "~5EXP   ~2= ~1{20,-11}~3|~5COL ~2= ~1{21,-4}~3|~5MDIS ~1= ~1{22,-6}~3|~5BEACN ~2= ~1{23,-4}~3|~5EPRB  ~2= ~1{24}" + "\r" +
+                "~5SHIP  ~2= ~1{25,-4} ~3{26,-8}" + "\r",
+                GetCurrentSector().ToString(CultureInfo.InvariantCulture),
+                GetCurrentTotalHolds(),
+                GetCurrentFighters(),
+                GetCurrentArmids(),
+                GetCurrentTwarpType(),
+                GetCurrentTurns(),
+                GetCurrentOreHolds(),
+                GetCurrentShields(),
+                GetCurrentLimpets(),
+                GetCurrentPlanetScanner(),
+                GetCurrentCredits(),
+                GetCurrentOrgHolds(),
+                GetCurrentPhotons(),
+                GetCurrentGenTorps(),
+                GetCurrentScanType(),
+                GetCurrentAlignment(),
+                GetCurrentEquHolds(),
+                GetCurrentCorbomite(),
+                GetCurrentAtomics(),
+                GetCurrentPsychicProbe(),
+                GetCurrentExperience(),
+                GetCurrentColHolds(),
+                GetCurrentMineDisr(),
+                GetCurrentBeacons(),
+                GetCurrentEprobes(),
+                GetCurrentShipNumber(),
+                GetCurrentShipClass());
+        }
+
+        private static string GetCurrentQuickStats()
+        {
+            string qs = GetCurrentAnsiQuickStats();
+            if (_activeGameInstance != null)
+                qs = _activeGameInstance.ApplyQuickText(qs);
+            return AnsiCodes.StripANSI(qs);
+        }
+
+        private static string GetCurrentQs()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0} {1} {2} {3} {4} {5} {6} {7} {8} {9} {10} {11} {12} {13} {14} {15}",
+                GetCurrentTurns(),
+                GetCurrentCredits(),
+                GetCurrentFighters(),
+                GetCurrentShields(),
+                GetCurrentCorbomite(),
+                GetCurrentPhotons(),
+                GetCurrentAlignment(),
+                GetCurrentExperience(),
+                GetCurrentCorp(),
+                GetCurrentShipNumber(),
+                GetCurrentShipClass(),
+                GetCurrentTotalHolds(),
+                GetCurrentOreHolds(),
+                GetCurrentOrgHolds(),
+                GetCurrentEquHolds(),
+                GetCurrentColHolds());
+        }
+
+        private static string GetCurrentQStat()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "{0} {1} {2} {3} {4} {5} {6} {7} {8} {9} {10} {11} {12} {13} {14} {15} {16} {17} {18} {19} {20} {21} {22} {23} {24} {25} {26} {27}",
+                GetCurrentTurns(),
+                GetCurrentCredits(),
+                GetCurrentFighters(),
+                GetCurrentShields(),
+                GetCurrentCorbomite(),
+                GetCurrentPhotons(),
+                GetCurrentAlignment(),
+                GetCurrentExperience(),
+                GetCurrentCorp(),
+                GetCurrentShipNumber(),
+                GetCurrentShipClass(),
+                GetCurrentTotalHolds(),
+                GetCurrentOreHolds(),
+                GetCurrentOrgHolds(),
+                GetCurrentEquHolds(),
+                GetCurrentColHolds(),
+                GetCurrentArmids(),
+                GetCurrentLimpets(),
+                GetCurrentGenTorps(),
+                GetCurrentAtomics(),
+                GetCurrentTwarpType(),
+                GetCurrentCloaks(),
+                GetCurrentBeacons(),
+                GetCurrentEprobes(),
+                GetCurrentMineDisr(),
+                GetCurrentPsychicProbe(),
+                GetCurrentPlanetScanner(),
+                GetCurrentScanType());
         }
 
         /// <summary>
