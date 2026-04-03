@@ -1474,9 +1474,10 @@ namespace TWXProxy.Core
 
                     if (!string.IsNullOrEmpty(response))
                     {
-                        // Handle autotrigger response - send text to game server
-                        // Convert * to CRLF (Trade Wars convention)
-                        string output = response.Replace("*", "\r\n");
+                        // Handle autotrigger response - send the compiled bytes as-is.
+                        // Pascal TWX sends the response directly; source '*' characters have
+                        // already been serialized to carriage returns (#13) by the compiler.
+                        string output = response;
                         
                         // Send to game server via ModDatabase (cast to concrete type for SendToServerAsync)
                         if (GlobalModules.TWXDatabase is ModDatabase database)

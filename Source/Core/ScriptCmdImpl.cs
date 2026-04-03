@@ -905,14 +905,10 @@ namespace TWXProxy.Core
             foreach (var param in parameters)
                 output += param.Value;
             
-            // The Pascal compiler (and our C# compiler) replace '*' with CR (#13) in
-            // string constants at compile time. The bytecode therefore contains '\r'
-            // where the script source had '*'. Normalize to CRLF for the game server.
-            // Do this in two passes to avoid double-converting newly inserted \n chars.
-            output = output.Replace("\r\n", "\n") // fold any existing CRLF to LF
-                           .Replace("\r", "\n")   // fold bare CR to LF
-                           .Replace("\n", "\r\n"); // expand every LF to CRLF
-            
+            // Pascal TWX sends the compiled text exactly as serialized in bytecode.
+            // Source '*' characters are already converted to carriage returns (#13) by
+            // the compiler, so we must not expand them to CRLF here.
+
             GlobalModules.DebugLog($"[SEND] Output: '{output.Replace("\r", "\\r").Replace("\n", "\\n")}'\n");
             
             // Send to game server via GameInstance (which acts as the client)
