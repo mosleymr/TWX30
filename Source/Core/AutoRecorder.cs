@@ -571,39 +571,6 @@ namespace TWXProxy.Core
                     return;
                 }
             }
-            // Sector defense prompt: keep the current sector's fighter quantity in sync
-            // during burst unload flows like movefig, which depend on the DB total on the
-            // very next run.
-            if (rawLine.IndexOf("How many fighters do you want defending this sector?", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                int sectorNum = _currentSector > 0 ? _currentSector : _lastSector;
-                int qty = ExtractTrailingDisplayedCount(rawLine);
-
-                if (sectorNum <= 0)
-                {
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: sector defense prompt seen with no current sector: '{rawLine}'\n");
-                    return;
-                }
-
-                if (qty < 0)
-                {
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: sector defense prompt quantity parse failed for sector {sectorNum}: '{rawLine}'\n");
-                    return;
-                }
-
-                var sector = GetOrCreate(db, sectorNum);
-                if (sector == null)
-                {
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: sector defense prompt could not load sector {sectorNum}: '{rawLine}'\n");
-                    return;
-                }
-
-                sector.Fighters.Quantity = qty;
-                db.SaveSector(sector);
-                GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={qty}\n");
-                return;
-            }
-
             if (_inPortReport)
             {
                 var pm = _rxProductLine.Match(trimmedLine);
@@ -1003,28 +970,6 @@ namespace TWXProxy.Core
             if (existingValue < approx - margin || existingValue > approx + margin)
                 return approx;
             return existingValue;
-        }
-
-        private static int ExtractTrailingDisplayedCount(string text)
-        {
-            if (string.IsNullOrEmpty(text))
-                return -1;
-
-            int end = text.Length - 1;
-            while (end >= 0 && !char.IsDigit(text[end]))
-                end--;
-
-            if (end < 0)
-                return -1;
-
-            int start = end;
-            while (start >= 0 && (char.IsDigit(text[start]) || text[start] == ','))
-                start--;
-
-            string numeric = text[(start + 1)..(end + 1)];
-            return int.TryParse(numeric.Replace(",", string.Empty, StringComparison.Ordinal), out int value)
-                ? value
-                : -1;
         }
 
         private static int ParseCommaInt(string text)

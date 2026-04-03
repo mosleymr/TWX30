@@ -170,7 +170,7 @@ namespace TWXProxy.Core
 
         public static string PrepareScriptText(string text)
         {
-            return StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r');
+            return NormalizeTerminalText(StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r'));
         }
     }
 }
