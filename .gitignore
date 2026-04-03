@@ -21,6 +21,9 @@ obj/
 Source/MTC/publish/
 Source/TWXC/publish/
 Source/TWXD/publish/
+Source/Installer/Windows/artifacts/
+Source/Installer/Windows/bin/
+Source/Installer/Windows/obj/
 
 # Local-only notes
 RELOG_LOOP_FIX.md

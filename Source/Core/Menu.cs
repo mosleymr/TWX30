@@ -107,7 +107,9 @@ namespace TWXProxy.Core
             _interpreter = interpreter;
             _currentClientIndexProvider = currentClientIndexProvider;
 
-            string baseDir = AppContext.BaseDirectory;
+            string baseDir = OperatingSystem.IsWindows()
+                ? WindowsInstallInfo.GetInstalledProgramDirOrDefault()
+                : AppContext.BaseDirectory;
             if (string.IsNullOrWhiteSpace(baseDir))
                 baseDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 

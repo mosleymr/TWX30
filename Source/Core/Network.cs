@@ -193,7 +193,7 @@ namespace TWXProxy.Core
             _serverAddress = serverAddress;
             _serverPort = serverPort;
             _interpreter = interpreter;
-            _scriptDirectory = scriptDirectory ?? Path.Combine(AppContext.BaseDirectory, "scripts");
+            _scriptDirectory = scriptDirectory ?? GetDefaultScriptDirectory();
             
             // Register this instance as the global TWXServer for script access
             if (_interpreter != null)
@@ -216,10 +216,23 @@ namespace TWXProxy.Core
             InitializeSystemQuickTexts();
 
             string programDir = !string.IsNullOrWhiteSpace(scriptDirectory)
-                ? (Path.GetDirectoryName(scriptDirectory) ?? AppContext.BaseDirectory)
+                ? (Path.GetDirectoryName(scriptDirectory) ?? GetDefaultProgramDir())
                 : GlobalModules.ProgramDir;
             foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
                 RegisterBotConfig(bot);
+        }
+
+        private static string GetDefaultProgramDir()
+        {
+            if (OperatingSystem.IsWindows())
+                return WindowsInstallInfo.GetInstalledProgramDirOrDefault();
+
+            return AppContext.BaseDirectory;
+        }
+
+        private static string GetDefaultScriptDirectory()
+        {
+            return Path.Combine(GetDefaultProgramDir(), "scripts");
         }
 
         public IDisposable PushClientContext(int clientIndex)

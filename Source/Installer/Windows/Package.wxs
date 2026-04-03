@@ -1,0 +1,200 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="TWX Proxy"
+           Manufacturer="TWXProxy"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="$(var.UpgradeCode)"
+           Language="1033"
+           Scope="perMachine"
+           Platform="$(var.InstallerPlatform)">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of TWX Proxy is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="MtcShortcutIcon" SourceFile="$(var.MtcIconPath)" />
+    <Icon Id="TwxpShortcutIcon" SourceFile="$(var.TwxpIconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="TwxpShortcutIcon" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtfPath)" />
+    <Property Id="WIXUI_INSTALLDIR" Value="PROGRAMROOTDIR" />
+    <Property Id="PROGRAMROOTDIR" Value="$(var.ProgramDirDefault)">
+      <RegistrySearch Id="FindInstalledProgramDir"
+                      Root="HKLM"
+                      Key="Software\TWXProxy\TWX30"
+                      Name="ProgramDir"
+                      Type="raw" />
+    </Property>
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="PROGRAMROOTDIR" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLROOT" Name="TWXProxy">
+        <Directory Id="MTCAPPDIR" Name="MTC" />
+        <Directory Id="TWXPAPPDIR" Name="TWXP" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="TWXSTARTMENUDIR" Name="TWX Proxy" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="PROGRAMROOTDIR" Name="twxproxy">
+        <Directory Id="SCRIPTSDIR" Name="scripts" />
+        <Directory Id="DATADIR" Name="data" />
+        <Directory Id="LOGSDIR" Name="logs" />
+        <Directory Id="MODULESDIR" Name="modules" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProgramFilesPayload">
+      <Component Directory="MTCAPPDIR" Guid="*">
+        <File Id="MtcExeFile"
+              Source="$(var.PayloadRoot)\MTC\MTC.exe"
+              KeyPath="yes"
+              Checksum="yes">
+          <Shortcut Id="MtcStartMenuShortcut"
+                    Directory="TWXSTARTMENUDIR"
+                    Name="Mayhem Tradewars Client"
+                    Description="Launch Mayhem Tradewars Client"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="MtcShortcutIcon"
+                    IconIndex="0" />
+          <Shortcut Id="MtcDesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="Mayhem Tradewars Client"
+                    Description="Launch Mayhem Tradewars Client"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="MtcShortcutIcon"
+                    IconIndex="0" />
+        </File>
+      </Component>
+
+      <Component Directory="TWXPAPPDIR" Guid="*">
+        <File Id="TwxpExeFile"
+              Source="$(var.PayloadRoot)\TWXP\twxp.exe"
+              KeyPath="yes"
+              Checksum="yes">
+          <Shortcut Id="TwxpStartMenuShortcut"
+                    Directory="TWXSTARTMENUDIR"
+                    Name="TWX Proxy"
+                    Description="Launch TWX Proxy"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="TwxpShortcutIcon"
+                    IconIndex="0" />
+          <Shortcut Id="TwxpDesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="TWX Proxy"
+                    Description="Launch TWX Proxy"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="TwxpShortcutIcon"
+                    IconIndex="0" />
+        </File>
+      </Component>
+
+      <Files Directory="MTCAPPDIR" Include="$(var.PayloadRoot)\MTC\**">
+        <Exclude Files="$(var.PayloadRoot)\MTC\MTC.exe" />
+        <Exclude Files="$(var.PayloadRoot)\MTC\**\*.pdb" />
+      </Files>
+
+      <Files Directory="TWXPAPPDIR" Include="$(var.PayloadRoot)\TWXP\**">
+        <Exclude Files="$(var.PayloadRoot)\TWXP\twxp.exe" />
+        <Exclude Files="$(var.PayloadRoot)\TWXP\**\*.pdb" />
+      </Files>
+    </ComponentGroup>
+
+    <ComponentGroup Id="ProgramRootPayload">
+      <Component Directory="PROGRAMROOTDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30"
+                       Name="ProgramDir"
+                       Type="string"
+                       Value="[PROGRAMROOTDIR]"
+                       KeyPath="yes" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30"
+                       Name="InstallDir"
+                       Type="string"
+                       Value="[INSTALLROOT]" />
+      </Component>
+
+      <Component Directory="PROGRAMROOTDIR" Guid="*">
+        <File Id="TwxcExeFile"
+              Source="$(var.PayloadRoot)\ProgramDir\twxc.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+
+      <Component Directory="PROGRAMROOTDIR" Guid="*">
+        <File Id="TwxdExeFile"
+              Source="$(var.PayloadRoot)\ProgramDir\twxd.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+
+      <Component Directory="SCRIPTSDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="scripts"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Directory="DATADIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="data"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Directory="LOGSDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="logs"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Directory="MODULESDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="modules"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Directory="TWXSTARTMENUDIR" Guid="*">
+        <CreateFolder />
+        <RemoveFolder Id="RemoveTwxStartMenuDir" On="uninstall" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="startmenu"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Complete"
+             Title="TWX Proxy"
+             Description="Installs MTC, TWXP, TWXC, and TWXD."
+             Level="1"
+             ConfigurableDirectory="PROGRAMROOTDIR">
+      <ComponentGroupRef Id="ProgramFilesPayload" />
+      <ComponentGroupRef Id="ProgramRootPayload" />
+    </Feature>
+  </Package>
+</Wix>

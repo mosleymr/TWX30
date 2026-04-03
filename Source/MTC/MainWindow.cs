@@ -1467,7 +1467,7 @@ public class MainWindow : Window
         // Open / create the session database using sectors from the game config.
         OpenSessionDatabase(gameName, gameConfig.Sectors, useSharedProxyDatabase: true);
 
-        // Resolve the effective script directory: app prefs → ~/Documents.
+        // Resolve the effective script directory: game config -> app prefs -> platform default.
         // TrimEnd removes any trailing separator so Path.GetDirectoryName returns the
         // true parent folder rather than the same folder (which happens when the stored
         // path ends with '/').
@@ -1475,7 +1475,9 @@ public class MainWindow : Window
             ? gameConfig.ScriptDirectory
             : (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
                 ? _appPrefs.ScriptsDirectory
-                : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments)))
+                : (OperatingSystem.IsWindows()
+                    ? Core.WindowsInstallInfo.GetDefaultScriptsDirectory()
+                    : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments))))
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         // Create the script interpreter.
@@ -2545,6 +2547,9 @@ public class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
             return _appPrefs.ScriptsDirectory;
 
+        if (OperatingSystem.IsWindows())
+            return Core.WindowsInstallInfo.GetDefaultScriptsDirectory();
+
         return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
     }
 
@@ -2567,7 +2572,7 @@ public class MainWindow : Window
         IStorageFolder? start = null;
         string preferred = !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
             ? _appPrefs.ScriptsDirectory
-            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            : GetEffectiveProxyScriptDirectory();
 
         try
         {

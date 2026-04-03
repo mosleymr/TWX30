@@ -17,8 +17,13 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('windows')) or '$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64'">
+    <ApplicationIcon>..\Installer\Windows\Assets\mtc2.ico</ApplicationIcon>
+  </PropertyGroup>
+
   <ItemGroup>
     <AvaloniaResource Include="mtc2.png" />
+    <None Include="..\Installer\Windows\Assets\mtc2.ico" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>

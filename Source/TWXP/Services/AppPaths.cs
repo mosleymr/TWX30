@@ -55,8 +55,8 @@ public static class AppPaths
     /// <summary>
     /// Default scripts directory (used when a game config has no explicit ScriptDirectory).
     ///   macOS   : /Library/Application Support/twxproxy/scripts
-    ///   Windows : C:\ProgramData\twxproxy\scripts
-    ///   Linux   : /usr/local/share/twxproxy/scripts  (or XDG_DATA_DIRS fallback)
+    ///   Windows : ProgramDir\scripts, where ProgramDir comes from the installer registry key
+    ///   Linux   : /usr/local/share/twxproxy/scripts
     /// Users can override this per-game in Settings.
     /// </summary>
     public static string DefaultScriptDir => BuildDefaultScriptDir();
@@ -110,17 +110,15 @@ public static class AppPaths
 
     private static string BuildDefaultScriptDir()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return TWXProxy.Core.WindowsInstallInfo.GetDefaultScriptsDirectory();
+        }
+
         if (OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst())
         {
             // /Library/Application Support/twxproxy/scripts
             return Path.Combine("/Library", "Application Support", "twxproxy", "scripts");
-        }
-
-        if (OperatingSystem.IsWindows())
-        {
-            // C:\ProgramData\twxproxy\scripts
-            string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-            return Path.Combine(programData, "twxproxy", "scripts");
         }
 
         // Linux / other

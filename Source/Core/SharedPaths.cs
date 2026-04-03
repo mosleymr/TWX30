@@ -30,7 +30,7 @@ public static class SharedPaths
     public static string ModulesDir => Path.Combine(AppDataDir, "modules");
 
     /// <summary>Legacy TWX proxy configuration file used for quick-load and bot metadata.</summary>
-    public static string TwxpConfigPath => Path.Combine(AppDataDir, "twxp.cfg");
+    public static string TwxpConfigPath => BuildTwxpConfigPath();
 
     /// <summary>Returns the shared .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
@@ -73,5 +73,13 @@ public static class SharedPaths
         string xdgData = Environment.GetEnvironmentVariable("XDG_DATA_HOME")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share");
         return Path.Combine(xdgData, "twxproxy");
+    }
+
+    private static string BuildTwxpConfigPath()
+    {
+        if (OperatingSystem.IsWindows())
+            return Path.Combine(WindowsInstallInfo.GetInstalledProgramDirOrDefault(), "twxp.cfg");
+
+        return Path.Combine(AppDataDir, "twxp.cfg");
     }
 }

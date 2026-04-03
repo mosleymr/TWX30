@@ -124,7 +124,9 @@ namespace TWXProxy.Core
         public static object? TWXBubble { get; set; }
         public static object? TWXGUI { get; set; }
         public static object? PersistenceManager { get; set; }
-        public static string ProgramDir { get; set; } = Environment.CurrentDirectory;
+        public static string ProgramDir { get; set; } = OperatingSystem.IsWindows()
+            ? WindowsInstallInfo.GetInstalledProgramDirOrDefault()
+            : Environment.CurrentDirectory;
 
         /// <summary>Auto-recorder that parses game text and updates the sector database.</summary>
         public static AutoRecorder GlobalAutoRecorder { get; } = new AutoRecorder();

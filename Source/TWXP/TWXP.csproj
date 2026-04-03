@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net10.0-maccatalyst</TargetFrameworks>
+		<TargetFrameworks Condition="'$(IncludeWindowsTarget)' == 'true'">net10.0-maccatalyst;net10.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks Condition="'$(IncludeWindowsTarget)' != 'true'">net10.0-maccatalyst</TargetFrameworks>
 		<OutputType>Exe</OutputType>
 		<RootNamespace>TWXP</RootNamespace>
 		<UseMaui>true</UseMaui>
@@ -32,6 +33,15 @@
 
 		<!-- Suppress NU1510 warning for System.Text.Encoding.CodePages - it's needed for Database.cs Windows-1252 encoding -->
 		<NoWarn>$(NoWarn);NU1510</NoWarn>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<WindowsPackageType>None</WindowsPackageType>
+		<ApplicationIcon>..\Installer\Windows\Assets\TWXProxy_Icon.ico</ApplicationIcon>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows' and '$(RuntimeIdentifierOverride)' != ''">
+		<RuntimeIdentifier>$(RuntimeIdentifierOverride)</RuntimeIdentifier>
 	</PropertyGroup>
 
 	<ItemGroup>

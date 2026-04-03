@@ -73,7 +73,10 @@ public class ProxyService : IProxyService
             // Set the program directory for the interpreter (used for relative paths).
             // In the Pascal version the install dir (e.g. C:\TWXProxy) contained the
             // "scripts" sub-folder, so ProgramDir = parent of scriptDirectory.
-            string programDir = Path.GetDirectoryName(scriptDirectory) ?? AppContext.BaseDirectory;
+            string programDir = Path.GetDirectoryName(scriptDirectory)
+                ?? (OperatingSystem.IsWindows()
+                    ? TWXProxy.Core.WindowsInstallInfo.GetInstalledProgramDirOrDefault()
+                    : AppContext.BaseDirectory);
             interpreter.ProgramDir = programDir;
             GlobalModules.ProgramDir = programDir;
             interpreter.ScriptDirectory = scriptDirectory;

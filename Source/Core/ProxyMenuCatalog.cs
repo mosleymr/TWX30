@@ -212,7 +212,7 @@ public static class ProxyMenuCatalog
             return Path.GetFullPath(scriptDirectory);
 
         string root = string.IsNullOrWhiteSpace(programDir)
-            ? AppContext.BaseDirectory
+            ? GetDefaultProgramDir()
             : programDir;
         return Path.GetFullPath(Path.Combine(root, "scripts"));
     }
@@ -223,9 +223,17 @@ public static class ProxyMenuCatalog
             return SharedPaths.TwxpConfigPath;
 
         string root = string.IsNullOrWhiteSpace(programDir)
-            ? AppContext.BaseDirectory
+            ? GetDefaultProgramDir()
             : programDir;
         return Path.Combine(root, "twxp.cfg");
+    }
+
+    private static string GetDefaultProgramDir()
+    {
+        if (OperatingSystem.IsWindows())
+            return WindowsInstallInfo.GetInstalledProgramDirOrDefault();
+
+        return AppContext.BaseDirectory;
     }
 
     private static bool ParseBool(string value, bool fallback)

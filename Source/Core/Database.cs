@@ -257,7 +257,9 @@ namespace TWXProxy.Core
             set => _recording = value;
         }
 
-        public string ProgramDir { get; set; } = Environment.CurrentDirectory;
+        public string ProgramDir { get; set; } = OperatingSystem.IsWindows()
+            ? WindowsInstallInfo.GetInstalledProgramDirOrDefault()
+            : Environment.CurrentDirectory;
 
         /// <summary>
         /// Number of sectors in the universe.  Returns int.MaxValue when the
