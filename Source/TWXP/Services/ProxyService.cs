@@ -261,17 +261,12 @@ public class ProxyService : IProxyService
                         // Set the partial line as CURRENTLINE and fire triggers on it
                         if (!string.IsNullOrEmpty(remainder))
                         {
-                            // Strip \n (LF) control bytes for ANSI content (they appear between
-                            // protocol lines and are not part of display text).
-                            string remainderForAnsi = TWXProxy.Core.AnsiCodes.NormalizeAnsiTerminalText(remainder.Replace("\n", ""));
-                            
-                            // Set CURRENTANSILINE (with ANSI codes, \n stripped)
-                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
-                            
-                            // Set CURRENTLINE (stripped of ANSI codes)
+                            string remainderForAnsi = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(remainder);
+                            string scriptRemainder = TWXProxy.Core.AnsiCodes.PrepareScriptText(remainder);
                             string strippedRemainder = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
                                 TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r'));
-                            TWXProxy.Core.ScriptRef.SetCurrentLine(strippedRemainder);
+                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
+                            TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
 
                             // Fire triggers for partial lines (prompts) too
                             if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
@@ -280,14 +275,14 @@ public class ProxyService : IProxyService
                                 TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
 
                                 // Restore CURRENTLINE to the actual prompt before firing
-                                TWXProxy.Core.ScriptRef.SetCurrentLine(strippedRemainder);
+                                TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");
                                 // Pascal ProcessPrompt calls TextEvent(CurrentLine) only — no TextLineEvent for partial prompts.
                                 // Pascal does NOT call ActivateTriggers after a prompt — only after a full \r-terminated
                                 // line (inside ProcessLine). Re-enabling triggers here was causing TextLineTriggers
                                 // registered during a prompt handler to fire on the next full line's TextLineEvent
                                 // instead of waiting for the line after that.
-                                interpreter.TextEvent(strippedRemainder, false);
+                                interpreter.TextEvent(scriptRemainder, false);
                             }
 
                             gameInstance.ProcessNativeHaggleLine(strippedRemainder);
@@ -300,8 +295,9 @@ public class ProxyService : IProxyService
                     // line's "text\r ESC[0m \n" terminator — strip \n (LF) bytes to concatenate them.
                     int lineStart = lastProcessedPos;
                     int lineLength = crPos - lastProcessedPos;
-                    string line = TWXProxy.Core.AnsiCodes.NormalizeAnsiTerminalText(
-                        buffered.Substring(lineStart, lineLength).Replace("\n", ""));
+                    string rawLine = buffered.Substring(lineStart, lineLength);
+                    string line = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(rawLine);
+                    string scriptLine = TWXProxy.Core.AnsiCodes.PrepareScriptText(rawLine);
                     
                     // Pascal fires ProcessLine (and thus TextLineEvent) on every \r, including blank lines.
                     // A blank \r\n line must reach TextLineEvent("") — e.g. PlayerInfo's :line handler
@@ -328,16 +324,16 @@ public class ProxyService : IProxyService
                         // Fire text triggers and text line triggers for scripts (all lines, including blank)
                         if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
                         {
-                            TWXProxy.Core.ScriptRef.SetCurrentLine(strippedLine);
+                            TWXProxy.Core.ScriptRef.SetCurrentLine(scriptLine);
 
                             // Pascal dispatch order for complete lines: TextLineEvent first, then TextEvent.
                             // (Pascal ProcessLine calls TextLineEvent, then ProcessPrompt calls TextEvent with the same line.)
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextLineEvent...\n");
-                            interpreter.TextLineEvent(strippedLine, false);
+                            interpreter.TextLineEvent(scriptLine, false);
 
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextEvent...\n");
                             // TextEvent fires on complete lines too (matches Pascal ProcessPrompt calling TextEvent with CurrentLine)
-                            interpreter.TextEvent(strippedLine, false);
+                            interpreter.TextEvent(scriptLine, false);
                             
                             // Re-enable triggers for next line (they get disabled when they fire to prevent double-triggering)
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Re-activating triggers\n");

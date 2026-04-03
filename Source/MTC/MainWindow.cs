@@ -1611,16 +1611,17 @@ public class MainWindow : Window
 
                     if (!string.IsNullOrEmpty(remainder))
                     {
-                        string remainderAnsi = Core.AnsiCodes.NormalizeAnsiTerminalText(remainder.Replace("\n", ""));
+                        string remainderAnsi = Core.AnsiCodes.PrepareScriptAnsiText(remainder);
+                        string scriptRemainder = Core.AnsiCodes.PrepareScriptText(remainder);
                         string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r'));
                         _shipParser.FeedLine(strippedRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
                         if (!gi.IsProxyMenuActive)
                         {
                             Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                            Core.ScriptRef.SetCurrentLine(strippedRemainder);
+                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
                             // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
-                            interpreter.TextEvent(strippedRemainder, false);
+                            interpreter.TextEvent(scriptRemainder, false);
                         }
 
                         gi.ProcessNativeHaggleLine(strippedRemainder);
@@ -1629,7 +1630,8 @@ public class MainWindow : Window
                 }
 
                 // Complete \r-terminated line.
-                string lineRaw = Core.AnsiCodes.NormalizeAnsiTerminalText(buffered[lastProcessedPos..crPos].Replace("\n", ""));
+                string lineRaw = Core.AnsiCodes.PrepareScriptAnsiText(buffered[lastProcessedPos..crPos]);
+                string lineForScript = Core.AnsiCodes.PrepareScriptText(buffered[lastProcessedPos..crPos]);
                 string lineStripped = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(lineRaw, string.Empty).TrimEnd('\r'));
 
                 if (!string.IsNullOrEmpty(lineStripped))
@@ -1643,11 +1645,11 @@ public class MainWindow : Window
                 if (!gi.IsProxyMenuActive)
                 {
                     Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                    Core.ScriptRef.SetCurrentLine(lineStripped);
+                    Core.ScriptRef.SetCurrentLine(lineForScript);
 
                     // Fire trigger pipeline (all lines including blank — matches Pascal ProcessLine).
-                    interpreter.TextLineEvent(lineStripped, false);
-                    interpreter.TextEvent(lineStripped, false);
+                    interpreter.TextLineEvent(lineForScript, false);
+                    interpreter.TextEvent(lineForScript, false);
                     interpreter.ActivateTriggers();
                 }
 

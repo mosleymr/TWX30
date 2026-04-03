@@ -150,5 +150,27 @@ namespace TWXProxy.Core
 
             return builder.ToString();
         }
+
+        public static string PrepareScriptAnsiText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var builder = new System.Text.StringBuilder(text.Length);
+            foreach (char ch in text)
+            {
+                if (ch == '\0' || ch == '\n')
+                    continue;
+
+                builder.Append(ch);
+            }
+
+            return builder.ToString();
+        }
+
+        public static string PrepareScriptText(string text)
+        {
+            return StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r');
+        }
     }
 }
