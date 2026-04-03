@@ -19,6 +19,11 @@ namespace TWXProxy.Core
         // TODO: This should be injected or accessed through a service locator
         private static ModInterpreter? _activeInterpreter;
 
+        private static ModInterpreter? GetActiveInterpreter()
+        {
+            return _activeInterpreter ?? (GlobalModules.TWXInterpreter as ModInterpreter);
+        }
+
         #region Script Management Command Implementation
 
         private static CmdAction CmdLoadScript_Impl(object script, CmdParam[] parameters)
@@ -92,15 +97,16 @@ namespace TWXProxy.Core
                 string filename = parameters[1].Value;
                 bool loaded = false;
                 
-                if (_activeInterpreter != null)
+            ModInterpreter? interpreter = GetActiveInterpreter();
+            if (interpreter != null)
+            {
+                for (int i = 0; i < interpreter.Count; i++)
                 {
-                    for (int i = 0; i < _activeInterpreter.Count; i++)
+                    var scriptObj = interpreter.GetScript(i);
+                    if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
                     {
-                        var scriptObj = _activeInterpreter.GetScript(i);
-                        if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
-                        {
-                            loaded = true;
-                            break;
+                        loaded = true;
+                        break;
                         }
                     }
                 }
@@ -116,7 +122,8 @@ namespace TWXProxy.Core
             // CMD: pausescript <filename>
             // Pause a running script
             
-            if (_activeInterpreter == null)
+            ModInterpreter? interpreter = GetActiveInterpreter();
+            if (interpreter == null)
             {
                 Console.WriteLine("[Script] PAUSESCRIPT: No active interpreter");
                 return CmdAction.None;
@@ -126,9 +133,9 @@ namespace TWXProxy.Core
             
             try
             {
-                for (int i = 0; i < _activeInterpreter.Count; i++)
+                for (int i = 0; i < interpreter.Count; i++)
                 {
-                    var scriptObj = _activeInterpreter.GetScript(i);
+                    var scriptObj = interpreter.GetScript(i);
                     if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
                     {
                         scriptObj.Pause();
@@ -150,7 +157,8 @@ namespace TWXProxy.Core
             // CMD: resumescript <filename>
             // Resume a paused script
             
-            if (_activeInterpreter == null)
+            ModInterpreter? interpreter = GetActiveInterpreter();
+            if (interpreter == null)
             {
                 Console.WriteLine("[Script] RESUMESCRIPT: No active interpreter");
                 return CmdAction.None;
@@ -160,9 +168,9 @@ namespace TWXProxy.Core
             
             try
             {
-                for (int i = 0; i < _activeInterpreter.Count; i++)
+                for (int i = 0; i < interpreter.Count; i++)
                 {
-                    var scriptObj = _activeInterpreter.GetScript(i);
+                    var scriptObj = interpreter.GetScript(i);
                     if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
                     {
                         scriptObj.Resume();
@@ -188,11 +196,12 @@ namespace TWXProxy.Core
             {
                 var scriptNames = new List<string>();
                 
-                if (_activeInterpreter != null)
+                ModInterpreter? interpreter = GetActiveInterpreter();
+                if (interpreter != null)
                 {
-                    for (int i = 0; i < _activeInterpreter.Count; i++)
+                    for (int i = 0; i < interpreter.Count; i++)
                     {
-                        var scriptObj = _activeInterpreter.GetScript(i);
+                        var scriptObj = interpreter.GetScript(i);
                         if (scriptObj != null && !string.IsNullOrEmpty(scriptObj.ScriptName))
                         {
                             scriptNames.Add(scriptObj.ScriptName);
@@ -200,6 +209,7 @@ namespace TWXProxy.Core
                     }
                 }
                 
+                parameters[0].Value = scriptNames.Count.ToString();
                 varParam.SetArrayFromStrings(scriptNames);
             }
             
@@ -211,7 +221,8 @@ namespace TWXProxy.Core
             // CMD: stopallscripts
             // Stop all running scripts (except system scripts)
             
-            if (_activeInterpreter == null)
+            ModInterpreter? interpreter = GetActiveInterpreter();
+            if (interpreter == null)
             {
                 Console.WriteLine("[Script] STOPALLSCRIPTS: No active interpreter");
                 return CmdAction.None;
@@ -219,7 +230,7 @@ namespace TWXProxy.Core
 
             try
             {
-                _activeInterpreter.StopAll(false); // false = don't stop system scripts
+                interpreter.StopAll(false); // false = don't stop system scripts
             }
             catch (Exception ex)
             {

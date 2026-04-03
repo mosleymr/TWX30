@@ -164,7 +164,7 @@ namespace TWXProxy.Core
         // This echoed prompt appears after q f z <total> and reflects the new total
         // defenders that will remain in the current sector once the command completes.
         private static readonly Regex _rxSectorDefensePrompt = new(
-            @"^How many fighters do you want defending this sector\?\s*([\d,]+)\s*$",
+            @"How many fighters do you want defending this sector\?\s*([\d,]+)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // "Planets : <<<< (L) Romulus >>>> (Shielded)"  — first planet on the line
@@ -409,6 +409,7 @@ namespace TWXProxy.Core
                 if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
                 {
                     _currentSector = csn;
+                    _lastSector = csn;
                     CurrentSectorChanged?.Invoke(csn);
                     GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
                 }
@@ -598,7 +599,7 @@ namespace TWXProxy.Core
             // during burst unload flows like movefig, which depend on the DB total on the
             // very next run.
             {
-                var m = _rxSectorDefensePrompt.Match(trimmedLine);
+                var m = _rxSectorDefensePrompt.Match(rawLine);
                 if (m.Success)
                 {
                     int sectorNum = _currentSector > 0 ? _currentSector : _lastSector;
@@ -615,6 +616,10 @@ namespace TWXProxy.Core
                                 GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={qty}\n");
                             }
                         }
+                    }
+                    else
+                    {
+                        GlobalModules.DebugLog($"[AutoRecorder] WARN: sector defense prompt seen with no current sector: '{rawLine}'\n");
                     }
                     return;
                 }

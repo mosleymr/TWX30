@@ -213,6 +213,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.TWXServer = this;
                 GlobalModules.TWXInterpreter = _interpreter;
+                ScriptRef.SetActiveInterpreter(_interpreter);
                 GlobalModules.DebugLog($"[GameInstance] Registered TWXServer and TWXInterpreter for game {_gameName}\n");
             }
             _listenPort = listenPort;
