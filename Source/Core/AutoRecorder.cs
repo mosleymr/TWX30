@@ -571,30 +571,6 @@ namespace TWXProxy.Core
                     return;
                 }
             }
-            if (_inPortReport)
-            {
-                var pm = _rxProductLine.Match(trimmedLine);
-                if (pm.Success)
-                {
-                    ParseProductLine(db, pm);
-                    return;
-                }
-                // Skip other lines inside the report (date/time etc.) and fall through
-                return;
-            }
-
-            if (trimmedLine.Contains("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
-            {
-                _inFigScan = true;
-                return;
-            }
-
-            if (_inFigScan)
-            {
-                ProcessFigScanLine(db, trimmedLine);
-                return;
-            }
-
             // Sector defense prompt: keep the current sector's fighter quantity in sync
             // during burst unload flows like movefig, which depend on the DB total on the
             // very next run.
@@ -623,6 +599,30 @@ namespace TWXProxy.Core
                     }
                     return;
                 }
+            }
+
+            if (_inPortReport)
+            {
+                var pm = _rxProductLine.Match(trimmedLine);
+                if (pm.Success)
+                {
+                    ParseProductLine(db, pm);
+                    return;
+                }
+                // Skip other lines inside the report (date/time etc.) and fall through
+                return;
+            }
+
+            if (trimmedLine.Contains("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
+            {
+                _inFigScan = true;
+                return;
+            }
+
+            if (_inFigScan)
+            {
+                ProcessFigScanLine(db, trimmedLine);
+                return;
             }
 
             // ── Data lines that belong to _lastSector ─────────────────────────
