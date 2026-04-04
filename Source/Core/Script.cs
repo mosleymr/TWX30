@@ -2524,7 +2524,7 @@ namespace TWXProxy.Core
             if (GlobalModules.EnableVmMetrics)
             {
                 double elapsedMs = startTimestamp == 0 ? 0 : LastExecutionTicks * 1000.0 / Stopwatch.Frequency;
-                GlobalModules.DebugLog(
+                GlobalModules.VmMetricLog(
                     $"[VM EXEC] mode={(prepared ? "prepared" : "raw")} script='{ScriptName}' completed={(completed ? 1 : 0)} " +
                     $"commands={commandsExecuted} resolvedParams={resolvedParamCount} elapsedMs={elapsedMs:F3} codePos={_codePos}\n");
             }

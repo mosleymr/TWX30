@@ -511,7 +511,7 @@ namespace TWXProxy.Core
                 if (GlobalModules.EnableVmMetrics)
                 {
                     double prepareMs = StopwatchTicksToMilliseconds(LastPrepareTicks);
-                    GlobalModules.DebugLog(
+                    GlobalModules.VmMetricLog(
                         $"[VM LOAD] phase=prepare script='{_scriptFile}' preparedCacheHit={(LastPreparedCacheHit ? 1 : 0)} " +
                         $"instructions={_preparedProgram?.Instructions.Length ?? 0} elapsedMs={prepareMs:F3}\n");
                 }
@@ -754,7 +754,7 @@ namespace TWXProxy.Core
 
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.DebugLog(
+                GlobalModules.VmMetricLog(
                     $"[VM LOAD] phase=source-compile script='{fullPath}' cacheHit=0 deps={LastDependencyCount} " +
                     $"compileMs={StopwatchTicksToMilliseconds(LastCompileTicks):F3} codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
             }
@@ -1998,7 +1998,7 @@ namespace TWXProxy.Core
 
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.DebugLog(
+                GlobalModules.VmMetricLog(
                     $"[VM LOAD] phase=source-cache script='{filename}' cacheHit=1 deps={LastDependencyCount} " +
                     $"validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} " +
                     $"loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
@@ -2225,7 +2225,7 @@ namespace TWXProxy.Core
             LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.DebugLog(
+                GlobalModules.VmMetricLog(
                     $"[VM LOAD] phase=compiled-load script='{filename}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
                     $"codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
             }

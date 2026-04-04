@@ -23,6 +23,12 @@ public class AppPreferences
     /// <summary>When true, includes very high-frequency diagnostic logging.</summary>
     public bool VerboseDebugLogging { get; set; }
 
+    /// <summary>When true, scripts prefer the prepared VM execution path.</summary>
+    public bool PreparedVmEnabled { get; set; } = true;
+
+    /// <summary>When true, VM load/execute metrics are written to the shared log.</summary>
+    public bool VmMetricsEnabled { get; set; } = true;
+
     // ── Paths ──────────────────────────────────────────────────────────────
 
     private static string DefaultPath()
@@ -66,6 +72,8 @@ public class AppPreferences
                     new XElement("ScriptsDirectory", ScriptsDirectory),
                     new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
                     new XElement("VerboseDebugLogging", VerboseDebugLogging),
+                    new XElement("PreparedVmEnabled", PreparedVmEnabled),
+                    new XElement("VmMetricsEnabled", VmMetricsEnabled),
                     new XElement("RecentFiles",
                         RecentFiles.Select(p => new XElement("File", p))
                     )
@@ -100,6 +108,10 @@ public class AppPreferences
                 prefs.DebugLoggingEnabled = debugEnabled;
             if (bool.TryParse((string?)root.Element("VerboseDebugLogging"), out bool verboseEnabled))
                 prefs.VerboseDebugLogging = verboseEnabled;
+            if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
+                prefs.PreparedVmEnabled = preparedVmEnabled;
+            if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
+                prefs.VmMetricsEnabled = vmMetricsEnabled;
 
             foreach (var el in root.Element("RecentFiles")?.Elements("File")
                                    ?? Enumerable.Empty<XElement>())

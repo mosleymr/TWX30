@@ -98,6 +98,21 @@ public class PreferencesDialog : Window
             Margin = new Thickness(0, 4, 0, 0),
         };
 
+        var chkPreparedVm = new CheckBox
+        {
+            Content = "Use prepared VM",
+            IsChecked = prefs.PreparedVmEnabled,
+            Foreground = FgNormal,
+        };
+
+        var chkVmMetrics = new CheckBox
+        {
+            Content = "Log VM metrics",
+            IsChecked = prefs.VmMetricsEnabled,
+            Foreground = FgNormal,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
         chkDebug.IsCheckedChanged += (_, _) =>
         {
             bool debugEnabled = chkDebug.IsChecked == true;
@@ -111,6 +126,12 @@ public class PreferencesDialog : Window
         {
             Spacing = 2,
             Children = { chkDebug, chkVerbose },
+        });
+
+        var vmRow = BuildRow("Virtual Machine:", new StackPanel
+        {
+            Spacing = 2,
+            Children = { chkPreparedVm, chkVmMetrics },
         });
 
         // ── OK / Cancel ──────────────────────────────────────────────────
@@ -138,6 +159,8 @@ public class PreferencesDialog : Window
                 ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             prefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
             prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
+            prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
+            prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
             prefs.Save();
             Close(true);
         };
@@ -157,7 +180,7 @@ public class PreferencesDialog : Window
         {
             Margin   = new Thickness(16),
             Spacing  = 4,
-            Children = { scriptsRow, debugRow, buttons },
+            Children = { scriptsRow, debugRow, vmRow, buttons },
         };
     }
 

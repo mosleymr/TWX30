@@ -7,6 +7,8 @@ Console.SetOut(TextWriter.Null);
 
 var prefs = MTC.AppPreferences.Load();
 GlobalModules.ProgramDir = MTC.AppPaths.GetEffectiveProgramDir(prefs.ScriptsDirectory);
+GlobalModules.PreferPreparedVm = prefs.PreparedVmEnabled;
+GlobalModules.EnableVmMetrics = prefs.VmMetricsEnabled;
 MTC.AppPaths.EnsureDebugLogDir(prefs.ScriptsDirectory);
 GlobalModules.ConfigureDebugLogging(
     MTC.AppPaths.GetDebugLogPath(prefs.ScriptsDirectory),

@@ -153,7 +153,7 @@ namespace TWXProxy.Core
 
         /// <summary>
         /// Enables lightweight VM timing/counter summaries for script load and execute paths.
-        /// These summaries are written through the normal debug log path.
+        /// These summaries are written through the shared log path even when normal debug logging is off.
         /// </summary>
         public static bool EnableVmMetrics { get; set; } = false;
 
@@ -173,6 +173,42 @@ namespace TWXProxy.Core
         private static readonly object _debugLock = new object();
         private static StreamWriter? _debugWriter = null;
 
+        private static bool LogWriterEnabled => DebugMode || EnableVmMetrics;
+
+        private static void EnsureLogWriter(bool resetFile)
+        {
+            if (!LogWriterEnabled)
+                return;
+
+            string? directory = Path.GetDirectoryName(DebugLogPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            if (_debugWriter != null && !resetFile)
+                return;
+
+            _debugWriter?.Dispose();
+            _debugWriter = new StreamWriter(DebugLogPath, append: !resetFile, System.Text.Encoding.UTF8, bufferSize: 4096)
+            {
+                AutoFlush = true
+            };
+
+            if (resetFile)
+            {
+                _debugWriter.WriteLine($"=== TWX Proxy Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+                _debugWriter.Flush();
+            }
+        }
+
+        private static void WriteLogMessage(string message)
+        {
+            lock (_debugLock)
+            {
+                EnsureLogWriter(resetFile: false);
+                _debugWriter?.Write($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+            }
+        }
+
         public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled)
         {
             lock (_debugLock)
@@ -186,21 +222,12 @@ namespace TWXProxy.Core
                 _debugWriter?.Dispose();
                 _debugWriter = null;
 
-                if (!DebugMode)
+                if (!LogWriterEnabled)
                     return;
 
                 try
                 {
-                    string? directory = Path.GetDirectoryName(DebugLogPath);
-                    if (!string.IsNullOrWhiteSpace(directory))
-                        Directory.CreateDirectory(directory);
-
-                    _debugWriter = new StreamWriter(DebugLogPath, append: false, System.Text.Encoding.UTF8, bufferSize: 4096)
-                    {
-                        AutoFlush = true
-                    };
-                    _debugWriter.WriteLine($"=== TWX Proxy Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
-                    _debugWriter.Flush();
+                    EnsureLogWriter(resetFile: true);
                 }
                 catch (Exception ex)
                 {
@@ -222,7 +249,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void FlushDebugLog()
         {
-            if (!DebugMode) return;
+            if (!LogWriterEnabled) return;
             try { lock (_debugLock) { _debugWriter?.Flush(); } }
             catch { /* ignore */ }
         }
@@ -237,21 +264,29 @@ namespace TWXProxy.Core
 
             try
             {
-                lock (_debugLock)
-                {
-                    if (_debugWriter == null)
-                    {
-                        _debugWriter = new StreamWriter(DebugLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
-                        {
-                            AutoFlush = true
-                        };
-                    }
-                    _debugWriter.Write($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
-                }
+                WriteLogMessage(message);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[DEBUG LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        /// <summary>
+        /// Write VM-specific metric output to the shared log path when VM metrics are enabled,
+        /// without requiring full debug logging.
+        /// </summary>
+        public static void VmMetricLog(string message)
+        {
+            if (!EnableVmMetrics) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VM METRIC LOG ERROR] {ex.Message}: {message}");
             }
         }
     }

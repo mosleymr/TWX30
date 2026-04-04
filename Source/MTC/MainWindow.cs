@@ -1037,6 +1037,8 @@ public class MainWindow : Window
 
         string programDir = AppPaths.GetEffectiveProgramDir(debugScriptDirectory);
         Core.GlobalModules.ProgramDir = programDir;
+        Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
+        Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
         AppPaths.EnsureDebugLogDir(debugScriptDirectory);
         Core.GlobalModules.ConfigureDebugLogging(
             AppPaths.GetDebugLogPath(debugScriptDirectory),
