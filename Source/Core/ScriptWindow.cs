@@ -390,6 +390,13 @@ namespace TWXProxy.Core
         {
             if (_menuStack.Count == 0)
                 return false;
+
+            // Custom script menus are single-key hotkey driven. When a menu is first
+            // opened from a typed command, the trailing LF from the user's Enter can
+            // arrive after the script has already opened the menu. Pascal behavior is
+            // to ignore that newline rather than moving the prompt to the next line.
+            if (keyChar == '\r' || keyChar == '\n')
+                return true;
                 
             var currentMenu = _menuStack.Peek();
 
