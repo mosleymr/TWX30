@@ -151,6 +151,24 @@ namespace TWXProxy.Core
         /// </summary>
         public static bool DiagnoseMode { get; set; } = false;
 
+        /// <summary>
+        /// Enables lightweight VM timing/counter summaries for script load and execute paths.
+        /// These summaries are written through the normal debug log path.
+        /// </summary>
+        public static bool EnableVmMetrics { get; set; } = false;
+
+        /// <summary>
+        /// When true, newly created Script instances prefer the prepared VM path.
+        /// Defaults to false so existing runtime behavior is unchanged unless explicitly enabled.
+        /// </summary>
+        public static bool PreferPreparedVm { get; set; } = false;
+
+        /// <summary>
+        /// Enables the conservative in-memory source compile cache for .ts loads.
+        /// Cache keys are validated against the full discovered include/dependency set.
+        /// </summary>
+        public static bool EnableSourceScriptCache { get; set; } = true;
+
         public static string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
         private static readonly object _debugLock = new object();
         private static StreamWriter? _debugWriter = null;

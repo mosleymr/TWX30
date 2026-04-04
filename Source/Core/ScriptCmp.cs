@@ -24,6 +24,7 @@ received this source in.
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -375,6 +376,19 @@ namespace TWXProxy.Core
     /// </summary>
     public class ScriptCmp : IDisposable
     {
+        private readonly record struct SourceDependencyStamp(string Path, long LastWriteUtcTicks, long Length);
+
+        private sealed class SourceScriptCacheEntry
+        {
+            public required string CacheKey { get; init; }
+            public required byte[] CompiledBytes { get; init; }
+            public required List<SourceDependencyStamp> Dependencies { get; init; }
+            public PreparedScriptProgram? PreparedTemplate { get; set; }
+        }
+
+        private static readonly object _sourceCacheLock = new();
+        private static readonly Dictionary<string, SourceScriptCacheEntry> _sourceScriptCache = new(StringComparer.OrdinalIgnoreCase);
+
         private Stack<ConditionStruct> _ifStack;
         private List<CmdParam> _paramList;
         private List<ScriptLabel> _labelList;
@@ -394,6 +408,15 @@ namespace TWXProxy.Core
         private int _version = ScriptConstants.CompiledScriptVersion;
         private ScriptRef? _scriptRef;
         private PreparedScriptProgram? _preparedProgram;
+        private readonly List<SourceDependencyStamp> _sourceDependencies = new();
+        private string? _sourceCacheKey;
+        public bool LastSourceCacheHit { get; private set; }
+        public bool LastPreparedCacheHit { get; private set; }
+        public long LastSourceCacheValidationTicks { get; private set; }
+        public long LastCompileTicks { get; private set; }
+        public long LastLoadTicks { get; private set; }
+        public long LastPrepareTicks { get; private set; }
+        public int LastDependencyCount { get; private set; }
 
         public ScriptCmp(ScriptRef? scriptRef = null, string scriptDirectory = "")
         {
@@ -461,14 +484,37 @@ namespace TWXProxy.Core
             if (_preparedProgram != null)
                 return _preparedProgram;
 
+            long prepareStart = Stopwatch.GetTimestamp();
+            LastPreparedCacheHit = false;
+
             try
             {
-                _preparedProgram = PreparedScriptDecoder.Decode(this);
+                if (TryLoadPreparedTemplateFromSourceCache(out PreparedScriptProgram? cachedPrepared) && cachedPrepared != null)
+                {
+                    _preparedProgram = cachedPrepared;
+                    LastPreparedCacheHit = true;
+                }
+                else
+                {
+                    _preparedProgram = PreparedScriptDecoder.Decode(this);
+                    StorePreparedTemplateInSourceCache(_preparedProgram);
+                }
             }
             catch (Exception ex)
             {
                 GlobalModules.DebugLog($"[ScriptCmp.PrepareForExecution] Failed for '{_scriptFile}': {ex.Message}\n");
                 _preparedProgram = null;
+            }
+            finally
+            {
+                LastPrepareTicks = Stopwatch.GetTimestamp() - prepareStart;
+                if (GlobalModules.EnableVmMetrics)
+                {
+                    double prepareMs = StopwatchTicksToMilliseconds(LastPrepareTicks);
+                    GlobalModules.DebugLog(
+                        $"[VM LOAD] phase=prepare script='{_scriptFile}' preparedCacheHit={(LastPreparedCacheHit ? 1 : 0)} " +
+                        $"instructions={_preparedProgram?.Instructions.Length ?? 0} elapsedMs={prepareMs:F3}\n");
+                }
             }
 
             return _preparedProgram;
@@ -668,26 +714,50 @@ namespace TWXProxy.Core
 
         public void CompileFromFile(string filename, string descFile)
         {
+            ResetLoadMetrics();
             _preparedProgram = null;
-            _scriptFile = filename;
-            _scriptDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? string.Empty;
+            string fullPath = Path.GetFullPath(filename);
+            string fullDescPath = string.IsNullOrWhiteSpace(descFile) ? string.Empty : Path.GetFullPath(descFile);
+            _scriptFile = fullPath;
+            _scriptDirectory = Path.GetDirectoryName(fullPath) ?? string.Empty;
             _rootScriptDirectory = _scriptDirectory;
             _ifLabelCount = 0;
             _waitOnCount = 0;
             _lineCount = 0;
             _cmdCount = 0;
             _includeScriptList.Clear();
+            _sourceDependencies.Clear();
+            _sourceCacheKey = BuildSourceCacheKey(fullPath, fullDescPath);
+
+            if (TryLoadFromSourceCache(_sourceCacheKey, fullPath))
+                return;
+
+            AddSourceDependency(fullPath);
+            if (!string.IsNullOrWhiteSpace(fullDescPath) && File.Exists(fullDescPath))
+                AddSourceDependency(fullDescPath);
+
+            long compileStart = Stopwatch.GetTimestamp();
 
             // Read script file
-            var scriptText = LoadSourceLines(filename);
+            var scriptText = LoadSourceLines(fullPath);
 
             // Read description file if provided
-            if (!string.IsNullOrEmpty(descFile) && File.Exists(descFile))
+            if (!string.IsNullOrEmpty(fullDescPath) && File.Exists(fullDescPath))
             {
-                _description.AddRange(File.ReadAllLines(descFile, Encoding.Latin1));
+                _description.AddRange(File.ReadAllLines(fullDescPath, Encoding.Latin1));
             }
 
-            CompileFromStrings(scriptText, Path.GetFileName(filename));
+            CompileFromStrings(scriptText, Path.GetFileName(fullPath));
+            LastCompileTicks = Stopwatch.GetTimestamp() - compileStart;
+            LastDependencyCount = _sourceDependencies.Count;
+            StoreSourceCacheEntry();
+
+            if (GlobalModules.EnableVmMetrics)
+            {
+                GlobalModules.DebugLog(
+                    $"[VM LOAD] phase=source-compile script='{fullPath}' cacheHit=0 deps={LastDependencyCount} " +
+                    $"compileMs={StopwatchTicksToMilliseconds(LastCompileTicks):F3} codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
+            }
         }
 
         public void CompileFromStrings(List<string> scriptText, string scriptName)
@@ -1772,6 +1842,7 @@ namespace TWXProxy.Core
         private void IncludeFile(string filename)
         {
             string fullPath = ResolveIncludePath(filename);
+            AddSourceDependency(fullPath);
 
             var scriptText = LoadSourceLines(fullPath);
             
@@ -1823,6 +1894,173 @@ namespace TWXProxy.Core
 
         #region File I/O Methods
 
+        private void ResetLoadMetrics()
+        {
+            LastSourceCacheHit = false;
+            LastPreparedCacheHit = false;
+            LastSourceCacheValidationTicks = 0;
+            LastCompileTicks = 0;
+            LastLoadTicks = 0;
+            LastPrepareTicks = 0;
+            LastDependencyCount = 0;
+        }
+
+        private static double StopwatchTicksToMilliseconds(long ticks)
+        {
+            return ticks * 1000.0 / Stopwatch.Frequency;
+        }
+
+        private static string BuildSourceCacheKey(string fullPath, string descFile)
+        {
+            string descPart = string.IsNullOrWhiteSpace(descFile)
+                ? string.Empty
+                : Path.GetFullPath(descFile);
+            return fullPath + "|" + descPart;
+        }
+
+        private static SourceDependencyStamp CaptureDependencyStamp(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            var info = new FileInfo(fullPath);
+            return new SourceDependencyStamp(fullPath, info.LastWriteTimeUtc.Ticks, info.Exists ? info.Length : -1);
+        }
+
+        private void AddSourceDependency(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            string fullPath = Path.GetFullPath(path);
+            if (!File.Exists(fullPath))
+                return;
+
+            if (_sourceDependencies.Any(d => d.Path.Equals(fullPath, StringComparison.OrdinalIgnoreCase)))
+                return;
+
+            _sourceDependencies.Add(CaptureDependencyStamp(fullPath));
+        }
+
+        private static bool IsCacheEntryValid(SourceScriptCacheEntry entry)
+        {
+            foreach (SourceDependencyStamp dependency in entry.Dependencies)
+            {
+                if (!File.Exists(dependency.Path))
+                    return false;
+
+                var info = new FileInfo(dependency.Path);
+                if (info.LastWriteTimeUtc.Ticks != dependency.LastWriteUtcTicks || info.Length != dependency.Length)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private bool TryLoadFromSourceCache(string cacheKey, string filename)
+        {
+            if (!GlobalModules.EnableSourceScriptCache)
+                return false;
+
+            long validationStart = Stopwatch.GetTimestamp();
+            SourceScriptCacheEntry? entry;
+
+            lock (_sourceCacheLock)
+            {
+                if (!_sourceScriptCache.TryGetValue(cacheKey, out entry))
+                {
+                    LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+                    return false;
+                }
+
+                if (!IsCacheEntryValid(entry))
+                {
+                    _sourceScriptCache.Remove(cacheKey);
+                    LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+                    return false;
+                }
+            }
+
+            LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+
+            long loadStart = Stopwatch.GetTimestamp();
+            LoadFromBytes(entry.CompiledBytes, filename);
+            LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
+            LastSourceCacheHit = true;
+            LastDependencyCount = entry.Dependencies.Count;
+            _sourceCacheKey = cacheKey;
+            _sourceDependencies.Clear();
+            _sourceDependencies.AddRange(entry.Dependencies);
+
+            if (entry.PreparedTemplate != null)
+            {
+                _preparedProgram = PreparedScriptTemplateCloner.CloneForExecution(entry.PreparedTemplate, this);
+                LastPreparedCacheHit = true;
+            }
+
+            if (GlobalModules.EnableVmMetrics)
+            {
+                GlobalModules.DebugLog(
+                    $"[VM LOAD] phase=source-cache script='{filename}' cacheHit=1 deps={LastDependencyCount} " +
+                    $"validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} " +
+                    $"loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
+            }
+
+            return true;
+        }
+
+        private void StoreSourceCacheEntry()
+        {
+            if (!GlobalModules.EnableSourceScriptCache || string.IsNullOrWhiteSpace(_sourceCacheKey))
+                return;
+
+            byte[] compiledBytes = WriteToBytes();
+            var entry = new SourceScriptCacheEntry
+            {
+                CacheKey = _sourceCacheKey,
+                CompiledBytes = compiledBytes,
+                Dependencies = new List<SourceDependencyStamp>(_sourceDependencies),
+                PreparedTemplate = null
+            };
+
+            lock (_sourceCacheLock)
+            {
+                _sourceScriptCache[_sourceCacheKey] = entry;
+            }
+        }
+
+        private bool TryLoadPreparedTemplateFromSourceCache(out PreparedScriptProgram? preparedProgram)
+        {
+            preparedProgram = null;
+
+            if (!GlobalModules.EnableSourceScriptCache || string.IsNullOrWhiteSpace(_sourceCacheKey))
+                return false;
+
+            lock (_sourceCacheLock)
+            {
+                if (!_sourceScriptCache.TryGetValue(_sourceCacheKey, out SourceScriptCacheEntry? entry))
+                    return false;
+
+                if (entry.PreparedTemplate == null || !IsCacheEntryValid(entry))
+                    return false;
+
+                preparedProgram = PreparedScriptTemplateCloner.CloneForExecution(entry.PreparedTemplate, this);
+                return true;
+            }
+        }
+
+        private void StorePreparedTemplateInSourceCache(PreparedScriptProgram preparedProgram)
+        {
+            if (!GlobalModules.EnableSourceScriptCache || string.IsNullOrWhiteSpace(_sourceCacheKey))
+                return;
+
+            lock (_sourceCacheLock)
+            {
+                if (_sourceScriptCache.TryGetValue(_sourceCacheKey, out SourceScriptCacheEntry? entry) && IsCacheEntryValid(entry))
+                {
+                    entry.PreparedTemplate ??= PreparedScriptTemplateCloner.CreateTemplate(preparedProgram);
+                }
+            }
+        }
+
         private static List<string> SplitSourceLines(string text)
         {
             var lines = new List<string>();
@@ -1861,67 +2099,69 @@ namespace TWXProxy.Core
             using (var fs = new FileStream(filename, FileMode.Create, FileAccess.Write))
             using (var writer = new BinaryWriter(fs))
             {
-                // Write 24-byte Pascal TScriptFileHeader (matches ReadScriptFileHeader layout):
-                //   offset  0    : ShortString length byte (10)
-                //   offset  1-10 : "TWX SCRIPT" (10 chars, no null terminator)
-                //   offset 11    : 1 alignment pad byte
-                //   offset 12-13 : Version (uint16)
-                //   offset 14-15 : 2 alignment pad bytes
-                //   offset 16-19 : DescSize (int32)
-                //   offset 20-23 : CodeSize (int32)
-                byte[] descBytes = Encoding.ASCII.GetBytes(string.Join("\r\n", _description));
-                writer.Write((byte)10);                                        // ShortString length
-                writer.Write(Encoding.ASCII.GetBytes("TWX SCRIPT"));           // 10 chars
-                writer.Write((byte)0);                                         // offset 11 pad
-                writer.Write((ushort)ScriptConstants.CompiledScriptVersion);   // offset 12-13
-                writer.Write((byte)0);                                         // offset 14 pad
-                writer.Write((byte)0);                                         // offset 15 pad
-                writer.Write(descBytes.Length);                                // offset 16-19 DescSize
-                writer.Write(_codeSize);                                       // offset 20-23 CodeSize
+                WriteToWriter(writer);
+            }
+        }
 
-                // Write description then code (reader reads them in this order after the header)
-                writer.Write(descBytes);
-                writer.Write(_code);
+        public byte[] WriteToBytes()
+        {
+            using var stream = new MemoryStream();
+            using var writer = new BinaryWriter(stream, Encoding.Latin1, leaveOpen: true);
+            WriteToWriter(writer);
+            writer.Flush();
+            return stream.ToArray();
+        }
 
-                // Write parameters
-                foreach (var param in _paramList)
+        private void WriteToWriter(BinaryWriter writer)
+        {
+            byte[] descBytes = Encoding.ASCII.GetBytes(string.Join("\r\n", _description));
+            writer.Write((byte)10);
+            writer.Write(Encoding.ASCII.GetBytes("TWX SCRIPT"));
+            writer.Write((byte)0);
+            writer.Write((ushort)ScriptConstants.CompiledScriptVersion);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write(descBytes.Length);
+            writer.Write(_codeSize);
+            writer.Write(descBytes);
+            writer.Write(_code);
+
+            foreach (var param in _paramList)
+            {
+                if (param is VarParam varParam)
                 {
-                    if (param is VarParam varParam)
-                    {
-                        writer.Write((byte)2); // TVarParam
-                        string encrypted = ApplyEncryption(varParam.Value, 113);
-                        writer.Write(encrypted.Length);
-                        writer.Write(Encoding.Latin1.GetBytes(encrypted));
+                    writer.Write((byte)2);
+                    string encrypted = ApplyEncryption(varParam.Value, 113);
+                    writer.Write(encrypted.Length);
+                    writer.Write(Encoding.Latin1.GetBytes(encrypted));
 
-                        encrypted = ApplyEncryption(varParam.Name, 113);
-                        writer.Write(encrypted.Length);
-                        writer.Write(Encoding.Latin1.GetBytes(encrypted));
-                    }
-                    else
-                    {
-                        writer.Write((byte)1); // TCmdParam
-                        string encrypted = ApplyEncryption(param.Value, 113);
-                        writer.Write(encrypted.Length);
-                        writer.Write(Encoding.Latin1.GetBytes(encrypted));
-                    }
+                    encrypted = ApplyEncryption(varParam.Name, 113);
+                    writer.Write(encrypted.Length);
+                    writer.Write(Encoding.Latin1.GetBytes(encrypted));
                 }
-                writer.Write((byte)0); // End of parameters
-
-                // Write include scripts
-                foreach (var include in _includeScriptList)
+                else
                 {
-                    writer.Write(include.Length);
-                    writer.Write(Encoding.ASCII.GetBytes(include));
+                    writer.Write((byte)1);
+                    string encrypted = ApplyEncryption(param.Value, 113);
+                    writer.Write(encrypted.Length);
+                    writer.Write(Encoding.Latin1.GetBytes(encrypted));
                 }
-                writer.Write(0); // End of includes
+            }
 
-                // Write labels
-                foreach (var label in _labelList)
-                {
-                    writer.Write(label.Location);
-                    writer.Write(label.Name.Length);
-                    writer.Write(Encoding.ASCII.GetBytes(label.Name));
-                }
+            writer.Write((byte)0);
+
+            foreach (var include in _includeScriptList)
+            {
+                writer.Write(include.Length);
+                writer.Write(Encoding.ASCII.GetBytes(include));
+            }
+            writer.Write(0);
+
+            foreach (var label in _labelList)
+            {
+                writer.Write(label.Location);
+                writer.Write(label.Name.Length);
+                writer.Write(Encoding.ASCII.GetBytes(label.Name));
             }
         }
 
@@ -1975,130 +2215,135 @@ namespace TWXProxy.Core
 
         public void LoadFromFile(string filename)
         {
+            ResetLoadMetrics();
+            long loadStart = Stopwatch.GetTimestamp();
+
+            using var fs = new FileStream(filename, FileMode.Open, FileAccess.Read);
+            using var reader = new BinaryReader(fs);
+            LoadFromReader(reader, filename, fs.Length);
+
+            LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
+            if (GlobalModules.EnableVmMetrics)
+            {
+                GlobalModules.DebugLog(
+                    $"[VM LOAD] phase=compiled-load script='{filename}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
+                    $"codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
+            }
+        }
+
+        public void LoadFromBytes(byte[] compiledBytes, string filename)
+        {
+            using var stream = new MemoryStream(compiledBytes, writable: false);
+            using var reader = new BinaryReader(stream, Encoding.Latin1, leaveOpen: true);
+            LoadFromReader(reader, filename, compiledBytes.Length);
+        }
+
+        private void LoadFromReader(BinaryReader reader, string filename, long length)
+        {
             _preparedProgram = null;
             if (_codeSize > 0)
                 throw new Exception("Code already exists - cannot load from file");
 
-            using (var fs = new FileStream(filename, FileMode.Open, FileAccess.Read))
-            using (var reader = new BinaryReader(fs))
+            GlobalModules.DebugLog($"[DEBUG] Loading file: {filename} ({length} bytes)\n");
+
+            var (progName, version, descSize, codeSize, headerSize) = ReadScriptFileHeader(reader);
+
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File: {filename}\n");
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File size: {length} bytes\n");
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Header string: '{progName}', Version: {version}, DescSize: {descSize}, CodeSize: {codeSize}, HeaderSize: {headerSize}\n");
+
+            if (version < 2 || version > ScriptConstants.CompiledScriptVersion)
+                throw new Exception($"Script file is an incorrect version ({version}); supported versions are 2-{ScriptConstants.CompiledScriptVersion}");
+
+            _version = version;
+
+            byte[] descBytes = descSize > 0 ? reader.ReadBytes(descSize) : Array.Empty<byte>();
+            string description = descSize > 0 ? Encoding.ASCII.GetString(descBytes) : string.Empty;
+            if (!string.IsNullOrEmpty(description))
+                _description = new List<string>(description.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None));
+            else
+                _description = new List<string>();
+
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Stream position before reading code: {reader.BaseStream.Position}\n");
+
+            _code = reader.ReadBytes(codeSize);
+            _codeSize = codeSize;
+
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read {codeSize} bytes of code, position now: {reader.BaseStream.Position}\n");
+
+            byte paramType = reader.ReadByte();
+            while (paramType > 0)
             {
-                GlobalModules.DebugLog($"[DEBUG] Loading file: {filename} ({fs.Length} bytes)\n");
-
-                var (progName, version, descSize, codeSize, headerSize) = ReadScriptFileHeader(reader);
-
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File: {filename}\n");
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File size: {fs.Length} bytes\n");
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Header string: '{progName}', Version: {version}, DescSize: {descSize}, CodeSize: {codeSize}, HeaderSize: {headerSize}\n");
-
-                if (version < 2 || version > ScriptConstants.CompiledScriptVersion)
-                    throw new Exception($"Script file is an incorrect version ({version}); supported versions are 2-{ScriptConstants.CompiledScriptVersion}");
-
-                _version = version;
-
-                // Read and skip description
-                byte[] descBytes = descSize > 0 ? reader.ReadBytes(descSize) : Array.Empty<byte>();
-                string description = descSize > 0 ? Encoding.ASCII.GetString(descBytes) : string.Empty;
-                if (!string.IsNullOrEmpty(description))
-                    _description = new List<string>(description.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None));
-                else
-                    _description = new List<string>();
-
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Stream position before reading code: {fs.Position}\n");
-
-                // Read code
-                _code = reader.ReadBytes(codeSize);
-                _codeSize = codeSize;
-                
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read {codeSize} bytes of code, position now: {fs.Position}\n");
-
-                // Read parameters
-                byte paramType = reader.ReadByte();
-                while (paramType > 0)
+                if (paramType == 1)
                 {
-                    if (paramType == 1)
-                    {
-                        // TCmdParam
-                        int len = reader.ReadInt32();
-                        string val = Encoding.Latin1.GetString(reader.ReadBytes(len));
-                        var param = new CmdParam
-                        {
-                            Value = ApplyEncryption(val, 113)
-                        };
-                        _paramList.Add(param);
-                    }
-                    else
-                    {
-                        // TVarParam
-                        int len = reader.ReadInt32();
-                        string val = Encoding.Latin1.GetString(reader.ReadBytes(len));
-                        var param = new VarParam
-                        {
-                            Value = ApplyEncryption(val, 113)
-                        };
-
-                        len = reader.ReadInt32();
-                        val = Encoding.Latin1.GetString(reader.ReadBytes(len));
-                        param.Name = ApplyEncryption(val, 113);
-
-                        _paramList.Add(param);
-                    }
-
-                    paramType = reader.ReadByte();
-                }
-                
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read {_paramList.Count} parameters, position now: {fs.Position}\n");
-                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File length: {fs.Length}, bytes remaining: {fs.Length - fs.Position}\n");
-
-                // Note: the Pascal compiler (CompileValue) deduplicates variables at compile time —
-                // when a variable name is seen again, it reuses the existing paramID rather than
-                // creating a new entry. Our C# TWXC does the same via FindOrCreateVariable.
-                // Therefore a well-formed CTS file already has one entry per unique variable name,
-                // and no post-load deduplication is needed. All bytecode references to a given
-                // variable share the same paramID pointing to the same single VarParam object.
-
-                // Read include scripts (only if data remains)
-                if (fs.Position + 4 <= fs.Length)
-                {
-                    GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Attempting to read includeLen...\n");
-                    try
-                    {
-                        int includeLen = reader.ReadInt32();
-                        GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read includeLen: {includeLen}\n");
-                        while (includeLen > 0)
-                        {
-                            string include = Encoding.ASCII.GetString(reader.ReadBytes(includeLen));
-                            _includeScriptList.Add(include);
-                            includeLen = reader.ReadInt32();
-                        }
-                    }
-                    catch (EndOfStreamException ex)
-                    {
-                        GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Hit EOF while reading includes: {ex.Message}\n");
-                        // Continue - includes are optional
-                    }
-                }
-                else
-                {
-                    GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] No include scripts section (EOF at {fs.Position})\n");
-                }
-
-                // Read labels
-                while (fs.Position < fs.Length)
-                {
-                    int location = reader.ReadInt32();
                     int len = reader.ReadInt32();
-                    string name = Encoding.ASCII.GetString(reader.ReadBytes(len));
-
-                    var label = new ScriptLabel
+                    string val = Encoding.Latin1.GetString(reader.ReadBytes(len));
+                    var param = new CmdParam
                     {
-                        Name = name,
-                        Location = location
+                        Value = ApplyEncryption(val, 113)
                     };
-                    _labelList.Add(label);
-                    // First definition wins - consistent with FirstOrDefault
-                    if (!_labelDict.ContainsKey(name))
-                        _labelDict[name] = location;
+                    _paramList.Add(param);
                 }
+                else
+                {
+                    int len = reader.ReadInt32();
+                    string val = Encoding.Latin1.GetString(reader.ReadBytes(len));
+                    var param = new VarParam
+                    {
+                        Value = ApplyEncryption(val, 113)
+                    };
+
+                    len = reader.ReadInt32();
+                    val = Encoding.Latin1.GetString(reader.ReadBytes(len));
+                    param.Name = ApplyEncryption(val, 113);
+
+                    _paramList.Add(param);
+                }
+
+                paramType = reader.ReadByte();
+            }
+
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read {_paramList.Count} parameters, position now: {reader.BaseStream.Position}\n");
+            GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] File length: {length}, bytes remaining: {length - reader.BaseStream.Position}\n");
+
+            if (reader.BaseStream.Position + 4 <= reader.BaseStream.Length)
+            {
+                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Attempting to read includeLen...\n");
+                try
+                {
+                    int includeLen = reader.ReadInt32();
+                    GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Read includeLen: {includeLen}\n");
+                    while (includeLen > 0)
+                    {
+                        string include = Encoding.ASCII.GetString(reader.ReadBytes(includeLen));
+                        _includeScriptList.Add(include);
+                        includeLen = reader.ReadInt32();
+                    }
+                }
+                catch (EndOfStreamException ex)
+                {
+                    GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] Hit EOF while reading includes: {ex.Message}\n");
+                }
+            }
+            else
+            {
+                GlobalModules.DebugLog($"[ScriptCmp.LoadFromFile] No include scripts section (EOF at {reader.BaseStream.Position})\n");
+            }
+
+            while (reader.BaseStream.Position < reader.BaseStream.Length)
+            {
+                int location = reader.ReadInt32();
+                int len = reader.ReadInt32();
+                string name = Encoding.ASCII.GetString(reader.ReadBytes(len));
+
+                var label = new ScriptLabel
+                {
+                    Name = name,
+                    Location = location
+                };
+                _labelList.Add(label);
+                if (!_labelDict.ContainsKey(name))
+                    _labelDict[name] = location;
             }
 
             _scriptFile = filename;
