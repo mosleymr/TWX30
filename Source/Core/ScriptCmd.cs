@@ -444,7 +444,7 @@ namespace TWXProxy.Core
             AddCommand("CLEARAVOID", 1, 1, CmdClearAvoid, Array.Empty<ParamKind>(), ParamKind.Value); // 94
             AddCommand("GETALLCOURSES", 2, 2, CmdGetAllCourses, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 95
             AddCommand("GETFILELIST", 1, 2, CmdGetFileList, new[] { ParamKind.Variable }, ParamKind.Value); // 96
-            AddCommand("GETNEARESTWARPS", 3, 3, CmdGetNearestWarps, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 97
+            AddCommand("GETNEARESTWARPS", 2, 2, CmdGetNearestWarps, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 97
             AddCommand("GETSCRIPTVERSION", 2, 2, CmdGetScriptVersion, new[] { ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 98
             AddCommand("LISTACTIVESCRIPTS", 1, 1, CmdListActiveScripts, new[] { ParamKind.Variable }, ParamKind.Value); // 99
             AddCommand("LISTAVOIDS", 1, 1, CmdListAvoids, new[] { ParamKind.Variable }, ParamKind.Value); // 100

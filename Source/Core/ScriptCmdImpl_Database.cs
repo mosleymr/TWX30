@@ -424,25 +424,27 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetNearestWarps_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: getnearestwarps var <from> <to>
-            // Get list of warps from 'from' sector sorted by distance to 'to' sector
-            
-            int fromSector, toSector;
-            ConvertToNumber(parameters[1].Value, out fromSector);
-            ConvertToNumber(parameters[2].Value, out toSector);
-            
+            // Pascal TWX semantics:
+            //   getnearestwarps <ArrayName> <StartingSector>
+            // Returns the breadth-first reachable-sector queue produced by PlotWarpCourse(start, 0).
+
+            int startSector;
+            ConvertToNumber(parameters[1].Value, out startSector);
+
             if (parameters[0] is VarParam varParam)
             {
-                if (_activeDatabase != null && 
-                    fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
-                    toSector > 0 && toSector <= _activeDatabase.SectorCount)
+                if (_activeDatabase != null &&
+                    startSector > 0 && startSector <= _activeDatabase.SectorCount)
                 {
-                    // Get warps sorted by distance to target
-                    var sortedWarps = _activeDatabase.GetWarpsSortedByDistance(fromSector, toSector, _avoidedSectors);
-                    varParam.SetArrayFromStrings(sortedWarps.Select(w => w.ToString()).ToList());
+                    var reachable = _activeDatabase.GetReachableSectorsBreadthFirst(startSector, _avoidedSectors)
+                        .Select(sector => sector.ToString())
+                        .ToList();
+                    parameters[0].Value = reachable.Count.ToString();
+                    varParam.SetArrayFromStrings(reachable);
                 }
                 else
                 {
+                    parameters[0].Value = "0";
                     varParam.SetArrayFromStrings(new List<string>());
                 }
             }

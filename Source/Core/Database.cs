@@ -831,6 +831,46 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Return the breadth-first reachable sector queue used by Pascal PlotWarpCourse(start, 0).
+        /// The starting sector is included first, followed by reachable sectors in BFS order.
+        /// </summary>
+        public List<int> GetReachableSectorsBreadthFirst(int startSector, HashSet<int>? avoidSectors = null)
+        {
+            if (startSector < 1 || startSector > _header.Sectors)
+                return new List<int>();
+
+            var visited = new HashSet<int>();
+            var queue = new Queue<int>();
+            var result = new List<int>();
+            var avoids = avoidSectors ?? new HashSet<int>();
+
+            visited.Add(startSector);
+            queue.Enqueue(startSector);
+            result.Add(startSector);
+
+            while (queue.Count > 0)
+            {
+                int currentSector = queue.Dequeue();
+                var sector = GetSector(currentSector);
+                if (sector == null)
+                    continue;
+
+                foreach (var warp in sector.Warp.Where(w => w > 0 && w <= _header.Sectors))
+                {
+                    int neighbor = warp;
+                    if (avoids.Contains(neighbor) || visited.Contains(neighbor))
+                        continue;
+
+                    visited.Add(neighbor);
+                    queue.Enqueue(neighbor);
+                    result.Add(neighbor);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
         /// Find which warp from the current sector gets closest to the target sector
         /// </summary>
         /// <param name="fromSector">Current sector number</param>

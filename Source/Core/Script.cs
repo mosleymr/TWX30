@@ -1331,6 +1331,7 @@ namespace TWXProxy.Core
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
         private const int MAX_LOOP_ITERATIONS = 50;  // Max iterations before warning
+        private bool _resetLoopDetectionOnNextExecute;
         private bool _enableVariableDebug = false;  // Toggle for [VAR] output
         private string _waitText = string.Empty;
         private string _outText = string.Empty;
@@ -1500,7 +1501,8 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[CheckTriggers] Checking trigger {i}: value='{triggerList[i].Value}', label='{triggerList[i].LabelName}'\n");
                 if (text.Contains(triggerList[i].Value) || string.IsNullOrEmpty(triggerList[i].Value))
                 {
-                    GlobalModules.DebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
+                    if (GlobalModules.VerboseDebugMode)
+                        GlobalModules.DebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
                     // Save trigger values
                     int lifeCycle = triggerList[i].LifeCycle;
                     string labelName = triggerList[i].LabelName;
@@ -1544,12 +1546,15 @@ namespace TWXProxy.Core
                             // Set CURRENTLINE to the text that triggered this handler
                             // This allows the handler to parse the triggering line
                             string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
-                            GlobalModules.DebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
                             ScriptRef.SetCurrentLine(currentLine);
-                            GlobalModules.DebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
                             
                             GotoLabel(labelName);
-                            GlobalModules.DebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
                         }
                         catch (Exception ex)
                         {
@@ -1563,7 +1568,8 @@ namespace TWXProxy.Core
 
                     if (!result)
                     {
-                        GlobalModules.DebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
+                        if (GlobalModules.VerboseDebugMode)
+                            GlobalModules.DebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
                         TriggersActive = false;
 
                         // Save the current pause state before running the handler.
@@ -1588,12 +1594,14 @@ namespace TWXProxy.Core
 
                         if (Execute())
                         {
-                            GlobalModules.DebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
                             result = true; // script was self-terminated
                         }
                         else
                         {
-                            GlobalModules.DebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
 
                             bool handlerPaused = _paused; // did the handler itself pause (e.g. its own waitOn)?
 
@@ -1633,6 +1641,7 @@ namespace TWXProxy.Core
                                     GlobalModules.DebugLog($"[CheckTriggers] Persistent trigger handler done; restoring outer pause\n");
                                     _paused = true;
                                     _pausedReason = savedPauseReason;
+                                    _resetLoopDetectionOnNextExecute = true;
                                 }
                             }
                             // If !wasPaused: script was not paused before, nothing to restore.
@@ -1814,6 +1823,7 @@ namespace TWXProxy.Core
                             // so the outer PAUSE loop continues where it left off.
                             _paused = true;
                             _pausedReason = savedPauseReason;
+                            _resetLoopDetectionOnNextExecute = true;
                         }
                     }
 
@@ -2959,6 +2969,7 @@ namespace TWXProxy.Core
                         case CmdAction.Pause:
                             _paused = true;
                             _pausedReason = PauseReason.Command;
+                            _resetLoopDetectionOnNextExecute = true;
                             GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
                             GlobalModules.FlushDebugLog();
                             return false;
@@ -2966,6 +2977,7 @@ namespace TWXProxy.Core
                         case CmdAction.Auth:
                             _waitingForAuth = true;
                             _pausedReason = PauseReason.Auth;
+                            _resetLoopDetectionOnNextExecute = true;
                             return false;
                     }
 
@@ -3020,6 +3032,14 @@ namespace TWXProxy.Core
         {
             var server = GlobalModules.TWXServer;
             IExecutionObserver? observer = ExecutionObserver;
+
+            if (_resetLoopDetectionOnNextExecute)
+            {
+                _lastCodePos = -1;
+                _loopCounter = 0;
+                _lastLoopCheck = DateTime.MinValue;
+                _resetLoopDetectionOnNextExecute = false;
+            }
             
             // Loop detection: check if we're repeatedly hitting the same code position
             if (_codePos == _lastCodePos && (DateTime.Now - _lastLoopCheck).TotalMilliseconds < 100)
@@ -3027,10 +3047,7 @@ namespace TWXProxy.Core
                 _loopCounter++;
                 if (_loopCounter >= MAX_LOOP_ITERATIONS)
                 {
-                    server?.ClientMessage($"\r\n*** WARNING: Possible script loop detected at position {_codePos} ***\r\n");
-                    server?.ClientMessage($"*** Script has executed the same position {_loopCounter} times in rapid succession ***\r\n");
-                    server?.ClientMessage($"*** This may indicate an endless loop (e.g., relog attempts with no server) ***\r\n");
-                    server?.ClientMessage($"*** Script will continue, but consider stopping it if stuck ***\r\n\r\n");
+                    GlobalModules.DebugLog($"[LOOPWARN] Script '{ScriptName}' repeated code position {_codePos} {_loopCounter} times in rapid succession\n");
                     _loopCounter = 0;  // Reset counter after warning
                 }
             }
@@ -3415,6 +3432,7 @@ namespace TWXProxy.Core
                         case CmdAction.Pause:
                             _paused = true;
                             _pausedReason = PauseReason.Command;
+                            _resetLoopDetectionOnNextExecute = true;
                             GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
                             GlobalModules.FlushDebugLog();
                             return false; // Pause execution
@@ -3422,6 +3440,7 @@ namespace TWXProxy.Core
                         case CmdAction.Auth:
                             _waitingForAuth = true;
                             _pausedReason = PauseReason.Auth;
+                            _resetLoopDetectionOnNextExecute = true;
                             return false; // Wait for authentication
                         
                         case CmdAction.None:
@@ -3748,6 +3767,7 @@ namespace TWXProxy.Core
                 {
                     Console.WriteLine($"[Script.LocalInputEvent] Menu still open after handler, re-pausing and redisplaying");
                     _paused = true;
+                    _resetLoopDetectionOnNextExecute = true;
                     menuMgr.RedisplayCurrentMenu();
                 }
                 
@@ -3824,6 +3844,7 @@ namespace TWXProxy.Core
             _waitingForInput = true;
             _keypressMode = keypressMode;
             _inputVarParam = varParam;
+            _resetLoopDetectionOnNextExecute = true;
         }
         public string OutText => _outText;
         public bool Silent { get; set; }
@@ -3870,6 +3891,7 @@ namespace TWXProxy.Core
         public void Pause()
         {
             _paused = true;
+            _resetLoopDetectionOnNextExecute = true;
         }
 
         /// <summary>

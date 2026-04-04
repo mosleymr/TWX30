@@ -348,7 +348,8 @@ namespace TWXProxy.Core
                         : $"const";
                     srcInfo.Append($" src[{i}]={srcName}='{parameters[i].Value}'");
                 }
-                GlobalModules.DebugLog($"[SETVAR] {varName}{svHash}: '{oldValue}' → '{result}'{srcInfo}\n");
+                if (GlobalModules.VerboseDebugMode)
+                    GlobalModules.DebugLog($"[SETVAR] {varName}{svHash}: '{oldValue}' → '{result}'{srcInfo}\n");
             }
             else if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[SETVAR] {varName}: '{oldValue}' → '{result}'\n");
@@ -383,7 +384,8 @@ namespace TWXProxy.Core
                 srcDescs.Append($" src[{i}]={srcName}='{parameters[i].Value}'");
                 parameters[0].Value += parameters[i].Value;
             }
-            GlobalModules.DebugLog($"[CONCAT] {varName}@{parameters[0].GetHashCode():X8}: '{oldValue}' → '{parameters[0].Value}'{srcDescs}\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[CONCAT] {varName}@{parameters[0].GetHashCode():X8}: '{oldValue}' → '{parameters[0].Value}'{srcDescs}\n");
             return CmdAction.None;
         }
 
@@ -415,7 +417,8 @@ namespace TWXProxy.Core
             string p1Name = (parameters[1] is VarParam v1gl) ? v1gl.Name : (parameters[1] is ProgVarParam pv1gl) ? $"ProgVar:{pv1gl.Name}" : "???";
             int len = parameters[0].Value.Length;
             parameters[1].Value = len.ToString();
-            GlobalModules.DebugLog($"[GETLENGTH] {p0Name}='{parameters[0].Value}' → {p1Name}='{len}'\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[GETLENGTH] {p0Name}='{parameters[0].Value}' → {p1Name}='{len}'\n");
             return CmdAction.None;
         }
 
@@ -436,21 +439,24 @@ namespace TWXProxy.Core
 
             if (start > parameters[0].Value.Length)
             {
-                GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (start>len)\n");
+                if (GlobalModules.VerboseDebugMode)
+                    GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (start>len)\n");
                 parameters[1].Value = string.Empty;
                 return CmdAction.None;
             }
 
             if (length <= 0)
             {
-                GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (len<=0)\n");
+                if (GlobalModules.VerboseDebugMode)
+                    GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (len<=0)\n");
                 parameters[1].Value = string.Empty;
                 return CmdAction.None;
             }
 
             string result = parameters[0].Value.Substring(start - 1, 
                 Math.Min(length, parameters[0].Value.Length - start + 1));
-            GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");
             parameters[1].Value = result;
             return CmdAction.None;
         }
@@ -620,7 +626,8 @@ namespace TWXProxy.Core
                     : (parameters[2] is ProgVarParam mp2) ? $"PV:{mp2.Name}" : "const";
                 parameters[2].Value = result;
             }
-            GlobalModules.DebugLog($"[MERGETEXT] {src0Name}='{src0Val}' + {src1Name}='{src1Val}' → dst={dstName} result='{result}'\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[MERGETEXT] {src0Name}='{src0Val}' + {src1Name}='{src1Val}' → dst={dstName} result='{result}'\n");
             return CmdAction.None;
         }
 
