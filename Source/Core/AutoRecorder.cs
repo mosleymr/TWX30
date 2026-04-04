@@ -459,9 +459,10 @@ namespace TWXProxy.Core
                 var stardock = _rxStardock.Match(trimmedLine);
                 if (stardock.Success && int.TryParse(stardock.Groups[1].Value, out int dockSector))
                 {
-                    if (dockSector > 0 && dockSector <= db.SectorCount &&
-                        (db.DBHeader.StarDock == 0 || db.DBHeader.StarDock == 65535))
+                    if (dockSector > 0 && dockSector <= db.SectorCount)
                     {
+                        ushort previousDock = db.DBHeader.StarDock;
+                        bool changed = previousDock != (ushort)dockSector;
                         db.DBHeader.StarDock = (ushort)dockSector;
 
                         var dock = GetOrCreate(db, dockSector);
@@ -482,7 +483,14 @@ namespace TWXProxy.Core
                         ScriptRef.SetCurrentGameVar("$STARDOCK", dockSector.ToString());
                         ScriptRef.OnVariableSaved?.Invoke("$STARDOCK", dockSector.ToString());
                         LandmarkSectorsChanged?.Invoke();
-                        GlobalModules.DebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
+                        if (changed && previousDock != 0 && previousDock != 65535)
+                        {
+                            GlobalModules.DebugLog($"[AutoRecorder] Stardock corrected from sector {previousDock} to {dockSector}\n");
+                        }
+                        else
+                        {
+                            GlobalModules.DebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
+                        }
                     }
                     return;
                 }
