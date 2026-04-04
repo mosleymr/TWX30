@@ -38,6 +38,7 @@ public class MapWindow : Window
     // Computed layout: sector number → canvas position
     private Dictionary<int, SKPoint> _positions = new();
     private Dictionary<int, Core.SectorData?> _sectorCache = new();
+    private Dictionary<int, int> _depthCache = new();
     private HashSet<int> _majorSpaceLaneSectors = new();
     private (ushort StarDock, ushort AlphaCentauri, ushort Rylos)? _majorSpaceLaneHeader;
 
@@ -350,6 +351,7 @@ public class MapWindow : Window
     {
         _positions.Clear();
         _sectorCache.Clear();
+        _depthCache.Clear();
 
         var db = _getDb();
         if (db == null) { _canvas.InvalidateVisual(); return; }
@@ -394,6 +396,7 @@ public class MapWindow : Window
         foreach (var sn in visited.Keys.Where(s => !_sectorCache.ContainsKey(s)))
             _sectorCache[sn] = db.GetSector(sn);
 
+        _depthCache = new Dictionary<int, int>(visited);
         RefreshMajorSpaceLaneSectors(db, force: true);
 
         // ── Layout: BFS tree with simple force-relaxation ─────────────────
@@ -432,6 +435,17 @@ public class MapWindow : Window
             _sectorCache[sn] = db.GetSector(sn);
         RefreshMajorSpaceLaneSectors(db);
         _canvas.InvalidateVisual();
+    }
+
+    private int VisibleDepthForZoom()
+    {
+        if (_zoom >= 2.75f)
+            return 1;
+        if (_zoom >= 1.65f)
+            return 2;
+        if (_zoom >= 0.95f)
+            return 3;
+        return MaxDepth;
     }
 
     private void RefreshMajorSpaceLaneSectors(Core.ModDatabase db, bool force = false)
@@ -652,12 +666,19 @@ public class MapWindow : Window
             PathEffect = SKPathEffect.CreateDash(DashIntervals, 0),
         };
 
+        int visibleDepth = VisibleDepthForZoom();
         var drawnEdges = new HashSet<(int, int)>();
         foreach (var (sn, pos) in _positions)
         {
+            if (!_depthCache.TryGetValue(sn, out int depth) || depth > visibleDepth)
+                continue;
+
             if (!_sectorCache.TryGetValue(sn, out var sd) || sd == null) continue;
             foreach (var w in sd.Warp.Where(w => w > 0 && _positions.ContainsKey(w)))
             {
+                if (!_depthCache.TryGetValue(w, out int warpDepth) || warpDepth > visibleDepth)
+                    continue;
+
                 // Check two-way: target also has a warp back to us
                 _sectorCache.TryGetValue(w, out var target);
                 bool twoWay = target != null && target.Warp.Contains((ushort)sn);
@@ -688,6 +709,9 @@ public class MapWindow : Window
 
         foreach (var (sn, pos) in _positions)
         {
+            if (!_depthCache.TryGetValue(sn, out int depth) || depth > visibleDepth)
+                continue;
+
             _sectorCache.TryGetValue(sn, out var sd);
             bool isCurrent = sn == currentSect;
             bool isMajorLane = _majorSpaceLaneSectors.Contains(sn);
@@ -727,7 +751,7 @@ public class MapWindow : Window
             if (sd != null && (sd.SectorPort != null || sd.Explored > Core.ExploreType.No))
             {
                 // Use dark (black) text when background is light: explored teal or current green
-                bool darkText = isCurrent || sd.Explored == Core.ExploreType.Yes;
+                bool darkText = isCurrent || isMajorLane || sd.Explored == Core.ExploreType.Yes;
                 DrawSectorIcons(sk, sd, pos, y + 24f, smallPaint, darkText);
             }
             else if (sd != null)
