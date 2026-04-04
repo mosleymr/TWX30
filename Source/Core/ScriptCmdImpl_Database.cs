@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace TWXProxy.Core
@@ -33,17 +34,14 @@ namespace TWXProxy.Core
         private static CmdAction CmdGetSector_Impl(object script, CmdParam[] parameters)
         {
             // CMD: getsector <sectorNum> var
-            // Populates var with struct-like sub-fields for the given sector.
-            // The base variable value is NOT modified (it retains its current value,
-            // which is typically the sector number).
-            // Sub-fields populated: density, warps, warp[1..n], anomoly, port.exists,
-            // port.class, figs.owner, figs.quantity, figs.type, etc.
-            
             if (parameters[1] is not VarParam sectorVar)
                 return CmdAction.None;
 
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
+
+            if (sectorNum == 0)
+                return CmdAction.None;
 
             // Helper to set a named sub-field.
             // Names with dots (e.g. "figs.owner") are stored hierarchically so that
@@ -68,89 +66,170 @@ namespace TWXProxy.Core
                        name.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
             }
 
+            static string FormatExplore(ExploreType explored) => explored switch
+            {
+                ExploreType.No => "NO",
+                ExploreType.Calc => "CALC",
+                ExploreType.Density => "DENSITY",
+                _ => "YES"
+            };
+
+            static string FormatYesNo(bool value) => value ? "YES" : "NO";
+
+            static string FormatFigType(FighterType figType) => figType switch
+            {
+                FighterType.Toll => "TOLL",
+                FighterType.Defensive => "DEFENSIVE",
+                _ => "OFFENSIVE"
+            };
+
+            static string FormatPascalDateTime(DateTime value)
+            {
+                if (value == default)
+                    return string.Empty;
+                return value.ToShortDateString() + " " + value.ToLongTimeString();
+            }
+
             if (_activeDatabase == null || sectorNum <= 0 || sectorNum > _activeDatabase.SectorCount)
             {
-                // Unknown sector – zero out all commonly-used fields
-                SetField("density",       "0");
-                SetField("navhaz",        "0");
-                SetField("anomoly",       "NO");
-                SetField("warps",         "0");
-                SetField("port.exists",   "0");
-                SetField("port.class",    "0");
-                SetField("figs.owner",    "");
+                SetField("explored", "NO");
+                SetField("index", "0");
+                SetField("density", "0");
+                SetField("navhaz", "0");
+                SetField("anomaly", "NO");
+                SetField("anomoly", "NO");
+                SetField("warps", "0");
+                SetField("port.exists", "0");
+                SetField("port.class", "0");
+                SetField("figs.owner", "");
                 SetField("figs.quantity", "0");
-                SetField("figs.type",     "0");
-                // Clear warp array (at least first few slots)
-                for (int i = 1; i <= 6; i++)
-                    sectorVar.GetIndexVar(new[] { "warp", i.ToString() }).Value = "0";
+                SetField("figs.type", "OFFENSIVE");
                 return CmdAction.None;
             }
 
             var sector = _activeDatabase.GetSector(sectorNum);
             if (sector == null)
             {
-                SetField("density",       "0");
-                SetField("navhaz",        "0");
-                SetField("anomoly",       "NO");
-                SetField("warps",         "0");
-                SetField("port.exists",   "0");
-                SetField("port.class",    "0");
-                SetField("figs.owner",    "");
-                SetField("figs.quantity", "0");
-                SetField("figs.type",     "0");
-                for (int i = 1; i <= 6; i++)
-                    sectorVar.GetIndexVar(new[] { "warp", i.ToString() }).Value = "0";
                 return CmdAction.None;
             }
 
-            // Populate sector fields
-            SetField("density",  sector.Density.ToString());
-            SetField("navhaz",   sector.NavHaz.ToString());
-            SetField("anomoly",  sector.Anomaly ? "YES" : "NO");
+            SetField("explored", FormatExplore(sector.Explored));
+            SetField("index", sectorNum.ToString(CultureInfo.InvariantCulture));
+            SetField("beacon", sector.Beacon ?? string.Empty);
+            SetField("constellation", sector.Constellation ?? string.Empty);
+            SetField("armidmines.quantity", sector.MinesArmid.Quantity.ToString(CultureInfo.InvariantCulture));
+            SetField("armidmines.owner", sector.MinesArmid.Owner ?? string.Empty);
+            SetField("limpetmines.quantity", sector.MinesLimpet.Quantity.ToString(CultureInfo.InvariantCulture));
+            SetField("limpetmines.owner", sector.MinesLimpet.Owner ?? string.Empty);
+            SetField("limpets.quantity", sector.MinesLimpet.Quantity.ToString(CultureInfo.InvariantCulture));
+            SetField("limpets.owner", sector.MinesLimpet.Owner ?? string.Empty);
+            SetField("figs.quantity", sector.Fighters.Quantity.ToString(CultureInfo.InvariantCulture));
+            SetField("figs.owner", sector.Fighters.Owner ?? string.Empty);
+            SetField("figs.type", FormatFigType(sector.Fighters.FigType));
+            SetField("density", sector.Density.ToString(CultureInfo.InvariantCulture));
+            SetField("navhaz", sector.NavHaz.ToString(CultureInfo.InvariantCulture));
+            SetField("updated", FormatPascalDateTime(sector.Update));
+            SetField("anomaly", sector.Anomaly ? "YES" : "NO");
+            SetField("anomoly", sector.Anomaly ? "YES" : "NO");
 
             var warps = sector.Warp.Where(w => w != 0).ToList();
-            SetField("warps", warps.Count.ToString());
+            SetField("warps", warps.Count.ToString(CultureInfo.InvariantCulture));
             for (int i = 1; i <= 6; i++)
             {
-                string warpValue = (i <= warps.Count) ? warps[i - 1].ToString() : "0";
-                sectorVar.GetIndexVar(new[] { "warp", i.ToString() }).Value = warpValue;
-
-                if (script is Script scriptObj && scriptObj.Compiler != null)
-                {
-                    scriptObj.Compiler
-                        .GetOrCreateRuntimeVar(sectorVar.Name + ".warp")
-                        .GetIndexVar(new[] { i.ToString() })
-                        .Value = warpValue;
-                }
+                string warpValue = i <= warps.Count
+                    ? warps[i - 1].ToString(CultureInfo.InvariantCulture)
+                    : "0";
+                SetField($"warp.{i}", warpValue);
             }
 
-            // Port
-            bool portExists = sector.SectorPort != null;
+            bool portExists = sector.SectorPort != null && !string.IsNullOrEmpty(sector.SectorPort.Name);
+            SetField("port.name", sector.SectorPort?.Name ?? string.Empty);
             SetField("port.exists", portExists ? "1" : "0");
-            SetField("port.class",  sector.SectorPort?.ClassIndex.ToString() ?? "0");
-            SetField("port.name",   sector.SectorPort?.Name ?? "");
-            if (sector.SectorPort != null)
+            SetField("port.class", portExists ? sector.SectorPort!.ClassIndex.ToString(CultureInfo.InvariantCulture) : "0");
+            if (portExists && sector.SectorPort != null)
             {
-                SetField("port.fuel",        sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.FuelOre).ToString());
-                SetField("port.org",         sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.Organics).ToString());
-                SetField("port.equip",       sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.Equipment).ToString());
-                SetField("port.buyfuel",     sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.FuelOre) ? "1" : "0");
-                SetField("port.buyorg",      sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Organics) ? "1" : "0");
-                SetField("port.buyequip",    sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Equipment) ? "1" : "0");
+                string ore = sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.FuelOre).ToString(CultureInfo.InvariantCulture);
+                string org = sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.Organics).ToString(CultureInfo.InvariantCulture);
+                string equip = sector.SectorPort.ProductAmount.GetValueOrDefault(ProductType.Equipment).ToString(CultureInfo.InvariantCulture);
+                string percOre = sector.SectorPort.ProductPercent.GetValueOrDefault(ProductType.FuelOre).ToString(CultureInfo.InvariantCulture);
+                string percOrg = sector.SectorPort.ProductPercent.GetValueOrDefault(ProductType.Organics).ToString(CultureInfo.InvariantCulture);
+                string percEquip = sector.SectorPort.ProductPercent.GetValueOrDefault(ProductType.Equipment).ToString(CultureInfo.InvariantCulture);
+                string buyOre = FormatYesNo(sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.FuelOre));
+                string buyOrg = FormatYesNo(sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Organics));
+                string buyEquip = FormatYesNo(sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Equipment));
+
+                SetField("port.buildtime", sector.SectorPort.BuildTime.ToString(CultureInfo.InvariantCulture));
+                SetField("port.perc_ore", percOre);
+                SetField("port.perc_org", percOrg);
+                SetField("port.perc_equip", percEquip);
+                SetField("port.ore", ore);
+                SetField("port.org", org);
+                SetField("port.equip", equip);
+                SetField("port.updated", FormatPascalDateTime(sector.SectorPort.Update));
+                SetField("port.buy_ore", buyOre);
+                SetField("port.buy_org", buyOrg);
+                SetField("port.buy_equip", buyEquip);
+
+                // Compatibility aliases used by the C# port sysconsts.
+                SetField("port.fuel", ore);
+                SetField("port.buyfuel", sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.FuelOre) ? "1" : "0");
+                SetField("port.buyorg", sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Organics) ? "1" : "0");
+                SetField("port.buyequip", sector.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Equipment) ? "1" : "0");
+                SetField("port.percentfuel", percOre);
+                SetField("port.percentorg", percOrg);
+                SetField("port.percentequip", percEquip);
+            }
+            else
+            {
+                SetField("port.buildtime", "0");
+                SetField("port.perc_ore", "0");
+                SetField("port.perc_org", "0");
+                SetField("port.perc_equip", "0");
+                SetField("port.ore", "0");
+                SetField("port.org", "0");
+                SetField("port.equip", "0");
+                SetField("port.updated", string.Empty);
+                SetField("port.buy_ore", "NO");
+                SetField("port.buy_org", "NO");
+                SetField("port.buy_equip", "NO");
+                SetField("port.fuel", "0");
+                SetField("port.buyfuel", "0");
+                SetField("port.buyorg", "0");
+                SetField("port.buyequip", "0");
+                SetField("port.percentfuel", "0");
+                SetField("port.percentorg", "0");
+                SetField("port.percentequip", "0");
             }
 
-            // Fighters
-            SetField("figs.owner",    sector.Fighters.Owner ?? "");
-            SetField("figs.quantity", sector.Fighters.Quantity.ToString());
-            SetField("figs.type",     sector.Fighters.FigType.ToString());
+            SetField("planets", sector.PlanetNames.Count.ToString(CultureInfo.InvariantCulture));
+            for (int i = 0; i < sector.PlanetNames.Count; i++)
+                SetField($"planet.{i + 1}", sector.PlanetNames[i]);
 
-            // Mines / Limpets
-            SetField("limpets.owner",    sector.MinesArmid.Owner ?? "");
-            SetField("limpets.quantity", sector.MinesArmid.Quantity.ToString());
+            SetField("traders", sector.Traders.Count.ToString(CultureInfo.InvariantCulture));
+            for (int i = 0; i < sector.Traders.Count; i++)
+            {
+                Trader trader = sector.Traders[i];
+                SetField($"trader.name.{i + 1}", trader.Name ?? string.Empty);
+                SetField($"trader.ship.{i + 1}", trader.ShipType ?? string.Empty);
+                SetField($"trader.shipname.{i + 1}", trader.ShipName ?? string.Empty);
+                SetField($"trader.figs.{i + 1}", trader.Fighters.ToString(CultureInfo.InvariantCulture));
+            }
 
-            // Beacon / Constellation
-            SetField("beacon",        sector.Beacon.ToString());
-            SetField("constellation", sector.Constellation.ToString());
+            SetField("ships", sector.Ships.Count.ToString(CultureInfo.InvariantCulture));
+            for (int i = 0; i < sector.Ships.Count; i++)
+            {
+                Ship ship = sector.Ships[i];
+                SetField($"ship.name.{i + 1}", ship.Name ?? string.Empty);
+                SetField($"ship.ship.{i + 1}", ship.ShipType ?? string.Empty);
+                SetField($"ship.owner.{i + 1}", ship.Owner ?? string.Empty);
+                SetField($"ship.figs.{i + 1}", ship.Fighters.ToString(CultureInfo.InvariantCulture));
+            }
+
+            var backDoors = _activeDatabase.GetBackDoors(sector, sectorNum);
+            for (int i = 0; i < backDoors.Count; i++)
+            {
+                SetField($"backdoor.{i + 1}", backDoors[i].ToString(CultureInfo.InvariantCulture));
+            }
 
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[GETSECTOR] #{sectorNum} warps:[{string.Join(",", warps)}] port.class={sector.SectorPort?.ClassIndex ?? 0}\n");
@@ -171,113 +250,43 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetSectorParameter_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: getsectorparameter <sector> <param> var          (3-param, C# form)
-            //  or: getsectorparameter <sector> %%progvar             (2-param, Pascal form)
-            // In the Pascal form the progvar NAME is the DB key and the result is stored back into it.
-            
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
-
-            bool twoParam = parameters.Length == 2 && parameters[1] is ProgVarParam;
-            string paramName = twoParam
-                ? ((ProgVarParam)parameters[1]).Name.ToUpperInvariant()
-                : parameters[1].Value.ToUpperInvariant();
-            CmdParam outputParam = twoParam ? parameters[1] : parameters[2];
+            string paramName = parameters[1].Value;
+            CmdParam outputParam = parameters[2];
             
+            if (sectorNum == 0)
+                return CmdAction.None;
+
+            if (paramName.Length > 10)
+                throw new ScriptException("Sector parameter name exceeds 10 characters");
+
             if (_activeDatabase == null || sectorNum <= 0 || sectorNum > _activeDatabase.SectorCount)
             {
                 outputParam.Value = string.Empty;
                 return CmdAction.None;
             }
             
-            // Check custom variables first
             string varValue = _activeDatabase.GetSectorVar(sectorNum, paramName);
-            if (!string.Empty.Equals(varValue))
-            {
-                outputParam.Value = varValue;
-                return CmdAction.None;
-            }
-            
-            var sector = _activeDatabase.GetSector(sectorNum);
-            if (sector == null)
-            {
-                outputParam.Value = string.Empty;
-                return CmdAction.None;
-            }
-            
-            // Map parameter names to sector properties
-            // Convert Warp array to list of warps
-            var warpList = sector.Warp.Where(w => w != 0).ToList();
-            
-            outputParam.Value = paramName switch
-            {
-                "WARPS" => string.Join(" ", warpList),
-                "WARPCOUNT" => warpList.Count.ToString(),
-                "WARPIN" or "WARPSIN" => string.Join(" ", sector.WarpsIn),
-                "WARPINCOUNT" => sector.WarpsIn.Count.ToString(),
-                "BEACON" => sector.Beacon.ToString(),
-                "CONSTELLATION" => sector.Constellation.ToString(),
-                "EXPLORED" => (sector.Explored != ExploreType.No) ? "YES" : "NO",
-                "DENSITY" => sector.Density.ToString(),
-                "NAVHAZ" => sector.NavHaz.ToString(),
-                "ANOMALY" or "ANOMOLY" => sector.Anomaly ? "1" : "0",
-                "DEADEND" => (warpList.Count == 1) ? "1" : "0",
-                "BACKDOORCOUNT" => _activeDatabase.GetBackDoors(sector, sectorNum).Count.ToString(),
-                "BACKDOORS" => string.Join(" ", _activeDatabase.GetBackDoors(sector, sectorNum)),
-                "PORT.EXISTS" => (sector.SectorPort != null) ? "1" : "0",
-                "PORT.CLASS" => sector.SectorPort?.ClassIndex.ToString() ?? "0",
-                "PORT.NAME" => sector.SectorPort?.Name ?? string.Empty,
-                "PORT.FUEL" => sector.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.FuelOre).ToString() ?? "0",
-                "PORT.ORG" => sector.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.Organics).ToString() ?? "0",
-                "PORT.EQUIP" => sector.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.Equipment).ToString() ?? "0",
-                "PORT.BUYFUEL" => (sector.SectorPort?.BuyProduct.GetValueOrDefault(ProductType.FuelOre) == true) ? "1" : "0",
-                "PORT.BUYORG" => (sector.SectorPort?.BuyProduct.GetValueOrDefault(ProductType.Organics) == true) ? "1" : "0",
-                "PORT.BUYEQUIP" => (sector.SectorPort?.BuyProduct.GetValueOrDefault(ProductType.Equipment) == true) ? "1" : "0",
-                "PORT.PERCENTFUEL" => sector.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.FuelOre).ToString() ?? "0",
-                "PORT.PERCENTORG" => sector.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.Organics).ToString() ?? "0",
-                "PORT.PERCENTEQUIP" => sector.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.Equipment).ToString() ?? "0",
-                "PORT.BUILDTIME" => sector.SectorPort?.BuildTime.ToString() ?? string.Empty,
-                "PORT.UPDATED" => sector.SectorPort?.Update.ToString() ?? string.Empty,
-                "SHIPS" => sector.Ships.Count > 0 ? string.Join(", ", sector.Ships.Select(s => s.Name)) : string.Empty,
-                "SHIPCOUNT" => sector.Ships.Count.ToString(),
-                "PLANETS" => sector.PlanetNames.Count > 0 ? string.Join(", ", sector.PlanetNames) : string.Empty,
-                "PLANETCOUNT" => sector.PlanetNames.Count.ToString(),
-                "TRADERS" => sector.Traders.Count > 0 ? string.Join(", ", sector.Traders.Select(t => t.Name)) : string.Empty,
-                "TRADERCOUNT" => sector.Traders.Count.ToString(),
-                "FIGS.OWNER" => sector.Fighters.Owner,
-                "FIGS.QUANTITY" => sector.Fighters.Quantity.ToString(),
-                "FIGS.TYPE" => sector.Fighters.FigType.ToString(),
-                "MINES.OWNER" => string.Empty, // No Mines property in SectorData - only MinesArmid and MinesLimpet
-                "MINES.QUANTITY" => "0",
-                "LIMPETS.OWNER" => sector.MinesArmid.Owner,
-                "LIMPETS.QUANTITY" => sector.MinesArmid.Quantity.ToString(),
-                "UPDATED" => sector.Update.ToString(),
-                _ => varValue // Return custom variable or empty
-            };
+            if (varValue.Length > 40)
+                throw new ScriptException("Sector parameter value exceeds 40 characters");
+
+            outputParam.Value = varValue;
             
             return CmdAction.None;
         }
 
         private static CmdAction CmdSetSectorParameter_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: setsectorparameter <sector> <param> <value>     (3-param, C# form)
-            //  or: setsectorparameter <sector> %%progvar            (2-param, Pascal form)
-            // In the Pascal form the progvar NAME is the DB key and the progvar VALUE is stored.
-            
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
+            string paramName = parameters[1].Value;
+            string value = parameters[2].Value;
 
-            string paramName, value;
-            if (parameters.Length == 2 && parameters[1] is ProgVarParam pgp)
-            {
-                paramName = pgp.Name;
-                value = pgp.Value;
-            }
-            else
-            {
-                paramName = parameters[1].Value;
-                value = parameters[2].Value;
-            }
+            if (paramName.Length > 10)
+                throw new ScriptException("Sector parameter name exceeds 10 characters");
+            if (value.Length > 40)
+                throw new ScriptException("Sector parameter value exceeds 40 characters");
             
             if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
             {
@@ -300,11 +309,14 @@ namespace TWXProxy.Core
                 if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
                 {
                     var paramNames = _activeDatabase.GetSectorVarNames(sectorNum);
-                    varParam.SetArrayFromStrings(paramNames.ToList());
+                    var names = paramNames.ToList();
+                    varParam.SetArrayFromStrings(names);
+                    varParam.Value = names.Count.ToString(CultureInfo.InvariantCulture);
                 }
                 else
                 {
                     varParam.SetArrayFromStrings(new List<string>());
+                    varParam.Value = "0";
                 }
             }
             
@@ -374,60 +386,22 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetAllCourses_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: getallcourses var <sector>
-            // Get all possible routes from current sector to target with distances
-            // Returns array of "warp:distance" strings sorted by distance
-            
-            int toSector;
-            ConvertToNumber(parameters[1].Value, out toSector);
+            // CMD: getallcourses <2-DimensionArrayName> <StartingSector>
+            int startSector;
+            ConvertToNumber(parameters[1].Value, out startSector);
             
             if (parameters[0] is VarParam varParam)
             {
-                if (_activeDatabase == null)
+                if (_activeDatabase == null ||
+                    startSector <= 0 ||
+                    startSector > _activeDatabase.SectorCount)
                 {
-                    varParam.SetArrayFromStrings(new List<string>());
+                    varParam.SetMultiArraysFromStringsLists(new List<List<string>>());
                     return CmdAction.None;
                 }
 
-                int fromSector = _currentSector;
-                
-                // If current sector not set or invalid, return empty
-                if (fromSector <= 0 || fromSector > _activeDatabase.SectorCount ||
-                    toSector <= 0 || toSector > _activeDatabase.SectorCount)
-                {
-                    varParam.SetArrayFromStrings(new List<string>());
-                    return CmdAction.None;
-                }
-
-                var sector = _activeDatabase.GetSector(fromSector);
-                if (sector == null)
-                {
-                    varParam.SetArrayFromStrings(new List<string>());
-                    return CmdAction.None;
-                }
-
-                // Calculate distance from each warp to target
-                var warpRoutes = new List<(int warp, int distance)>();
-                foreach (var warp in sector.Warp.Where(w => w > 0 && w <= _activeDatabase.SectorCount))
-                {
-                    // Skip avoided sectors
-                    if (_avoidedSectors.Contains(warp))
-                        continue;
-
-                    int distance = _activeDatabase.GetDistance(warp, toSector, _avoidedSectors);
-                    
-                    // Include all warps, even if unreachable (distance = -1)
-                    warpRoutes.Add((warp, distance));
-                }
-
-                // Sort by distance (unreachable paths at end)
-                var sortedRoutes = warpRoutes
-                    .OrderBy(x => x.distance < 0 ? int.MaxValue : x.distance)
-                    .ThenBy(x => x.warp)
-                    .Select(x => x.distance >= 0 ? $"{x.warp}:{x.distance + 1}" : $"{x.warp}:UNREACHABLE")
-                    .ToList();
-
-                varParam.SetArrayFromStrings(sortedRoutes);
+                var allCourses = _activeDatabase.GetAllCoursesFrom(startSector, _avoidedSectors);
+                varParam.SetMultiArraysFromStringsLists(allCourses);
             }
             
             return CmdAction.None;
@@ -509,6 +483,7 @@ namespace TWXProxy.Core
             {
                 var avoidList = _avoidedSectors.OrderBy(s => s).Select(s => s.ToString()).ToList();
                 varParam.SetArrayFromStrings(avoidList);
+                varParam.Value = avoidList.Count.ToString(CultureInfo.InvariantCulture);
             }
             
             return CmdAction.None;

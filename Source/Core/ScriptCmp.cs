@@ -259,6 +259,37 @@ namespace TWXProxy.Core
             }
         }
 
+        public void SetMultiArraysFromStringsLists(List<List<string>> listArray)
+        {
+            _arraySize = listArray.Count;
+
+            for (int i = _vars.Count - 1; i >= _arraySize; i--)
+            {
+                _vars[i].Dispose();
+                _vars.RemoveAt(i);
+            }
+
+            for (int i = 0; i < _arraySize; i++)
+            {
+                if (i >= _vars.Count)
+                {
+                    var newVar = new VarParam
+                    {
+                        Name = (i + 1).ToString(),
+                        Value = (listArray[i].Count - 1).ToString()
+                    };
+                    AddVar(newVar);
+                }
+                else
+                {
+                    _vars[i].Name = (i + 1).ToString();
+                    _vars[i].Value = (listArray[i].Count - 1).ToString();
+                }
+
+                _vars[i].SetArrayFromStrings(listArray[i]);
+            }
+        }
+
         public void Dump(string tab)
         {
             // Broadcast variable details to active telnet connections

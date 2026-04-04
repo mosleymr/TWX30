@@ -371,7 +371,7 @@ namespace TWXProxy.Core
             AddCommand("GETOUTTEXT", 1, 1, CmdGetOutText, new[] { ParamKind.Variable }, ParamKind.Value); // 21
             AddCommand("GETRND", 3, 3, CmdGetRnd, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 22
             AddCommand("GETSECTOR", 2, 2, CmdGetSector, new[] { ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 23
-            AddCommand("GETSECTORPARAMETER", 2, 3, CmdGetSectorParameter, new[] { ParamKind.Value, ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 24
+            AddCommand("GETSECTORPARAMETER", 3, 3, CmdGetSectorParameter, new[] { ParamKind.Value, ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 24
             AddCommand("GETTEXT", 4, 4, CmdGetText, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 25
             AddCommand("GETTIME", 1, 2, CmdGetTime, new[] { ParamKind.Variable }, ParamKind.Value); // 26
             AddCommand("GOSUB", 1, 1, CmdGosub, Array.Empty<ParamKind>(), ParamKind.Value); // 27
@@ -416,7 +416,7 @@ namespace TWXProxy.Core
             AddCommand("SETMENUOPTIONS", 4, 4, CmdSetMenuOptions, Array.Empty<ParamKind>(), ParamKind.Value); // 66
             AddCommand("SETPRECISION", 1, 1, CmdSetPrecision, Array.Empty<ParamKind>(), ParamKind.Value); // 67
             AddCommand("SETPROGVAR", 2, 2, CmdSetProgVar, Array.Empty<ParamKind>(), ParamKind.Value); // 68
-            AddCommand("SETSECTORPARAMETER", 2, 3, CmdSetSectorParameter, Array.Empty<ParamKind>(), ParamKind.Value); // 69
+            AddCommand("SETSECTORPARAMETER", 3, 3, CmdSetSectorParameter, new[] { ParamKind.Value, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 69
             AddCommand("SETTEXTLINETRIGGER", 2, 3, CmdSetTextLineTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 70
             AddCommand("SETTEXTOUTTRIGGER", 2, 3, CmdSetTextOutTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 71
             AddCommand("SETTEXTTRIGGER", 2, 3, CmdSetTextTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 72
@@ -452,11 +452,11 @@ namespace TWXProxy.Core
             AddCommand("SETAVOID", 1, 1, CmdSetAvoid, Array.Empty<ParamKind>(), ParamKind.Value); // 102
             AddCommand("CUTLENGTHS", 3, 3, CmdCutLengths, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 103
             AddCommand("FORMAT", 3, 3, CmdFormat, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 104
-            AddCommand("GETDIRLIST", 1, 2, CmdGetDirList, new[] { ParamKind.Variable }, ParamKind.Value); // 105
+            AddCommand("GETDIRLIST", 1, 3, CmdGetDirList, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 105
             AddCommand("GETWORDCOUNT", 2, 2, CmdGetWordCount, new[] { ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 106
             AddCommand("MAKEDIR", 1, 1, CmdMakeDir, Array.Empty<ParamKind>(), ParamKind.Value); // 107
-            AddCommand("PADLEFT", 2, 2, CmdPadLeft, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 108
-            AddCommand("PADRIGHT", 2, 2, CmdPadRight, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 109
+            AddCommand("PADLEFT", 2, 3, CmdPadLeft, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 108
+            AddCommand("PADRIGHT", 2, 3, CmdPadRight, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value); // 109
             AddCommand("REMOVEDIR", 1, 1, CmdRemoveDir, Array.Empty<ParamKind>(), ParamKind.Value); // 110
             AddCommand("SETMENUKEY", 1, 1, CmdSetMenuKey, Array.Empty<ParamKind>(), ParamKind.Value); // 111
             AddCommand("SPLITTEXT", 2, 3, CmdSplitText, new[] { ParamKind.Value, ParamKind.Variable }, ParamKind.Value); // 112
@@ -477,7 +477,7 @@ namespace TWXProxy.Core
             AddCommand("SETAUTOTEXTTRIGGER", 3, 4, CmdSetAutoTrigger, Array.Empty<ParamKind>(), ParamKind.Value); // 126
             AddCommand("REQVERSION", 1, 1, CmdReqVersion, Array.Empty<ParamKind>(), ParamKind.Value); // 127
             AddCommand("SORT", 2, 2, CmdSort, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 128
-            AddCommand("FIND", 3, 4, CmdFind, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 129
+            AddCommand("FIND", 3, 4, CmdFind, new[] { ParamKind.Value, ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 129
             AddCommand("FINDALL", 3, 3, CmdFindAll, new[] { ParamKind.Value, ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 130
             AddCommand("MODULUS", 2, 2, CmdModulus, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 131
             AddCommand("DIREXISTS", 2, 2, CmdDirExists, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 132

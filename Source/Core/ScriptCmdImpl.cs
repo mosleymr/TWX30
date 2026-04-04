@@ -543,17 +543,33 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdPadLeft(object script, CmdParam[] parameters)
         {
-            // CMD: padleft var <length>
+            // CMD: padLeft var <length> [pad]
             int length = (int)parameters[1].DecValue;
-            parameters[0].Value = parameters[0].Value.PadLeft(length);
+            string padValue = parameters.Length > 2 ? parameters[2].Value : " ";
+            string pad = string.Empty;
+
+            for (int i = parameters[0].Value.Length; i <= length - 1; i++)
+            {
+                pad += padValue;
+            }
+
+            parameters[0].Value = pad + parameters[0].Value;
             return CmdAction.None;
         }
 
         private static CmdAction CmdPadRight(object script, CmdParam[] parameters)
         {
-            // CMD: padright var <length>
+            // CMD: padRight var <length> [pad]
             int length = (int)parameters[1].DecValue;
-            parameters[0].Value = parameters[0].Value.PadRight(length);
+            string padValue = parameters.Length > 2 ? parameters[2].Value : " ";
+            string pad = string.Empty;
+
+            for (int i = parameters[0].Value.Length; i <= length - 1; i++)
+            {
+                pad += padValue;
+            }
+
+            parameters[0].Value = parameters[0].Value + pad;
             return CmdAction.None;
         }
 
@@ -634,13 +650,14 @@ namespace TWXProxy.Core
         private static CmdAction CmdSplitText(object script, CmdParam[] parameters)
         {
             // CMD: splittext <value> var [delimiter]
-            string delimiter = parameters.Length > 2 ? parameters[2].Value : " ";
-            string[] parts = parameters[0].Value.Split(new[] { delimiter }, StringSplitOptions.None);
+            string delimiters = parameters.Length > 2 ? parameters[2].Value : string.Empty;
+            List<string> parts = Utility.Split(parameters[0].Value, delimiters);
             
             // Store in array variable
             if (parameters[1] is VarParam varParam)
             {
-                varParam.SetArrayFromStrings(parts.ToList());
+                varParam.SetArrayFromStrings(parts);
+                varParam.Value = parts.Count.ToString();
             }
             
             return CmdAction.None;
@@ -670,37 +687,84 @@ namespace TWXProxy.Core
             if (parameters[1] is VarParam varParam)
             {
                 varParam.SetArrayFromStrings(results);
+                varParam.Value = results.Count.ToString();
             }
             
             return CmdAction.None;
         }
 
+        private static IEnumerable<(int Index, string Value)> EnumerateArrayValues(VarParam sourceVar)
+        {
+            if (sourceVar.ArraySize > 0)
+            {
+                for (int i = 1; i <= sourceVar.ArraySize; i++)
+                {
+                    yield return (i, sourceVar.GetIndexVar(new[] { i.ToString() }).Value);
+                }
+                yield break;
+            }
+
+            for (int i = 0; i < sourceVar.Vars.Count; i++)
+            {
+                string value = sourceVar.Vars[i].Value;
+                if (string.Equals(value, "0", StringComparison.Ordinal))
+                    yield break;
+
+                yield return (i + 1, value);
+            }
+        }
+
         private static CmdAction CmdFind(object script, CmdParam[] parameters)
         {
-            // CMD: find <text> var <search> [startpos]
-            int startPos = parameters.Length > 3 ? (int)parameters[3].DecValue - 1 : 0;
-            int pos = parameters[0].Value.IndexOf(parameters[2].Value, startPos, StringComparison.Ordinal);
-            parameters[1].Value = (pos + 1).ToString(); // 1-based
+            // CMD: find <array> <value> <index> [start]
+            if (parameters[0] is not VarParam sourceVar)
+                return CmdAction.None;
+
+            int start = parameters.Length > 3 ? int.TryParse(parameters[3].Value, out int parsedStart) ? parsedStart : 1 : 1;
+            parameters[2].DecValue = 0;
+
+            int lastIndex = 0;
+            foreach (var (index, value) in EnumerateArrayValues(sourceVar))
+            {
+                lastIndex = index;
+                if (!string.Equals(value, "0", StringComparison.Ordinal) &&
+                    value.IndexOf(parameters[1].Value, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    if (start > 1)
+                    {
+                        start--;
+                    }
+                    else if (parameters[2].DecValue == 0)
+                    {
+                        parameters[2].DecValue = index;
+                    }
+                }
+            }
+
+            parameters[0].DecValue = lastIndex;
             return CmdAction.None;
         }
 
         private static CmdAction CmdFindAll(object script, CmdParam[] parameters)
         {
-            // CMD: findall <text> var <search>
-            string text = parameters[0].Value;
-            string search = parameters[2].Value;
-            var positions = new System.Collections.Generic.List<string>();
-            
-            int pos = 0;
-            while ((pos = text.IndexOf(search, pos, StringComparison.Ordinal)) != -1)
+            // CMD: findall <array> <foundArray> <search>
+            if (parameters[0] is not VarParam sourceVar)
+                return CmdAction.None;
+
+            var matches = new System.Collections.Generic.List<string>();
+            foreach (var (_, value) in EnumerateArrayValues(sourceVar))
             {
-                positions.Add((pos + 1).ToString()); // 1-based
-                pos++;
+                if (!string.Equals(value, "0", StringComparison.Ordinal) &&
+                    value.IndexOf(parameters[2].Value, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    matches.Add(value);
+                }
             }
             
             if (parameters[1] is VarParam varParam)
             {
-                varParam.SetArrayFromStrings(positions);
+                varParam.SetArrayFromStrings(matches);
+                varParam.Value = matches.Count.ToString();
             }
             
             return CmdAction.None;
@@ -1059,6 +1123,7 @@ namespace TWXProxy.Core
                 if (parameters[1] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(lines.ToList());
+                    varParam.Value = lines.Length.ToString();
                 }
             }
             catch
@@ -1067,6 +1132,7 @@ namespace TWXProxy.Core
                 if (parameters[1] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(new System.Collections.Generic.List<string>());
+                    varParam.Value = "0";
                 }
             }
             return CmdAction.None;
