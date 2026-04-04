@@ -265,7 +265,9 @@ public class ProxyService : IProxyService
                             string scriptRemainder = TWXProxy.Core.AnsiCodes.PrepareScriptText(remainder);
                             string strippedRemainder = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
                                 TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r'));
-                            gameInstance.FeedShipStatusLine(strippedRemainder);
+                            TWXProxy.Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder);
+                            if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                                TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                             TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
                             TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
 
@@ -273,10 +275,6 @@ public class ProxyService : IProxyService
                             if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
                             {
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing partial line (prompt): '{strippedRemainder}'\n");
-                                TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
-                                if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                                    TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-
                                 // Restore CURRENTLINE to the actual prompt before firing
                                 TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");

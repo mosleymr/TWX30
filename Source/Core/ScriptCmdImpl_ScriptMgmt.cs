@@ -24,6 +24,15 @@ namespace TWXProxy.Core
             return _activeInterpreter ?? (GlobalModules.TWXInterpreter as ModInterpreter);
         }
 
+        private static bool ScriptReferenceMatches(ModInterpreter interpreter, Script? scriptObj, string requestedName)
+        {
+            if (scriptObj == null)
+                return false;
+
+            string loadedName = scriptObj.LoadEventName ?? scriptObj.Compiler?.ScriptFile ?? scriptObj.ScriptName;
+            return ModInterpreter.ScriptReferencesMatch(loadedName, requestedName, interpreter.ProgramDir);
+        }
+
         #region Script Management Command Implementation
 
         private static CmdAction CmdLoadScript_Impl(object script, CmdParam[] parameters)
@@ -72,7 +81,7 @@ namespace TWXProxy.Core
                 for (int i = interpreter.Count - 1; i >= 0; i--)
                 {
                     var scriptObj = interpreter.GetScript(i);
-                    if (scriptObj != null && Path.GetFileName(scriptObj.ScriptName).Equals(Path.GetFileName(filename), StringComparison.OrdinalIgnoreCase))
+                    if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
                         GlobalModules.DebugLog($"[STOP] Found and stopping script at index {i}: '{scriptObj.ScriptName}'\n");
                         interpreter.Stop(i);
@@ -103,7 +112,7 @@ namespace TWXProxy.Core
                 for (int i = 0; i < interpreter.Count; i++)
                 {
                     var scriptObj = interpreter.GetScript(i);
-                    if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
+                    if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
                         loaded = true;
                         break;
@@ -136,7 +145,7 @@ namespace TWXProxy.Core
                 for (int i = 0; i < interpreter.Count; i++)
                 {
                     var scriptObj = interpreter.GetScript(i);
-                    if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
+                    if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
                         scriptObj.Pause();
                         Console.WriteLine($"[Script] PAUSESCRIPT: Paused {filename}");
@@ -171,7 +180,7 @@ namespace TWXProxy.Core
                 for (int i = 0; i < interpreter.Count; i++)
                 {
                     var scriptObj = interpreter.GetScript(i);
-                    if (scriptObj != null && scriptObj.ScriptName.Equals(filename, StringComparison.OrdinalIgnoreCase))
+                    if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
                         scriptObj.Resume();
                         Console.WriteLine($"[Script] RESUMESCRIPT: Resumed {filename}");

@@ -235,6 +235,51 @@ namespace TWXProxy.Core
             return current;
         }
 
+        internal static string NormalizeScriptReference(string filename, string baseDir)
+        {
+            if (string.IsNullOrWhiteSpace(filename))
+                return string.Empty;
+
+            string normalized = Utility.NormalizePathSeparators(filename.Trim());
+            if (!Path.IsPathRooted(normalized))
+                normalized = Path.Combine(baseDir, normalized);
+
+            try
+            {
+                normalized = Path.GetFullPath(normalized);
+            }
+            catch
+            {
+                // Keep the normalized value if GetFullPath rejects the input.
+            }
+
+            return normalized;
+        }
+
+        internal static string GetScriptReferenceLeaf(string filename)
+        {
+            if (string.IsNullOrWhiteSpace(filename))
+                return string.Empty;
+
+            return Path.GetFileName(Utility.NormalizePathSeparators(filename.Trim()));
+        }
+
+        internal static bool ScriptReferencesMatch(string? left, string? right, string baseDir)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+                return false;
+
+            string leftFull = NormalizeScriptReference(left, baseDir);
+            string rightFull = NormalizeScriptReference(right, baseDir);
+            if (leftFull.Equals(rightFull, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            string leftLeaf = GetScriptReferenceLeaf(left);
+            string rightLeaf = GetScriptReferenceLeaf(right);
+            return !string.IsNullOrEmpty(leftLeaf) &&
+                   leftLeaf.Equals(rightLeaf, StringComparison.OrdinalIgnoreCase);
+        }
+
         public void Load(string filename, bool silent)
         {
             GlobalModules.DebugLog($"[ModInterpreter.Load] Starting load of '{filename}', silent={silent}\n");
@@ -249,10 +294,11 @@ namespace TWXProxy.Core
             int i = 0;
             while (i < Count)
             {
-                // TODO: Replace with proper type once ScriptCmp is converted
-                // if (_scriptList[i].Cmp?.ScriptFile == filename)
-                //     Stop(i);
-                // else
+                var runningScript = _scriptList[i];
+                string runningScriptName = runningScript.LoadEventName ?? runningScript.Compiler?.ScriptFile ?? runningScript.ScriptName;
+                if (ScriptReferencesMatch(runningScriptName, filename, _programDir))
+                    Stop(i);
+                else
                     i++;
             }
 

@@ -119,6 +119,9 @@ namespace TWXProxy.Core
         private static readonly Regex _rxCommandSector = new(
             @"Command \[TL=.*?\]:\[(\d+)\]", RegexOptions.Compiled);
 
+        private static readonly Regex _rxComputerSector = new(
+            @"Computer command \[TL=.*?\]:\[(\d+)\]", RegexOptions.Compiled);
+
         // "Commerce report for Howdah Primus:"
         private static readonly Regex _rxCommerceReport = new(
             @"^Commerce report for (.+?):", RegexOptions.Compiled);
@@ -160,13 +163,6 @@ namespace TWXProxy.Core
             @"^\s+:\s+(\d+)\s+\(Type\s+\d+\s+(Armid|Limpet)\)\s*(.*)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // "How many fighters do you want defending this sector?  30280516"
-        // This echoed prompt appears after q f z <total> and reflects the new total
-        // defenders that will remain in the current sector once the command completes.
-        private static readonly Regex _rxSectorDefensePrompt = new(
-            @"How many fighters do you want defending this sector\?\s*([\d,]+)",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
         // "Planets : <<<< (L) Romulus >>>> (Shielded)"  — first planet on the line
         private static readonly Regex _rxPlanets = new(
             @"^Planets?\s+:\s+(.*)", RegexOptions.Compiled);
@@ -206,6 +202,10 @@ namespace TWXProxy.Core
             @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxSectorDefenderPrompt = new(
+            @"^How many fighters do you want defending this sector\?\s+([\d,]+)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // ── Public API ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -234,6 +234,18 @@ namespace TWXProxy.Core
                 return;
             }
 
+            if (TryProcessPrompt(db, rawLine, trimmedLine))
+                return;
+
+            {
+                var m = _rxSectorDefenderPrompt.Match(trimmedLine);
+                if (m.Success)
+                {
+                    ParseSectorDefenderPrompt(db, m);
+                    return;
+                }
+            }
+
             // ── Warp-lane trigger — checked on the RAW line before Trim() ────
             // Pascal: Copy(Line, 1, 19) = 'The shortest path (' or Copy(Line, 1, 7) = '  TO > '
             // Pascal never trims, so '  TO > ' carries its leading spaces.  We must check
@@ -244,16 +256,6 @@ namespace TWXProxy.Core
                 _inWarpLane       = true;
                 _lastWarpLaneSect = 0;
                 return;
-            }
-
-            // ── Command prompt always clears warp-lane mode ───────────────────
-            // Safety net: if a Command prompt appears while _inWarpLane is set, clear it.
-            if (_inWarpLane && trimmedLine.StartsWith("Command [TL="))
-            {
-                GlobalModules.DebugLog($"[AutoRecorder] WarpLane cleared by Command prompt\n");
-                _inWarpLane       = false;
-                _lastWarpLaneSect = 0;
-                // Fall through to the normal Command [TL=] handler below.
             }
 
             // ── Warp-lane continuation lines ──────────────────────────────────
@@ -267,18 +269,6 @@ namespace TWXProxy.Core
                     return;
                 }
                 ProcessWarpLaneLine(db, rawLine);
-                return;
-            }
-
-            // ── CIM prompt: ": " sent by game after ^R ────────────────────────
-            // Pascal: Copy(Line, 1, 2) = ': ' → FCurrentDisplay := dCIM
-            // After Trim(), this is simply ":". The CIM prompt is always a lone colon
-            // with no other content on the line.
-            if (trimmedLine == ":")
-            {
-                _inCIM     = true;
-                _inPortCIM = false;
-                _inWarpCIM = false;
                 return;
             }
 
@@ -383,38 +373,6 @@ namespace TWXProxy.Core
             // Separator / decoration lines
             if (trimmedLine.StartsWith("---") || trimmedLine.StartsWith("==="))
                 return;
-
-            // Command prompt resets scan state
-            if (trimmedLine.StartsWith("Command [TL="))
-            {
-                _inWarpLane = false;
-
-                // Commit density-scan sectors as Warp[] for the origin sector.
-                if (_densityFromSector > 0 && _densityScanSectors.Count > 0)
-                    CommitDensityWarps(db, _densityFromSector, _densityScanSectors);
-                _densityFromSector = 0;
-                _densityScanSectors.Clear();
-
-                _inDensityScan = false;
-                _inHoloScan    = false;
-                _inPortReport  = false;
-                _pendingPortReportSectorOverride = 0;
-                _inCIM         = false;
-                _inPortCIM     = false;
-                _inWarpCIM     = false;
-                _inFigScan     = false;
-
-                // Track current sector from the prompt ("Command [TL=...]:[$N]")
-                var mc = _rxCommandSector.Match(trimmedLine);
-                if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
-                {
-                    _currentSector = csn;
-                    _lastSector = csn;
-                    CurrentSectorChanged?.Invoke(csn);
-                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
-                }
-                return;
-            }
 
             // ── Density scan lines ────────────────────────────────────────────
             if (_inDensityScan)
@@ -523,31 +481,6 @@ namespace TWXProxy.Core
                 }
             }
 
-            // ── Commerce report detection ──────────────────────────────────────
-            {
-                var m = _rxPortSectorPrompt.Match(trimmedLine);
-                if (m.Success)
-                {
-                    int promptSector = _currentSector;
-                    int bracket = trimmedLine.IndexOf(']');
-                    if (bracket >= 0 && bracket + 1 < trimmedLine.Length)
-                    {
-                        string tail = trimmedLine[(bracket + 1)..].Trim();
-                        if (int.TryParse(tail, out int typedSector) && typedSector > 0)
-                            promptSector = typedSector;
-                        else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
-                            promptSector = bracketSector;
-                    }
-                    else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
-                    {
-                        promptSector = bracketSector;
-                    }
-
-                    _pendingPortReportSectorOverride = promptSector;
-                    GlobalModules.DebugLog($"[AutoRecorder] Port report sector prompt -> {_pendingPortReportSectorOverride}\n");
-                    return;
-                }
-            }
             {
                 var m = _rxCommerceReport.Match(trimmedLine);
                 if (m.Success)
@@ -778,7 +711,131 @@ namespace TWXProxy.Core
             }
         }
 
+        public void ProcessPrompt(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return;
+
+            string rawLine = line.TrimEnd('\r', '\n');
+            string trimmedLine = rawLine.Trim();
+            TryProcessPrompt(ScriptRef.ActiveDatabase, rawLine, trimmedLine);
+        }
+
         // ── Private helpers ────────────────────────────────────────────────────
+
+        private bool TryProcessPrompt(ModDatabase? db, string rawLine, string trimmedLine)
+        {
+            if (string.IsNullOrEmpty(trimmedLine))
+                return false;
+
+            if (_inWarpLane &&
+                (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal) ||
+                 trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal)))
+            {
+                GlobalModules.DebugLog("[AutoRecorder] WarpLane cleared by prompt\n");
+                _inWarpLane = false;
+                _lastWarpLaneSect = 0;
+            }
+
+            if (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal))
+            {
+                ResetPromptDisplays(db);
+
+                var mc = _rxCommandSector.Match(trimmedLine);
+                if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
+                {
+                    _currentSector = csn;
+                    _lastSector = csn;
+                    CurrentSectorChanged?.Invoke(csn);
+                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
+                }
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal))
+            {
+                ResetPromptDisplays(db);
+
+                var mc = _rxComputerSector.Match(trimmedLine);
+                if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
+                {
+                    _currentSector = csn;
+                    _lastSector = csn;
+                    CurrentSectorChanged?.Invoke(csn);
+                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from computer prompt\n");
+                }
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Citadel treasury contains", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Stop in this sector", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Engage the Autopilot?", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Probe entering sector :", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Probe Self Destructs", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetPromptDisplays(db);
+                return true;
+            }
+
+            if (trimmedLine == ":")
+            {
+                if (_inWarpLane)
+                {
+                    _inWarpLane = false;
+                    _lastWarpLaneSect = 0;
+                }
+
+                _inCIM = true;
+                _inPortCIM = false;
+                _inWarpCIM = false;
+                return true;
+            }
+
+            var m = _rxPortSectorPrompt.Match(trimmedLine);
+            if (m.Success)
+            {
+                int promptSector = _currentSector;
+                int bracket = trimmedLine.IndexOf(']');
+                if (bracket >= 0 && bracket + 1 < trimmedLine.Length)
+                {
+                    string tail = trimmedLine[(bracket + 1)..].Trim();
+                    if (int.TryParse(tail, out int typedSector) && typedSector > 0)
+                        promptSector = typedSector;
+                    else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
+                        promptSector = bracketSector;
+                }
+                else if (m.Groups[1].Success && int.TryParse(m.Groups[1].Value, out int bracketSector))
+                {
+                    promptSector = bracketSector;
+                }
+
+                _pendingPortReportSectorOverride = promptSector;
+                GlobalModules.DebugLog($"[AutoRecorder] Port report sector prompt -> {_pendingPortReportSectorOverride}\n");
+                return true;
+            }
+
+            return false;
+        }
+
+        private void ResetPromptDisplays(ModDatabase? db)
+        {
+            _inWarpLane = false;
+            _lastWarpLaneSect = 0;
+
+            if (db != null && _densityFromSector > 0 && _densityScanSectors.Count > 0)
+                CommitDensityWarps(db, _densityFromSector, _densityScanSectors);
+
+            _densityFromSector = 0;
+            _densityScanSectors.Clear();
+            _inDensityScan = false;
+            _inHoloScan = false;
+            _inPortReport = false;
+            _pendingPortReportSectorOverride = 0;
+            _inCIM = false;
+            _inPortCIM = false;
+            _inWarpCIM = false;
+            _inFigScan = false;
+        }
 
         private void MarkDestroyedPort(ModDatabase db, int sectorNum)
         {
@@ -970,6 +1027,22 @@ namespace TWXProxy.Core
             if (existingValue < approx - margin || existingValue > approx + margin)
                 return approx;
             return existingValue;
+        }
+
+        private void ParseSectorDefenderPrompt(ModDatabase db, Match m)
+        {
+            int sectorNum = _currentSector > 0 ? _currentSector : _lastSector;
+            if (sectorNum <= 0)
+                return;
+
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector == null)
+                return;
+
+            int quantity = ParseCommaInt(m.Groups[1].Value);
+            sector.Fighters.Quantity = quantity;
+            db.SaveSector(sector);
+            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={quantity}\n");
         }
 
         private static int ParseCommaInt(string text)

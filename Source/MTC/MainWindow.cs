@@ -1615,9 +1615,7 @@ public class MainWindow : Window
                         string remainderAnsi = Core.AnsiCodes.PrepareScriptAnsiText(remainder);
                         string scriptRemainder = Core.AnsiCodes.PrepareScriptText(remainder);
                         string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(remainderAnsi, string.Empty).TrimEnd('\r'));
-                        gi.FeedShipStatusLine(strippedRemainder);
-                        _shipParser.FeedLine(strippedRemainder);
-                        Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedRemainder);
+                        Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         if (!gi.IsProxyMenuActive)

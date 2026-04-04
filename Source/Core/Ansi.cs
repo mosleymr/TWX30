@@ -170,7 +170,10 @@ namespace TWXProxy.Core
 
         public static string PrepareScriptText(string text)
         {
-            return NormalizeTerminalText(StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r'));
+            // Pascal exposes inbound script text largely raw: ANSI is stripped, but prompt
+            // control bytes such as #145#8 remain available to Text/TextLine triggers.
+            // Local typed input still goes through its own normalization path.
+            return StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r');
         }
     }
 }
