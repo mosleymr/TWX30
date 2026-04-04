@@ -320,18 +320,29 @@ namespace TWXProxy.Core
             ConvertToNumber(parameters[1].Value, out fromSector);
             ConvertToNumber(parameters[2].Value, out toSector);
             
-            if (_activeDatabase != null && 
+            if (parameters[0] is VarParam varParam &&
+                _activeDatabase != null &&
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
-                // TODO: Implement pathfinding algorithm (A* or Dijkstra)
-                // For now, return empty path
                 var path = CalculatePath(fromSector, toSector);
-                parameters[0].Value = string.Join(" ", path);
+                parameters[0].Value = Math.Max(0, path.Count - 1).ToString();
+
+                if (path.Count > 0)
+                {
+                    path.Reverse(); // Pascal reverses PlotWarpCourse before exposing the array.
+                    varParam.SetArrayFromStrings(path.Select(sector => sector.ToString()).ToList());
+                }
+                else
+                {
+                    varParam.SetArrayFromStrings(new List<string>());
+                }
             }
             else
             {
-                parameters[0].Value = string.Empty;
+                parameters[0].Value = "0";
+                if (parameters[0] is VarParam emptyVarParam)
+                    emptyVarParam.SetArrayFromStrings(new List<string>());
             }
             
             return CmdAction.None;
