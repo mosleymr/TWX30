@@ -56,6 +56,19 @@ namespace TWXProxy.Core
                 {
                     string flatName = sectorVar.Name + "." + name;
                     scriptObj.Compiler.GetOrCreateRuntimeVar(flatName).Value = value;
+
+                    // Pascal keeps dotted names flat in the runtime param table. For
+                    // fields exposed as arrays (e.g. $sector.warp[1], $sector.planet[1],
+                    // $sector.trader.name[1]) we must also populate the flat array base
+                    // variable, not just the fully dotted scalar leaf.
+                    if (parts.Length > 1 && int.TryParse(parts[^1], out _))
+                    {
+                        string arrayBaseName = sectorVar.Name + "." + string.Join(".", parts, 0, parts.Length - 1);
+                        scriptObj.Compiler
+                            .GetOrCreateRuntimeVar(arrayBaseName)
+                            .GetIndexVar(new[] { parts[^1] })
+                            .Value = value;
+                    }
                 }
             }
 
