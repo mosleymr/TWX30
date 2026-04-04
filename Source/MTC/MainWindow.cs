@@ -172,6 +172,13 @@ public class MainWindow : Window
                 }
             });
 
+        Core.GlobalModules.GlobalAutoRecorder.LandmarkSectorsChanged += () =>
+            Dispatcher.UIThread.Post(() =>
+            {
+                RefreshStatusBar();
+                _buffer.Dirty = true;
+            });
+
         _state.Changed += () => Dispatcher.UIThread.Post(RefreshInfoPanels);
 
         // Wire keyboard → telnet
@@ -244,7 +251,7 @@ public class MainWindow : Window
         dock.Children.Add(_menuBar);
 
         // ── Status bar ────────────────────────────────────────────────────
-        _statusText.Text              = " Sect: -  Turns: -  Cred: -  [ disconnected ]";
+        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
         _statusText.Foreground         = FgStatus;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
         _statusText.Margin             = new Thickness(8, 0);
@@ -818,8 +825,27 @@ public class MainWindow : Window
         string conn = _state.Connected
             ? $"[ {_state.Host}:{_state.Port} ]"
             : "[ disconnected ]";
+
+        string starDock = "-";
+        string rylos = "-";
+        string alpha = "-";
+
+        if (_sessionDb != null)
+        {
+            var header = _sessionDb.DBHeader;
+
+            if (header.StarDock != 0 && header.StarDock != 65535)
+                starDock = header.StarDock.ToString();
+
+            if (header.Rylos != 0 && header.Rylos != 65535)
+                rylos = header.Rylos.ToString();
+
+            if (header.AlphaCentauri != 0 && header.AlphaCentauri != 65535)
+                alpha = header.AlphaCentauri.ToString();
+        }
+
         _statusText.Text =
-            $" Sect: {_state.Sector,-6}  Turns: {_state.Turns,-8:N0}  Cred: {_state.Credits,-14:N0}  {conn}";
+            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}  {conn}";
     }
 
     // ── Telnet events ──────────────────────────────────────────────────────
@@ -1005,9 +1031,15 @@ public class MainWindow : Window
 
     private void ApplyDebugLoggingPreferences()
     {
-        Core.SharedPaths.EnsureLogDir();
+        string? debugScriptDirectory = CurrentInterpreter?.ScriptDirectory;
+        if (string.IsNullOrWhiteSpace(debugScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
+            debugScriptDirectory = _appPrefs.ScriptsDirectory;
+
+        string programDir = AppPaths.GetEffectiveProgramDir(debugScriptDirectory);
+        Core.GlobalModules.ProgramDir = programDir;
+        AppPaths.EnsureDebugLogDir(debugScriptDirectory);
         Core.GlobalModules.ConfigureDebugLogging(
-            Path.Combine(Core.SharedPaths.LogDir, "mtc_debug.log"),
+            AppPaths.GetDebugLogPath(debugScriptDirectory),
             _appPrefs.DebugLoggingEnabled,
             _appPrefs.VerboseDebugLogging);
     }
@@ -1488,6 +1520,7 @@ public class MainWindow : Window
         interpreter.ScriptDirectory = effectiveScriptDir;
         interpreter.ProgramDir      = programDir;
         Core.GlobalModules.ProgramDir = programDir;  // shared global used by some script commands
+        ApplyDebugLoggingPreferences();
 
         // Embedded mode needs a live menu manager so OPENMENU pauses and displays
         // configuration menus (same behavior as TWXP ProxyService startup).
@@ -2291,10 +2324,6 @@ public class MainWindow : Window
             new Separator(),
         };
 
-        var loadScript = new MenuItem { Header = "_Load Script…", IsEnabled = hasInterpreter };
-        loadScript.Click += (_, _) => _ = OnProxyLoadScriptAsync();
-        items.Add(loadScript);
-
         var stopNonSystem = new MenuItem { Header = "Stop All _Non-System Scripts", IsEnabled = hasInterpreter };
         stopNonSystem.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: false);
         items.Add(stopNonSystem);
@@ -2319,14 +2348,6 @@ public class MainWindow : Window
         var loggingMenu = new MenuItem { Header = "_Logging", IsEnabled = hasGame };
         loggingMenu.ItemsSource = BuildProxyLoggingItems(canPlayCapture, hasGame);
         items.Add(loggingMenu);
-
-        var quickMenu = new MenuItem { Header = "_Quick", IsEnabled = hasInterpreter };
-        quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
-        items.Add(quickMenu);
-
-        var botMenu = new MenuItem { Header = "_Bots", IsEnabled = _gameInstance != null };
-        botMenu.ItemsSource = BuildBotMenuItems(_gameInstance != null);
-        items.Add(botMenu);
 
         return items;
     }
@@ -2427,11 +2448,13 @@ public class MainWindow : Window
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
         var groups = Core.ProxyMenuCatalog.BuildQuickLoadGroups(programDir, scriptDirectory);
-        if (groups.Count == 0)
-        {
-            items.Add(new MenuItem { Header = "No quick-load scripts found", IsEnabled = false });
-            return items;
-        }
+
+        var botMenu = new MenuItem { Header = "_Bots", IsEnabled = _gameInstance != null };
+        botMenu.ItemsSource = BuildBotMenuItems(_gameInstance != null);
+        items.Add(botMenu);
+
+        if (groups.Count > 0)
+            items.Add(new Separator());
 
         foreach (var group in groups)
         {
@@ -2448,6 +2471,9 @@ public class MainWindow : Window
             groupMenu.ItemsSource = groupItems;
             items.Add(groupMenu);
         }
+
+        if (groups.Count == 0)
+            items.Add(new MenuItem { Header = "No quick-load scripts found", IsEnabled = false });
 
         return items;
     }

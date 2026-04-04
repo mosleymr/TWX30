@@ -33,10 +33,13 @@ public class MapWindow : Window
     private int  _centerSector;
     private readonly Func<int>            _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
+    private bool _followCurrentSector = true;
 
     // Computed layout: sector number → canvas position
     private Dictionary<int, SKPoint> _positions = new();
     private Dictionary<int, Core.SectorData?> _sectorCache = new();
+    private HashSet<int> _majorSpaceLaneSectors = new();
+    private (ushort StarDock, ushort AlphaCentauri, ushort Rylos)? _majorSpaceLaneHeader;
 
     // Nav history (browser-style back/forward)
     private readonly List<int> _history      = new();
@@ -46,6 +49,7 @@ public class MapWindow : Window
     private float   _zoom      = 1.0f;
     private SKPoint _pan       = new(0, 0);
     private bool    _dragging;
+    private bool    _dragMoved;
     private Point   _dragStart;
     private SKPoint _panStart;
 
@@ -64,6 +68,7 @@ public class MapWindow : Window
     private static readonly SKColor ColBoxDensity  = new(0x40, 0x80, 0x80); // dim teal — density only
     private static readonly SKColor ColBoxUnknown  = new(0x50, 0x50, 0x55); // gray — unknown
     private static readonly SKColor ColBoxCurrent  = new(0x22, 0xcc, 0x55); // green — current
+    private static readonly SKColor ColBoxMajorLane= new(0x33, 0x99, 0xff); // blue — major space lane
     private static readonly SKColor ColBoxText     = new(0x00, 0x00, 0x00);
     private static readonly SKColor ColBoxTextUnk  = new(0xdd, 0xdd, 0xdd);
     private static readonly SKColor ColLineTwo     = new(0xff, 0xff, 0xff); // solid two-way
@@ -120,7 +125,11 @@ public class MapWindow : Window
         centerBtn.Click  += (_, _) => GoToSector();
 
         var currentBtn = new Button { Content = "Current", Padding = new Thickness(10, 2), VerticalAlignment = VerticalAlignment.Center };
-        currentBtn.Click += (_, _) => NavigateTo(Math.Max(1, _getCurrentSector()));
+        currentBtn.Click += (_, _) =>
+        {
+            _followCurrentSector = true;
+            NavigateTo(Math.Max(1, _getCurrentSector()));
+        };
 
         var refreshBtn = new Button { Content = "\u21bb",  Width = 28, Padding = new Thickness(4, 2), VerticalAlignment = VerticalAlignment.Center };
         refreshBtn.Click += (_, _) => Rebuild();
@@ -213,7 +222,7 @@ public class MapWindow : Window
             (_, _) =>
             {
                 int cur = _getCurrentSector();
-                if (cur > 0 && cur != _centerSector)
+                if (_followCurrentSector && cur > 0 && cur != _centerSector)
                     NavigateTo(cur);
                 else
                     RefreshData();
@@ -251,6 +260,7 @@ public class MapWindow : Window
             {
                 new Border { Width = 8 },
                 Swatch(Color.FromRgb(0x22, 0xcc, 0x55)), Lbl("Current"),
+                Swatch(Color.FromRgb(0x33, 0x99, 0xff)), Lbl("MSL"),
                 Swatch(Color.FromRgb(0x00, 0xc8, 0xc8)), Lbl("Explored"),
                 Swatch(Color.FromRgb(0x40, 0x80, 0x80)), Lbl("Density only"),
                 Swatch(Color.FromRgb(0x50, 0x50, 0x55)), Lbl("Unknown"),
@@ -384,6 +394,8 @@ public class MapWindow : Window
         foreach (var sn in visited.Keys.Where(s => !_sectorCache.ContainsKey(s)))
             _sectorCache[sn] = db.GetSector(sn);
 
+        RefreshMajorSpaceLaneSectors(db, force: true);
+
         // ── Layout: BFS tree with simple force-relaxation ─────────────────
         ComputePositions(visited);
 
@@ -418,7 +430,39 @@ public class MapWindow : Window
         if (db == null) { _canvas.InvalidateVisual(); return; }
         foreach (var sn in _positions.Keys.ToList())
             _sectorCache[sn] = db.GetSector(sn);
+        RefreshMajorSpaceLaneSectors(db);
         _canvas.InvalidateVisual();
+    }
+
+    private void RefreshMajorSpaceLaneSectors(Core.ModDatabase db, bool force = false)
+    {
+        var header = db.DBHeader;
+        var currentHeader = (header.StarDock, header.AlphaCentauri, header.Rylos);
+        if (!force && _majorSpaceLaneHeader == currentHeader)
+            return;
+
+        _majorSpaceLaneHeader = currentHeader;
+        _majorSpaceLaneSectors = new HashSet<int>();
+
+        void AddPath(int fromSector, int toSector)
+        {
+            if (fromSector <= 0 || toSector <= 0 || fromSector == 65535 || toSector == 65535)
+                return;
+
+            foreach (int sector in db.CalculateShortestPath(fromSector, toSector))
+                _majorSpaceLaneSectors.Add(sector);
+        }
+
+        int stardock = header.StarDock;
+        int alpha = header.AlphaCentauri;
+        int rylos = header.Rylos;
+
+        AddPath(1, stardock);
+        AddPath(stardock, 1);
+        AddPath(alpha, stardock);
+        AddPath(stardock, alpha);
+        AddPath(rylos, stardock);
+        AddPath(stardock, rylos);
     }
 
     // ── Position computation ──────────────────────────────────────────────
@@ -646,8 +690,10 @@ public class MapWindow : Window
         {
             _sectorCache.TryGetValue(sn, out var sd);
             bool isCurrent = sn == currentSect;
+            bool isMajorLane = _majorSpaceLaneSectors.Contains(sn);
 
             SKColor fillColor = isCurrent ? ColBoxCurrent :
+                isMajorLane                          ? ColBoxMajorLane :
                 sd?.Explored == Core.ExploreType.Yes     ? ColBoxExp :
                 sd?.Explored == Core.ExploreType.Density ? ColBoxDensity :
                 ColBoxUnknown;
@@ -661,6 +707,8 @@ public class MapWindow : Window
 
             borderPaint.Color = isCurrent
                 ? new SKColor(0x00, 0x99, 0x33)
+                : isMajorLane
+                    ? new SKColor(0x00, 0x55, 0xbb)
                 : sd?.Explored == Core.ExploreType.Yes
                     ? new SKColor(0x00, 0x99, 0x99)
                     : new SKColor(0x44, 0x44, 0x55);
@@ -766,6 +814,7 @@ public class MapWindow : Window
         if (e.GetCurrentPoint(_canvas).Properties.IsLeftButtonPressed)
         {
             _dragging  = true;
+            _dragMoved = false;
             _dragStart = e.GetPosition(_canvas);
             _panStart  = _pan;
         }
@@ -776,34 +825,25 @@ public class MapWindow : Window
         if (!_dragging) return;
         var pos  = e.GetPosition(_canvas);
         var diff = pos - _dragStart;
+        if (!_dragMoved && (Math.Abs(diff.X) > 3 || Math.Abs(diff.Y) > 3))
+            _dragMoved = true;
         _pan = new SKPoint(_panStart.X + (float)diff.X, _panStart.Y + (float)diff.Y);
         _canvas.InvalidateVisual();
     }
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
-        => _dragging = false;
+    {
+        bool shouldSelect = _dragging && !_dragMoved;
+        _dragging = false;
+        if (!shouldSelect)
+            return;
+
+        TryFocusSectorAt(e.GetPosition(_canvas));
+    }
 
     private void OnDoubleTapped(object? sender, TappedEventArgs e)
     {
-        // Find the sector under the tap
-        var tapPos = e.GetPosition(_canvas);
-        float cx = (float)(_canvas.Bounds.Width  / 2) + _pan.X;
-        float cy = (float)(_canvas.Bounds.Height / 2) + _pan.Y;
-
-        // Map screen coords back to world coords
-        float wx = ((float)tapPos.X - cx) / _zoom;
-        float wy = ((float)tapPos.Y - cy) / _zoom;
-
-        int closest = 0;
-        float minD  = float.MaxValue;
-        foreach (var (sn, pos) in _positions)
-        {
-            float d = Dist(pos, new SKPoint(wx, wy));
-            if (d < minD) { minD = d; closest = sn; }
-        }
-
-        if (closest > 0 && minD < BoxW)
-            NavigateTo(closest);
+        TryFocusSectorAt(e.GetPosition(_canvas));
     }
 
     private void OnSectorBoxKeyDown(object? sender, KeyEventArgs e)
@@ -817,7 +857,31 @@ public class MapWindow : Window
         if (int.TryParse(_sectorBox.Text?.Trim(), out int sn) && sn > 0)
         {
             _sectorBox.Text = string.Empty;
+            _followCurrentSector = false;
             NavigateTo(sn);
+        }
+    }
+
+    private void TryFocusSectorAt(Point tapPos)
+    {
+        float cx = (float)(_canvas.Bounds.Width  / 2) + _pan.X;
+        float cy = (float)(_canvas.Bounds.Height / 2) + _pan.Y;
+
+        float wx = ((float)tapPos.X - cx) / _zoom;
+        float wy = ((float)tapPos.Y - cy) / _zoom;
+
+        int closest = 0;
+        float minD  = float.MaxValue;
+        foreach (var (sn, pos) in _positions)
+        {
+            float d = Dist(pos, new SKPoint(wx, wy));
+            if (d < minD) { minD = d; closest = sn; }
+        }
+
+        if (closest > 0 && minD < BoxW)
+        {
+            _followCurrentSector = false;
+            NavigateTo(closest);
         }
     }
 

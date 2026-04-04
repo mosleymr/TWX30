@@ -25,6 +25,12 @@ public static class AppPaths
     /// <summary>Directory where session/capture logs are stored.</summary>
     public static string LogDir => Core.SharedPaths.LogDir;
 
+    /// <summary>Directory where MTC debug logs are stored for the active TWX program directory.</summary>
+    public static string DebugLogDir => Path.Combine(GetEffectiveProgramDir(), "logs");
+
+    /// <summary>Path to the MTC debug log file for the active TWX program directory.</summary>
+    public static string DebugLogPath => Path.Combine(DebugLogDir, "mtc_debug.log");
+
     /// <summary>Directory where MTC-only expansion modules can be placed.</summary>
     public static string ModulesDir => Path.Combine(AppDataDir, "modules-mtc");
 
@@ -91,6 +97,32 @@ public static class AppPaths
 
     /// <summary>Ensure the shared twxproxy games directory exists.</summary>
     public static void EnsureTwxproxyGamesDir() => Directory.CreateDirectory(TwxproxyGamesDir);
+
+    public static string GetEffectiveProgramDir(string? scriptDirectory = null)
+    {
+        if (!string.IsNullOrWhiteSpace(scriptDirectory))
+        {
+            string trimmed = scriptDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!string.IsNullOrWhiteSpace(trimmed))
+                return Path.GetDirectoryName(trimmed) ?? trimmed;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Core.GlobalModules.ProgramDir))
+            return Core.GlobalModules.ProgramDir;
+
+        return OperatingSystem.IsWindows()
+            ? Core.WindowsInstallInfo.GetInstalledProgramDirOrDefault()
+            : Environment.CurrentDirectory;
+    }
+
+    public static string GetDebugLogDir(string? scriptDirectory = null)
+        => Path.Combine(GetEffectiveProgramDir(scriptDirectory), "logs");
+
+    public static string GetDebugLogPath(string? scriptDirectory = null)
+        => Path.Combine(GetDebugLogDir(scriptDirectory), "mtc_debug.log");
+
+    public static void EnsureDebugLogDir(string? scriptDirectory = null)
+        => Directory.CreateDirectory(GetDebugLogDir(scriptDirectory));
 
     private static string BuildLegacyLocalAppDataDir()
     {

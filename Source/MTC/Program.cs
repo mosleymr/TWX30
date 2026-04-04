@@ -6,9 +6,10 @@ using TWXProxy.Core;
 Console.SetOut(TextWriter.Null);
 
 var prefs = MTC.AppPreferences.Load();
-SharedPaths.EnsureLogDir();
+GlobalModules.ProgramDir = MTC.AppPaths.GetEffectiveProgramDir(prefs.ScriptsDirectory);
+MTC.AppPaths.EnsureDebugLogDir(prefs.ScriptsDirectory);
 GlobalModules.ConfigureDebugLogging(
-    Path.Combine(SharedPaths.LogDir, "mtc_debug.log"),
+    MTC.AppPaths.GetDebugLogPath(prefs.ScriptsDirectory),
     prefs.DebugLoggingEnabled,
     prefs.VerboseDebugLogging);
 

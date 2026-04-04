@@ -584,6 +584,29 @@ namespace TWXProxy.Core
             if (sector.Number > _maxSectorSeen)
                 _maxSectorSeen = sector.Number;
 
+            // Pascal parity: saving a live sector with a special port updates the
+            // database header landmark sectors.
+            if (sector.SectorPort != null)
+            {
+                if (sector.SectorPort.ClassIndex == 9)
+                {
+                    _header.StarDock = (ushort)sector.Number;
+                }
+
+                if (sector.SectorPort.ClassIndex == 0)
+                {
+                    string portName = sector.SectorPort.Name ?? string.Empty;
+                    if (string.Equals(portName, "Alpha Centauri", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _header.AlphaCentauri = (ushort)sector.Number;
+                    }
+                    else if (string.Equals(portName, "Rylos", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _header.Rylos = (ushort)sector.Number;
+                    }
+                }
+            }
+
             // Update warp-in cache for connected sectors
             UpdateWarpInCache(sector);
         }

@@ -89,6 +89,12 @@ namespace TWXProxy.Core
         /// </summary>
         public event Action<int>? CurrentSectorChanged;
 
+        /// <summary>
+        /// Raised whenever live parsing updates landmark sectors such as Stardock,
+        /// Alpha Centauri, or Rylos in the active database header.
+        /// </summary>
+        public event Action? LandmarkSectorsChanged;
+
         // ── Compiled Regex ─────────────────────────────────────────────────────
         // "Sector  : 3942 in The Crucible" — sector display header (D command, holo scan)
         // Group 1 = sector number, Group 2 = optional constellation name after " in "
@@ -475,6 +481,7 @@ namespace TWXProxy.Core
 
                         ScriptRef.SetCurrentGameVar("$STARDOCK", dockSector.ToString());
                         ScriptRef.OnVariableSaved?.Invoke("$STARDOCK", dockSector.ToString());
+                        LandmarkSectorsChanged?.Invoke();
                         GlobalModules.DebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
                     }
                     return;
@@ -1138,7 +1145,7 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");
         }
 
-        private static void ParsePortLine(ModDatabase db, int sectorNum, Match m)
+        private void ParsePortLine(ModDatabase db, int sectorNum, Match m)
         {
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
@@ -1175,6 +1182,13 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
+            if (sector.SectorPort.ClassIndex == 9 ||
+                (sector.SectorPort.ClassIndex == 0 &&
+                 (string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase) ||
+                  string.Equals(sector.SectorPort.Name, "Rylos", StringComparison.OrdinalIgnoreCase))))
+            {
+                LandmarkSectorsChanged?.Invoke();
+            }
             GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port={sector.SectorPort.Name} class={cls}\n");
         }
 
