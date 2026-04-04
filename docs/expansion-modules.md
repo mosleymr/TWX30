@@ -114,15 +114,6 @@ dotnet build /Users/mosleym/Code/twxproxy/TWX30/Source/Modules/SampleObserverMod
 
 Then copy the resulting DLL (and any adjacent dependency files) into one of the auto-load module folders.
 
-## Validation harness
-
-A small harness is available at:
-
-- [`TestExpansionHost.csproj`](/Users/mosleym/Code/twxproxy/TWX30/Source/Test/TestExpansionHost/TestExpansionHost.csproj)
-- [`Program.cs`](/Users/mosleym/Code/twxproxy/TWX30/Source/Test/TestExpansionHost/Program.cs)
-
-It loads the sample module against a real `GameInstance` and verifies the host sees it.
-
 ## GPT-style module direction
 
 For the GPT gameplay module you mentioned, the intended pattern is:

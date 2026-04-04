@@ -71,7 +71,7 @@
 
 ## Phase 1: Measurement Harness
 
-Add a dedicated test harness under `Source/Test` to measure:
+Add a dedicated measurement harness to measure:
 
 - source compile time
 - compiled load time
