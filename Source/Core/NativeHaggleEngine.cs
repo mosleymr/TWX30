@@ -42,6 +42,7 @@ public sealed class NativeHaggleEngine
         public int McicMin { get; set; }
         public int McicMax { get; set; }
         public int DeriveFailures { get; set; }
+        public bool UseLowPercentDerive { get; set; }
         public int BidNumber { get; set; }
         public long LastCounter { get; set; }
         public long LastOffer { get; set; }
@@ -710,6 +711,9 @@ public sealed class NativeHaggleEngine
         session.DefaultMcicMin = session.McicStep * defaultMin;
         session.DefaultMcicMax = session.McicStep * defaultMax;
 
+        int savedLowProductivity = ReadInt(db, session.Sector, session.ProductKey + "L");
+        int savedHighProductivity = ReadInt(db, session.Sector, session.ProductKey + "H");
+
         if (session.Percent == 100)
         {
             int productivity = (int)PascalRoundInt(session.PortQty / 10.0, 0);
@@ -735,9 +739,13 @@ public sealed class NativeHaggleEngine
                 maxProductivity = 6553;
             session.MaxProductivity = maxProductivity;
             session.CalculatedLowProductivity = minProductivity;
-            session.LowProductivity = minProductivity;
-            session.HighProductivity = maxProductivity;
+            session.LowProductivity = savedLowProductivity > minProductivity ? savedLowProductivity : minProductivity;
+            session.HighProductivity = (savedHighProductivity > 0 && savedHighProductivity < maxProductivity)
+                ? savedHighProductivity
+                : maxProductivity;
         }
+
+        session.UseLowPercentDerive = ((session.HighProductivity - session.LowProductivity) + 1) > 10;
 
         if (db != null)
         {
@@ -781,64 +789,10 @@ public sealed class NativeHaggleEngine
         {
             session.Candidates.Clear();
 
-            double expAdjust = session.Experience > 999
-                ? 0
-                : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
-
-            int terminal = session.McicMax + session.McicStep;
-            for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
-            {
-                double mcicFactor = (mcic / 1000.0) + 1.0;
-                double qtyFactor = (mcic * (session.ProductFactor * session.PortQty)) / 10.0;
-
-                for (int productivity = session.LowProductivity; productivity <= session.HighProductivity; productivity++)
-                {
-                    double productivityFactor = qtyFactor / productivity;
-
-                    for (int baseVar = session.BaseVarMin; baseVar <= session.BaseVarMax; baseVar++)
-                    {
-                        double priceBase = ((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust - productivityFactor;
-                        while (priceBase < 4.0)
-                            priceBase += 1.0;
-
-                        double exactPrice = priceBase * session.TradeQty;
-                        long lowBound = PascalRoundInt(((mcicFactor - 0.003) * exactPrice) - 0.5001, 0);
-                        long highBound = PascalRoundInt(((mcicFactor + 0.003) * exactPrice) + 0.5001, 0);
-                        if (offer < lowBound || offer > highBound)
-                            continue;
-
-                        for (double variance = -0.003; variance <= 0.0030001; variance += 0.001)
-                        {
-                            double offeredPrice = (mcicFactor + variance) * exactPrice;
-                            long rounded = PascalRoundInt(offeredPrice, 0);
-                            bool match = rounded == offer;
-                            if (!match)
-                            {
-                                double roundedDownCheck = PascalRoundValue(offeredPrice - 0.5, 7);
-                                double roundedUpCheck = PascalRoundValue(offeredPrice + 0.5, 7);
-                                bool roundedDown = Math.Abs(rounded - roundedDownCheck) <= 0.0000001;
-                                bool roundedUp = Math.Abs(rounded - roundedUpCheck) <= 0.0000001;
-                                if (roundedDown && rounded + 1 == offer)
-                                    match = true;
-                                else if (roundedUp && rounded - 1 == offer)
-                                    match = true;
-                            }
-
-                            if (!match)
-                                continue;
-
-                            session.Candidates.Add(new Candidate
-                            {
-                                Mcic = mcic,
-                                BaseVar = baseVar,
-                                Variance = PascalRoundValue(variance, 3),
-                                Productivity = productivity,
-                                ExactPrice = exactPrice,
-                            });
-                        }
-                    }
-                }
-            }
+            if (session.UseLowPercentDerive && !HasLowPercentAnomalyRisk(session))
+                DeriveCandidatesLowPercent(session, offer);
+            else
+                DeriveCandidatesConventional(session, offer);
 
             if (session.Candidates.Count > 0)
             {
@@ -850,6 +804,151 @@ public sealed class NativeHaggleEngine
             if (!ApplyDeriveRecovery(session))
                 return false;
         }
+    }
+
+    private static void DeriveCandidatesConventional(SessionState session, long offer)
+    {
+        double expAdjust = session.Experience > 999
+            ? 0
+            : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
+
+        int terminal = session.McicMax + session.McicStep;
+        for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
+        {
+            double mcicFactor = (mcic / 1000.0) + 1.0;
+            double qtyFactor = (mcic * (session.ProductFactor * session.PortQty)) / 10.0;
+
+            for (int productivity = session.LowProductivity; productivity <= session.HighProductivity; productivity++)
+            {
+                double productivityFactor = qtyFactor / productivity;
+
+                for (int baseVar = session.BaseVarMin; baseVar <= session.BaseVarMax; baseVar++)
+                {
+                    double priceBase = ((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust - productivityFactor;
+                    while (priceBase < 4.0)
+                        priceBase += 1.0;
+
+                    double exactPrice = priceBase * session.TradeQty;
+                    double lowBound = ((mcicFactor - 0.003) * exactPrice) - 0.5001;
+                    double highBound = ((mcicFactor + 0.003) * exactPrice) + 0.5001;
+                    if (offer < PascalRoundInt(lowBound, 0) || offer > PascalRoundInt(highBound, 0))
+                        continue;
+
+                    for (double variance = -0.003; variance <= 0.0030001; variance = PascalRoundValue(variance + 0.001, 3))
+                    {
+                        double offeredPrice = (mcicFactor + variance) * exactPrice;
+                        long rounded = PascalRoundInt(offeredPrice, 0);
+                        bool match = rounded == offer;
+                        if (!match)
+                        {
+                            double roundedDownCheck = PascalRoundValue(offeredPrice - 0.5, 7);
+                            double roundedUpCheck = PascalRoundValue(offeredPrice + 0.5, 7);
+                            bool roundedDown = Math.Abs(rounded - roundedDownCheck) <= 0.0000001;
+                            bool roundedUp = Math.Abs(rounded - roundedUpCheck) <= 0.0000001;
+                            if (roundedDown && rounded + 1 == offer)
+                                match = true;
+                            else if (roundedUp && rounded - 1 == offer)
+                                match = true;
+                        }
+
+                        if (!match)
+                            continue;
+
+                        session.Candidates.Add(new Candidate
+                        {
+                            Mcic = mcic,
+                            BaseVar = baseVar,
+                            Variance = PascalRoundValue(variance, 3),
+                            Productivity = productivity,
+                            ExactPrice = exactPrice,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    private static void DeriveCandidatesLowPercent(SessionState session, long offer)
+    {
+        double expAdjust = session.Experience > 999
+            ? 0
+            : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
+
+        int terminal = session.McicMax + session.McicStep;
+        for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
+        {
+            double mcicFactor = (mcic / 1000.0) + 1.0;
+
+            for (int baseVar = session.BaseVarMin; baseVar <= session.BaseVarMax; baseVar++)
+            {
+                for (double variance = -0.003; variance <= 0.0030001; variance = PascalRoundValue(variance + 0.001, 3))
+                {
+                    double divisor = mcicFactor + variance;
+                    if (Math.Abs(divisor) < 0.0000001)
+                        continue;
+
+                    double lowerExact = (offer - 0.4999999999) / divisor;
+                    double upperExact = (offer + 0.4999999999) / divisor;
+
+                    double denom1 = (((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust) - (upperExact / session.TradeQty);
+                    double denom2 = (((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust) - (lowerExact / session.TradeQty);
+                    if (Math.Abs(denom1) < 0.0000001 || Math.Abs(denom2) < 0.0000001)
+                        continue;
+
+                    double prod1 = ((mcic * session.ProductFactor) * session.PortQty) / (10.0 * denom1);
+                    double prod2 = ((mcic * session.ProductFactor) * session.PortQty) / (10.0 * denom2);
+                    if (prod2 < prod1)
+                    {
+                        (prod1, prod2) = (prod2, prod1);
+                    }
+
+                    int rangeLow = (int)PascalRoundInt(prod1 + 0.4999999999, 0);
+                    int rangeHigh = (int)PascalRoundInt(prod2 - 0.4999999999, 0);
+                    if (rangeLow > rangeHigh)
+                        continue;
+
+                    int low = Math.Max(session.LowProductivity, rangeLow);
+                    int high = Math.Min(session.HighProductivity, rangeHigh);
+                    if (low > high)
+                        continue;
+
+                    for (int productivity = low; productivity <= high; productivity++)
+                    {
+                        double exactPrice = ((((session.PlusMinus * baseVar) + session.BasePrice)
+                            - ((session.PortQty / (productivity * 10.0)) * (mcic * session.ProductFactor)))
+                            - expAdjust) * session.TradeQty;
+
+                        session.Candidates.Add(new Candidate
+                        {
+                            Mcic = mcic,
+                            BaseVar = baseVar,
+                            Variance = variance,
+                            Productivity = productivity,
+                            ExactPrice = exactPrice,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool HasLowPercentAnomalyRisk(SessionState session)
+    {
+        double expAdjust = session.Experience > 999
+            ? 0
+            : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
+
+        int terminal = session.McicMax + session.McicStep;
+        for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
+        {
+            double minValue = (((session.BasePrice + (session.PlusMinus * session.BaseVarMax)) - expAdjust)
+                - ((mcic * (session.ProductFactor * session.PortQty)) / (session.LowProductivity * 10.0)));
+            minValue = PascalRoundValue(minValue, 3);
+            if (minValue < 4.0)
+                return true;
+        }
+
+        return false;
     }
 
     private static bool FilterCandidates(SessionState session, long offer)
