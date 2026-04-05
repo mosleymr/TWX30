@@ -251,7 +251,7 @@ public class MainWindow : Window
         dock.Children.Add(_menuBar);
 
         // ── Status bar ────────────────────────────────────────────────────
-        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  Haggle Pct: 0%  [ disconnected ]";
+        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
         _statusText.Foreground         = FgStatus;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
         _statusText.Margin             = new Thickness(8, 0);
@@ -829,6 +829,10 @@ public class MainWindow : Window
         string starDock = "-";
         string rylos = "-";
         string alpha = "-";
+        bool showHagglePct =
+            _gameInstance?.NativeHaggleEnabled == true &&
+            _appPrefs.DebugLoggingEnabled &&
+            Core.GlobalModules.DebugMode;
         int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
 
         if (_sessionDb != null)
@@ -845,8 +849,12 @@ public class MainWindow : Window
                 alpha = header.AlphaCentauri.ToString();
         }
 
+        string haggleText = showHagglePct
+            ? $"  Haggle Pct: {hagglePct}%"
+            : string.Empty;
+
         _statusText.Text =
-            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}  Haggle Pct: {hagglePct}%  {conn}";
+            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}  {conn}";
     }
 
     // ── Telnet events ──────────────────────────────────────────────────────
