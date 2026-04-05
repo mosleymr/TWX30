@@ -136,6 +136,7 @@ namespace TWXProxy.Core
 #pragma warning restore CS0649
         private string _programDir = string.Empty;
         private string _scriptDirectory = string.Empty;
+        private bool _serverLineHandledByScript;
 
         public ModInterpreter(IPersistenceController? persistenceController = null)
             : base(persistenceController)
@@ -941,7 +942,12 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (_scriptList[i].TextEvent(text, forceTrigger))
+                Script script = _scriptList[i];
+                bool completed = script.TextEvent(text, forceTrigger);
+                if (script.LastLineHandled)
+                    _serverLineHandledByScript = true;
+
+                if (completed)
                     Stop(i);
                 else
                     i++;
@@ -957,11 +963,28 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (_scriptList[i].TextLineEvent(text, forceTrigger))
+                Script script = _scriptList[i];
+                bool completed = script.TextLineEvent(text, forceTrigger);
+                if (script.LastLineHandled)
+                    _serverLineHandledByScript = true;
+
+                if (completed)
                     Stop(i);
                 else
                     i++;
             }
+        }
+
+        public void BeginServerLineTracking()
+        {
+            _serverLineHandledByScript = false;
+        }
+
+        public bool ConsumeServerLineHandledFlag()
+        {
+            bool handled = _serverLineHandledByScript;
+            _serverLineHandledByScript = false;
+            return handled;
         }
 
         public void AutoTextEvent(string text, bool forceTrigger)
@@ -1327,6 +1350,7 @@ namespace TWXProxy.Core
 #pragma warning restore CS0169
         private bool _paused;
         private PauseReason _pausedReason = PauseReason.None;
+        private bool _lastLineHandled;
         private int _lastCodePos = -1;
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
@@ -1509,6 +1533,7 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[CheckTriggers] Checking trigger {i}: value='{triggerList[i].Value}', label='{triggerList[i].LabelName}'\n");
                 if (text.Contains(triggerList[i].Value) || string.IsNullOrEmpty(triggerList[i].Value))
                 {
+                    _lastLineHandled = true;
                     if (GlobalModules.VerboseDebugMode)
                         GlobalModules.DebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
                     // Save trigger values
@@ -1714,6 +1739,7 @@ namespace TWXProxy.Core
 
         public bool TextOutEvent(string text, ref bool handled)
         {
+            _lastLineHandled = false;
             _outText = text;
             // Check through textOut triggers for matches with text
             return CheckTriggers(_triggers[TriggerType.TextOut], text, true, false, ref handled);
@@ -1721,6 +1747,7 @@ namespace TWXProxy.Core
 
         public bool TextLineEvent(string text, bool forceTrigger)
         {
+            _lastLineHandled = false;
             // Pascal TextLineEvent only checks TextLine triggers — no waitFor/waitOn check here.
             // (waitFor/waitOn is handled exclusively in TextEvent.)
             // Check through lineTriggers for matches with Text
@@ -1730,6 +1757,7 @@ namespace TWXProxy.Core
 
         public bool AutoTextEvent(string text, bool forceTrigger)
         {
+            _lastLineHandled = false;
             // Check through autoTriggers for matches with Text
             bool handled = false;
             return CheckTriggers(_triggers[TriggerType.TextAuto], text, false, forceTrigger, ref handled);
@@ -1737,12 +1765,14 @@ namespace TWXProxy.Core
 
         public bool TextEvent(string text, bool forceTrigger)
         {
+            _lastLineHandled = false;
             // [Script.TextEvent] per-line logging removed — too high-frequency.
             // Check waitfor
             if (_waitForActive)
             {
                 if (text.Contains(_waitText))
                 {
+                    _lastLineHandled = true;
                     TriggersActive = false;
                     _waitForActive = false;
                     // Unpause if paused (WAITFOR/WAITON paused the script)
@@ -3947,6 +3977,7 @@ namespace TWXProxy.Core
         public PauseReason PausedReason { get => _pausedReason; set => _pausedReason = value; }
         public bool WaitingForInput => _waitingForInput;
         public bool KeypressMode => _keypressMode;
+        public bool LastLineHandled => _lastLineHandled;
         public int SubStackDepth => _subStack.Count;
         public ModInterpreter Controller => _owner;
         public int ExecScript => _execScriptID;

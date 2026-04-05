@@ -1653,6 +1653,7 @@ public class MainWindow : Window
                         Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                        interpreter.BeginServerLineTracking();
                         if (!gi.IsProxyMenuActive)
                         {
                             Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
@@ -1661,7 +1662,7 @@ public class MainWindow : Window
                             interpreter.TextEvent(scriptRemainder, false);
                         }
 
-                        gi.ProcessNativeHaggleLine(strippedRemainder);
+                        gi.ProcessNativeHaggleLine(strippedRemainder, interpreter.ConsumeServerLineHandledFlag());
                     }
                     break;
                 }
@@ -1681,6 +1682,7 @@ public class MainWindow : Window
                 }
 
                 gi.History.ProcessLine(lineStripped);
+                interpreter.BeginServerLineTracking();
 
                 if (!gi.IsProxyMenuActive)
                 {
@@ -1693,7 +1695,7 @@ public class MainWindow : Window
                     interpreter.ActivateTriggers();
                 }
 
-                gi.ProcessNativeHaggleLine(lineStripped);
+                gi.ProcessNativeHaggleLine(lineStripped, interpreter.ConsumeServerLineHandledFlag());
 
                 searchPos = crPos + 1;
                 lastProcessedPos = searchPos;

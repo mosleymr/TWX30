@@ -112,6 +112,18 @@ public sealed class NativeHaggleEngine
         return Enabled;
     }
 
+    public static bool IsNegotiationLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        return RxHoldPrompt.IsMatch(line) ||
+               RxAgreed.IsMatch(line) ||
+               RxSellOffer.IsMatch(line) ||
+               RxBuyOffer.IsMatch(line) ||
+               RxFinalOffer.IsMatch(line);
+    }
+
     public string? HandleLine(string line)
     {
         if (string.IsNullOrWhiteSpace(line))

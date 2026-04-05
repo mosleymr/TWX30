@@ -1493,10 +1493,17 @@ namespace TWXProxy.Core
                 _commandChar = commandChar;
         }
 
-        public void ProcessNativeHaggleLine(string line)
+        public void ProcessNativeHaggleLine(string line, bool scriptHandledLine = false)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
+
+            if (scriptHandledLine && _nativeHaggle.Enabled && NativeHaggleEngine.IsNegotiationLine(line))
+            {
+                GlobalModules.DebugLog($"[NativeHaggle] Disabled because a script handled negotiation line: '{line}'\n");
+                _nativeHaggle.SetEnabled(false);
+                return;
+            }
 
             string? response = _nativeHaggle.HandleLine(line);
             if (!string.IsNullOrEmpty(response))
