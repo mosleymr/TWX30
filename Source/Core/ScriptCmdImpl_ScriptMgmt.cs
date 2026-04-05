@@ -282,6 +282,19 @@ namespace TWXProxy.Core
             _activeInterpreter = interpreter;
         }
 
+        public static void SetVarOnActiveScripts(string varName, string value)
+        {
+            ModInterpreter? interpreter = GetActiveInterpreter();
+            if (interpreter == null || string.IsNullOrWhiteSpace(varName))
+                return;
+
+            for (int i = 0; i < interpreter.Count; i++)
+            {
+                Script? scriptObj = interpreter.GetScript(i);
+                scriptObj?.SetScriptVarIgnoreCase(varName, value);
+            }
+        }
+
         #endregion
     }
 }

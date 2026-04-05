@@ -34,6 +34,12 @@ namespace TWXProxy.Core
     /// </summary>
     public class GameInstance : IDisposable, ITWXServer
     {
+        private sealed class DeferredLocalOutput
+        {
+            public byte[] Data { get; init; } = Array.Empty<byte>();
+            public bool BroadcastDeaf { get; init; }
+        }
+
         private sealed class ClientSession
         {
             public TcpClient? TcpClient { get; init; }
@@ -116,6 +122,9 @@ namespace TWXProxy.Core
         private readonly ShipInfoParser _shipInfoParser = new();
         private readonly object _shipStatusLock = new();
         private ShipStatus _currentShipStatus = new();
+        private readonly object _deferredLocalOutputLock = new();
+        private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
+        private int _serverDataDispatchDepth;
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -163,6 +172,7 @@ namespace TWXProxy.Core
         public event EventHandler<DisconnectEventArgs>? Disconnected;
         public event EventHandler? ClearInputBufferRequested;
         public event Action<bool>? NativeHaggleChanged;
+        public event Action? NativeHaggleStatsChanged;
         public event Action<ShipStatus>? ShipStatusUpdated;
 
         public string GameName => _gameName;
@@ -178,6 +188,9 @@ namespace TWXProxy.Core
             }
         }
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
+        public int NativeHaggleCompletedCount => _nativeHaggle.CompletedHaggles;
+        public int NativeHaggleSuccessfulCount => _nativeHaggle.SuccessfulHaggles;
+        public int NativeHaggleSuccessRatePercent => _nativeHaggle.SuccessRatePercent;
         public ModLog Logger => _log;
         public ProxyHistoryBuffer History { get; } = new();
         public bool LogDataEnabled
@@ -221,6 +234,7 @@ namespace TWXProxy.Core
             _directMenuHandler = new MenuHandler(this, interpreter, _scriptDirectory, () => 0);
             _nativeHaggle.SetEnabled(true);
             _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
+            _nativeHaggle.StatsChanged += () => NativeHaggleStatsChanged?.Invoke();
             _log.ProgramDir = GlobalModules.ProgramDir;
             _log.SetLogIdentity(gameName);
             _log.SetPlaybackTargets(
@@ -905,7 +919,15 @@ namespace TWXProxy.Core
                     // Raise event for script processing (with cleaned data)
                     if (cleanData.Length > 0)
                     {
-                        ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
+                        BeginServerDataDispatch();
+                        try
+                        {
+                            ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
+                        }
+                        finally
+                        {
+                            EndServerDataDispatch();
+                        }
                         _log.RecordServerData(cleanData);
                     }
 
@@ -916,6 +938,7 @@ namespace TWXProxy.Core
                     else
                     {
                         await SendToLocalAsync(cleanData, token: token);
+                        await FlushDeferredLocalOutputAsync(token);
                         LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
                 }
@@ -1376,6 +1399,9 @@ namespace TWXProxy.Core
         {
             message = ApplyQuickText(message);
             var data = Encoding.ASCII.GetBytes(message);
+            if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
+                return;
+
             if (_preferredClientIndex.Value is int clientIndex)
                 await SendToClientAsync(clientIndex, data);
             else
@@ -1493,28 +1519,24 @@ namespace TWXProxy.Core
                 _commandChar = commandChar;
         }
 
-        public void ProcessNativeHaggleLine(string line, bool scriptHandledLine = false)
+        public void ProcessNativeHaggleLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
-            // A script touching the quantity prompt is not enough to prove it owns the haggle.
-            // Stand down only when a script actually handles an offer/final-offer line.
-            if (scriptHandledLine && _nativeHaggle.Enabled && NativeHaggleEngine.IsOfferLine(line))
-            {
-                GlobalModules.DebugLog($"[NativeHaggle] Suppressed for current trade because a script handled offer line: '{line}'\n");
-                _nativeHaggle.SuppressCurrentTrade("script-owned-offer");
-                return;
-            }
-
             string? response = _nativeHaggle.HandleLine(line);
             if (!string.IsNullOrEmpty(response))
-                _ = SendNativeHaggleResponseAsync(response);
+                SendNativeHaggleResponse(response);
         }
 
-        private async Task SendNativeHaggleResponseAsync(string response)
+        public void ObserveScriptSend(string text)
         {
-            await _nativeHaggleSendLock.WaitAsync();
+            _nativeHaggle.ObserveScriptSend(text);
+        }
+
+        private void SendNativeHaggleResponse(string response)
+        {
+            _nativeHaggleSendLock.Wait();
             try
             {
                 if (_serverStream == null || _serverClient?.Connected != true)
@@ -1525,8 +1547,8 @@ namespace TWXProxy.Core
 
                 byte[] data = Encoding.ASCII.GetBytes(response + "\r");
                 GlobalModules.DebugLog($"[NativeHaggle] SEND '{response}\\r'\n");
-                await _serverStream.WriteAsync(data, 0, data.Length);
-                await _serverStream.FlushAsync();
+                _serverStream.Write(data, 0, data.Length);
+                _serverStream.Flush();
             }
             catch (Exception ex)
             {
@@ -1577,12 +1599,69 @@ namespace TWXProxy.Core
 
         public void Broadcast(string message)
         {
-            SendToLocalAsync(Encoding.ASCII.GetBytes(ApplyQuickText(message))).Wait();
+            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
+                return;
+
+            SendToLocalAsync(data).Wait();
         }
 
         public void ClientMessage(string message)
         {
-            SendToLocalAsync(Encoding.ASCII.GetBytes(ApplyQuickText(message))).Wait();
+            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
+                return;
+
+            SendToLocalAsync(data).Wait();
+        }
+
+        private void BeginServerDataDispatch()
+        {
+            lock (_deferredLocalOutputLock)
+                _serverDataDispatchDepth++;
+        }
+
+        private void EndServerDataDispatch()
+        {
+            lock (_deferredLocalOutputLock)
+            {
+                if (_serverDataDispatchDepth > 0)
+                    _serverDataDispatchDepth--;
+            }
+        }
+
+        private bool TryQueueDeferredLocalOutput(byte[] data, bool broadcastDeaf)
+        {
+            lock (_deferredLocalOutputLock)
+            {
+                if (_serverDataDispatchDepth <= 0)
+                    return false;
+
+                byte[] copy = new byte[data.Length];
+                Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+                _deferredLocalOutput.Add(new DeferredLocalOutput
+                {
+                    Data = copy,
+                    BroadcastDeaf = broadcastDeaf
+                });
+                return true;
+            }
+        }
+
+        private async Task FlushDeferredLocalOutputAsync(CancellationToken token = default)
+        {
+            List<DeferredLocalOutput>? pending = null;
+            lock (_deferredLocalOutputLock)
+            {
+                if (_serverDataDispatchDepth > 0 || _deferredLocalOutput.Count == 0)
+                    return;
+
+                pending = new List<DeferredLocalOutput>(_deferredLocalOutput);
+                _deferredLocalOutput.Clear();
+            }
+
+            foreach (DeferredLocalOutput output in pending)
+                await SendToLocalAsync(output.Data, output.BroadcastDeaf, token);
         }
 
         public void AddQuickText(string key, string value)

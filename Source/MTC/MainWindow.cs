@@ -251,7 +251,7 @@ public class MainWindow : Window
         dock.Children.Add(_menuBar);
 
         // ── Status bar ────────────────────────────────────────────────────
-        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
+        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  Haggle Pct: 0%  [ disconnected ]";
         _statusText.Foreground         = FgStatus;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
         _statusText.Margin             = new Thickness(8, 0);
@@ -829,6 +829,7 @@ public class MainWindow : Window
         string starDock = "-";
         string rylos = "-";
         string alpha = "-";
+        int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
 
         if (_sessionDb != null)
         {
@@ -845,7 +846,7 @@ public class MainWindow : Window
         }
 
         _statusText.Text =
-            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}  {conn}";
+            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}  Haggle Pct: {hagglePct}%  {conn}";
     }
 
     // ── Telnet events ──────────────────────────────────────────────────────
@@ -979,6 +980,17 @@ public class MainWindow : Window
             _haggleToggle.IsChecked = enabled;
             _updatingHaggleToggle = false;
             UpdateHaggleToggleState();
+            RefreshStatusBar();
+            _buffer.Dirty = true;
+        });
+    }
+
+    private void OnNativeHaggleStatsChanged()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshStatusBar();
+            _buffer.Dirty = true;
         });
     }
 
@@ -1573,6 +1585,7 @@ public class MainWindow : Window
         gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
+        gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
 
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
@@ -1653,7 +1666,6 @@ public class MainWindow : Window
                         Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                        interpreter.BeginServerLineTracking();
                         if (!gi.IsProxyMenuActive)
                         {
                             Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
@@ -1662,7 +1674,7 @@ public class MainWindow : Window
                             interpreter.TextEvent(scriptRemainder, false);
                         }
 
-                        gi.ProcessNativeHaggleLine(strippedRemainder, interpreter.ConsumeServerLineHandledFlag());
+                        gi.ProcessNativeHaggleLine(strippedRemainder);
                     }
                     break;
                 }
@@ -1682,8 +1694,6 @@ public class MainWindow : Window
                 }
 
                 gi.History.ProcessLine(lineStripped);
-                interpreter.BeginServerLineTracking();
-
                 if (!gi.IsProxyMenuActive)
                 {
                     Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
@@ -1695,7 +1705,7 @@ public class MainWindow : Window
                     interpreter.ActivateTriggers();
                 }
 
-                gi.ProcessNativeHaggleLine(lineStripped, interpreter.ConsumeServerLineHandledFlag());
+                gi.ProcessNativeHaggleLine(lineStripped);
 
                 searchPos = crPos + 1;
                 lastProcessedPos = searchPos;
@@ -1824,6 +1834,8 @@ public class MainWindow : Window
         _moduleHost = null;
         if (gi != null)
             gi.NativeHaggleChanged -= OnNativeHaggleChanged;
+        if (gi != null)
+            gi.NativeHaggleStatsChanged -= OnNativeHaggleStatsChanged;
         if (gi != null)
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
         if (moduleHost != null)

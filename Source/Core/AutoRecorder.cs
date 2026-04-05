@@ -141,8 +141,9 @@ namespace TWXProxy.Core
 
         // Density scan data line:
         // "Sector   4497  ==>              0  Warps : 3    NavHaz :     0%    Anom : No"
+        // "Sector ( 5528) ==>              0  Warps : 4    NavHaz :     0%    Anom : No"
         private static readonly Regex _rxDensityLine = new(
-            @"^\s*Sector\s+(\d+)\s+==>\s+(\d+)\s+Warps\s*:\s*(\d+)\s+NavHaz\s*:\s*(\d+)%\s+Anom\s*:\s*(Yes|No)",
+            @"^\s*Sector\s+(?:\(\s*)?(\d+)(?:\s*\))?\s+==>\s+(\d+)\s+Warps\s*:\s*(\d+)\s+NavHaz\s*:\s*(\d+)%\s+Anom\s*:\s*(Yes|No)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // "Fighters: 2,316,238 (belong to your Corp) [Defensive]"
@@ -415,13 +416,21 @@ namespace TWXProxy.Core
                     var sec = GetOrCreate(db, sn);
                     if (sec != null)
                     {
+                        bool hadCachedPort = sec.SectorPort != null && !string.IsNullOrEmpty(sec.SectorPort.Name);
                         sec.Fighters    = new SpaceObject();
                         sec.MinesArmid  = new SpaceObject();
                         sec.MinesLimpet = new SpaceObject();
                         sec.PlanetNames.Clear();
                         sec.Ships.Clear();
                         sec.Traders.Clear();
-                        // Don't null the port here — it is only overwritten when a Ports line arrives.
+                        // Pascal NULLSector() clears sector display state before re-parsing the
+                        // live sector/holo block. If no Ports line arrives, that means the
+                        // sector has no port and any cached DB port must be discarded.
+                        sec.SectorPort = null;
+                        if (hadCachedPort)
+                        {
+                            GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {sn} pending live sector display\n");
+                        }
                     }
 
                     // If we were NOT already inside a holo scan, this "Sector  : NNNN" line

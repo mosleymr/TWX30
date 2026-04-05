@@ -973,7 +973,9 @@ namespace TWXProxy.Core
                 
                 Console.WriteLine($"[SEND] Sending {data.Length} bytes to server");
                 GlobalModules.DebugLog($"[SEND] Sending {data.Length} bytes to server\n");
-                
+
+                _activeGameInstance.ObserveScriptSend(output);
+
                 // Use SendToServerAsync to send to game server (blocking to preserve send order)
                 _activeGameInstance.SendToServerAsync(data).GetAwaiter().GetResult();
             }

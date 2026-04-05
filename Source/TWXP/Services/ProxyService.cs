@@ -283,10 +283,8 @@ public class ProxyService : IProxyService
                                 // line (inside ProcessLine). Re-enabling triggers here was causing TextLineTriggers
                                 // registered during a prompt handler to fire on the next full line's TextLineEvent
                                 // instead of waiting for the line after that.
-                                interpreter.BeginServerLineTracking();
                                 interpreter.TextEvent(scriptRemainder, false);
-
-                                gameInstance.ProcessNativeHaggleLine(strippedRemainder, interpreter.ConsumeServerLineHandledFlag());
+                                gameInstance.ProcessNativeHaggleLine(strippedRemainder);
                             }
                             else
                             {
@@ -338,7 +336,6 @@ public class ProxyService : IProxyService
                             // Pascal dispatch order for complete lines: TextLineEvent first, then TextEvent.
                             // (Pascal ProcessLine calls TextLineEvent, then ProcessPrompt calls TextEvent with the same line.)
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextLineEvent...\n");
-                            interpreter.BeginServerLineTracking();
                             interpreter.TextLineEvent(scriptLine, false);
 
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextEvent...\n");
@@ -349,7 +346,7 @@ public class ProxyService : IProxyService
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Re-activating triggers\n");
                             interpreter.ActivateTriggers();
 
-                            gameInstance.ProcessNativeHaggleLine(strippedLine, interpreter.ConsumeServerLineHandledFlag());
+                            gameInstance.ProcessNativeHaggleLine(strippedLine);
                         }
                         else
                         {

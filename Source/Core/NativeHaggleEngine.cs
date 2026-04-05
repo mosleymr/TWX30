@@ -35,13 +35,32 @@ public sealed class NativeHaggleEngine
         public int BaseVarMax { get; set; }
         public int LowProductivity { get; set; }
         public int HighProductivity { get; set; }
+        public int CalculatedLowProductivity { get; set; }
         public int MaxProductivity { get; set; }
+        public int DefaultMcicMin { get; set; }
+        public int DefaultMcicMax { get; set; }
         public int McicMin { get; set; }
         public int McicMax { get; set; }
+        public int DeriveFailures { get; set; }
         public int BidNumber { get; set; }
         public long LastCounter { get; set; }
+        public long LastOffer { get; set; }
         public bool FinalOffer { get; set; }
+        public bool HeuristicFallback { get; set; }
+        public long StartCredits { get; set; }
+        public int StartEmptyHolds { get; set; }
+        public long PendingBid { get; set; }
+        public long PendingBidOffer { get; set; }
+        public bool PendingBidFinalOffer { get; set; }
+        public bool OutcomeRecorded { get; set; }
         public List<Candidate> Candidates { get; } = new();
+    }
+
+    private sealed class RetryHint
+    {
+        public int Sector { get; set; }
+        public string ProductKey { get; set; } = string.Empty;
+        public string BuySell { get; set; } = string.Empty;
     }
 
     private static readonly Regex RxCommandPrompt = new(@"command \[tl=", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -53,6 +72,9 @@ public sealed class NativeHaggleEngine
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxExpGain = new(
         @"receive (\d+) experience point",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex RxTradeSuccess = new(
+        @"^For your (?:good|great) trading you receive",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxHoldPrompt = new(
         @"^How many holds of (Fuel Ore|Organics|Equipment) do you want to (buy|sell) \[(\d+)\]\?",
@@ -69,6 +91,9 @@ public sealed class NativeHaggleEngine
     private static readonly Regex RxFinalOffer = new(
         @"^Our final offer is ([\d,]+) credits\.",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex RxYourOfferPrompt = new(
+        @"^Your offer \[([\d,]+)\]\s*\?",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly ShipInfoParser _shipInfoParser = new();
     private ShipStatus _shipStatus = new();
@@ -77,16 +102,40 @@ public sealed class NativeHaggleEngine
     private ProductType _pendingProductType;
     private string? _pendingBuySell;
     private long _lastKnownCredits;
+    private bool _hasLastKnownCredits;
+    private int _lastKnownEmptyHolds;
+    private bool _hasLastKnownEmptyHolds;
     private int _lastKnownExperience = 1000;
-    private bool _suppressedForCurrentTrade;
+    private RetryHint? _retryHint;
+    private int _completedHaggles;
+    private int _successfulHaggles;
+
+    public event Action? StatsChanged;
+
+    public int CompletedHaggles => _completedHaggles;
+
+    public int SuccessfulHaggles => _successfulHaggles;
+
+    public int SuccessRatePercent =>
+        _completedHaggles <= 0
+            ? 0
+            : (int)Math.Round((_successfulHaggles * 100.0) / _completedHaggles, MidpointRounding.AwayFromZero);
 
     public NativeHaggleEngine()
     {
         _shipInfoParser.Updated += status =>
         {
             _shipStatus = CloneStatus(status);
-            if (_shipStatus.Credits > 0)
+            if (_shipStatus.Credits >= 0)
+            {
                 _lastKnownCredits = _shipStatus.Credits;
+                _hasLastKnownCredits = true;
+            }
+            if (_shipStatus.HoldsEmpty >= 0)
+            {
+                _lastKnownEmptyHolds = (int)_shipStatus.HoldsEmpty;
+                _hasLastKnownEmptyHolds = true;
+            }
             if (_shipStatus.Experience > 0)
                 _lastKnownExperience = (int)_shipStatus.Experience;
         };
@@ -133,15 +182,11 @@ public sealed class NativeHaggleEngine
 
         if (RxCommandPrompt.IsMatch(line))
         {
-            _suppressedForCurrentTrade = false;
             Reset("command-prompt");
             return null;
         }
 
         if (!Enabled)
-            return null;
-
-        if (_suppressedForCurrentTrade)
             return null;
 
         if (line.Equals("<Port>", StringComparison.OrdinalIgnoreCase) ||
@@ -176,31 +221,61 @@ public sealed class NativeHaggleEngine
 
         Match initialSell = RxSellOffer.Match(line);
         if (initialSell.Success)
+        {
+            GlobalModules.DebugLog($"[NativeHaggle] Offer line SELLING: '{line}'\n");
             return HandleOffer(ParseLong(initialSell.Groups[1].Value), "SELLING", finalOffer: false);
+        }
 
         Match initialBuy = RxBuyOffer.Match(line);
         if (initialBuy.Success)
+        {
+            GlobalModules.DebugLog($"[NativeHaggle] Offer line BUYING: '{line}'\n");
             return HandleOffer(ParseLong(initialBuy.Groups[1].Value), "BUYING", finalOffer: false);
+        }
 
         Match finalMatch = RxFinalOffer.Match(line);
         if (finalMatch.Success)
+        {
+            GlobalModules.DebugLog($"[NativeHaggle] Offer line FINAL: '{line}'\n");
             return HandleOffer(ParseLong(finalMatch.Groups[1].Value), _session?.BuySell ?? string.Empty, finalOffer: true);
+        }
+
+        Match promptMatch = RxYourOfferPrompt.Match(line);
+        if (promptMatch.Success)
+        {
+            return HandleOfferPrompt(ParseLong(promptMatch.Groups[1].Value));
+        }
 
         return null;
     }
 
     public void SuppressCurrentTrade(string reason)
     {
-        _suppressedForCurrentTrade = true;
-        Reset(reason);
+        GlobalModules.DebugLog($"[NativeHaggle] SuppressCurrentTrade('{reason}') ignored while suppression is disabled.\n");
+    }
+
+    public void ObserveScriptSend(string text)
+    {
+        // Suppression is temporarily disabled for debugging.
     }
 
     private void UpdatePassiveState(string line)
     {
+        if (RxTradeSuccess.IsMatch(line))
+        {
+            RecordOutcome(success: true, "trade-success-line");
+        }
+
         Match creditsMatch = RxCredits.Match(line);
         if (creditsMatch.Success)
         {
-            _lastKnownCredits = ParseLong(creditsMatch.Groups[1].Value);
+            long credits = ParseLong(creditsMatch.Groups[1].Value);
+            int emptyHolds = ParseInt(creditsMatch.Groups[2].Value);
+            _lastKnownCredits = credits;
+            _hasLastKnownCredits = true;
+            _lastKnownEmptyHolds = emptyHolds;
+            _hasLastKnownEmptyHolds = true;
+            ProcessCreditsLine(credits, emptyHolds);
             return;
         }
 
@@ -264,8 +339,19 @@ public sealed class NativeHaggleEngine
         _session.Experience = ResolveExperience();
         _session.BidNumber = 0;
         _session.LastCounter = 0;
+        _session.LastOffer = 0;
         _session.FinalOffer = false;
+        _session.HeuristicFallback = false;
+        _session.DeriveFailures = 0;
+        _session.PendingBid = 0;
+        _session.PendingBidOffer = 0;
+        _session.PendingBidFinalOffer = false;
+        _session.OutcomeRecorded = false;
+        _session.StartCredits = ResolveStartingCredits();
+        _session.StartEmptyHolds = ResolveStartingEmptyHolds();
         _session.Candidates.Clear();
+
+        PushScriptState(_session.StartCredits, abort: false);
 
         ConfigureProductConstants(_session);
         if (!PrepareRanges(_session, db))
@@ -274,8 +360,119 @@ public sealed class NativeHaggleEngine
             return;
         }
 
+        if (RetryHintMatches(_session))
+        {
+            _session.HeuristicFallback = true;
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Using heuristic-first retry mode for sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell}\n");
+        }
+        else if (_retryHint != null)
+        {
+            _retryHint = null;
+        }
+
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Armed sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} exp={_session.Experience} weekday={_session.Weekday}\n");
+            $"[NativeHaggle] Armed sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax}\n");
+    }
+
+    private void ProcessCreditsLine(long credits, int emptyHolds)
+    {
+        if (_session == null)
+            return;
+
+        PushScriptState(credits, abort: false);
+
+        bool attemptedTrade = _session.BidNumber > 0 || _session.LastCounter > 0;
+        if (!attemptedTrade)
+            return;
+
+        if (_session.OutcomeRecorded)
+        {
+            if (RetryHintMatches(_session))
+                _retryHint = null;
+            return;
+        }
+
+        bool success = IsSuccessfulTrade(_session, credits, emptyHolds);
+        if (success)
+        {
+            if (RetryHintMatches(_session))
+                _retryHint = null;
+            return;
+        }
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] No transaction detected sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} startCredits={_session.StartCredits} endCredits={credits} startEmpty={_session.StartEmptyHolds} endEmpty={emptyHolds} bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter}\n");
+        if (_session.BidNumber <= 1)
+        {
+            _retryHint = new RetryHint
+            {
+                Sector = _session.Sector,
+                ProductKey = _session.ProductKey,
+                BuySell = _session.BuySell,
+            };
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Recorded retry hint for sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell}\n");
+        }
+        RecordOutcome(success: false, "credits-no-transaction");
+        PushScriptState(credits, abort: true);
+    }
+
+    private static bool IsSuccessfulTrade(SessionState session, long credits, int emptyHolds)
+    {
+        if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+        {
+            return credits < session.StartCredits || emptyHolds < session.StartEmptyHolds;
+        }
+
+        if (string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase))
+        {
+            return credits > session.StartCredits || emptyHolds > session.StartEmptyHolds;
+        }
+
+        return true;
+    }
+
+    private bool RetryHintMatches(SessionState session)
+    {
+        if (_retryHint == null)
+            return false;
+
+        return _retryHint.Sector == session.Sector &&
+               string.Equals(_retryHint.ProductKey, session.ProductKey, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(_retryHint.BuySell, session.BuySell, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void PushScriptState(long credits, bool abort)
+    {
+        ScriptRef.SetVarOnActiveScripts("$HAGGLE~CREDITS", credits.ToString(CultureInfo.InvariantCulture));
+        ScriptRef.SetVarOnActiveScripts("$HAGGLE~ABORT", abort ? "1" : "0");
+    }
+
+    private long ResolveStartingCredits()
+    {
+        if (_hasLastKnownCredits)
+            return _lastKnownCredits;
+        if (_shipStatus.Credits >= 0)
+            return _shipStatus.Credits;
+        return 0;
+    }
+
+    private int ResolveStartingEmptyHolds()
+    {
+        if (_hasLastKnownEmptyHolds)
+            return _lastKnownEmptyHolds;
+        if (_shipStatus.HoldsEmpty >= 0)
+            return (int)_shipStatus.HoldsEmpty;
+
+        long totalCargo = _shipStatus.FuelOre + _shipStatus.Organics + _shipStatus.Equipment + _shipStatus.Colonists;
+        if (_shipStatus.TotalHolds > 0)
+        {
+            long empty = _shipStatus.TotalHolds - totalCargo;
+            return empty < 0 ? 0 : (int)empty;
+        }
+
+        return 0;
     }
 
     private string? HandleOffer(long offer, string buySell, bool finalOffer)
@@ -292,10 +489,30 @@ public sealed class NativeHaggleEngine
         }
 
         _session.FinalOffer = finalOffer;
+        if (_session.HeuristicFallback)
+        {
+            long heuristicBid = ComputeHeuristicBid(_session, offer);
+            StageBid(_session, offer, heuristicBid, finalOffer);
+
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+            return null;
+        }
+
         if (_session.BidNumber == 0)
         {
             if (!DeriveCandidates(_session, offer))
             {
+                if (TryEnableHeuristicFallback(_session, offer, "derive-failed"))
+                {
+                    long heuristicBid = ComputeHeuristicBid(_session, offer);
+                    StageBid(_session, offer, heuristicBid, finalOffer);
+
+                    GlobalModules.DebugLog(
+                        $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+                    return null;
+                }
+
                 GlobalModules.DebugLog($"[NativeHaggle] Derive failed for sector={_session.Sector} product={_session.ProductKey}, manual haggle required.\n");
                 Reset("derive-failed");
                 return null;
@@ -305,6 +522,16 @@ public sealed class NativeHaggleEngine
         {
             if (!FilterCandidates(_session, offer))
             {
+                if (TryEnableHeuristicFallback(_session, offer, "filter-failed"))
+                {
+                    long heuristicBid = ComputeHeuristicBid(_session, offer);
+                    StageBid(_session, offer, heuristicBid, finalOffer);
+
+                    GlobalModules.DebugLog(
+                        $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+                    return null;
+                }
+
                 GlobalModules.DebugLog($"[NativeHaggle] Candidate filter failed for sector={_session.Sector} product={_session.ProductKey}, manual haggle required.\n");
                 Reset("filter-failed");
                 return null;
@@ -312,12 +539,41 @@ public sealed class NativeHaggleEngine
         }
 
         long bid = ComputeBid(_session);
-        _session.BidNumber++;
-        _session.LastCounter = bid;
+        StageBid(_session, offer, bid, finalOffer);
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] offer={offer} final={finalOffer} bidNumber={_session.BidNumber} candidates={_session.Candidates.Count} bid={bid}\n");
+            $"[NativeHaggle] offer={offer} final={finalOffer} candidates={_session.Candidates.Count} stagedBid={bid}\n");
+        return null;
+    }
+
+    private string? HandleOfferPrompt(long offer)
+    {
+        if (_session == null || _session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
+            return null;
+
+        if (offer != _session.PendingBidOffer)
+            return null;
+
+        long bid = _session.PendingBid;
+        bool finalOffer = _session.PendingBidFinalOffer;
+        _session.PendingBid = 0;
+        _session.PendingBidOffer = 0;
+        _session.PendingBidFinalOffer = false;
+
+        _session.BidNumber++;
+        _session.LastCounter = bid;
+        _session.LastOffer = offer;
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Prompt offer={offer} final={finalOffer} bidNumber={_session.BidNumber} bid={bid}\n");
         return bid.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static void StageBid(SessionState session, long offer, long bid, bool finalOffer)
+    {
+        session.PendingBid = bid;
+        session.PendingBidOffer = offer;
+        session.PendingBidFinalOffer = finalOffer;
     }
 
     private static ShipStatus CloneStatus(ShipStatus status) => new()
@@ -451,6 +707,8 @@ public sealed class NativeHaggleEngine
             "ORGANICS" => (30, 75),
             _ => (20, 65),
         };
+        session.DefaultMcicMin = session.McicStep * defaultMin;
+        session.DefaultMcicMax = session.McicStep * defaultMax;
 
         if (session.Percent == 100)
         {
@@ -458,12 +716,14 @@ public sealed class NativeHaggleEngine
             session.MaxProductivity = productivity;
             session.LowProductivity = productivity;
             session.HighProductivity = productivity;
+            session.CalculatedLowProductivity = productivity;
         }
         else if (session.Percent == 0)
         {
             session.LowProductivity = ReadInt(db, session.Sector, session.ProductKey + "L");
             session.HighProductivity = ReadInt(db, session.Sector, session.ProductKey + "H");
             session.MaxProductivity = session.HighProductivity;
+            session.CalculatedLowProductivity = session.LowProductivity;
             if (session.LowProductivity <= 0 || session.HighProductivity <= 0)
                 return false;
         }
@@ -474,6 +734,7 @@ public sealed class NativeHaggleEngine
             if (maxProductivity > 6553)
                 maxProductivity = 6553;
             session.MaxProductivity = maxProductivity;
+            session.CalculatedLowProductivity = minProductivity;
             session.LowProductivity = minProductivity;
             session.HighProductivity = maxProductivity;
         }
@@ -502,8 +763,8 @@ public sealed class NativeHaggleEngine
         }
         else
         {
-            session.McicMin = sign * defaultMin;
-            session.McicMax = sign * defaultMax;
+            session.McicMin = session.DefaultMcicMin;
+            session.McicMax = session.DefaultMcicMax;
             if (db != null && storedMin != int.MinValue)
             {
                 db.SetSectorVar(session.Sector, session.ProductKey + "-", string.Empty);
@@ -516,69 +777,79 @@ public sealed class NativeHaggleEngine
 
     private static bool DeriveCandidates(SessionState session, long offer)
     {
-        session.Candidates.Clear();
-
-        double expAdjust = session.Experience > 999
-            ? 0
-            : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
-
-        int terminal = session.McicMax + session.McicStep;
-        for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
+        while (true)
         {
-            double mcicFactor = (mcic / 1000.0) + 1.0;
-            double qtyFactor = (mcic * (session.ProductFactor * session.PortQty)) / 10.0;
+            session.Candidates.Clear();
 
-            for (int productivity = session.LowProductivity; productivity <= session.HighProductivity; productivity++)
+            double expAdjust = session.Experience > 999
+                ? 0
+                : session.PlusMinus * ((1000.0 - session.Experience) / 100.0);
+
+            int terminal = session.McicMax + session.McicStep;
+            for (int mcic = session.McicMin; mcic != terminal; mcic += session.McicStep)
             {
-                double productivityFactor = qtyFactor / productivity;
+                double mcicFactor = (mcic / 1000.0) + 1.0;
+                double qtyFactor = (mcic * (session.ProductFactor * session.PortQty)) / 10.0;
 
-                for (int baseVar = session.BaseVarMin; baseVar <= session.BaseVarMax; baseVar++)
+                for (int productivity = session.LowProductivity; productivity <= session.HighProductivity; productivity++)
                 {
-                    double priceBase = ((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust - productivityFactor;
-                    while (priceBase < 4.0)
-                        priceBase += 1.0;
+                    double productivityFactor = qtyFactor / productivity;
 
-                    double exactPrice = priceBase * session.TradeQty;
-                    long lowBound = PascalRoundInt(((mcicFactor - 0.003) * exactPrice) - 0.5001, 0);
-                    long highBound = PascalRoundInt(((mcicFactor + 0.003) * exactPrice) + 0.5001, 0);
-                    if (offer < lowBound || offer > highBound)
-                        continue;
-
-                    for (double variance = -0.003; variance <= 0.0030001; variance += 0.001)
+                    for (int baseVar = session.BaseVarMin; baseVar <= session.BaseVarMax; baseVar++)
                     {
-                        double offeredPrice = (mcicFactor + variance) * exactPrice;
-                        long rounded = PascalRoundInt(offeredPrice, 0);
-                        bool match = rounded == offer;
-                        if (!match)
-                        {
-                            double roundedDownCheck = PascalRoundValue(offeredPrice - 0.5, 7);
-                            double roundedUpCheck = PascalRoundValue(offeredPrice + 0.5, 7);
-                            bool roundedDown = Math.Abs(rounded - roundedDownCheck) <= 0.0000001;
-                            bool roundedUp = Math.Abs(rounded - roundedUpCheck) <= 0.0000001;
-                            if (roundedDown && rounded + 1 == offer)
-                                match = true;
-                            else if (roundedUp && rounded - 1 == offer)
-                                match = true;
-                        }
+                        double priceBase = ((session.PlusMinus * baseVar) + session.BasePrice) - expAdjust - productivityFactor;
+                        while (priceBase < 4.0)
+                            priceBase += 1.0;
 
-                        if (!match)
+                        double exactPrice = priceBase * session.TradeQty;
+                        long lowBound = PascalRoundInt(((mcicFactor - 0.003) * exactPrice) - 0.5001, 0);
+                        long highBound = PascalRoundInt(((mcicFactor + 0.003) * exactPrice) + 0.5001, 0);
+                        if (offer < lowBound || offer > highBound)
                             continue;
 
-                        session.Candidates.Add(new Candidate
+                        for (double variance = -0.003; variance <= 0.0030001; variance += 0.001)
                         {
-                            Mcic = mcic,
-                            BaseVar = baseVar,
-                            Variance = PascalRoundValue(variance, 3),
-                            Productivity = productivity,
-                            ExactPrice = exactPrice,
-                        });
+                            double offeredPrice = (mcicFactor + variance) * exactPrice;
+                            long rounded = PascalRoundInt(offeredPrice, 0);
+                            bool match = rounded == offer;
+                            if (!match)
+                            {
+                                double roundedDownCheck = PascalRoundValue(offeredPrice - 0.5, 7);
+                                double roundedUpCheck = PascalRoundValue(offeredPrice + 0.5, 7);
+                                bool roundedDown = Math.Abs(rounded - roundedDownCheck) <= 0.0000001;
+                                bool roundedUp = Math.Abs(rounded - roundedUpCheck) <= 0.0000001;
+                                if (roundedDown && rounded + 1 == offer)
+                                    match = true;
+                                else if (roundedUp && rounded - 1 == offer)
+                                    match = true;
+                            }
+
+                            if (!match)
+                                continue;
+
+                            session.Candidates.Add(new Candidate
+                            {
+                                Mcic = mcic,
+                                BaseVar = baseVar,
+                                Variance = PascalRoundValue(variance, 3),
+                                Productivity = productivity,
+                                ExactPrice = exactPrice,
+                            });
+                        }
                     }
                 }
             }
-        }
 
-        PersistDerivedRanges(session);
-        return session.Candidates.Count > 0;
+            if (session.Candidates.Count > 0)
+            {
+                PersistDerivedRanges(session);
+                LogCandidateSnapshot(session, offer, stage: "derive");
+                return true;
+            }
+
+            if (!ApplyDeriveRecovery(session))
+                return false;
+        }
     }
 
     private static bool FilterCandidates(SessionState session, long offer)
@@ -586,6 +857,8 @@ public sealed class NativeHaggleEngine
         if (session.Candidates.Count == 0)
             return false;
 
+        var prior = new List<Candidate>(session.Candidates.Count);
+        prior.AddRange(session.Candidates);
         var next = new List<Candidate>();
         foreach (Candidate candidate in session.Candidates)
         {
@@ -607,6 +880,10 @@ public sealed class NativeHaggleEngine
         session.Candidates.Clear();
         session.Candidates.AddRange(next);
         PersistDerivedRanges(session);
+        if (session.Candidates.Count == 0)
+            LogFilterFailure(session, offer, prior);
+        else
+            LogCandidateSnapshot(session, offer, stage: "filter");
         return session.Candidates.Count > 0;
     }
 
@@ -703,15 +980,179 @@ public sealed class NativeHaggleEngine
         WriteInt(db, session.Sector, session.ProductKey + "H", maxProductivity);
     }
 
+    private static bool TryEnableHeuristicFallback(SessionState session, long offer, string reason)
+    {
+        if (session.HeuristicFallback)
+            return true;
+
+        if (reason == "filter-failed")
+        {
+            if (session.BidNumber <= 0 || session.LastOffer <= 0 || session.LastCounter <= 0)
+                return false;
+        }
+        else if (reason == "derive-failed")
+        {
+            if (offer <= 0)
+                return false;
+        }
+        else
+        {
+            return false;
+        }
+
+        session.HeuristicFallback = true;
+        session.Candidates.Clear();
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Switching to heuristic fallback ({reason}) for sector={session.Sector} product={session.ProductKey} buysell={session.BuySell} offer={offer} lastOffer={session.LastOffer} lastCounter={session.LastCounter}\n");
+        return true;
+    }
+
+    private static long ComputeHeuristicBid(SessionState session, long offer)
+    {
+        long priorOffer = session.LastOffer > 0 ? session.LastOffer : offer;
+        long priorCounter = session.LastCounter > 0 ? session.LastCounter : offer;
+
+        if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+        {
+            return ComputeBuyHeuristicBid(session, offer, priorOffer, priorCounter);
+        }
+
+        return ComputeSellHeuristicBid(session, offer, priorOffer, priorCounter);
+    }
+
+    private static long ComputeRepeatedPromptBid(SessionState session, long offer)
+    {
+        if (session.BidNumber <= 1)
+        {
+            if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+            {
+                long retry = (offer * 92) / 100;
+                if (retry <= session.LastCounter)
+                    retry = session.LastCounter + Math.Max(1, (offer - session.LastCounter) / 2);
+                if (retry >= offer)
+                    retry = offer - 1;
+                return Math.Max(1, retry);
+            }
+
+            long opening = (offer * 108) / 100;
+            if (opening <= offer)
+                opening = offer + 1;
+            if (opening >= session.LastCounter && session.LastCounter > offer)
+                opening = offer + Math.Max(1, (session.LastCounter - offer) / 2);
+            return Math.Max(offer + 1, opening);
+        }
+
+        long bid = ComputeHeuristicBid(session, offer);
+        if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+        {
+            if (bid <= session.LastCounter)
+                bid = session.LastCounter + 1;
+            if (bid >= offer)
+                bid = offer - 1;
+            return Math.Max(1, bid);
+        }
+
+        if (bid >= session.LastCounter)
+            bid = session.LastCounter - 1;
+        return Math.Max(offer + 1, bid);
+    }
+
+    private static long ComputeBuyHeuristicBid(SessionState session, long offer, long priorOffer, long priorCounter)
+    {
+        long counter;
+        if (session.BidNumber == 0)
+        {
+            counter = (offer * 92) / 100;
+            if (counter <= 0)
+                counter = offer;
+        }
+        else if (session.FinalOffer)
+        {
+            long offerChange = offer - priorOffer;
+            offerChange -= 1;
+            offerChange = (offerChange * 25) / 10;
+            counter = priorCounter - offerChange;
+            if (counter == priorCounter)
+                counter += 1;
+            counter += 1;
+        }
+        else
+        {
+            long offerPct = (offer * 1000) / Math.Max(1, priorOffer);
+            if (offerPct > 990)
+                offerPct = 990;
+
+            counter = (priorCounter * 1000) / Math.Max(1, offerPct);
+            if (counter <= priorCounter)
+                counter += 1;
+        }
+
+        if (counter <= 0)
+            counter = Math.Max(1, offer);
+        return counter;
+    }
+
+    private static long ComputeSellHeuristicBid(SessionState session, long offer, long priorOffer, long priorCounter)
+    {
+        long counter;
+        if (session.BidNumber == 0)
+        {
+            counter = (offer * 108) / 100;
+            if (counter <= offer)
+                counter = offer + 1;
+        }
+        else if (session.FinalOffer)
+        {
+            long offerChange = offer - priorOffer;
+            offerChange = (offerChange * 25) / 10;
+            counter = priorCounter - offerChange;
+            counter -= 3;
+        }
+        else
+        {
+            long offerPct = (offer * 1000) / Math.Max(1, priorOffer);
+            if (offerPct < 1003)
+                offerPct = 1003;
+
+            counter = (priorCounter * 1000) / Math.Max(1, offerPct);
+            if (counter >= priorCounter)
+                counter -= 1;
+        }
+
+        if (counter <= 0)
+            counter = Math.Max(1, offer);
+        return counter;
+    }
+
     private void Reset(string reason)
     {
         if (_session != null)
         {
+            bool attemptedTrade = _session.BidNumber > 0 || _session.LastCounter > 0 || _session.PendingBid > 0;
+            if (attemptedTrade && !_session.OutcomeRecorded)
+                RecordOutcome(success: false, $"reset:{reason}");
+
             GlobalModules.DebugLog($"[NativeHaggle] Reset reason='{reason}' sector={_session.Sector} product={_session.ProductKey}\n");
         }
         _session = null;
         _pendingProductKey = null;
         _pendingBuySell = null;
+    }
+
+    private void RecordOutcome(bool success, string reason)
+    {
+        if (_session == null || _session.OutcomeRecorded)
+            return;
+
+        _session.OutcomeRecorded = true;
+        _completedHaggles++;
+        if (success)
+            _successfulHaggles++;
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' completed={_completedHaggles} successful={_successfulHaggles} pct={SuccessRatePercent}%\n");
+        StatsChanged?.Invoke();
     }
 
     private static string NormalizeWeekday(string value)
@@ -760,6 +1201,73 @@ public sealed class NativeHaggleEngine
     private static void WriteInt(ModDatabase db, int sector, string key, int value)
     {
         db.SetSectorVar(sector, key, value.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static bool ApplyDeriveRecovery(SessionState session)
+    {
+        ModDatabase? db = ScriptRef.GetActiveDatabase();
+        if (session.DeriveFailures == 0)
+        {
+            session.DeriveFailures = 1;
+            session.HighProductivity = session.MaxProductivity;
+            if (db != null)
+                WriteInt(db, session.Sector, session.ProductKey + "H", session.MaxProductivity);
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Derive recovery #1 sector={session.Sector} product={session.ProductKey} highProd->{session.HighProductivity}\n");
+            return true;
+        }
+
+        if (session.DeriveFailures == 1)
+        {
+            session.DeriveFailures = 2;
+            session.McicMin = session.DefaultMcicMin;
+            session.McicMax = session.DefaultMcicMax;
+            session.LowProductivity = session.CalculatedLowProductivity;
+            session.HighProductivity = session.MaxProductivity;
+            session.BaseVarMin = 0;
+            session.BaseVarMax = 18;
+            if (db != null)
+            {
+                WriteInt(db, session.Sector, session.ProductKey + "-", session.McicMin);
+                WriteInt(db, session.Sector, session.ProductKey + "+", session.McicMax);
+                WriteInt(db, session.Sector, session.ProductKey + "L", session.LowProductivity);
+                WriteInt(db, session.Sector, session.ProductKey + "H", session.HighProductivity);
+            }
+
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Derive recovery #2 sector={session.Sector} product={session.ProductKey} lowProd->{session.LowProductivity} highProd->{session.HighProductivity} mcicMin->{session.McicMin} mcicMax->{session.McicMax} baseVar=0..18\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void LogCandidateSnapshot(SessionState session, long offer, string stage)
+    {
+        if (session.Candidates.Count == 0)
+            return;
+
+        int limit = Math.Min(session.Candidates.Count, 8);
+        for (int i = 0; i < limit; i++)
+        {
+            Candidate candidate = session.Candidates[i];
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] {stage} cand[{i + 1}/{session.Candidates.Count}] offer={offer} mcic={candidate.Mcic} baseVar={candidate.BaseVar} variance={candidate.Variance.ToString("0.000", CultureInfo.InvariantCulture)} prod={candidate.Productivity} exact={candidate.ExactPrice.ToString("0.000000", CultureInfo.InvariantCulture)}\n");
+        }
+    }
+
+    private static void LogFilterFailure(SessionState session, long offer, List<Candidate> prior)
+    {
+        int limit = Math.Min(prior.Count, 8);
+        for (int i = 0; i < limit; i++)
+        {
+            Candidate candidate = prior[i];
+            double exactCounter = ((session.LastCounter - candidate.ExactPrice) * 0.3) + candidate.ExactPrice;
+            long projected = PascalRoundInt((((candidate.Mcic / 1000.0) + candidate.Variance) + 1.0) * exactCounter, 0);
+            long delta = projected - offer;
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] filter-fail cand[{i + 1}/{prior.Count}] target={offer} projected={projected} delta={delta} mcic={candidate.Mcic} baseVar={candidate.BaseVar} variance={candidate.Variance.ToString("0.000", CultureInfo.InvariantCulture)} prod={candidate.Productivity} exact={candidate.ExactPrice.ToString("0.000000", CultureInfo.InvariantCulture)} nextExact={exactCounter.ToString("0.000000", CultureInfo.InvariantCulture)} lastCounter={session.LastCounter}\n");
+        }
     }
 
     private static long PascalRoundInt(double value, int precision)

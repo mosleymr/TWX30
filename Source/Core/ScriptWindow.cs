@@ -190,6 +190,9 @@ namespace TWXProxy.Core
         void CloseMenu(bool force);
         MenuItem? GetMenuByName(string menuName);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
+        void SuspendMenuForInput();
+        void RestoreSuspendedMenuIfNeeded();
+        bool HasSuspendedMenu { get; }
     }
 
     /// <summary>
@@ -199,6 +202,7 @@ namespace TWXProxy.Core
     {
         private readonly Dictionary<string, MenuItem> _menus = new Dictionary<string, MenuItem>(StringComparer.OrdinalIgnoreCase);
         private Stack<MenuItem> _menuStack = new Stack<MenuItem>();
+        private List<MenuItem>? _suspendedMenuStack;
         private Script? _inputScript;
         private CmdParam? _inputVarParam;
         private bool _inputSingleKey;
@@ -225,6 +229,7 @@ namespace TWXProxy.Core
         public void OpenMenu(string menuName, int flags)
         {
             menuName = menuName.ToUpper();
+            _suspendedMenuStack = null;
             
             if (_menus.TryGetValue(menuName, out var menu))
             {
@@ -248,12 +253,7 @@ namespace TWXProxy.Core
 
                 if (_menuStack.Count == 0)
                 {
-                    string currentAnsiLine = ScriptRef.GetCurrentAnsiLine();
-                    string exitText = "\r" + AnsiCodes.ANSI_CLEARLINE;
-                    if (!string.IsNullOrEmpty(currentAnsiLine))
-                        exitText += currentAnsiLine;
-
-                    GlobalModules.TWXServer?.ClientMessage(exitText);
+                    ClearMenuDisplay();
                 }
             }
         }
@@ -305,6 +305,41 @@ namespace TWXProxy.Core
             return _menuStack.Any(m => m.Name.Equals(menuName, StringComparison.OrdinalIgnoreCase));
         }
 
+        public bool HasSuspendedMenu => _suspendedMenuStack is { Count: > 0 };
+
+        public void SuspendMenuForInput()
+        {
+            if (_menuStack.Count == 0)
+                return;
+
+            _suspendedMenuStack = _menuStack.Reverse().ToList();
+            _menuStack.Clear();
+            GlobalModules.DebugLog($"[Menu] Suspended menu stack for GETINPUT (depth={_suspendedMenuStack.Count})\n");
+            ClearMenuDisplay();
+        }
+
+        public void RestoreSuspendedMenuIfNeeded()
+        {
+            if (_menuStack.Count > 0 || _suspendedMenuStack is not { Count: > 0 })
+                return;
+
+            foreach (MenuItem item in _suspendedMenuStack)
+                _menuStack.Push(item);
+
+            GlobalModules.DebugLog($"[Menu] Restored suspended menu stack (depth={_menuStack.Count})\n");
+            _suspendedMenuStack = null;
+            DisplayScriptMenu(_menuStack.Peek());
+        }
+
+        public void ClearSuspendedMenu()
+        {
+            if (_suspendedMenuStack is not { Count: > 0 })
+                return;
+
+            GlobalModules.DebugLog($"[Menu] Cleared suspended menu stack (depth={_suspendedMenuStack.Count})\n");
+            _suspendedMenuStack = null;
+        }
+
         public void RedisplayCurrentMenu()
         {
             if (_menuStack.Count > 0)
@@ -312,6 +347,16 @@ namespace TWXProxy.Core
                 var currentMenu = _menuStack.Peek();
                 DisplayScriptMenu(currentMenu);
             }
+        }
+
+        private static void ClearMenuDisplay()
+        {
+            string currentAnsiLine = ScriptRef.GetCurrentAnsiLine();
+            string exitText = "\r" + AnsiCodes.ANSI_CLEARLINE;
+            if (!string.IsNullOrEmpty(currentAnsiLine))
+                exitText += currentAnsiLine;
+
+            GlobalModules.TWXServer?.ClientMessage(exitText);
         }
 
         private void CompleteInput(string inputText)
@@ -473,6 +518,7 @@ namespace TWXProxy.Core
                         // Call Execute() to actually run the GOSUBed code
                         // Execute until handler completes (RETURN) or pauses (GETINPUT)
                         GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Calling Execute() for handler '{labelName}', subStack depth before={initialSubStackDepth}...\n");
+                        GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Hotkey '{upperKey}' matched menu item '{matchingItem.Name}'\n");
                         
                         bool handlerCompleted = false;
                         int maxIterations = 100; // Safety limit
@@ -501,6 +547,8 @@ namespace TWXProxy.Core
                             if (script.Paused && script.WaitingForInput)
                             {
                                 GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Handler paused for GETINPUT\n");
+                                if (!matchingItem.CloseMenu)
+                                    SuspendMenuForInput();
                                 break; // Exit - will resume later when input received
                             }
                             

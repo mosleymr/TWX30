@@ -136,7 +136,6 @@ namespace TWXProxy.Core
 #pragma warning restore CS0649
         private string _programDir = string.Empty;
         private string _scriptDirectory = string.Empty;
-        private bool _serverLineHandledByScript;
 
         public ModInterpreter(IPersistenceController? persistenceController = null)
             : base(persistenceController)
@@ -944,9 +943,6 @@ namespace TWXProxy.Core
             {
                 Script script = _scriptList[i];
                 bool completed = script.TextEvent(text, forceTrigger);
-                if (script.LastLineHandled)
-                    _serverLineHandledByScript = true;
-
                 if (completed)
                     Stop(i);
                 else
@@ -965,26 +961,11 @@ namespace TWXProxy.Core
             {
                 Script script = _scriptList[i];
                 bool completed = script.TextLineEvent(text, forceTrigger);
-                if (script.LastLineHandled)
-                    _serverLineHandledByScript = true;
-
                 if (completed)
                     Stop(i);
                 else
                     i++;
             }
-        }
-
-        public void BeginServerLineTracking()
-        {
-            _serverLineHandledByScript = false;
-        }
-
-        public bool ConsumeServerLineHandledFlag()
-        {
-            bool handled = _serverLineHandledByScript;
-            _serverLineHandledByScript = false;
-            return handled;
         }
 
         public void AutoTextEvent(string text, bool forceTrigger)
@@ -3827,6 +3808,25 @@ namespace TWXProxy.Core
             return false;
         }
 
+        public bool SetScriptVarIgnoreCase(string varName, string value)
+        {
+            if (_cmp == null) return false;
+            foreach (var param in _cmp.ParamList)
+            {
+                if (param is VarParam vp &&
+                    vp.Vars.Count == 0 &&
+                    string.Equals(vp.Name, varName, StringComparison.OrdinalIgnoreCase))
+                {
+                    string old = vp.Value;
+                    vp.Value = value;
+                    GlobalModules.DebugLog($"[FORCEVAR] {vp.Name}: '{old}' -> '{value}'\n");
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         public bool LocalInputEvent(string text)
         {
             // Handle input from local client (for GETINPUT command)
@@ -3886,14 +3886,27 @@ namespace TWXProxy.Core
                         break;
                 }
                 
-                // After execution completes, check if a menu is still open
-                // If so, we need to re-pause the script and redisplay the menu
-                if (!completed && GlobalModules.TWXMenu is MenuManager menuMgr && menuMgr.IsMenuOpen())
+                // After execution completes, restore or clear suspended custom menus.
+                if (GlobalModules.TWXMenu is MenuManager menuMgr)
                 {
-                    Console.WriteLine($"[Script.LocalInputEvent] Menu still open after handler, re-pausing and redisplaying");
-                    _paused = true;
-                    _resetLoopDetectionOnNextExecute = true;
-                    menuMgr.RedisplayCurrentMenu();
+                    if (!completed && !_waitingForInput && !menuMgr.IsMenuOpen() && menuMgr.HasSuspendedMenu)
+                    {
+                        Console.WriteLine($"[Script.LocalInputEvent] Restoring suspended menu after input");
+                        _paused = true;
+                        _resetLoopDetectionOnNextExecute = true;
+                        menuMgr.RestoreSuspendedMenuIfNeeded();
+                    }
+                    else if (completed || _waitingForInput)
+                    {
+                        menuMgr.ClearSuspendedMenu();
+                    }
+                    else if (!completed && menuMgr.IsMenuOpen())
+                    {
+                        Console.WriteLine($"[Script.LocalInputEvent] Menu still open after handler, re-pausing and redisplaying");
+                        _paused = true;
+                        _resetLoopDetectionOnNextExecute = true;
+                        menuMgr.RedisplayCurrentMenu();
+                    }
                 }
                 
                 return completed;
