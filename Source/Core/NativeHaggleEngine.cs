@@ -78,6 +78,7 @@ public sealed class NativeHaggleEngine
     private string? _pendingBuySell;
     private long _lastKnownCredits;
     private int _lastKnownExperience = 1000;
+    private bool _suppressedForCurrentTrade;
 
     public NativeHaggleEngine()
     {
@@ -112,14 +113,12 @@ public sealed class NativeHaggleEngine
         return Enabled;
     }
 
-    public static bool IsNegotiationLine(string line)
+    public static bool IsOfferLine(string line)
     {
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
-        return RxHoldPrompt.IsMatch(line) ||
-               RxAgreed.IsMatch(line) ||
-               RxSellOffer.IsMatch(line) ||
+        return RxSellOffer.IsMatch(line) ||
                RxBuyOffer.IsMatch(line) ||
                RxFinalOffer.IsMatch(line);
     }
@@ -134,11 +133,15 @@ public sealed class NativeHaggleEngine
 
         if (RxCommandPrompt.IsMatch(line))
         {
+            _suppressedForCurrentTrade = false;
             Reset("command-prompt");
             return null;
         }
 
         if (!Enabled)
+            return null;
+
+        if (_suppressedForCurrentTrade)
             return null;
 
         if (line.Equals("<Port>", StringComparison.OrdinalIgnoreCase) ||
@@ -184,6 +187,12 @@ public sealed class NativeHaggleEngine
             return HandleOffer(ParseLong(finalMatch.Groups[1].Value), _session?.BuySell ?? string.Empty, finalOffer: true);
 
         return null;
+    }
+
+    public void SuppressCurrentTrade(string reason)
+    {
+        _suppressedForCurrentTrade = true;
+        Reset(reason);
     }
 
     private void UpdatePassiveState(string line)

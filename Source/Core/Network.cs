@@ -1498,10 +1498,12 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
-            if (scriptHandledLine && _nativeHaggle.Enabled && NativeHaggleEngine.IsNegotiationLine(line))
+            // A script touching the quantity prompt is not enough to prove it owns the haggle.
+            // Stand down only when a script actually handles an offer/final-offer line.
+            if (scriptHandledLine && _nativeHaggle.Enabled && NativeHaggleEngine.IsOfferLine(line))
             {
-                GlobalModules.DebugLog($"[NativeHaggle] Disabled because a script handled negotiation line: '{line}'\n");
-                _nativeHaggle.SetEnabled(false);
+                GlobalModules.DebugLog($"[NativeHaggle] Suppressed for current trade because a script handled offer line: '{line}'\n");
+                _nativeHaggle.SuppressCurrentTrade("script-owned-offer");
                 return;
             }
 
