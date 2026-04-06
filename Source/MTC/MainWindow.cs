@@ -59,6 +59,7 @@ public class MainWindow : Window
     private Menu            _menuBar       = new();
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
+    private readonly MTC.mbot.mbotService _mbot = new();
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
     private bool _nativeDockMenuAttached;
@@ -356,10 +357,13 @@ public class MainWindow : Window
         var viewDbItem = new MenuItem { Header = "_Database..." };
         viewDbItem.Click += (_, _) => OnViewDatabase();
 
+        var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
+        viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
+
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewClear, viewFont, viewDbItem },
+            Items  = { viewClear, viewFont, viewGameInfoItem, viewDbItem },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -403,6 +407,12 @@ public class MainWindow : Window
         var win = new SectorInfoWindow(
             () => _sessionDb,
             () => _state.Sector);
+        win.Show();
+    }
+
+    private void OnViewGameInfo()
+    {
+        var win = new GameInfoWindow(() => _sessionDb);
         win.Show();
     }
 
@@ -1002,6 +1012,37 @@ public class MainWindow : Window
         });
     }
 
+    private async Task OnAdvancedProxySettingsAsync()
+    {
+        await Task.Yield();
+
+        string gameName = _embeddedGameName ?? DeriveGameName();
+        if (string.IsNullOrWhiteSpace(gameName))
+            return;
+
+        EmbeddedGameConfig gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        var dialog = new AdvancedProxySettingsDialog(gameConfig.NativeHaggleMode);
+        bool saved = await dialog.ShowDialog<bool>(this);
+        if (!saved)
+            return;
+
+        string selectedMode = Core.NativeHaggleModes.Normalize(dialog.SelectedHaggleMode);
+        if (string.Equals(gameConfig.NativeHaggleMode, selectedMode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        gameConfig.NativeHaggleMode = selectedMode;
+        _embeddedGameConfig = gameConfig;
+        _embeddedGameName = gameName;
+        await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
+
+        if (_gameInstance != null)
+            _gameInstance.SetNativeHaggleMode(selectedMode);
+
+        _parser.Feed($"\x1b[1;36m[Native haggle mode: {selectedMode}]\x1b[0m\r\n");
+        _buffer.Dirty = true;
+        RebuildProxyMenu();
+    }
+
     // ── Menu actions ───────────────────────────────────────────────────────
 
     private async void OnConnect()
@@ -1238,6 +1279,7 @@ public class MainWindow : Window
         config.ScriptDirectory = string.IsNullOrWhiteSpace(config.ScriptDirectory)
             ? (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty)
             : config.ScriptDirectory;
+        config.NativeHaggleMode = Core.NativeHaggleModes.Normalize(config.NativeHaggleMode);
         config.AutoReconnect = _state.AutoReconnect;
         config.UseLogin = _state.UseLogin;
         config.UseRLogin = _state.UseRLogin;
@@ -1308,6 +1350,7 @@ public class MainWindow : Window
         config.DatabasePath = databasePath;
         if (string.IsNullOrWhiteSpace(config.ScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
             config.ScriptDirectory = _appPrefs.ScriptsDirectory;
+        config.NativeHaggleMode = Core.NativeHaggleModes.Normalize(config.NativeHaggleMode);
         config.AutoReconnect = profile.AutoReconnect;
         config.UseLogin = profile.UseLogin;
         config.UseRLogin = profile.UseRLogin;
@@ -1592,6 +1635,7 @@ public class MainWindow : Window
         gi.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
+        gi.SetNativeHaggleMode(gameConfig.NativeHaggleMode);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
         gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
 
@@ -1714,6 +1758,8 @@ public class MainWindow : Window
                 }
 
                 gi.ProcessNativeHaggleLine(lineStripped);
+                if (!string.IsNullOrWhiteSpace(lineStripped))
+                    _mbot.ObserveServerLine(lineStripped);
 
                 searchPos = crPos + 1;
                 lastProcessedPos = searchPos;
@@ -1797,6 +1843,7 @@ public class MainWindow : Window
         };
 
         _gameInstance = gi;
+        _mbot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mbot);
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
         OnNativeHaggleChanged(gi.NativeHaggleEnabled);
         AppPaths.EnsureDirectories();
@@ -1838,6 +1885,7 @@ public class MainWindow : Window
 
         var gi = _gameInstance;
         _gameInstance = null;
+        _mbot.DetachSession();
         var moduleHost = _moduleHost;
         _moduleHost = null;
         if (gi != null)
@@ -1893,6 +1941,7 @@ public class MainWindow : Window
                     cfg.DatabasePath = string.IsNullOrWhiteSpace(cfg.DatabasePath)
                         ? AppPaths.TwxproxyDatabasePathForGame(cfg.Name)
                         : cfg.DatabasePath;
+                    cfg.NativeHaggleMode = Core.NativeHaggleModes.Normalize(cfg.NativeHaggleMode);
                     cfg.Mtc ??= new EmbeddedMtcConfig();
                     cfg.Mtc.State ??= new EmbeddedMtcState();
                     return cfg;
@@ -1911,6 +1960,7 @@ public class MainWindow : Window
             DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName),
             ScriptDirectory = !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty,
             NativeHaggleEnabled = true,
+            NativeHaggleMode = Core.NativeHaggleModes.ClampHeuristic,
             UseLogin = _state.UseLogin,
             UseRLogin = _state.UseRLogin,
             LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
@@ -2372,6 +2422,11 @@ public class MainWindow : Window
         var loggingMenu = new MenuItem { Header = "_Logging", IsEnabled = hasGame };
         loggingMenu.ItemsSource = BuildProxyLoggingItems(canPlayCapture, hasGame);
         items.Add(loggingMenu);
+        items.Add(new Separator());
+
+        var advancedSettings = new MenuItem { Header = "_Advanced Settings…", IsEnabled = hasGame };
+        advancedSettings.Click += (_, _) => _ = OnAdvancedProxySettingsAsync();
+        items.Add(advancedSettings);
 
         return items;
     }
@@ -3389,6 +3444,7 @@ public class MainWindow : Window
 
         string gameName = GetEmbeddedGameName();
         var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        gameConfig.NativeHaggleMode = Core.NativeHaggleModes.Normalize(gameConfig.NativeHaggleMode);
         string previousHost = gameConfig.Host;
         int previousPort = gameConfig.Port;
 
@@ -3455,6 +3511,7 @@ public class MainWindow : Window
         _gameInstance.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         _gameInstance.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         _gameInstance.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
+        _gameInstance.SetNativeHaggleMode(gameConfig.NativeHaggleMode);
 
         bool endpointChanged = !string.Equals(previousHost, _state.Host, StringComparison.Ordinal) || previousPort != _state.Port;
         if (!_gameInstance.IsConnected && endpointChanged)

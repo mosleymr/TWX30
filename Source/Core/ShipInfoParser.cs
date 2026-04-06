@@ -90,6 +90,17 @@ public class ShipInfoParser
                 Updated?.Invoke(_s);
             }
         }
+
+        // ── Live credits/holds line seen during trading ───────────────────
+        {
+            var m = _rxCreditsAndEmptyHolds.Match(trimmed);
+            if (m.Success)
+            {
+                _s.Credits = ParseLong(m.Groups[1].Value);
+                _s.HoldsEmpty = ParseInt(m.Groups[2].Value);
+                Updated?.Invoke(_s);
+            }
+        }
     }
 
     // ── "/" one-liner parser ───────────────────────────────────────────────
@@ -154,6 +165,10 @@ public class ShipInfoParser
     // "Done. You have 837 fighter(s) in close support."
     private static readonly Regex _rxDoneFighters = new(
         @"^Done\.\s+You have ([\d,]+) fighter",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex _rxCreditsAndEmptyHolds = new(
+        @"^You have ([\d,]+) credits and (\d+) empty cargo holds\.",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxRankExp = new(

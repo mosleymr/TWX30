@@ -269,6 +269,52 @@ namespace TWXProxy.Core
             GlobalModules.Server?.Broadcast("\r\n\r\n");
         }
 
+        public (int TotalBubbles, int GappedBubbles, int SolidBubbles) GetBubbleCounts()
+        {
+            var database = GlobalModules.Database;
+            if (database == null)
+                return (0, 0, 0);
+
+            _bubbleList.Clear();
+            _totalBubbles = 0;
+            _gappedBubbles = 0;
+            _bubblesCovered = new byte[database.SectorCount];
+
+            for (int i = 1; i <= database.SectorCount; i++)
+            {
+                var s = database.LoadSector(i);
+                if (s == null)
+                    continue;
+
+                if (s.Warp[1] > 0 && _bubblesCovered[i - 1] == 0)
+                {
+                    CheckBubble(i, s.Warp[0]);
+                    CheckBubble(i, s.Warp[1]);
+
+                    if (s.Warp[2] > 0)
+                        CheckBubble(i, s.Warp[2]);
+                    if (s.Warp[3] > 0)
+                        CheckBubble(i, s.Warp[3]);
+                    if (s.Warp[4] > 0)
+                        CheckBubble(i, s.Warp[4]);
+                    if (s.Warp[5] > 0)
+                        CheckBubble(i, s.Warp[5]);
+                }
+            }
+
+            foreach (var bubble in _bubbleList)
+            {
+                if (_bubblesCovered[bubble.Gate - 1] != 0)
+                    continue;
+
+                _totalBubbles++;
+                if (bubble.Gapped)
+                    _gappedBubbles++;
+            }
+
+            return (_totalBubbles, _gappedBubbles, _totalBubbles - _gappedBubbles);
+        }
+
         public void ExportBubbles(StreamWriter writer)
         {
             _targetFile = writer;

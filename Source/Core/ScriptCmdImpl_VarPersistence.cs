@@ -278,6 +278,36 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Read the current game's shared savevar/loadvar value without going through a script.
+        /// </summary>
+        public static string GetCurrentGameVar(string name, string defaultValue = "")
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return defaultValue;
+
+            if (TryGetCompatibleVarValue(_currentGameVars, name, out string value, out _))
+                return value;
+
+            return defaultValue;
+        }
+
+        /// <summary>
+        /// Inject or override a global variable value in the shared loadglobal/saveglobal store.
+        /// Used by non-script subsystems that need to publish script-visible global state.
+        /// </summary>
+        public static void SetGlobalVar(string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+
+            _globalVars[name] = new GlobalVarEntry
+            {
+                Value = value ?? string.Empty,
+                Data = null
+            };
+        }
+
+        /// <summary>
         /// Remove the in-memory variable cache for a single script.
         /// Call this whenever a script is stopped or killed so its vars don't
         /// bleed across into a fresh run of the same (or another) script.

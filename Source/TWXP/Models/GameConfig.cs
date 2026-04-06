@@ -18,6 +18,7 @@ public class GameConfig
     public bool AutoReconnect { get; set; }
     public int ReconnectDelaySeconds { get; set; } = 5;
     public bool NativeHaggleEnabled { get; set; } = true;
+    public string NativeHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.ClampHeuristic;
     public bool UseCache { get; set; } = true;
     public int BubbleSize { get; set; } = 25;
     public bool LocalEcho { get; set; } = true;

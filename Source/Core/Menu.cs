@@ -1107,7 +1107,10 @@ namespace TWXProxy.Core
                 _lastScript = fullPath;
 
                 _currentMenu = MenuState.None;
-                await _gameInstance.SendMessageAsync("\r\n");
+
+                bool customScriptMenuOpen = GlobalModules.TWXMenu is MenuManager menuMgr && menuMgr.IsMenuOpen();
+                if (!customScriptMenuOpen)
+                    await _gameInstance.SendMessageAsync("\r\n");
             }
             catch (Exception ex)
             {

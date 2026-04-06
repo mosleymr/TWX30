@@ -188,6 +188,7 @@ namespace TWXProxy.Core
             }
         }
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
+        public string NativeHaggleMode => _nativeHaggle.FirstBidMode;
         public int NativeHaggleCompletedCount => _nativeHaggle.CompletedHaggles;
         public int NativeHaggleSuccessfulCount => _nativeHaggle.SuccessfulHaggles;
         public int NativeHaggleSuccessRatePercent => _nativeHaggle.SuccessRatePercent;
@@ -1511,6 +1512,11 @@ namespace TWXProxy.Core
         public void SetNativeHaggleEnabled(bool enabled)
         {
             _nativeHaggle.SetEnabled(enabled);
+        }
+
+        public void SetNativeHaggleMode(string? mode)
+        {
+            _nativeHaggle.SetFirstBidMode(mode);
         }
 
         public void SetCommandChar(char commandChar)

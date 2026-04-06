@@ -1825,6 +1825,17 @@ namespace TWXProxy.Core
                 string reference = parameters[4].Value;
                 string prompt = parameters[5].Value;
                 bool closeMenu = parameters[6].Value == "1";
+
+                if (script is Script menuScript &&
+                    !string.IsNullOrEmpty(reference) &&
+                    reference.StartsWith(':') &&
+                    menuScript.Compiler is ScriptCmp cmp)
+                {
+                    // Menu handlers can be defined inside include namespaces. Qualify
+                    // local label refs at addMenu time so later hotkey dispatch from
+                    // the root menu context still reaches the include-local handler.
+                    cmp.ExtendLabelName(ref reference, menuScript.ExecScript);
+                }
                 
                 if (GlobalModules.DebugMode)
                 {

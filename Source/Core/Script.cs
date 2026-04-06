@@ -2399,7 +2399,12 @@ namespace TWXProxy.Core
             }
             catch (Exception ex)
             {
-                GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                GlobalModules.DebugLog(
+                    $"[Array Access Error] base='{varParam.Name}' indexes=[{string.Join(", ", indexes)}] message='{ex.Message}'\n");
+                if (!ShouldSuppressArrayAccessError(ex.Message, indexes))
+                {
+                    GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                }
                 return baseParam;  // Return base param if index fails
             }
         }
@@ -2683,6 +2688,17 @@ namespace TWXProxy.Core
             }
         }
 
+        private static bool ShouldSuppressArrayAccessError(string message, IEnumerable<string> indexValues)
+        {
+            if (string.IsNullOrEmpty(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("Static array index '0' is out of range", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                   indexValues.Any(index => string.Equals(index, "0", StringComparison.Ordinal));
+        }
+
         private void FillPreparedIndexBuffer(PreparedParam[] indexes, string[] buffer)
         {
             switch (indexes.Length)
@@ -2814,7 +2830,12 @@ namespace TWXProxy.Core
             }
             catch (Exception ex)
             {
-                GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                GlobalModules.DebugLog(
+                    $"[Array Access Error] base='{varParam.Name}' indexes=[{string.Join(", ", indexValues)}] message='{ex.Message}'\n");
+                if (!ShouldSuppressArrayAccessError(ex.Message, indexValues))
+                {
+                    GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                }
                 return baseParam;
             }
             finally
@@ -3902,10 +3923,16 @@ namespace TWXProxy.Core
                     }
                     else if (!completed && menuMgr.IsMenuOpen())
                     {
-                        Console.WriteLine($"[Script.LocalInputEvent] Menu still open after handler, re-pausing and redisplaying");
+                        Console.WriteLine($"[Script.LocalInputEvent] Menu open after handler, re-pausing");
                         _paused = true;
                         _resetLoopDetectionOnNextExecute = true;
-                        menuMgr.RedisplayCurrentMenu();
+
+                        // If a handler explicitly reopened/redrew its menu (for example,
+                        // a GETINPUT handler ending with OPENMENU), Pascal does not emit
+                        // a second duplicate menu block. Only redisplay when a suspended
+                        // menu still needs restoring logic to finish the UI state.
+                        if (menuMgr.HasSuspendedMenu)
+                            menuMgr.RedisplayCurrentMenu();
                     }
                 }
                 

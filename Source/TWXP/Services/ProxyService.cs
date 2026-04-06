@@ -111,6 +111,7 @@ public class ProxyService : IProxyService
             gameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
             gameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
             gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
+            gameInstance.SetNativeHaggleMode(config.NativeHaggleMode);
             gameInstance.NativeHaggleChanged += enabled =>
             {
                 if (config.NativeHaggleEnabled == enabled)

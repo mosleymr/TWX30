@@ -213,6 +213,42 @@ namespace TWXProxy.Core
             @"^How many fighters do you want defending this sector\?\s+([\d,]+)\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxFighterHitReport = new(
+            @"Deployed Fighters Report Sector\s+(\d+)\s*:",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxLimpetHitReport = new(
+            @"Limpet mine in\s+(\d+)\s+activated",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxArmidHitReport = new(
+            @"Your mines in\s+(\d+)\s+did\s+",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDestroyedFigsSector = new(
+            @"fighters in sector\s+(\d+)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxLostCorpFigsSector = new(
+            @"^Your Corp's fighters in sector\s+(\d+)\s+lost\s+",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxLostPersonalFigsSector = new(
+            @"^Your fighters in sector\s+(\d+)\s+lost\s+",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxNoFigsSector = new(
+            @"^You do not have any fighters in Sector\s+(\d+)\.?",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPgridAdd = new(
+            @"^Successfully P-gridded(?: w/xport)? into sector\s+(\d+)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPgridRemove = new(
+            @"^Unsuccessful P-grid into sector\s+(\d+)\.",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // ── Public API ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -252,6 +288,9 @@ namespace TWXProxy.Core
                     return;
                 }
             }
+
+            if (TryProcessWatcherState(db, rawLine, trimmedLine))
+                return;
 
             // ── Warp-lane trigger — checked on the RAW line before Trim() ────
             // Pascal: Copy(Line, 1, 19) = 'The shortest path (' or Copy(Line, 1, 7) = '  TO > '
@@ -1072,6 +1111,215 @@ namespace TWXProxy.Core
         private static int ParseCommaInt(string text)
         {
             return int.TryParse(text.Replace(",", string.Empty, StringComparison.Ordinal), out int value) ? value : 0;
+        }
+
+        private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
+        {
+            if (ShouldIgnoreWatcherSpoofLine(rawLine))
+                return false;
+
+            if (trimmedLine.StartsWith("For getting caught your alignment went down by", StringComparison.OrdinalIgnoreCase))
+            {
+                int sector = ScriptRef.GetCurrentSector();
+                if (sector <= 0)
+                    return true;
+
+                db.SetSectorVar(sector, "BUSTED", "1");
+                GlobalModules.DebugLog($"[AutoRecorder] BUSTED sector={sector}\n");
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("(You realize the guards saw you last time!)", StringComparison.OrdinalIgnoreCase))
+            {
+                int sector = ScriptRef.GetCurrentSector();
+                if (sector <= 0)
+                    return true;
+
+                db.SetSectorVar(sector, "FAKEBUST", "1");
+                GlobalModules.DebugLog($"[AutoRecorder] FAKEBUST sector={sector}\n");
+                return true;
+            }
+
+            {
+                var m = _rxFighterHitReport.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    PublishLastHit("fighter", sector);
+                    return true;
+                }
+            }
+
+            {
+                var m = _rxLimpetHitReport.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    PublishLastHit("limpet", sector);
+                    return true;
+                }
+            }
+
+            {
+                var m = _rxArmidHitReport.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    PublishLastHit("armid", sector);
+                    return true;
+                }
+            }
+
+            if (trimmedLine.StartsWith("Should these be (D)efensive, (O)ffensive or Charge a (T)oll ?", StringComparison.OrdinalIgnoreCase))
+            {
+                int sector = ScriptRef.GetCurrentSector();
+                if (sector > 10)
+                    AddFigMarker(db, sector);
+                return true;
+            }
+
+            {
+                var m = _rxPgridAdd.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    AddFigMarker(db, sector);
+                    return true;
+                }
+            }
+
+            {
+                var m = _rxPgridRemove.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    RemoveFigMarker(db, sector);
+                    return true;
+                }
+            }
+
+            {
+                var m = _rxNoFigsSector.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    RemoveFigMarker(db, sector);
+                    return true;
+                }
+            }
+
+            if (_rxLostCorpFigsSector.IsMatch(trimmedLine) || _rxLostPersonalFigsSector.IsMatch(trimmedLine))
+            {
+                var m = _rxDestroyedFigsSector.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    RemoveFigMarker(db, sector);
+                    return true;
+                }
+            }
+
+            if (trimmedLine.StartsWith("The Federation We destroyed your Corp's", StringComparison.OrdinalIgnoreCase))
+            {
+                var m = _rxDestroyedFigsSector.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    db.SetSectorVar(sector, "MSLSEC", "1");
+                    RemoveFigMarker(db, sector);
+                    GlobalModules.DebugLog($"[AutoRecorder] Federation erased corp figs sector={sector} msl=1\n");
+                    return true;
+                }
+            }
+
+            if (trimmedLine.Contains(" of your fighters in sector ", StringComparison.OrdinalIgnoreCase) &&
+                trimmedLine.Contains(" destroyed ", StringComparison.OrdinalIgnoreCase))
+            {
+                var m = _rxDestroyedFigsSector.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sector))
+                {
+                    RemoveFigMarker(db, sector);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ShouldIgnoreWatcherSpoofLine(string line)
+        {
+            if (string.IsNullOrEmpty(line))
+                return false;
+
+            if (line.StartsWith("R ", StringComparison.Ordinal) ||
+                line.StartsWith("F ", StringComparison.Ordinal) ||
+                line.StartsWith("P ", StringComparison.Ordinal) ||
+                line.StartsWith("'", StringComparison.Ordinal) ||
+                line.StartsWith("`", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static void PublishLastHit(string hitType, int sector)
+        {
+            if (sector <= 0)
+                return;
+
+            ScriptRef.SetGlobalVar("$BOT~LAST_HIT_TYPE", hitType);
+            ScriptRef.SetGlobalVar("$BOT~LAST_HIT", sector.ToString());
+
+            switch (hitType)
+            {
+                case "fighter":
+                    ScriptRef.SetGlobalVar("$BOT~LAST_FIGHTER_HIT", sector.ToString());
+                    break;
+                case "limpet":
+                    ScriptRef.SetGlobalVar("$BOT~LAST_LIMPET_HIT", sector.ToString());
+                    break;
+                case "armid":
+                    ScriptRef.SetGlobalVar("$BOT~LAST_ARMID_HIT", sector.ToString());
+                    break;
+            }
+
+            GlobalModules.DebugLog($"[AutoRecorder] Last hit type={hitType} sector={sector}\n");
+        }
+
+        private static void AddFigMarker(ModDatabase db, int sector)
+        {
+            if (sector <= 0 || sector > db.SectorCount)
+                return;
+
+            bool alreadyPresent = IsSectorVarTrue(db, sector, "FIGSEC");
+            if (!alreadyPresent)
+            {
+                int count = GetSectorVarInt(db, 2, "FIG_COUNT");
+                db.SetSectorVar(2, "FIG_COUNT", (count + 1).ToString());
+            }
+
+            db.SetSectorVar(sector, "FIGSEC", "1");
+            GlobalModules.DebugLog($"[AutoRecorder] FIGSEC add sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
+        }
+
+        private static void RemoveFigMarker(ModDatabase db, int sector)
+        {
+            if (sector <= 0 || sector > db.SectorCount)
+                return;
+
+            bool alreadyPresent = IsSectorVarTrue(db, sector, "FIGSEC");
+            if (alreadyPresent)
+            {
+                int count = Math.Max(0, GetSectorVarInt(db, 2, "FIG_COUNT") - 1);
+                db.SetSectorVar(2, "FIG_COUNT", count.ToString());
+            }
+
+            db.SetSectorVar(sector, "FIGSEC", string.Empty);
+            GlobalModules.DebugLog($"[AutoRecorder] FIGSEC remove sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
+        }
+
+        private static bool IsSectorVarTrue(ModDatabase db, int sector, string name)
+        {
+            string value = db.GetSectorVar(sector, name);
+            return value == "1" || value.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int GetSectorVarInt(ModDatabase db, int sector, string name)
+        {
+            return int.TryParse(db.GetSectorVar(sector, name), out int value) ? value : 0;
         }
 
         // Returns the sector number on success (so caller can collect it), 0 on failure.

@@ -5,6 +5,32 @@ using System.Text.RegularExpressions;
 
 namespace TWXProxy.Core;
 
+public static class NativeHaggleModes
+{
+    public const string Baseline = "baseline";
+    public const string BlendHeuristic = "blend-heuristic";
+    public const string ClampHeuristic = "clamp-heuristic";
+
+    public static string Normalize(string? mode)
+    {
+        string normalized = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            Baseline => Baseline,
+            BlendHeuristic => BlendHeuristic,
+            ClampHeuristic => ClampHeuristic,
+            _ => ClampHeuristic,
+        };
+    }
+
+    public static IReadOnlyList<string> All { get; } = new[]
+    {
+        ClampHeuristic,
+        BlendHeuristic,
+        Baseline,
+    };
+}
+
 public sealed class NativeHaggleEngine
 {
     private sealed class Candidate
@@ -110,6 +136,7 @@ public sealed class NativeHaggleEngine
     private RetryHint? _retryHint;
     private int _completedHaggles;
     private int _successfulHaggles;
+    private string _firstBidMode = NativeHaggleModes.ClampHeuristic;
 
     public event Action? StatsChanged;
 
@@ -121,6 +148,8 @@ public sealed class NativeHaggleEngine
         _completedHaggles <= 0
             ? 0
             : (int)Math.Round((_successfulHaggles * 100.0) / _completedHaggles, MidpointRounding.AwayFromZero);
+
+    public string FirstBidMode => _firstBidMode;
 
     public NativeHaggleEngine()
     {
@@ -161,6 +190,11 @@ public sealed class NativeHaggleEngine
     {
         SetEnabled(!Enabled);
         return Enabled;
+    }
+
+    public void SetFirstBidMode(string? mode)
+    {
+        _firstBidMode = NativeHaggleModes.Normalize(mode);
     }
 
     public static bool IsOfferLine(string line)
@@ -539,7 +573,7 @@ public sealed class NativeHaggleEngine
             }
         }
 
-        long bid = ComputeBid(_session);
+        long bid = ComputeBid(_session, offer, GetActiveFirstBidMode());
         StageBid(_session, offer, bid, finalOffer);
 
         GlobalModules.DebugLog(
@@ -986,7 +1020,7 @@ public sealed class NativeHaggleEngine
         return session.Candidates.Count > 0;
     }
 
-    private static long ComputeBid(SessionState session)
+    private static long ComputeBid(SessionState session, long offer, string firstBidMode)
     {
         double minCounter = 0;
         double maxCounter = 0;
@@ -1044,7 +1078,60 @@ public sealed class NativeHaggleEngine
                 chosen += 1;
         }
 
-        return PascalRoundInt(chosen, 0);
+        long exactBid = PascalRoundInt(chosen, 0);
+        return ApplyExperimentalFirstBidMode(session, offer, exactBid, firstBidMode);
+    }
+
+    private static long ApplyExperimentalFirstBidMode(SessionState session, long offer, long exactBid, string firstBidMode)
+    {
+        if (session.BidNumber != 0)
+            return exactBid;
+
+        string mode = NativeHaggleModes.Normalize(firstBidMode);
+
+        if (mode == NativeHaggleModes.Baseline)
+            return exactBid;
+
+        long heuristicBid = ComputeHeuristicBid(session, offer);
+        long adjustedBid = mode switch
+        {
+            NativeHaggleModes.BlendHeuristic => PascalRoundInt((exactBid + heuristicBid) / 2.0, 0),
+            NativeHaggleModes.ClampHeuristic => string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase)
+                ? Math.Max(exactBid, heuristicBid)
+                : Math.Min(exactBid, heuristicBid),
+            _ => exactBid,
+        };
+
+        adjustedBid = NormalizeBidForDirection(session, offer, adjustedBid);
+        if (adjustedBid != exactBid)
+        {
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Experiment '{mode}' adjusted first bid exact={exactBid} heuristic={heuristicBid} adjusted={adjustedBid} offer={offer} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
+        }
+
+        return adjustedBid;
+    }
+
+    private string GetActiveFirstBidMode()
+    {
+        string? overrideMode = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXPERIMENT");
+        return string.IsNullOrWhiteSpace(overrideMode)
+            ? _firstBidMode
+            : NativeHaggleModes.Normalize(overrideMode);
+    }
+
+    private static long NormalizeBidForDirection(SessionState session, long offer, long bid)
+    {
+        if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+        {
+            if (bid >= offer)
+                bid = offer - 1;
+            return Math.Max(1, bid);
+        }
+
+        if (bid <= offer)
+            bid = offer + 1;
+        return Math.Max(offer + 1, bid);
     }
 
     private static void PersistDerivedRanges(SessionState session)
