@@ -21,6 +21,24 @@ internal sealed record mbotDispatchResult(
     string Message,
     string? ScriptReference = null);
 
+internal sealed record mbotStatusSnapshot(
+    bool Enabled,
+    bool AutoStart,
+    bool IsAttached,
+    bool WatcherEnabled,
+    bool WatcherAttached,
+    bool AcceptSelfCommands,
+    bool AcceptSubspaceCommands,
+    bool AcceptPrivateCommands,
+    string BotName,
+    string TeamName,
+    int SubspaceChannel,
+    int CurrentSector,
+    string Mode,
+    string ScriptRoot,
+    string LastLoadedModule,
+    IReadOnlyList<string> AuthorizedUsers);
+
 internal sealed class mbotService
 {
     private Core.GameInstance? _gameInstance;
@@ -51,6 +69,8 @@ internal sealed class mbotService
         _database = database;
         _interpreter = interpreter;
         _config = config ?? new mbotConfig();
+        if (_config.AutoStart)
+            _config.Enabled = true;
         ResetAuthorizedUsers();
 
         if (_config.WatcherEnabled)
@@ -124,6 +144,57 @@ internal sealed class mbotService
     public bool TryResolveInitialCommand(string input, out mbotCommandSpec? command, out string canonical)
     {
         return mbotCatalog.TryResolveInitialCommand(input, out command, out canonical);
+    }
+
+    public mbotStatusSnapshot GetStatusSnapshot()
+    {
+        mbotSettings settings = Settings;
+        string mode = Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General");
+        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+
+        return new mbotStatusSnapshot(
+            Enabled: _config.Enabled,
+            AutoStart: _config.AutoStart,
+            IsAttached: IsAttached,
+            WatcherEnabled: _config.WatcherEnabled,
+            WatcherAttached: Watcher.IsAttached,
+            AcceptSelfCommands: _config.AcceptSelfCommands,
+            AcceptSubspaceCommands: _config.AcceptSubspaceCommands,
+            AcceptPrivateCommands: _config.AcceptPrivateCommands,
+            BotName: settings.BotName,
+            TeamName: settings.TeamName,
+            SubspaceChannel: settings.SubspaceChannel,
+            CurrentSector: Core.ScriptRef.GetCurrentSector(),
+            Mode: string.IsNullOrWhiteSpace(mode) ? "General" : mode,
+            ScriptRoot: _config.ScriptRoot,
+            LastLoadedModule: lastLoadedModule,
+            AuthorizedUsers: _authorizedUsers
+                .OrderBy(user => user, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    public bool TryExecuteLocalInput(string input, out IReadOnlyList<mbotDispatchResult> results)
+    {
+        results = Array.Empty<mbotDispatchResult>();
+        if (string.IsNullOrWhiteSpace(input))
+            return false;
+
+        string trimmed = input.Trim();
+        if (TryParseLocalSelfCommand(trimmed, out mbotCommandContext? context) && context != null)
+        {
+            if (context.CommandLine.Length == 0)
+            {
+                mbotSettings settings = Settings;
+                PublishMessage($"mbot: you are logged into this bot. Use {settings.BotName} help for commands.");
+                return true;
+            }
+
+            results = ExecuteCommandLine(context.CommandLine, selfCommand: true, route: "local", userName: "self");
+            return true;
+        }
+
+        results = ExecuteCommandLine(trimmed, selfCommand: true, route: "local", userName: "self");
+        return true;
     }
 
     public bool ObserveServerLine(string line)
@@ -330,12 +401,11 @@ internal sealed class mbotService
 
     private mbotDispatchResult ExecuteBotStatus(string canonical)
     {
-        mbotSettings settings = Settings;
-        int currentSector = Core.ScriptRef.GetCurrentSector();
-        PublishMessage($"mbot: enabled={Enabled} attached={IsAttached} sector={currentSector}");
-        PublishMessage($"mbot: botname={settings.BotName} team={settings.TeamName} subspace={settings.SubspaceChannel}");
-        PublishMessage($"mbot: self={_config.AcceptSelfCommands} subspaceCmds={_config.AcceptSubspaceCommands} private={_config.AcceptPrivateCommands}");
-        PublishMessage($"mbot: scriptRoot={_config.ScriptRoot}");
+        mbotStatusSnapshot snapshot = GetStatusSnapshot();
+        PublishMessage($"mbot: enabled={snapshot.Enabled} autostart={snapshot.AutoStart} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
+        PublishMessage($"mbot: botname={snapshot.BotName} team={snapshot.TeamName} subspace={snapshot.SubspaceChannel} mode={snapshot.Mode}");
+        PublishMessage($"mbot: self={snapshot.AcceptSelfCommands} subspaceCmds={snapshot.AcceptSubspaceCommands} private={snapshot.AcceptPrivateCommands} authUsers={snapshot.AuthorizedUsers.Count}");
+        PublishMessage($"mbot: scriptRoot={snapshot.ScriptRoot}");
         return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, "mbot displayed bot status.");
     }
 
@@ -469,6 +539,25 @@ internal sealed class mbotService
         return false;
     }
 
+    private bool TryParseLocalSelfCommand(string line, out mbotCommandContext? context)
+    {
+        context = null;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        mbotSettings settings = Settings;
+        if (TryParseOwnCommand(line, settings.BotName, out context))
+            return true;
+
+        if (!string.Equals(settings.TeamName, settings.BotName, StringComparison.OrdinalIgnoreCase) &&
+            TryParseOwnCommand(line, settings.TeamName, out context))
+        {
+            return true;
+        }
+
+        return TryParseOwnCommand(line, "all", out context);
+    }
+
     private static bool TryParseOwnCommand(string line, string targetName, out mbotCommandContext? context)
     {
         context = null;
@@ -486,14 +575,16 @@ internal sealed class mbotService
             return true;
         }
 
-        List<string> words = GetWords(remainder.ToLowerInvariant());
+        List<string> words = GetWords(remainder);
         if (words.Count == 0)
             return false;
 
+        string commandName = words[0];
+        List<string> parameters = words.Skip(1).Take(8).ToList();
         context = new mbotCommandContext(
-            remainder.ToLowerInvariant(),
-            words[0],
-            words.Skip(1).Take(8).ToList(),
+            BuildNormalizedCommandLine(commandName, parameters),
+            commandName,
+            parameters,
             true,
             "self",
             "self");
@@ -506,7 +597,7 @@ internal sealed class mbotService
         if (!TryParseFixedWidthCommand(line, routePrefix, out string userName, out string payload))
             return false;
 
-        List<string> words = GetWords(payload.ToLowerInvariant());
+        List<string> words = GetWords(payload);
         if (words.Count == 0 || !string.Equals(words[0], targetName, StringComparison.OrdinalIgnoreCase))
             return false;
 

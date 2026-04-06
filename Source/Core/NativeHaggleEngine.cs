@@ -719,12 +719,18 @@ public sealed class NativeHaggleEngine
             return;
 
         double bid = session.LastCounter;
-        session.HiddenTotalMin = (session.HiddenTotalMin * 0.7) + (bid * 0.3);
-        session.HiddenTotalMax = (session.HiddenTotalMax * 0.7) + (bid * 0.3);
+        session.HiddenTotalMin = AdvanceServerHiddenTotal(session.HiddenTotalMin, bid);
+        session.HiddenTotalMax = AdvanceServerHiddenTotal(session.HiddenTotalMax, bid);
         session.HiddenTotalAppliedBidNumber = session.BidNumber;
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] Hidden tracker advance bidNumber={session.BidNumber} lastCounter={session.LastCounter} total={session.HiddenTotalMin:0.000000}..{session.HiddenTotalMax:0.000000}\n");
+    }
+
+    private static double AdvanceServerHiddenTotal(double priorTotal, double acceptedBid)
+    {
+        // Mirrors the 0x004594F5 hidden-basis update: 0.7 * priorTotal + 0.1 * acceptedBid.
+        return (priorTotal * 0.7) + (acceptedBid * 0.1);
     }
 
     private static (double MinTotal, double MaxTotal) GetHiddenTotalRangeFromCandidates(SessionState session)
@@ -765,26 +771,72 @@ public sealed class NativeHaggleEngine
 
     private static IReadOnlyList<int> GetServerSeedQuantityCandidates(SessionState session, double signedTrade)
     {
-        List<int> quantities = new(4);
+        List<int> quantities = new(16);
         AddUniqueQuantity(quantities, session.PortQty);
 
         if (session.Percent <= 0)
             return quantities;
 
         int capQty = Math.Max(0, session.Percent * 10);
-        if (!string.Equals(session.ProductKey, "FUEL", StringComparison.OrdinalIgnoreCase))
-        {
-            double productFactor = string.Equals(session.ProductKey, "ORGANICS", StringComparison.OrdinalIgnoreCase) ? 0.2 : 0.3;
-            int baseShift = Math.Max(0, (int)Math.Round(session.Percent * productFactor, MidpointRounding.AwayFromZero));
-            int lowShift = Math.Max(0, baseShift - 1);
-            int highShift = baseShift + 1;
+        AddUniqueQuantity(quantities, capQty);
 
-            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, lowShift);
-            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, baseShift);
-            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, highShift);
+        if (string.Equals(session.ProductKey, "FUEL", StringComparison.OrdinalIgnoreCase))
+            return quantities;
+
+        foreach (double factor1 in GetServerSeedFactor1Candidates(session))
+        {
+            foreach (double factor2 in GetServerSeedFactor2Candidates())
+            {
+                double deltaBase = session.Percent * factor1 * factor2;
+                AddAdjustedSeedQuantityVariants(quantities, session.PortQty, capQty, signedTrade, deltaBase);
+            }
         }
 
         return quantities;
+    }
+
+    private static IReadOnlyList<double> GetServerSeedFactor1Candidates(SessionState session)
+    {
+        double baseFactor = string.Equals(session.ProductKey, "ORGANICS", StringComparison.OrdinalIgnoreCase) ? 0.2 : 0.3;
+
+        return new[]
+        {
+            baseFactor,
+            Math.Max(baseFactor, 0.25),
+            Math.Max(baseFactor, 1.0 / 3.0),
+            Math.Max(baseFactor, 0.5),
+            Math.Max(baseFactor, 2.0 / 3.0),
+            Math.Max(baseFactor, 1.0),
+        };
+    }
+
+    private static IReadOnlyList<double> GetServerSeedFactor2Candidates() => new[]
+    {
+        0.5,
+        0.75,
+        1.0,
+        1.25,
+        1.5,
+    };
+
+    private static void AddAdjustedSeedQuantityVariants(List<int> quantities, int rawQty, int capQty, double signedTrade, double deltaBase)
+    {
+        if (deltaBase < 0)
+            return;
+
+        int rounded = Math.Max(0, (int)Math.Round(deltaBase, MidpointRounding.AwayFromZero));
+        int floored = Math.Max(0, (int)Math.Floor(deltaBase));
+        int ceiled = Math.Max(0, (int)Math.Ceiling(deltaBase));
+
+        AddAdjustedSeedQuantity(quantities, rawQty, capQty, signedTrade, floored);
+        AddAdjustedSeedQuantity(quantities, rawQty, capQty, signedTrade, rounded);
+        AddAdjustedSeedQuantity(quantities, rawQty, capQty, signedTrade, ceiled);
+
+        if (rounded > 0)
+        {
+            AddAdjustedSeedQuantity(quantities, rawQty, capQty, signedTrade, rounded - 1);
+            AddAdjustedSeedQuantity(quantities, rawQty, capQty, signedTrade, rounded + 1);
+        }
     }
 
     private static void AddAdjustedSeedQuantity(List<int> quantities, int rawQty, int capQty, double signedTrade, int shift)
@@ -1199,7 +1251,7 @@ public sealed class NativeHaggleEngine
         var next = new List<Candidate>();
         foreach (Candidate candidate in session.Candidates)
         {
-            double exactCounter = ((session.LastCounter - candidate.ExactPrice) * 0.3) + candidate.ExactPrice;
+            double exactCounter = AdvanceServerHiddenTotal(candidate.ExactPrice, session.LastCounter);
             long projected = PascalRoundInt((((candidate.Mcic / 1000.0) + candidate.Variance) + 1.0) * exactCounter, 0);
             if (projected != offer)
                 continue;
@@ -2422,7 +2474,7 @@ public sealed class NativeHaggleEngine
         for (int i = 0; i < limit; i++)
         {
             Candidate candidate = prior[i];
-            double exactCounter = ((session.LastCounter - candidate.ExactPrice) * 0.3) + candidate.ExactPrice;
+            double exactCounter = AdvanceServerHiddenTotal(candidate.ExactPrice, session.LastCounter);
             long projected = PascalRoundInt((((candidate.Mcic / 1000.0) + candidate.Variance) + 1.0) * exactCounter, 0);
             long delta = projected - offer;
             GlobalModules.DebugLog(
