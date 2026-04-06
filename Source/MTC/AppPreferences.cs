@@ -29,6 +29,9 @@ public class AppPreferences
     /// <summary>When true, VM load/execute metrics are written to the shared log.</summary>
     public bool VmMetricsEnabled { get; set; } = true;
 
+    /// <summary>Global native haggle mode used by MTC across all games.</summary>
+    public string NativeHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.ClampHeuristic;
+
     // ── Paths ──────────────────────────────────────────────────────────────
 
     private static string DefaultPath()
@@ -74,6 +77,7 @@ public class AppPreferences
                     new XElement("VerboseDebugLogging", VerboseDebugLogging),
                     new XElement("PreparedVmEnabled", PreparedVmEnabled),
                     new XElement("VmMetricsEnabled", VmMetricsEnabled),
+                    new XElement("NativeHaggleMode", NativeHaggleMode),
                     new XElement("RecentFiles",
                         RecentFiles.Select(p => new XElement("File", p))
                     )
@@ -112,6 +116,9 @@ public class AppPreferences
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
+
+            string? nativeHaggleMode = (string?)root.Element("NativeHaggleMode");
+            prefs.NativeHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(nativeHaggleMode);
 
             foreach (var el in root.Element("RecentFiles")?.Elements("File")
                                    ?? Enumerable.Empty<XElement>())

@@ -22,8 +22,8 @@ public static class AppPaths
     /// <summary>Legacy pre-3.0 MTC-only database directory used for one-time migration.</summary>
     public static string LegacyDatabaseDir => Path.Combine(_legacyLocalAppDataDir, "databases");
 
-    /// <summary>Directory where session/capture logs are stored.</summary>
-    public static string LogDir => Core.SharedPaths.LogDir;
+    /// <summary>Directory where session/capture logs are stored for the active TWX program directory.</summary>
+    public static string LogDir => GetDebugLogDir();
 
     /// <summary>Directory where MTC debug logs are stored for the active TWX program directory.</summary>
     public static string DebugLogDir => Path.Combine(GetEffectiveProgramDir(), "logs");

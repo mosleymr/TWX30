@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text.RegularExpressions;
 
 namespace TWXProxy.Core;
@@ -10,6 +11,8 @@ public static class NativeHaggleModes
     public const string Baseline = "baseline";
     public const string BlendHeuristic = "blend-heuristic";
     public const string ClampHeuristic = "clamp-heuristic";
+    public const string ServerDerived = "server-derived";
+    public const string ExcellentTarget = "excellent-target";
 
     public static string Normalize(string? mode)
     {
@@ -19,6 +22,8 @@ public static class NativeHaggleModes
             Baseline => Baseline,
             BlendHeuristic => BlendHeuristic,
             ClampHeuristic => ClampHeuristic,
+            ServerDerived => ServerDerived,
+            ExcellentTarget => ExcellentTarget,
             _ => ClampHeuristic,
         };
     }
@@ -27,6 +32,8 @@ public static class NativeHaggleModes
     {
         ClampHeuristic,
         BlendHeuristic,
+        ServerDerived,
+        ExcellentTarget,
         Baseline,
     };
 }
@@ -45,6 +52,8 @@ public sealed class NativeHaggleEngine
     private sealed class SessionState
     {
         public int Sector { get; set; }
+        public string RouteKey { get; set; } = string.Empty;
+        public string ActiveMode { get; set; } = string.Empty;
         public string Weekday { get; set; } = "Sat";
         public string ProductKey { get; set; } = string.Empty;
         public ProductType ProductType { get; set; }
@@ -80,7 +89,16 @@ public sealed class NativeHaggleEngine
         public long PendingBidOffer { get; set; }
         public bool PendingBidFinalOffer { get; set; }
         public bool OutcomeRecorded { get; set; }
+        public string RewardTier { get; set; } = string.Empty;
+        public int RewardExperience { get; set; }
+        public bool EmpiricalProbeApplied { get; set; }
+        public int EmpiricalProbeNudge { get; set; }
+        public double HiddenTotalMin { get; set; }
+        public double HiddenTotalMax { get; set; }
+        public int HiddenTotalAppliedBidNumber { get; set; }
         public List<Candidate> Candidates { get; } = new();
+
+        public bool HasHiddenTotalRange => HiddenTotalMin > 0 && HiddenTotalMax > 0 && HiddenTotalMin <= HiddenTotalMax;
     }
 
     private sealed class RetryHint
@@ -88,6 +106,23 @@ public sealed class NativeHaggleEngine
         public int Sector { get; set; }
         public string ProductKey { get; set; } = string.Empty;
         public string BuySell { get; set; } = string.Empty;
+    }
+
+    private sealed class ExcellentRouteState
+    {
+        public int GreatStreak { get; set; }
+        public int Cooldown { get; set; }
+        public int SuccessfulProbeCount { get; set; }
+        public int FailedProbeCount { get; set; }
+        public int NearExcellentCount { get; set; }
+        public int EarlyTowardOfferBias { get; set; }
+    }
+
+    private enum ServerProbeBranch
+    {
+        HiddenOverBid,
+        BidOverHidden,
+        Overlap,
     }
 
     private static readonly Regex RxCommandPrompt = new(@"command \[tl=", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -101,7 +136,7 @@ public sealed class NativeHaggleEngine
         @"receive (\d+) experience point",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxTradeSuccess = new(
-        @"^For your (?:good|great) trading you receive",
+        @"^For your (good|great|excellent) trading you receive ([\d,]+) experience point",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxHoldPrompt = new(
         @"^How many holds of (Fuel Ore|Organics|Equipment) do you want to (buy|sell) \[(\d+)\]\?",
@@ -136,13 +171,23 @@ public sealed class NativeHaggleEngine
     private RetryHint? _retryHint;
     private int _completedHaggles;
     private int _successfulHaggles;
+    private int _goodRewardCount;
+    private int _greatRewardCount;
+    private int _excellentRewardCount;
     private string _firstBidMode = NativeHaggleModes.ClampHeuristic;
+    private readonly Dictionary<string, ExcellentRouteState> _excellentRouteStates = new(StringComparer.OrdinalIgnoreCase);
 
     public event Action? StatsChanged;
 
     public int CompletedHaggles => _completedHaggles;
 
     public int SuccessfulHaggles => _successfulHaggles;
+
+    public int GoodRewardCount => _goodRewardCount;
+
+    public int GreatRewardCount => _greatRewardCount;
+
+    public int ExcellentRewardCount => _excellentRewardCount;
 
     public int SuccessRatePercent =>
         _completedHaggles <= 0
@@ -296,9 +341,33 @@ public sealed class NativeHaggleEngine
 
     private void UpdatePassiveState(string line)
     {
-        if (RxTradeSuccess.IsMatch(line))
+        Match tradeSuccessMatch = RxTradeSuccess.Match(line);
+        if (tradeSuccessMatch.Success)
         {
-            RecordOutcome(success: true, "trade-success-line");
+            string rewardTier = tradeSuccessMatch.Groups[1].Value.Trim().ToLowerInvariant();
+            int rewardExperience = ParseInt(tradeSuccessMatch.Groups[2].Value);
+            if (_session != null)
+            {
+                _session.RewardTier = rewardTier;
+                _session.RewardExperience = rewardExperience;
+            }
+
+            switch (rewardTier)
+            {
+                case "excellent":
+                    _excellentRewardCount++;
+                    break;
+                case "great":
+                    _greatRewardCount++;
+                    break;
+                case "good":
+                    _goodRewardCount++;
+                    break;
+            }
+
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Reward line tier='{rewardTier}' exp={rewardExperience} text='{line}'\n");
+            RecordOutcome(success: true, $"trade-success-line:{rewardTier}");
         }
 
         Match creditsMatch = RxCredits.Match(line);
@@ -368,6 +437,8 @@ public sealed class NativeHaggleEngine
         _session.ProductKey = _pendingProductKey;
         _session.ProductType = _pendingProductType;
         _session.BuySell = _pendingBuySell;
+        _session.RouteKey = BuildRouteKey(sector, _pendingProductKey, _pendingBuySell);
+        _session.ActiveMode = GetActiveFirstBidMode();
         _session.TradeQty = tradeQty;
         _session.PortQty = port.ProductAmount.GetValueOrDefault(_pendingProductType);
         _session.Percent = port.ProductPercent.GetValueOrDefault(_pendingProductType);
@@ -382,6 +453,13 @@ public sealed class NativeHaggleEngine
         _session.PendingBidOffer = 0;
         _session.PendingBidFinalOffer = false;
         _session.OutcomeRecorded = false;
+        _session.RewardTier = string.Empty;
+        _session.RewardExperience = 0;
+        _session.EmpiricalProbeApplied = false;
+        _session.EmpiricalProbeNudge = 0;
+        _session.HiddenTotalMin = 0;
+        _session.HiddenTotalMax = 0;
+        _session.HiddenTotalAppliedBidNumber = 0;
         _session.StartCredits = ResolveStartingCredits();
         _session.StartEmptyHolds = ResolveStartingEmptyHolds();
         _session.Candidates.Clear();
@@ -573,7 +651,9 @@ public sealed class NativeHaggleEngine
             }
         }
 
-        long bid = ComputeBid(_session, offer, GetActiveFirstBidMode());
+        UpdateHiddenTotalTracker(_session);
+
+        long bid = ComputeBid(_session, offer, _session.ActiveMode);
         StageBid(_session, offer, bid, finalOffer);
 
         GlobalModules.DebugLog(
@@ -598,9 +678,10 @@ public sealed class NativeHaggleEngine
         _session.BidNumber++;
         _session.LastCounter = bid;
         _session.LastOffer = offer;
+        string probe = DescribePredictedProbe(_session, bid);
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Prompt offer={offer} final={finalOffer} bidNumber={_session.BidNumber} bid={bid}\n");
+            $"[NativeHaggle] Prompt offer={offer} final={finalOffer} bidNumber={_session.BidNumber} bid={bid} {probe}\n");
         return bid.ToString(CultureInfo.InvariantCulture);
     }
 
@@ -610,6 +691,129 @@ public sealed class NativeHaggleEngine
         session.PendingBidOffer = offer;
         session.PendingBidFinalOffer = finalOffer;
     }
+
+    private static void UpdateHiddenTotalTracker(SessionState session)
+    {
+        ApplyAcceptedBidToHiddenTotalTracker(session);
+
+        if (session.HasHiddenTotalRange)
+            return;
+
+        (double hiddenMin, double hiddenMax) = GetHiddenTotalRangeFromCandidates(session);
+        if (hiddenMin <= 0 || hiddenMax <= 0 || hiddenMin > hiddenMax)
+            return;
+
+        session.HiddenTotalMin = hiddenMin;
+        session.HiddenTotalMax = hiddenMax;
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Hidden tracker init total={hiddenMin:0.000000}..{hiddenMax:0.000000} candidates={session.Candidates.Count}\n");
+    }
+
+    private static void ApplyAcceptedBidToHiddenTotalTracker(SessionState session)
+    {
+        if (!session.HasHiddenTotalRange || session.BidNumber <= 0 || session.LastCounter <= 0)
+            return;
+
+        if (session.HiddenTotalAppliedBidNumber >= session.BidNumber)
+            return;
+
+        double bid = session.LastCounter;
+        session.HiddenTotalMin = (session.HiddenTotalMin * 0.7) + (bid * 0.3);
+        session.HiddenTotalMax = (session.HiddenTotalMax * 0.7) + (bid * 0.3);
+        session.HiddenTotalAppliedBidNumber = session.BidNumber;
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Hidden tracker advance bidNumber={session.BidNumber} lastCounter={session.LastCounter} total={session.HiddenTotalMin:0.000000}..{session.HiddenTotalMax:0.000000}\n");
+    }
+
+    private static (double MinTotal, double MaxTotal) GetHiddenTotalRangeFromCandidates(SessionState session)
+    {
+        if (session.Candidates.Count == 0 || session.TradeQty <= 0 || session.Percent <= 0)
+            return (0, 0);
+
+        double minTotal = double.MaxValue;
+        double maxTotal = double.MinValue;
+        double baseCommodity = GetServerCommodityBasePrice(session);
+
+        foreach (Candidate candidate in session.Candidates)
+        {
+            double signedTrade = candidate.Mcic;
+            foreach (int adjustedQty in GetServerSeedQuantityCandidates(session, signedTrade))
+            {
+                double adjustment = signedTrade < 0
+                    ? (((((session.Percent * 10.0) - adjustedQty) * signedTrade) / session.Percent) / 1000.0)
+                    : ((((adjustedQty * signedTrade) / session.Percent) / 1000.0));
+
+                double basisPerUnit = (baseCommodity * (1.0 - adjustment)) + 0.5;
+                if (basisPerUnit <= 0)
+                    continue;
+
+                double hiddenTotal = basisPerUnit * session.TradeQty;
+                if (hiddenTotal < minTotal)
+                    minTotal = hiddenTotal;
+                if (hiddenTotal > maxTotal)
+                    maxTotal = hiddenTotal;
+            }
+        }
+
+        if (minTotal == double.MaxValue || maxTotal == double.MinValue)
+            return (0, 0);
+
+        return (minTotal, maxTotal);
+    }
+
+    private static IReadOnlyList<int> GetServerSeedQuantityCandidates(SessionState session, double signedTrade)
+    {
+        List<int> quantities = new(4);
+        AddUniqueQuantity(quantities, session.PortQty);
+
+        if (session.Percent <= 0)
+            return quantities;
+
+        int capQty = Math.Max(0, session.Percent * 10);
+        if (!string.Equals(session.ProductKey, "FUEL", StringComparison.OrdinalIgnoreCase))
+        {
+            double productFactor = string.Equals(session.ProductKey, "ORGANICS", StringComparison.OrdinalIgnoreCase) ? 0.2 : 0.3;
+            int baseShift = Math.Max(0, (int)Math.Round(session.Percent * productFactor, MidpointRounding.AwayFromZero));
+            int lowShift = Math.Max(0, baseShift - 1);
+            int highShift = baseShift + 1;
+
+            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, lowShift);
+            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, baseShift);
+            AddAdjustedSeedQuantity(quantities, session.PortQty, capQty, signedTrade, highShift);
+        }
+
+        return quantities;
+    }
+
+    private static void AddAdjustedSeedQuantity(List<int> quantities, int rawQty, int capQty, double signedTrade, int shift)
+    {
+        int adjustedQty = signedTrade < 0
+            ? rawQty - shift
+            : rawQty + shift;
+
+        if (adjustedQty < 0)
+            adjustedQty = 0;
+
+        if (adjustedQty > capQty)
+            adjustedQty = capQty;
+
+        AddUniqueQuantity(quantities, adjustedQty);
+    }
+
+    private static void AddUniqueQuantity(List<int> quantities, int quantity)
+    {
+        if (!quantities.Contains(quantity))
+            quantities.Add(quantity);
+    }
+
+    private static double GetServerCommodityBasePrice(SessionState session) => session.ProductKey switch
+    {
+        "FUEL" => 25.0,
+        "ORGANICS" => 50.0,
+        _ => 90.0,
+    };
 
     private static ShipStatus CloneStatus(ShipStatus status) => new()
     {
@@ -1020,7 +1224,19 @@ public sealed class NativeHaggleEngine
         return session.Candidates.Count > 0;
     }
 
-    private static long ComputeBid(SessionState session, long offer, string firstBidMode)
+    private long ComputeBid(SessionState session, long offer, string firstBidMode)
+    {
+        string mode = NativeHaggleModes.Normalize(firstBidMode);
+        if (mode == NativeHaggleModes.ServerDerived)
+            return ComputeServerDerivedBid(session, offer);
+        if (mode == NativeHaggleModes.ExcellentTarget)
+            return ComputeExcellentTargetBid(session, offer);
+
+        long exactBid = ComputeExactBid(session);
+        return ApplyExperimentalFirstBidMode(session, offer, exactBid, mode);
+    }
+
+    private static long ComputeExactBid(SessionState session)
     {
         double minCounter = 0;
         double maxCounter = 0;
@@ -1078,8 +1294,7 @@ public sealed class NativeHaggleEngine
                 chosen += 1;
         }
 
-        long exactBid = PascalRoundInt(chosen, 0);
-        return ApplyExperimentalFirstBidMode(session, offer, exactBid, firstBidMode);
+        return PascalRoundInt(chosen, 0);
     }
 
     private static long ApplyExperimentalFirstBidMode(SessionState session, long offer, long exactBid, string firstBidMode)
@@ -1111,6 +1326,656 @@ public sealed class NativeHaggleEngine
 
         return adjustedBid;
     }
+
+    private static long ComputeServerDerivedBid(SessionState session, long offer)
+    {
+        return ComputeServerDerivedBid(session, offer, NativeHaggleModes.ClampHeuristic);
+    }
+
+    private static long ComputeServerDerivedBid(SessionState session, long offer, string firstBidMode)
+    {
+        if (session.Candidates.Count == 0)
+            return NormalizeBidForDirection(session, offer, offer);
+
+        long exactBid = ComputeExactBid(session);
+        long overlayBid = session.BidNumber == 0
+            ? ApplyExperimentalFirstBidMode(session, offer, exactBid, firstBidMode)
+            : exactBid;
+
+        int roundNumber = Math.Max(1, session.BidNumber + 1);
+        double chosenThreshold = 0;
+        bool initialized = false;
+
+        foreach (Candidate candidate in session.Candidates)
+        {
+            double threshold = candidate.ExactPrice * (1.0 - ((candidate.Mcic / 250.0) / roundNumber));
+            if (!initialized)
+            {
+                chosenThreshold = threshold;
+                initialized = true;
+                continue;
+            }
+
+            if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+                chosenThreshold = Math.Max(chosenThreshold, threshold);
+            else
+                chosenThreshold = Math.Min(chosenThreshold, threshold);
+        }
+
+        long thresholdBid = PascalRoundInt(chosenThreshold, 0);
+        long bid = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase)
+            ? Math.Max(overlayBid, thresholdBid)
+            : Math.Min(overlayBid, thresholdBid);
+
+        bid = NormalizeBidForDirection(session, offer, bid);
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Server-derived bid round={roundNumber} offer={offer} exact={exactBid} overlay={overlayBid} threshold={chosenThreshold:0.000000} thresholdBid={thresholdBid} bid={bid} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
+        return bid;
+    }
+
+    private long ComputeExcellentTargetBid(SessionState session, long offer)
+    {
+        string firstBidMode = ReadExcellentTargetFirstBidMode();
+        long baseBid = ComputeServerDerivedBid(session, offer, firstBidMode);
+        if (session.Candidates.Count == 0)
+            return baseBid;
+
+        if (!session.FinalOffer)
+        {
+            int routeBias = 0;
+            if (session.BidNumber == 0 &&
+                !string.IsNullOrWhiteSpace(session.RouteKey) &&
+                _excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? routeState) &&
+                routeState.Cooldown <= 0)
+            {
+                routeBias = routeState.EarlyTowardOfferBias;
+            }
+
+            int soften = session.BidNumber == 0
+                ? ReadExcellentTargetFirstSoften()
+                : ReadExcellentTargetMidSoften();
+
+            long bid = baseBid;
+            if (soften > 0)
+                bid = MoveBidTowardOffer(session, offer, bid, soften);
+            if (routeBias > 0)
+                bid = MoveBidTowardOffer(session, offer, bid, routeBias);
+
+            int exactNudge = session.BidNumber == 0
+                ? ReadExcellentTargetFirstExactNudge()
+                : ReadExcellentTargetMidExactNudge();
+            if (exactNudge > 0)
+                bid = MoveBidTowardExactRange(session, bid, exactNudge);
+
+            bid = NormalizeBidForDirection(session, offer, bid);
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Excellent-target early round={Math.Max(1, session.BidNumber + 1)} offer={offer} baseBid={baseBid} soften={soften} routeBias={routeBias} exactNudge={exactNudge} bid={bid} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
+            return bid;
+        }
+
+        (double minTarget, double maxTarget) = GetTrackedTargetTotalRange(session);
+        bool selling = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase);
+
+        double targetHiddenTotal = selling ? minTarget : maxTarget;
+        long targetBid = selling
+            ? (long)Math.Floor(targetHiddenTotal)
+            : (long)Math.Ceiling(targetHiddenTotal);
+
+        int maxNudge = ReadExcellentTargetNudge();
+        long finalBid = MoveBidTowardTarget(baseBid, targetBid, maxNudge, selling);
+
+        finalBid = NormalizeBidForDirection(session, offer, finalBid);
+        finalBid = ApplyEmpiricalExcellentProbe(session, offer, baseBid, finalBid);
+
+        string baseProbe = DescribePredictedProbe(session, baseBid);
+        string finalProbe = DescribePredictedProbe(session, finalBid);
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Excellent-target bid round={Math.Max(1, session.BidNumber + 1)} offer={offer} targetHidden={targetHiddenTotal:0.000000} hiddenRange={minTarget:0.000000}..{maxTarget:0.000000} baseBid={baseBid} targetBid={targetBid} maxNudge={maxNudge} bid={finalBid} baseProbe={baseProbe} finalProbe={finalProbe} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
+        return finalBid;
+    }
+
+    private long ApplyEmpiricalExcellentProbe(SessionState session, long offer, long baseBid, long currentBid)
+    {
+        session.EmpiricalProbeApplied = false;
+        session.EmpiricalProbeNudge = 0;
+
+        if (!ReadExcellentTargetEmpiricalProbeEnabled())
+            return currentBid;
+
+        if (!session.FinalOffer || string.IsNullOrWhiteSpace(session.RouteKey))
+            return currentBid;
+
+        ExcellentRouteState state = GetExcellentRouteState(session.RouteKey);
+        if (state.Cooldown > 0 || state.GreatStreak < 8)
+            return currentBid;
+
+        (double _, long thresholdBid) = ComputeServerThresholdBid(session);
+        bool selling = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase);
+        long candidate = selling ? currentBid - 1 : currentBid + 1;
+
+        if (selling)
+        {
+            if (candidate < thresholdBid)
+                return currentBid;
+        }
+        else if (candidate > thresholdBid)
+        {
+            return currentBid;
+        }
+
+        candidate = NormalizeBidForDirection(session, offer, candidate);
+        if (candidate == currentBid)
+            return currentBid;
+
+        session.EmpiricalProbeApplied = true;
+        session.EmpiricalProbeNudge = (int)(candidate - baseBid);
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Excellent-target empirical probe route={session.RouteKey} greatStreak={state.GreatStreak} cooldown={state.Cooldown} baseBid={baseBid} currentBid={currentBid} thresholdBid={thresholdBid} probeBid={candidate} nudge={session.EmpiricalProbeNudge}\n");
+        return candidate;
+    }
+
+    private static bool ReadExcellentTargetEmpiricalProbeEnabled()
+    {
+        string? raw = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXCELLENT_EMPIRICAL");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            try
+            {
+                const string filePath = "/tmp/twx_haggle_excellent_empirical.txt";
+                if (File.Exists(filePath))
+                    raw = File.ReadAllText(filePath).Trim();
+            }
+            catch
+            {
+                raw = null;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        return raw.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+               raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               raw.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ReadExcellentTargetNudge()
+    {
+        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_NUDGE", "/tmp/twx_haggle_excellent_nudge.txt", defaultValue: 0, maxValue: 5);
+    }
+
+    private static string ReadExcellentTargetFirstBidMode()
+    {
+        const string defaultValue = NativeHaggleModes.ClampHeuristic;
+
+        string? raw = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXCELLENT_FIRST_MODE");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            try
+            {
+                const string filePath = "/tmp/twx_haggle_excellent_first_mode.txt";
+                if (File.Exists(filePath))
+                    raw = File.ReadAllText(filePath).Trim();
+            }
+            catch
+            {
+                raw = null;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+            return defaultValue;
+
+        if (string.Equals(raw, "exact", StringComparison.OrdinalIgnoreCase))
+            return NativeHaggleModes.Baseline;
+        if (string.Equals(raw, "server", StringComparison.OrdinalIgnoreCase))
+            return defaultValue;
+
+        string normalized = NativeHaggleModes.Normalize(raw);
+        return normalized == NativeHaggleModes.ServerDerived || normalized == NativeHaggleModes.ExcellentTarget
+            ? defaultValue
+            : normalized;
+    }
+
+    private static int ReadExcellentTargetFirstSoften()
+    {
+        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_FIRST_SOFTEN", "/tmp/twx_haggle_excellent_first_soften.txt", defaultValue: 0, maxValue: 3);
+    }
+
+    private static int ReadExcellentTargetMidSoften()
+    {
+        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_MID_SOFTEN", "/tmp/twx_haggle_excellent_mid_soften.txt", defaultValue: 0, maxValue: 3);
+    }
+
+    private static int ReadExcellentTargetFirstExactNudge()
+    {
+        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_FIRST_EXACT_NUDGE", "/tmp/twx_haggle_excellent_first_exact_nudge.txt", defaultValue: 0, maxValue: 5);
+    }
+
+    private static int ReadExcellentTargetMidExactNudge()
+    {
+        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_MID_EXACT_NUDGE", "/tmp/twx_haggle_excellent_mid_exact_nudge.txt", defaultValue: 0, maxValue: 5);
+    }
+
+    private static int ReadExcellentTargetSetting(string envName, string filePath, int defaultValue, int maxValue)
+    {
+        string? raw = Environment.GetEnvironmentVariable(envName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                    raw = File.ReadAllText(filePath).Trim();
+            }
+            catch
+            {
+                raw = null;
+            }
+        }
+
+        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            return defaultValue;
+
+        if (parsed < 0)
+            return 0;
+        if (parsed > maxValue)
+            return maxValue;
+        return parsed;
+    }
+
+    private static long MoveBidTowardTarget(long baseBid, long targetBid, int maxNudge, bool selling)
+    {
+        if (maxNudge <= 0)
+            return baseBid;
+
+        if (selling)
+        {
+            if (targetBid >= baseBid)
+                return baseBid;
+
+            long candidate = baseBid - maxNudge;
+            return Math.Max(targetBid, candidate);
+        }
+
+        if (targetBid <= baseBid)
+            return baseBid;
+
+        long buyingCandidate = baseBid + maxNudge;
+        return Math.Min(targetBid, buyingCandidate);
+    }
+
+    private static long MoveBidTowardOffer(SessionState session, long offer, long baseBid, int soften)
+    {
+        if (soften <= 0)
+            return baseBid;
+
+        if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+            return Math.Min(offer - 1, baseBid + soften);
+
+        return Math.Max(offer + 1, baseBid - soften);
+    }
+
+    private static long MoveBidTowardExactRange(SessionState session, long baseBid, int nudge)
+    {
+        if (nudge <= 0 || session.Candidates.Count == 0)
+            return baseBid;
+
+        (double minExact, double maxExact) = GetTrackedTargetTotalRange(session);
+        if (minExact <= 0 || maxExact <= 0)
+            return baseBid;
+
+        long lowerTarget = (long)Math.Ceiling(minExact);
+        long upperTarget = (long)Math.Floor(maxExact);
+        long target = baseBid;
+
+        if (baseBid < lowerTarget)
+            target = lowerTarget;
+        else if (baseBid > upperTarget)
+            target = upperTarget;
+
+        if (target == baseBid)
+            return baseBid;
+
+        bool selling = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase);
+        return MoveBidTowardTarget(baseBid, target, nudge, selling);
+    }
+
+    private static (double MinExact, double MaxExact) GetCandidateExactRange(SessionState session)
+    {
+        double minExact = 0;
+        double maxExact = 0;
+
+        foreach (Candidate candidate in session.Candidates)
+        {
+            if (minExact == 0 || candidate.ExactPrice < minExact)
+                minExact = candidate.ExactPrice;
+            if (candidate.ExactPrice > maxExact)
+                maxExact = candidate.ExactPrice;
+        }
+
+        return (minExact, maxExact);
+    }
+
+    private static (double MinTotal, double MaxTotal) GetTrackedTargetTotalRange(SessionState session)
+    {
+        if (session.HasHiddenTotalRange)
+            return (session.HiddenTotalMin, session.HiddenTotalMax);
+
+        return GetCandidateExactRange(session);
+    }
+
+    private static (double Threshold, long ThresholdBid) ComputeServerThresholdBid(SessionState session)
+    {
+        int roundNumber = Math.Max(1, session.BidNumber + 1);
+        double chosenThreshold = 0;
+        bool initialized = false;
+
+        foreach (Candidate candidate in session.Candidates)
+        {
+            double threshold = candidate.ExactPrice * (1.0 - ((candidate.Mcic / 250.0) / roundNumber));
+            if (!initialized)
+            {
+                chosenThreshold = threshold;
+                initialized = true;
+                continue;
+            }
+
+            if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
+                chosenThreshold = Math.Max(chosenThreshold, threshold);
+            else
+                chosenThreshold = Math.Min(chosenThreshold, threshold);
+        }
+
+        return (chosenThreshold, PascalRoundInt(chosenThreshold, 0));
+    }
+
+    private static string BuildRouteKey(int sector, string productKey, string buySell) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{sector}:{productKey}:{buySell}");
+
+    private ExcellentRouteState GetExcellentRouteState(string routeKey)
+    {
+        if (!_excellentRouteStates.TryGetValue(routeKey, out ExcellentRouteState? state))
+        {
+            state = new ExcellentRouteState();
+            _excellentRouteStates[routeKey] = state;
+        }
+
+        return state;
+    }
+
+    private static bool TryGetServerProbeRange(
+        SessionState session,
+        long bid,
+        out double serverProbeMin,
+        out double serverProbeMax,
+        out int serverBucketMin,
+        out int serverBucketMax)
+    {
+        serverProbeMin = 0;
+        serverProbeMax = 0;
+        serverBucketMin = 0;
+        serverBucketMax = 0;
+
+        if (bid <= 0)
+            return false;
+
+        ServerProbeBranch branch = GetServerProbeBranch(session, bid);
+
+        if (session.HasHiddenTotalRange)
+        {
+            long hiddenOverBidRawMin = Math.Max(0L, (long)Math.Truncate((session.HiddenTotalMin * 10000.0) / bid));
+            long hiddenOverBidRawMax = Math.Max(0L, (long)Math.Truncate((session.HiddenTotalMax * 10000.0) / bid));
+            long bidOverHiddenRawMin = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / session.HiddenTotalMax));
+            long bidOverHiddenRawMax = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / session.HiddenTotalMin));
+
+            if (branch == ServerProbeBranch.BidOverHidden)
+            {
+                serverProbeMin = bidOverHiddenRawMin / 100.0;
+                serverProbeMax = bidOverHiddenRawMax / 100.0;
+                serverBucketMin = (int)(bidOverHiddenRawMin / 100);
+                serverBucketMax = (int)(bidOverHiddenRawMax / 100);
+            }
+            else if (branch == ServerProbeBranch.HiddenOverBid)
+            {
+                serverProbeMin = hiddenOverBidRawMin / 100.0;
+                serverProbeMax = hiddenOverBidRawMax / 100.0;
+                serverBucketMin = (int)(hiddenOverBidRawMin / 100);
+                serverBucketMax = (int)(hiddenOverBidRawMax / 100);
+            }
+            else
+            {
+                serverProbeMin = Math.Min(hiddenOverBidRawMin / 100.0, bidOverHiddenRawMin / 100.0);
+                serverProbeMax = Math.Max(hiddenOverBidRawMax / 100.0, bidOverHiddenRawMax / 100.0);
+                serverBucketMin = (int)Math.Min(hiddenOverBidRawMin / 100, bidOverHiddenRawMin / 100);
+                serverBucketMax = (int)Math.Max(hiddenOverBidRawMax / 100, bidOverHiddenRawMax / 100);
+            }
+
+            return true;
+        }
+
+        if (session.Candidates.Count == 0)
+            return false;
+
+        long rawMin = long.MaxValue;
+        long rawMax = long.MinValue;
+        foreach (Candidate candidate in session.Candidates)
+        {
+            if (candidate.ExactPrice <= 0)
+                continue;
+
+            long exactOverBidRaw = Math.Max(0L, (long)Math.Truncate((candidate.ExactPrice * 10000.0) / bid));
+            long bidOverExactRaw = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / candidate.ExactPrice));
+
+            if (branch == ServerProbeBranch.BidOverHidden)
+            {
+                if (bidOverExactRaw < rawMin)
+                    rawMin = bidOverExactRaw;
+                if (bidOverExactRaw > rawMax)
+                    rawMax = bidOverExactRaw;
+            }
+            else if (branch == ServerProbeBranch.HiddenOverBid)
+            {
+                if (exactOverBidRaw < rawMin)
+                    rawMin = exactOverBidRaw;
+                if (exactOverBidRaw > rawMax)
+                    rawMax = exactOverBidRaw;
+            }
+            else
+            {
+                long minRaw = Math.Min(exactOverBidRaw, bidOverExactRaw);
+                long maxRaw = Math.Max(exactOverBidRaw, bidOverExactRaw);
+                if (minRaw < rawMin)
+                    rawMin = minRaw;
+                if (maxRaw > rawMax)
+                    rawMax = maxRaw;
+            }
+        }
+
+        if (rawMin == long.MaxValue || rawMax == long.MinValue)
+            return false;
+
+        serverProbeMin = rawMin / 100.0;
+        serverProbeMax = rawMax / 100.0;
+        serverBucketMin = (int)(rawMin / 100);
+        serverBucketMax = (int)(rawMax / 100);
+        return true;
+    }
+
+    private static double GetNearExcellentProbeThreshold(SessionState session) =>
+        GetNearExcellentProbeThreshold(GetServerProbeBranch(session, session.LastCounter));
+
+    private static double GetNearExcellentProbeThreshold(ServerProbeBranch branch) =>
+        branch == ServerProbeBranch.BidOverHidden ? 99.80 : 99.90;
+
+    private static string DescribePredictedProbe(SessionState session, long bid)
+    {
+        if (bid <= 0)
+            return "probe=n/a";
+
+        if (TryDescribeTrackedProbe(session, bid, out string trackedProbe))
+            return trackedProbe;
+
+        if (session.Candidates.Count == 0)
+            return "probe=n/a";
+
+        double exactOverBidMin = double.MaxValue;
+        double exactOverBidMax = double.MinValue;
+        double bidOverExactMin = double.MaxValue;
+        double bidOverExactMax = double.MinValue;
+        int exactOverBidBucketMin = int.MaxValue;
+        int exactOverBidBucketMax = int.MinValue;
+        int bidOverExactBucketMin = int.MaxValue;
+        int bidOverExactBucketMax = int.MinValue;
+
+        foreach (Candidate candidate in session.Candidates)
+        {
+            if (candidate.ExactPrice <= 0)
+                continue;
+
+            long exactOverBidRaw = Math.Max(0L, (long)Math.Truncate((candidate.ExactPrice * 10000.0) / bid));
+            long bidOverExactRaw = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / candidate.ExactPrice));
+
+            double exactOverBid = exactOverBidRaw / 100.0;
+            double bidOverExact = bidOverExactRaw / 100.0;
+            int exactBucket = (int)(exactOverBidRaw / 100);
+            int bidBucket = (int)(bidOverExactRaw / 100);
+
+            if (exactOverBid < exactOverBidMin)
+                exactOverBidMin = exactOverBid;
+            if (exactOverBid > exactOverBidMax)
+                exactOverBidMax = exactOverBid;
+            if (bidOverExact < bidOverExactMin)
+                bidOverExactMin = bidOverExact;
+            if (bidOverExact > bidOverExactMax)
+                bidOverExactMax = bidOverExact;
+            if (exactBucket < exactOverBidBucketMin)
+                exactOverBidBucketMin = exactBucket;
+            if (exactBucket > exactOverBidBucketMax)
+                exactOverBidBucketMax = exactBucket;
+            if (bidBucket < bidOverExactBucketMin)
+                bidOverExactBucketMin = bidBucket;
+            if (bidBucket > bidOverExactBucketMax)
+                bidOverExactBucketMax = bidBucket;
+        }
+
+        if (exactOverBidMin == double.MaxValue || bidOverExactMin == double.MaxValue)
+            return "probe=n/a";
+
+        ServerProbeBranch branch = GetServerProbeBranch(session, bid);
+        (double serverProbeMin, double serverProbeMax, int serverBucketMin, int serverBucketMax) = branch switch
+        {
+            ServerProbeBranch.BidOverHidden => (bidOverExactMin, bidOverExactMax, bidOverExactBucketMin, bidOverExactBucketMax),
+            ServerProbeBranch.HiddenOverBid => (exactOverBidMin, exactOverBidMax, exactOverBidBucketMin, exactOverBidBucketMax),
+            _ => (
+                Math.Min(exactOverBidMin, bidOverExactMin),
+                Math.Max(exactOverBidMax, bidOverExactMax),
+                Math.Min(exactOverBidBucketMin, bidOverExactBucketMin),
+                Math.Max(exactOverBidBucketMax, bidOverExactBucketMax)),
+        };
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"probe exact/bid={exactOverBidMin:0.00}..{exactOverBidMax:0.00} bucket={exactOverBidBucketMin}..{exactOverBidBucketMax} bid/exact={bidOverExactMin:0.00}..{bidOverExactMax:0.00} bucket={bidOverExactBucketMin}..{bidOverExactBucketMax} serverBranch={DescribeServerProbeBranch(branch)} serverProbe={serverProbeMin:0.00}..{serverProbeMax:0.00} serverBucket={serverBucketMin}..{serverBucketMax}");
+    }
+
+    private static bool TryDescribeTrackedProbe(SessionState session, long bid, out string description)
+    {
+        if (!session.HasHiddenTotalRange || bid <= 0)
+        {
+            description = string.Empty;
+            return false;
+        }
+
+        long hiddenOverBidRawMin = Math.Max(0L, (long)Math.Truncate((session.HiddenTotalMin * 10000.0) / bid));
+        long hiddenOverBidRawMax = Math.Max(0L, (long)Math.Truncate((session.HiddenTotalMax * 10000.0) / bid));
+        long bidOverHiddenRawMin = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / session.HiddenTotalMax));
+        long bidOverHiddenRawMax = Math.Max(0L, (long)Math.Truncate((bid * 10000.0) / session.HiddenTotalMin));
+        ServerProbeBranch branch = GetServerProbeBranch(session, bid);
+        (double serverProbeMin, double serverProbeMax, long serverBucketMin, long serverBucketMax) = branch switch
+        {
+            ServerProbeBranch.BidOverHidden => (bidOverHiddenRawMin / 100.0, bidOverHiddenRawMax / 100.0, bidOverHiddenRawMin / 100, bidOverHiddenRawMax / 100),
+            ServerProbeBranch.HiddenOverBid => (hiddenOverBidRawMin / 100.0, hiddenOverBidRawMax / 100.0, hiddenOverBidRawMin / 100, hiddenOverBidRawMax / 100),
+            _ => (
+                Math.Min(hiddenOverBidRawMin / 100.0, bidOverHiddenRawMin / 100.0),
+                Math.Max(hiddenOverBidRawMax / 100.0, bidOverHiddenRawMax / 100.0),
+                Math.Min(hiddenOverBidRawMin / 100, bidOverHiddenRawMin / 100),
+                Math.Max(hiddenOverBidRawMax / 100, bidOverHiddenRawMax / 100)),
+        };
+
+        description = string.Create(
+            CultureInfo.InvariantCulture,
+            $"probe hidden/bid={hiddenOverBidRawMin / 100.0:0.00}..{hiddenOverBidRawMax / 100.0:0.00} bucket={hiddenOverBidRawMin / 100}..{hiddenOverBidRawMax / 100} bid/hidden={bidOverHiddenRawMin / 100.0:0.00}..{bidOverHiddenRawMax / 100.0:0.00} bucket={bidOverHiddenRawMin / 100}..{bidOverHiddenRawMax / 100} serverBranch={DescribeServerProbeBranch(branch)} serverProbe={serverProbeMin:0.00}..{serverProbeMax:0.00} serverBucket={serverBucketMin}..{serverBucketMax}");
+        return true;
+    }
+
+    private static ServerProbeBranch GetServerProbeBranch(SessionState session, long bid)
+    {
+        if (bid <= 0)
+            return FallbackServerProbeBranch(session);
+
+        if (TryGetServerProbeComparisonRange(session, out double hiddenMin, out double hiddenMax))
+        {
+            if (bid < hiddenMin)
+                return ServerProbeBranch.HiddenOverBid;
+            if (bid > hiddenMax)
+                return ServerProbeBranch.BidOverHidden;
+            return ServerProbeBranch.Overlap;
+        }
+
+        return FallbackServerProbeBranch(session);
+    }
+
+    private static bool TryGetServerProbeComparisonRange(SessionState session, out double hiddenMin, out double hiddenMax)
+    {
+        hiddenMin = 0;
+        hiddenMax = 0;
+
+        if (session.HasHiddenTotalRange)
+        {
+            hiddenMin = session.HiddenTotalMin;
+            hiddenMax = session.HiddenTotalMax;
+            return true;
+        }
+
+        if (session.Candidates.Count == 0)
+            return false;
+
+        double minExact = double.MaxValue;
+        double maxExact = double.MinValue;
+        foreach (Candidate candidate in session.Candidates)
+        {
+            if (candidate.ExactPrice <= 0)
+                continue;
+
+            if (candidate.ExactPrice < minExact)
+                minExact = candidate.ExactPrice;
+            if (candidate.ExactPrice > maxExact)
+                maxExact = candidate.ExactPrice;
+        }
+
+        if (minExact == double.MaxValue || maxExact == double.MinValue)
+            return false;
+
+        hiddenMin = minExact;
+        hiddenMax = maxExact;
+        return true;
+    }
+
+    private static ServerProbeBranch FallbackServerProbeBranch(SessionState session) =>
+        string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase)
+            ? ServerProbeBranch.BidOverHidden
+            : ServerProbeBranch.HiddenOverBid;
+
+    private static string DescribeServerProbeBranch(ServerProbeBranch branch) =>
+        branch switch
+        {
+            ServerProbeBranch.BidOverHidden => "bid/hidden",
+            ServerProbeBranch.HiddenOverBid => "hidden/bid",
+            _ => "overlap",
+        };
 
     private string GetActiveFirstBidMode()
     {
@@ -1336,9 +2201,118 @@ public sealed class NativeHaggleEngine
         if (success)
             _successfulHaggles++;
 
+        UpdateExcellentRouteState(_session, success, reason);
+
+        string probe = (_session.LastCounter > 0)
+            ? DescribePredictedProbe(_session, _session.LastCounter)
+            : "probe=n/a";
+        string rewardTier = string.IsNullOrWhiteSpace(_session.RewardTier) ? "-" : _session.RewardTier;
+        string routeState = DescribeExcellentRouteState(_session);
+
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' completed={_completedHaggles} successful={_successfulHaggles} pct={SuccessRatePercent}%\n");
+            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {probe} {routeState}\n");
         StatsChanged?.Invoke();
+    }
+
+    private void UpdateExcellentRouteState(SessionState session, bool success, string reason)
+    {
+        if (!string.Equals(session.ActiveMode, NativeHaggleModes.ExcellentTarget, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(session.RouteKey))
+            return;
+
+        ExcellentRouteState state = GetExcellentRouteState(session.RouteKey);
+        double serverProbeMin = 0;
+        double serverProbeMax = 0;
+        int serverBucketMin = 0;
+        int serverBucketMax = 0;
+        bool hasServerProbe = session.LastCounter > 0 &&
+            TryGetServerProbeRange(session, session.LastCounter, out serverProbeMin, out serverProbeMax, out serverBucketMin, out serverBucketMax);
+
+        if (success)
+        {
+            if (state.Cooldown > 0)
+                state.Cooldown--;
+
+            if (session.EmpiricalProbeApplied)
+            {
+                if (string.Equals(session.RewardTier, "great", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(session.RewardTier, "excellent", StringComparison.OrdinalIgnoreCase))
+                {
+                    state.SuccessfulProbeCount++;
+                }
+
+                state.GreatStreak = 0;
+                state.NearExcellentCount = 0;
+                return;
+            }
+
+            if (string.Equals(session.RewardTier, "excellent", StringComparison.OrdinalIgnoreCase))
+            {
+                state.GreatStreak = 0;
+                state.NearExcellentCount = 0;
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' rewardTier='{session.RewardTier}' serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
+                return;
+            }
+
+            if (string.Equals(session.RewardTier, "great", StringComparison.OrdinalIgnoreCase))
+            {
+                state.GreatStreak++;
+
+                bool nearExcellent = hasServerProbe &&
+                    serverBucketMin == 99 &&
+                    serverBucketMax == 99 &&
+                    serverProbeMax >= GetNearExcellentProbeThreshold(session);
+
+                state.NearExcellentCount = nearExcellent
+                    ? state.NearExcellentCount + 1
+                    : 0;
+
+                if (state.Cooldown <= 0)
+                    state.EarlyTowardOfferBias = state.NearExcellentCount >= 4 ? 1 : 0;
+            }
+            else
+            {
+                state.GreatStreak = 0;
+                state.NearExcellentCount = 0;
+                if (state.Cooldown <= 0)
+                    state.EarlyTowardOfferBias = 0;
+            }
+
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' rewardTier='{session.RewardTier}' serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
+            return;
+        }
+
+        if (session.EmpiricalProbeApplied)
+        {
+            state.FailedProbeCount++;
+            state.Cooldown = 20;
+        }
+
+        if (state.EarlyTowardOfferBias > 0 &&
+            string.Equals(reason, "credits-no-transaction", StringComparison.OrdinalIgnoreCase))
+        {
+            state.Cooldown = Math.Max(state.Cooldown, 12);
+            state.EarlyTowardOfferBias = 0;
+            state.NearExcellentCount = 0;
+        }
+
+        state.GreatStreak = 0;
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
+    }
+
+    private string DescribeExcellentRouteState(SessionState session)
+    {
+        if (string.IsNullOrWhiteSpace(session.RouteKey) ||
+            !_excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? state))
+            return "excellentRoute=n/a";
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"excellentRoute(greatStreak={state.GreatStreak},nearExcellent={state.NearExcellentCount},bias={state.EarlyTowardOfferBias},cooldown={state.Cooldown},probeWins={state.SuccessfulProbeCount},probeFails={state.FailedProbeCount})");
     }
 
     private static string NormalizeWeekday(string value)

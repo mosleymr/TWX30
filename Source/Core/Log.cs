@@ -13,9 +13,18 @@ namespace TWXProxy.Core;
 /// </summary>
 public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
 {
+    private enum AnsiStripState
+    {
+        None,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+    }
+
     private readonly object _lock = new();
     private string _programDir = GlobalModules.ProgramDir;
-    private string _logDirectory = SharedPaths.LogDir;
+    private string _logDirectory = GetDefaultLogDirectory(GlobalModules.ProgramDir);
     private string _logIdentity = "game";
     private string _logFilename = string.Empty;
     private FileStream? _logStream;
@@ -32,11 +41,20 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     private Func<byte[], CancellationToken, Task>? _playbackSink;
     private Action<string>? _messageSink;
     private bool _playingLog;
+    private AnsiStripState _ansiStripState;
 
     public string ProgramDir
     {
         get => _programDir;
-        set => _programDir = value;
+        set
+        {
+            string previousProgramDir = _programDir;
+            _programDir = value;
+
+            string previousDefault = GetDefaultLogDirectory(previousProgramDir);
+            if (PathEquals(_logDirectory, previousDefault))
+                LogDirectory = GetDefaultLogDirectory(_programDir);
+        }
     }
 
     public string LogDirectory
@@ -44,7 +62,7 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         get => _logDirectory;
         set
         {
-            string next = string.IsNullOrWhiteSpace(value) ? SharedPaths.LogDir : value;
+            string next = string.IsNullOrWhiteSpace(value) ? GetDefaultLogDirectory(_programDir) : value;
             lock (_lock)
             {
                 if (PathEquals(_logDirectory, next))
@@ -258,10 +276,7 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     private byte[] PrepareData(byte[] ansiData)
     {
         if (!_logAnsi)
-        {
-            string clean = AnsiCodes.StripANSI(Encoding.Latin1.GetString(ansiData));
-            return clean.Length == 0 ? Array.Empty<byte>() : Encoding.Latin1.GetBytes(clean);
-        }
+            return StripAnsiBytes(ansiData);
 
         byte[] copy = new byte[ansiData.Length];
         Buffer.BlockCopy(ansiData, 0, copy, 0, ansiData.Length);
@@ -304,6 +319,7 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         _logStream = null;
         _lastLogDate = DateTime.MinValue;
         _logFilename = string.Empty;
+        _ansiStripState = AnsiStripState.None;
     }
 
     private void WriteBinaryRecordLocked(byte[] data)
@@ -323,6 +339,81 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         string safeIdentity = SharedPaths.SanitizeFileComponent(_logIdentity);
         string extension = _binaryLogs ? ".cap" : ".log";
         return Path.Combine(_logDirectory, $"{day:yyyy-MM-dd} {safeIdentity}{extension}");
+    }
+
+    private byte[] StripAnsiBytes(byte[] ansiData)
+    {
+        if (ansiData.Length == 0)
+            return Array.Empty<byte>();
+
+        byte[] buffer = new byte[ansiData.Length];
+        int count = 0;
+
+        foreach (byte value in ansiData)
+        {
+            switch (_ansiStripState)
+            {
+                case AnsiStripState.Escape:
+                    if (value == (byte)'[')
+                    {
+                        _ansiStripState = AnsiStripState.Csi;
+                        continue;
+                    }
+
+                    if (value == (byte)']')
+                    {
+                        _ansiStripState = AnsiStripState.Osc;
+                        continue;
+                    }
+
+                    _ansiStripState = AnsiStripState.None;
+                    continue;
+
+                case AnsiStripState.Csi:
+                    if (value >= 0x40 && value <= 0x7E)
+                        _ansiStripState = AnsiStripState.None;
+                    continue;
+
+                case AnsiStripState.Osc:
+                    if (value == 0x07)
+                        _ansiStripState = AnsiStripState.None;
+                    else if (value == 0x1B)
+                        _ansiStripState = AnsiStripState.OscEscape;
+                    continue;
+
+                case AnsiStripState.OscEscape:
+                    if (value == (byte)'\\')
+                        _ansiStripState = AnsiStripState.None;
+                    else if (value == 0x1B)
+                        _ansiStripState = AnsiStripState.OscEscape;
+                    else
+                        _ansiStripState = AnsiStripState.Osc;
+                    continue;
+            }
+
+            if (value == 0x1B)
+            {
+                _ansiStripState = AnsiStripState.Escape;
+                continue;
+            }
+
+            buffer[count++] = value;
+        }
+
+        if (count == 0)
+            return Array.Empty<byte>();
+
+        byte[] clean = new byte[count];
+        Buffer.BlockCopy(buffer, 0, clean, 0, count);
+        return clean;
+    }
+
+    private static string GetDefaultLogDirectory(string? programDir)
+    {
+        if (!string.IsNullOrWhiteSpace(programDir))
+            return Path.Combine(programDir, "logs");
+
+        return SharedPaths.LogDir;
     }
 
     private async Task PlaybackLoopAsync(

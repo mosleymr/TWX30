@@ -44,6 +44,8 @@ public class AdvancedProxySettingsDialog : Window
         {
             new(Core.NativeHaggleModes.ClampHeuristic, "Clamp Heuristic"),
             new(Core.NativeHaggleModes.BlendHeuristic, "Blend Heuristic"),
+            new(Core.NativeHaggleModes.ServerDerived, "Server Derived"),
+            new(Core.NativeHaggleModes.ExcellentTarget, "Excellent Target"),
             new(Core.NativeHaggleModes.Baseline, "Baseline"),
         };
 
