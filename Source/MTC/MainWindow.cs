@@ -82,30 +82,13 @@ public class MainWindow : Window
         Margin = new Thickness(8, 0, 0, 0),
         VerticalAlignment = VerticalAlignment.Center,
     };
-    private readonly ToggleSwitch _mbotWatcherToggle = new()
-    {
-        OffContent = "Off",
-        OnContent = "On",
-        IsEnabled = false,
-        IsChecked = false,
-        Margin = new Thickness(8, 0, 0, 0),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
-    private readonly Button _mbotCommandButton = new()
-    {
-        Content = "Command",
-        IsEnabled = false,
-        MinWidth = 78,
-    };
-    private readonly Button _mbotStatusButton = new()
-    {
-        Content = "Status",
-        IsEnabled = false,
-        MinWidth = 78,
-    };
     private bool _updatingHaggleToggle;
     private bool _updatingMbotToggle;
-    private bool _updatingMbotWatcherToggle;
+    private bool _mbotPromptOpen;
+    private readonly List<string> _mbotCommandHistory = [];
+    private string _mbotPromptBuffer = string.Empty;
+    private string _mbotPromptDraft = string.Empty;
+    private int _mbotPromptHistoryIndex;
     // ── Sidebar value TextBlocks (updated when GameState fires Changed) ────
     private TextBlock _valName     = new();
     private TextBlock _valSector    = new();
@@ -135,10 +118,6 @@ public class MainWindow : Window
     private TextBlock _valCloak     = new();
     private TextBlock _valTW1       = new();
     private TextBlock _valTW2       = new();
-    private TextBlock _valMbotState = new();
-    private TextBlock _valMbotRoutes = new();
-    private TextBlock _valMbotAuth = new();
-    private TextBlock _valMbotMode = new();
     private Border    _scanIndD     = new();
     private Border    _scanIndH     = new();
     private Border    _scanIndP     = new();
@@ -221,17 +200,11 @@ public class MainWindow : Window
         // Wire keyboard → telnet
         _termCtrl.SendInput = bytes =>
         {
-            if (_telnet.IsConnected)
-                _telnet.SendRaw(bytes);
-            else
-                _parser.Feed("\x1b[33m[not connected]\x1b[0m\r\n");
+            RouteTerminalInput(bytes, SendToTelnet);
         };
 
         _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
         _mbotToggle.IsCheckedChanged += (_, _) => OnMbotToggleRequested();
-        _mbotWatcherToggle.IsCheckedChanged += (_, _) => OnMbotWatcherToggleRequested();
-        _mbotCommandButton.Click += (_, _) => _ = ShowMbotCommandPromptAsync();
-        _mbotStatusButton.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("bot");
 
         Content = BuildLayout();
 
@@ -492,7 +465,6 @@ public class MainWindow : Window
         stack.Children.Add(BuildPanel("Holds", holdsRows, _valHTotal));
 
         stack.Children.Add(BuildShipInfoPanel());
-        stack.Children.Add(BuildMbotPanel());
 
         var scroll = new ScrollViewer
         {
@@ -565,6 +537,7 @@ public class MainWindow : Window
         // Scanner indicators
         panel.Children.Add(BuildScannerRow());
         panel.Children.Add(BuildHaggleRow());
+        panel.Children.Add(BuildMbotRow());
 
         panel.Children.Add(new Border { Height = 6 });
         return panel;
@@ -644,89 +617,22 @@ public class MainWindow : Window
         return row;
     }
 
-    private Control BuildMbotPanel()
-    {
-        var panel = new StackPanel { Background = BgPanel, Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 3) };
-
-        panel.Children.Add(new Border
-        {
-            Background = BgStatus,
-            Child = new TextBlock
-            {
-                Text = "mbot",
-                Foreground = FgTitle,
-                FontSize = 14,
-                FontWeight = Avalonia.Media.FontWeight.SemiBold,
-                Margin = new Thickness(6, 4, 4, 4),
-            },
-        });
-        panel.Children.Add(new Border { Background = BorderColor, Height = 1 });
-
-        panel.Children.Add(BuildControlRow("Enabled", _mbotToggle));
-        panel.Children.Add(BuildControlRow("Watcher", _mbotWatcherToggle));
-        panel.Children.Add(BuildMbotValueRow("State", _valMbotState));
-        panel.Children.Add(BuildMbotValueRow("Routes", _valMbotRoutes));
-        panel.Children.Add(BuildMbotValueRow("Auth", _valMbotAuth));
-        panel.Children.Add(BuildMbotValueRow("Mode", _valMbotMode));
-
-        var buttons = new Grid { Margin = new Thickness(6, 4, 6, 2) };
-        buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6, GridUnitType.Pixel) });
-        buttons.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(_mbotCommandButton, 0);
-        Grid.SetColumn(_mbotStatusButton, 2);
-        buttons.Children.Add(_mbotCommandButton);
-        buttons.Children.Add(_mbotStatusButton);
-        panel.Children.Add(buttons);
-
-        panel.Children.Add(new Border { Height = 6 });
-        return panel;
-    }
-
-    private Control BuildControlRow(string labelText, Control control)
+    private Control BuildMbotRow()
     {
         var row = new Grid { Margin = new Thickness(6, 2, 6, 3) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var label = new TextBlock
         {
-            Text = labelText,
+            Text = "mbot",
             Foreground = FgKey,
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetColumn(label, 0);
-        Grid.SetColumn(control, 1);
+        Grid.SetColumn(_mbotToggle, 1);
         row.Children.Add(label);
-        row.Children.Add(control);
-        return row;
-    }
-
-    private Control BuildMbotValueRow(string key, TextBlock value)
-    {
-        value.Text = "-";
-        value.Foreground = FgValue;
-        value.FontSize = 12;
-        value.TextAlignment = TextAlignment.Right;
-        value.TextWrapping = TextWrapping.NoWrap;
-        value.TextTrimming = TextTrimming.CharacterEllipsis;
-        value.MaxWidth = 118;
-
-        var keyTb = new TextBlock
-        {
-            Text = key,
-            Foreground = FgKey,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        var row = new Grid { Margin = new Thickness(6, 1, 6, 1) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(keyTb, 0);
-        Grid.SetColumn(value, 1);
-        row.Children.Add(keyTb);
-        row.Children.Add(value);
+        row.Children.Add(_mbotToggle);
         return row;
     }
 
@@ -1120,7 +1026,7 @@ public class MainWindow : Window
         if (_updatingMbotToggle)
             return;
 
-        if (_embeddedGameConfig?.Mtc?.mbot == null)
+        if (_embeddedGameConfig == null)
         {
             RefreshMbotUi();
             return;
@@ -1134,25 +1040,6 @@ public class MainWindow : Window
         _buffer.Dirty = true;
     }
 
-    private void OnMbotWatcherToggleRequested()
-    {
-        if (_updatingMbotWatcherToggle)
-            return;
-
-        if (_embeddedGameConfig?.Mtc?.mbot == null)
-        {
-            RefreshMbotUi();
-            return;
-        }
-
-        bool enabled = _mbotWatcherToggle.IsChecked == true;
-        ApplyMbotConfigChange(config => config.WatcherEnabled = enabled);
-        _parser.Feed(enabled
-            ? "\x1b[1;36m[mbot watcher enabled]\x1b[0m\r\n"
-            : "\x1b[1;36m[mbot watcher disabled]\x1b[0m\r\n");
-        _buffer.Dirty = true;
-    }
-
     private void ApplyMbotConfigChange(Action<MTC.mbot.mbotConfig> update)
     {
         _embeddedGameConfig ??= new EmbeddedGameConfig();
@@ -1160,6 +1047,7 @@ public class MainWindow : Window
         _embeddedGameConfig.Mtc.mbot ??= new MTC.mbot.mbotConfig();
 
         update(_embeddedGameConfig.Mtc.mbot);
+        _embeddedGameConfig.Mtc.mbot.WatcherEnabled = _embeddedGameConfig.Mtc.mbot.Enabled;
         _mbot.ApplyConfig(_embeddedGameConfig.Mtc.mbot);
         RefreshMbotUi();
         RefreshStatusBar();
@@ -1170,55 +1058,14 @@ public class MainWindow : Window
     private void RefreshMbotUi()
     {
         MTC.mbot.mbotConfig? config = _embeddedGameConfig?.Mtc?.mbot;
-        MTC.mbot.mbotStatusSnapshot snapshot = _mbot.GetStatusSnapshot();
         bool hasProfile = config != null || _embeddedGameConfig != null;
-        bool proxyActive = _gameInstance != null;
 
-        config ??= snapshot.IsAttached ? _mbot.Config : new MTC.mbot.mbotConfig();
+        config ??= _mbot.IsAttached ? _mbot.Config : new MTC.mbot.mbotConfig();
 
         _updatingMbotToggle = true;
         _mbotToggle.IsEnabled = hasProfile;
         _mbotToggle.IsChecked = config.Enabled;
         _updatingMbotToggle = false;
-
-        _updatingMbotWatcherToggle = true;
-        _mbotWatcherToggle.IsEnabled = hasProfile;
-        _mbotWatcherToggle.IsChecked = config.WatcherEnabled;
-        _updatingMbotWatcherToggle = false;
-
-        _mbotCommandButton.IsEnabled = proxyActive;
-        _mbotStatusButton.IsEnabled = proxyActive;
-
-        _valMbotState.Text = snapshot.IsAttached
-            ? (snapshot.Enabled ? "Running" : "Stopped")
-            : (hasProfile ? "Ready" : "No Game");
-        _valMbotRoutes.Text = BuildMbotRouteSummary(config);
-        _valMbotAuth.Text = BuildMbotAuthSummary(config, snapshot);
-        _valMbotMode.Text = snapshot.IsAttached
-            ? snapshot.Mode
-            : (config.AutoStart ? "Auto-Start" : "Manual");
-    }
-
-    private static string BuildMbotRouteSummary(MTC.mbot.mbotConfig config)
-    {
-        var routes = new List<string>();
-        if (config.AcceptSelfCommands)
-            routes.Add("self");
-        if (config.AcceptSubspaceCommands)
-            routes.Add("sub");
-        if (config.AcceptPrivateCommands)
-            routes.Add("page");
-        return routes.Count == 0 ? "none" : string.Join(",", routes);
-    }
-
-    private static string BuildMbotAuthSummary(MTC.mbot.mbotConfig config, MTC.mbot.mbotStatusSnapshot snapshot)
-    {
-        if (snapshot.AuthorizedUsers.Count > 0)
-            return snapshot.AuthorizedUsers.Count == 1 ? "1 user" : $"{snapshot.AuthorizedUsers.Count} users";
-
-        return config.AuthorizedUsers.Count > 0
-            ? (config.AuthorizedUsers.Count == 1 ? "1 user" : $"{config.AuthorizedUsers.Count} users")
-            : "open";
     }
 
     private void OnNativeHaggleChanged(bool enabled)
@@ -1922,8 +1769,11 @@ public class MainWindow : Window
         var termWriter = termToServer.Writer.AsStream();
         _termCtrl.SendInput = bytes =>
         {
-            try { termWriter.Write(bytes, 0, bytes.Length); termWriter.Flush(); }
-            catch { }
+            RouteTerminalInput(bytes, data =>
+            {
+                try { termWriter.Write(data, 0, data.Length); termWriter.Flush(); }
+                catch { }
+            });
         };
 
         // Background task: pipe-reader → AnsiParser.
@@ -1944,6 +1794,8 @@ public class MainWindow : Window
                     {
                         _sessionLog.RecordServerData(chunk);
                         _parser.Feed(chunk, chunk.Length);
+                        if (_mbotPromptOpen)
+                            RedrawMbotPrompt();
                         _buffer.Dirty = true;
                     });
                 }
@@ -2189,8 +2041,7 @@ public class MainWindow : Window
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
         _termCtrl.SendInput = bytes =>
         {
-            if (_telnet.IsConnected) _telnet.SendRaw(bytes);
-            else _parser.Feed("\x1b[33m[not connected]\x1b[0m\r\n");
+            RouteTerminalInput(bytes, SendToTelnet);
         };
 
         _state.Connected      = false;
@@ -2763,7 +2614,7 @@ public class MainWindow : Window
 
         items.Add(new MenuItem
         {
-            Header = $"Status: {(snapshot.Enabled ? "Running" : "Stopped")}" + (snapshot.WatcherEnabled ? " / watcher on" : " / watcher off"),
+            Header = $"Status: {(snapshot.Enabled ? "Running" : "Stopped")} / mode {snapshot.Mode}",
             IsEnabled = false,
         });
 
@@ -2771,16 +2622,12 @@ public class MainWindow : Window
         toggleEnabled.Click += (_, _) => ApplyMbotConfigChange(mbot => mbot.Enabled = !config.Enabled);
         items.Add(toggleEnabled);
 
-        var toggleWatcher = new MenuItem { Header = config.WatcherEnabled ? "Disable _Watcher" : "Enable _Watcher", IsEnabled = _embeddedGameConfig != null };
-        toggleWatcher.Click += (_, _) => ApplyMbotConfigChange(mbot => mbot.WatcherEnabled = !config.WatcherEnabled);
-        items.Add(toggleWatcher);
-
         var toggleAutoStart = new MenuItem { Header = config.AutoStart ? "Disable Auto-_Start" : "Enable Auto-_Start", IsEnabled = _embeddedGameConfig != null };
         toggleAutoStart.Click += (_, _) => ApplyMbotConfigChange(mbot => mbot.AutoStart = !config.AutoStart);
         items.Add(toggleAutoStart);
         items.Add(new Separator());
 
-        var runCommand = new MenuItem { Header = "Run _Command…", IsEnabled = proxyActive };
+        var runCommand = new MenuItem { Header = "Open _Prompt", IsEnabled = proxyActive && snapshot.Enabled };
         runCommand.Click += (_, _) => _ = ShowMbotCommandPromptAsync();
         items.Add(runCommand);
 
@@ -2788,19 +2635,19 @@ public class MainWindow : Window
         showStatus.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("bot");
         items.Add(showStatus);
 
-        var refresh = new MenuItem { Header = "_Refresh Context", IsEnabled = proxyActive };
+        var refresh = new MenuItem { Header = "_Refresh Context", IsEnabled = proxyActive && snapshot.Enabled };
         refresh.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("refresh");
         items.Add(refresh);
 
-        var listAll = new MenuItem { Header = "_List Active Scripts", IsEnabled = proxyActive };
+        var listAll = new MenuItem { Header = "_List Active Scripts", IsEnabled = proxyActive && snapshot.Enabled };
         listAll.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("listall");
         items.Add(listAll);
 
-        var stopCurrent = new MenuItem { Header = "S_top Current Module", IsEnabled = proxyActive };
+        var stopCurrent = new MenuItem { Header = "S_top Current Module", IsEnabled = proxyActive && snapshot.Enabled };
         stopCurrent.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("stop");
         items.Add(stopCurrent);
 
-        var stopAll = new MenuItem { Header = "Stop _All Bot Scripts", IsEnabled = proxyActive };
+        var stopAll = new MenuItem { Header = "Stop _All Bot Scripts", IsEnabled = proxyActive && snapshot.Enabled };
         stopAll.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("stopall");
         items.Add(stopAll);
 
@@ -3127,17 +2974,377 @@ public class MainWindow : Window
         _termCtrl.Focus();
     }
 
-    private async Task ExecuteMbotUiCommandAsync(string input)
+    private enum MbotPromptSurface
     {
-        await Task.Yield();
+        Unknown,
+        Command,
+        Citadel,
+        Computer,
+    }
 
+    private sealed record MbotGridContext(
+        MbotPromptSurface Surface,
+        int CurrentSector,
+        IReadOnlyList<int> AdjacentSectors,
+        int PlanetNumber,
+        bool Connected,
+        int PhotonCount);
+
+    private void SendToTelnet(byte[] bytes)
+    {
+        if (_telnet.IsConnected)
+            _telnet.SendRaw(bytes);
+        else
+            _parser.Feed("\x1b[33m[not connected]\x1b[0m\r\n");
+    }
+
+    private void RouteTerminalInput(byte[] bytes, Action<byte[]> forward)
+    {
+        if (TryHandleMbotPromptInput(bytes))
+            return;
+
+        if (TryInterceptMbotCommandPrompt(bytes))
+            return;
+
+        forward(bytes);
+    }
+
+    private bool TryHandleMbotPromptInput(byte[] bytes)
+    {
+        if (!_mbotPromptOpen)
+            return false;
+
+        if (bytes.Length == 0)
+            return true;
+
+        if (MatchesMbotPromptSequence(bytes, 'A'))
+        {
+            RecallMbotPromptHistory(-1);
+            return true;
+        }
+
+        if (MatchesMbotPromptSequence(bytes, 'B'))
+        {
+            RecallMbotPromptHistory(1);
+            return true;
+        }
+
+        if (bytes.Length == 1 && bytes[0] == 0x1B)
+        {
+            CancelMbotPrompt();
+            return true;
+        }
+
+        bool changed = false;
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x08:
+                case 0x7F:
+                    if (_mbotPromptBuffer.Length > 0)
+                    {
+                        _mbotPromptBuffer = _mbotPromptBuffer[..^1];
+                        changed = true;
+                    }
+                    break;
+
+                case 0x0D:
+                case 0x0A:
+                    SubmitMbotPrompt();
+                    return true;
+
+                case 0x09:
+                    break;
+
+                default:
+                    if (value >= 0x20)
+                    {
+                        _mbotPromptBuffer += (char)value;
+                        changed = true;
+                    }
+                    break;
+            }
+        }
+
+        if (changed)
+        {
+            _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
+            _mbotPromptDraft = _mbotPromptBuffer;
+            RedrawMbotPrompt();
+        }
+
+        return true;
+    }
+
+    private static bool MatchesMbotPromptSequence(byte[] bytes, char finalChar)
+    {
+        return bytes.Length == 3 &&
+            bytes[0] == 0x1B &&
+            bytes[1] == (byte)'[' &&
+            bytes[2] == (byte)finalChar;
+    }
+
+    private void BeginMbotPrompt(string initialValue = "")
+    {
         if (_gameInstance == null)
         {
-            await ShowMessageAsync("mbot", "mbot controls are only available while the embedded proxy is running.");
+            PublishMbotLocalMessage("mbot commands are only available while the embedded proxy is running.");
             return;
         }
 
-        _mbot.TryExecuteLocalInput(input, out _);
+        if (!_mbot.Enabled)
+        {
+            PublishMbotLocalMessage("Enable mbot first.");
+            return;
+        }
+
+        if (_mbotPromptOpen)
+            return;
+
+        _mbotPromptOpen = true;
+        _mbotPromptBuffer = initialValue;
+        _mbotPromptDraft = initialValue;
+        _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
+        RedrawMbotPrompt();
+    }
+
+    private void RecallMbotPromptHistory(int delta)
+    {
+        if (!_mbotPromptOpen || _mbotCommandHistory.Count == 0)
+            return;
+
+        int count = _mbotCommandHistory.Count;
+        if (_mbotPromptHistoryIndex == count)
+            _mbotPromptDraft = _mbotPromptBuffer;
+
+        _mbotPromptHistoryIndex = Math.Clamp(_mbotPromptHistoryIndex + delta, 0, count);
+        _mbotPromptBuffer = _mbotPromptHistoryIndex >= count
+            ? _mbotPromptDraft
+            : _mbotCommandHistory[_mbotPromptHistoryIndex];
+        RedrawMbotPrompt();
+    }
+
+    private void CancelMbotPrompt()
+    {
+        if (!_mbotPromptOpen)
+            return;
+
+        ResetMbotPromptState();
+        _parser.Feed("\r\x1b[K");
+        _buffer.Dirty = true;
+        _termCtrl.Focus();
+    }
+
+    private void SubmitMbotPrompt()
+    {
+        if (!_mbotPromptOpen)
+            return;
+
+        string command = _mbotPromptBuffer;
+        string prompt = GetMbotPromptPrefix();
+
+        ResetMbotPromptState();
+
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            _parser.Feed("\r\x1b[K");
+            _buffer.Dirty = true;
+            _termCtrl.Focus();
+            return;
+        }
+
+        _parser.Feed("\r\x1b[K");
+        _parser.Feed(prompt);
+        _parser.Feed(command);
+        _parser.Feed("\r\n");
+
+        RememberMbotHistory(command);
+        _mbot.TryExecuteLocalInput(command, out _);
+        ApplyMbotExecutionRefresh();
+    }
+
+    private void ResetMbotPromptState()
+    {
+        _mbotPromptOpen = false;
+        _mbotPromptBuffer = string.Empty;
+        _mbotPromptDraft = string.Empty;
+        _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
+    }
+
+    private void RedrawMbotPrompt()
+    {
+        if (!_mbotPromptOpen)
+            return;
+
+        _parser.Feed("\r\x1b[K");
+        _parser.Feed(GetMbotPromptPrefix());
+        if (_mbotPromptBuffer.Length > 0)
+            _parser.Feed(_mbotPromptBuffer);
+        _buffer.Dirty = true;
+        _termCtrl.Focus();
+    }
+
+    private string GetMbotPromptPrefix()
+    {
+        MTC.mbot.mbotStatusSnapshot snapshot = _mbot.GetStatusSnapshot();
+        string mode = string.IsNullOrWhiteSpace(snapshot.Mode) ? "General" : snapshot.Mode;
+        string botName = string.IsNullOrWhiteSpace(snapshot.BotName) ? "mbot" : snapshot.BotName;
+        return $"\x1b[1;34m{{{mode}}}\x1b[0;37m {botName}\x1b[1;32m>\x1b[0m ";
+    }
+
+    private void PublishMbotLocalMessage(string message)
+    {
+        if (_gameInstance != null)
+            _gameInstance.ClientMessage("\r\n" + message + "\r\n");
+        else
+            _parser.Feed("\r\n" + message + "\r\n");
+
+        if (_mbotPromptOpen)
+            RedrawMbotPrompt();
+        else
+            _termCtrl.Focus();
+
+        _buffer.Dirty = true;
+    }
+
+    private bool TryInterceptMbotCommandPrompt(byte[] bytes)
+    {
+        if (_gameInstance == null ||
+            !_mbot.Enabled ||
+            _mbotPromptOpen ||
+            _gameInstance.IsProxyMenuActive)
+        {
+            return false;
+        }
+
+        if (bytes.Length != 1 || bytes[0] != (byte)'>')
+            return false;
+
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null ||
+            interpreter.HasKeypressInputWaiting ||
+            interpreter.IsAnyScriptWaitingForInput())
+        {
+            return false;
+        }
+
+        MbotPromptSurface surface = GetMbotPromptSurface();
+        if (_gameInstance.IsConnected && surface == MbotPromptSurface.Unknown)
+            return false;
+
+        BeginMbotPrompt();
+        return true;
+    }
+
+    private MbotPromptSurface GetMbotPromptSurface()
+    {
+        string promptVar = Core.ScriptRef.GetCurrentGameVar("$PLAYER~CURRENT_PROMPT", string.Empty);
+        if (string.Equals(promptVar, "Command", StringComparison.OrdinalIgnoreCase))
+            return MbotPromptSurface.Command;
+        if (string.Equals(promptVar, "Citadel", StringComparison.OrdinalIgnoreCase))
+            return MbotPromptSurface.Citadel;
+        if (string.Equals(promptVar, "Computer", StringComparison.OrdinalIgnoreCase))
+            return MbotPromptSurface.Computer;
+
+        string currentLine = Core.ScriptRef.GetCurrentLine().Trim();
+        string currentAnsi = Core.ScriptRef.GetCurrentAnsiLine();
+        if (currentLine.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase))
+            return MbotPromptSurface.Command;
+        if (currentLine.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase))
+            return MbotPromptSurface.Computer;
+        if (currentLine.Contains("Citadel", StringComparison.OrdinalIgnoreCase) ||
+            currentLine.Contains("<Enter Citadel>", StringComparison.OrdinalIgnoreCase) ||
+            currentAnsi.Contains("Citadel", StringComparison.OrdinalIgnoreCase))
+        {
+            return MbotPromptSurface.Citadel;
+        }
+
+        return MbotPromptSurface.Unknown;
+    }
+
+    private MbotGridContext BuildMbotGridContext()
+    {
+        int currentSector = Core.ScriptRef.GetCurrentSector();
+        IReadOnlyList<int> adjacentSectors = _sessionDb?.GetSector(currentSector)?.Warp
+            .Where(warp => warp > 0)
+            .Select(warp => (int)warp)
+            .Distinct()
+            .ToArray()
+            ?? Array.Empty<int>();
+
+        return new MbotGridContext(
+            GetMbotPromptSurface(),
+            currentSector,
+            adjacentSectors,
+            ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLANET~PLANET", "0")),
+            _gameInstance?.IsConnected == true,
+            _state.Photon);
+    }
+
+    private static int ParseGameVarInt(string value)
+        => int.TryParse(value, out int parsed) ? parsed : 0;
+
+    private string BuildMbotScanMacro(bool holo, MbotGridContext context)
+    {
+        string macro = context.Surface == MbotPromptSurface.Citadel ? "q q z n " : string.Empty;
+        macro += holo ? "szhzn* " : "sdz* ";
+
+        if (context.Surface == MbotPromptSurface.Citadel && context.PlanetNumber > 0)
+            macro += $"l {context.PlanetNumber}*  c  ";
+
+        return macro;
+    }
+
+    private string BuildMbotMoveMacro(int sector)
+    {
+        int starDock = _sessionDb?.DBHeader.StarDock ?? 0;
+        string macro = $"m {sector}*";
+
+        if (sector <= 10 || sector == starDock)
+            return macro;
+
+        int shipMaxAttack = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$SHIP~SHIP_MAX_ATTACK", "0"));
+        int attackCount = shipMaxAttack > 0
+            ? Math.Min(_state.Fighters, shipMaxAttack)
+            : 0;
+        if (attackCount > 0)
+            macro += $"za{attackCount}* * ";
+
+        int surroundFigs = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDFIGS", "0"));
+        if (surroundFigs > 0)
+            macro += $"f  z  {surroundFigs}* z  c  d  *  ";
+
+        int surroundLimp = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDLIMP", "0"));
+        if (surroundLimp > 0)
+            macro += $"  H  2  Z  {surroundLimp}*  Z C  *  ";
+
+        int surroundMine = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDMINE", "0"));
+        if (surroundMine > 0)
+            macro += $"  H  1  Z  {surroundMine}*  Z C  *  ";
+
+        return macro;
+    }
+
+    private void RememberMbotHistory(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return;
+
+        string trimmed = input.Trim();
+        if (_mbotCommandHistory.Count > 0 &&
+            string.Equals(_mbotCommandHistory[^1], trimmed, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _mbotCommandHistory.Add(trimmed);
+        if (_mbotCommandHistory.Count > 50)
+            _mbotCommandHistory.RemoveAt(0);
+    }
+
+    private void ApplyMbotExecutionRefresh()
+    {
         RefreshMbotUi();
         RefreshStatusBar();
         RebuildProxyMenu();
@@ -3145,7 +3352,48 @@ public class MainWindow : Window
         _termCtrl.Focus();
     }
 
-    private async Task ShowMbotCommandPromptAsync(string initialValue = "")
+    private async Task SendMbotServerMacroAsync(string macro)
+    {
+        if (_gameInstance == null || !_gameInstance.IsConnected)
+        {
+            await ShowMessageAsync("mbot", "This mbot action requires an active game connection.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(macro))
+            return;
+
+        await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(macro));
+        _termCtrl.Focus();
+    }
+
+    private async Task ExecuteMbotUiCommandAsync(string input)
+    {
+        await Task.Yield();
+
+        if (_gameInstance == null)
+        {
+            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            return;
+        }
+
+        if (!_mbot.Enabled && !string.Equals(input, "bot", StringComparison.OrdinalIgnoreCase))
+        {
+            PublishMbotLocalMessage("Enable mbot first.");
+            return;
+        }
+
+        _mbot.TryExecuteLocalInput(input, out _);
+        ApplyMbotExecutionRefresh();
+    }
+
+    private Task ShowMbotCommandPromptAsync(string initialValue = "")
+    {
+        BeginMbotPrompt(initialValue);
+        return Task.CompletedTask;
+    }
+
+    private async Task ShowMbotGridMenuAsync(bool photonMode = false)
     {
         if (_gameInstance == null)
         {
@@ -3153,21 +3401,164 @@ public class MainWindow : Window
             return;
         }
 
-        string? input = await ShowTextPromptAsync(
-            "mbot Command",
-            "Enter an mbot command or a full self-command line.",
-            initialValue,
-            confirmText: "Run");
-
-        if (string.IsNullOrWhiteSpace(input))
+        if (!_mbot.Enabled)
+        {
+            await ShowMessageAsync("mbot", "Enable mbot first.");
             return;
+        }
 
-        _mbot.TryExecuteLocalInput(input, out _);
-        RefreshMbotUi();
-        RefreshStatusBar();
-        RebuildProxyMenu();
-        _buffer.Dirty = true;
-        _termCtrl.Focus();
+        MbotGridContext context = BuildMbotGridContext();
+        if (!context.Connected)
+        {
+            await ShowMessageAsync("mbot", "The grid menu needs an active game connection.");
+            return;
+        }
+
+        if (context.Surface != MbotPromptSurface.Command && context.Surface != MbotPromptSurface.Citadel)
+        {
+            await ShowMessageAsync("mbot", "The grid menu is only available from command or citadel prompts.");
+            return;
+        }
+
+        string? action = null;
+        string surfaceLabel = context.Surface == MbotPromptSurface.Citadel ? "Citadel" : "Command";
+        Window? gridDialog = null;
+        var actions = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            ItemHeight = 34,
+            ItemWidth = 120,
+        };
+
+        void AddActionButton(string label, string actionValue, bool enabled = true)
+        {
+            var button = new Button
+            {
+                Content = label,
+                IsEnabled = enabled,
+                Margin = new Thickness(4),
+                MinWidth = 110,
+            };
+            button.Click += (_, _) =>
+            {
+                action = actionValue;
+                gridDialog?.Close();
+            };
+            actions.Children.Add(button);
+        }
+
+        if (!photonMode)
+        {
+            AddActionButton("Holo", "scan:holo");
+            AddActionButton("Density", "scan:density");
+            AddActionButton("Surround", "cmd:surround");
+            AddActionButton("Photon…", "menu:photon", context.PhotonCount > 0 && context.AdjacentSectors.Count > 0);
+        }
+
+        foreach (int sector in context.AdjacentSectors)
+        {
+            string verb = photonMode
+                ? $"Photon {sector}"
+                : (context.Surface == MbotPromptSurface.Citadel ? $"PGrid {sector}" : $"Move {sector}");
+            AddActionButton(verb, (photonMode ? "photon:" : "move:") + sector);
+        }
+
+        var closeBtn = new Button { Content = "Close", MinWidth = 96 };
+        var dlg = new Window
+        {
+            Title = photonMode ? "mbot Photon Menu" : "mbot Grid Menu",
+            Width = 620,
+            Height = 280,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = BgPanel,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Spacing = 14,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = photonMode ? "Photon Menu" : "Grid Menu",
+                        Foreground = FgTitle,
+                        FontSize = 13,
+                        FontWeight = Avalonia.Media.FontWeight.SemiBold,
+                    },
+                    new TextBlock
+                    {
+                        Text = $"Prompt: {surfaceLabel}   Sector: {context.CurrentSector}",
+                        Foreground = FgKey,
+                    },
+                    new TextBlock
+                    {
+                        Text = context.AdjacentSectors.Count == 0
+                            ? "No adjacent sectors are known in the current database."
+                            : "Choose a scan, a bot action, or an adjacent sector.",
+                        Foreground = FgKey,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    actions,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        Children = { closeBtn },
+                    },
+                },
+            },
+        };
+        gridDialog = dlg;
+
+        closeBtn.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
+
+        if (string.IsNullOrWhiteSpace(action))
+        {
+            _termCtrl.Focus();
+            return;
+        }
+
+        if (string.Equals(action, "scan:holo", StringComparison.Ordinal))
+        {
+            await SendMbotServerMacroAsync(BuildMbotScanMacro(holo: true, context));
+            return;
+        }
+
+        if (string.Equals(action, "scan:density", StringComparison.Ordinal))
+        {
+            await SendMbotServerMacroAsync(BuildMbotScanMacro(holo: false, context));
+            return;
+        }
+
+        if (string.Equals(action, "cmd:surround", StringComparison.Ordinal))
+        {
+            await ExecuteMbotUiCommandAsync("surround");
+            return;
+        }
+
+        if (string.Equals(action, "menu:photon", StringComparison.Ordinal))
+        {
+            await ShowMbotGridMenuAsync(photonMode: true);
+            return;
+        }
+
+        if (action.StartsWith("photon:", StringComparison.Ordinal) &&
+            int.TryParse(action["photon:".Length..], out int photonSector))
+        {
+            await ExecuteMbotUiCommandAsync($"photon {photonSector}");
+            return;
+        }
+
+        if (action.StartsWith("move:", StringComparison.Ordinal) &&
+            int.TryParse(action["move:".Length..], out int moveSector))
+        {
+            if (context.Surface == MbotPromptSurface.Citadel)
+                await ExecuteMbotUiCommandAsync($"pgrid {moveSector} scan");
+            else
+                await SendMbotServerMacroAsync(BuildMbotMoveMacro(moveSector));
+        }
     }
 
     private async Task OnProxyStopAllScriptsAsync(bool includeSystemScripts)

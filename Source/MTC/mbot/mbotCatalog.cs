@@ -206,13 +206,10 @@ internal static class mbotCatalog
             .OrderBy(command => command, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    public static bool TryResolveInitialCommand(string input, out mbotCommandSpec? command, out string canonical)
+    public static string NormalizeCommandName(string input)
     {
-        command = null;
-        canonical = string.Empty;
-
         if (string.IsNullOrWhiteSpace(input))
-            return false;
+            return string.Empty;
 
         string normalized = input.Trim();
         int splitIndex = normalized.IndexOf(' ');
@@ -222,10 +219,26 @@ internal static class mbotCatalog
         mbotAliasSpec? alias = _initialAliases.FirstOrDefault(item =>
             string.Equals(item.Alias, normalized, StringComparison.OrdinalIgnoreCase));
 
-        canonical = alias?.Canonical ?? normalized;
-        string canonicalName = canonical;
+        return alias?.Canonical ?? normalized;
+    }
+
+    public static bool TryGetCommandSpec(string canonical, out mbotCommandSpec? command)
+    {
         command = _initialCommands.FirstOrDefault(item =>
-            string.Equals(item.Name, canonicalName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(item.Name, canonical, StringComparison.OrdinalIgnoreCase));
         return command != null;
+    }
+
+    public static bool IsInternalCommand(string input)
+    {
+        string canonical = NormalizeCommandName(input);
+        return !string.IsNullOrWhiteSpace(canonical) &&
+               AllInternalCommands.Contains(canonical, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static bool TryResolveInitialCommand(string input, out mbotCommandSpec? command, out string canonical)
+    {
+        canonical = NormalizeCommandName(input);
+        return TryGetCommandSpec(canonical, out command);
     }
 }

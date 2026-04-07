@@ -102,11 +102,11 @@ internal sealed class mbotCompatContext
     private static string GetScriptRootLeaf(string scriptRoot)
     {
         if (string.IsNullOrWhiteSpace(scriptRoot))
-            return "mombot";
+            return "mbot";
 
         string trimmed = scriptRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         string leaf = Path.GetFileName(trimmed);
-        return string.IsNullOrWhiteSpace(leaf) ? "mombot" : leaf;
+        return string.IsNullOrWhiteSpace(leaf) ? "mbot" : leaf;
     }
 
     private static string ReadCurrent(string name, string fallback)

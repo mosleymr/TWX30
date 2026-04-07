@@ -10,6 +10,6 @@ internal sealed class mbotConfig
     public bool AcceptSubspaceCommands { get; set; } = true;
     public bool AcceptPrivateCommands { get; set; } = true;
     public bool WatcherEnabled { get; set; } = true;
-    public string ScriptRoot { get; set; } = "scripts/mombot";
+    public string ScriptRoot { get; set; } = "scripts/mbot";
     public List<string> AuthorizedUsers { get; set; } = new();
 }

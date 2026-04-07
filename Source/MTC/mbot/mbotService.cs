@@ -71,12 +71,9 @@ internal sealed class mbotService
         _config = config ?? new mbotConfig();
         if (_config.AutoStart)
             _config.Enabled = true;
+        NormalizeConfig();
         ResetAuthorizedUsers();
-
-        if (_config.WatcherEnabled)
-            Watcher.Attach(gameInstance, database);
-        else
-            Watcher.Detach();
+        SyncWatcherState();
     }
 
     public void DetachSession()
@@ -91,12 +88,9 @@ internal sealed class mbotService
     public void ApplyConfig(mbotConfig? config)
     {
         _config = config ?? new mbotConfig();
+        NormalizeConfig();
         ResetAuthorizedUsers();
-
-        if (_config.WatcherEnabled && _gameInstance != null)
-            Watcher.Attach(_gameInstance, _database);
-        else
-            Watcher.Detach();
+        SyncWatcherState();
     }
 
     public IReadOnlyList<Core.RunningScriptInfo> GetRunningScripts()
@@ -199,10 +193,11 @@ internal sealed class mbotService
 
     public bool ObserveServerLine(string line)
     {
-        Watcher.ObserveServerLine(line);
-
         if (!Enabled || string.IsNullOrWhiteSpace(line))
             return false;
+
+        if (Watcher.IsAttached)
+            Watcher.ObserveServerLine(line);
 
         if (TryHandlePageLogin(line))
             return true;
@@ -257,14 +252,6 @@ internal sealed class mbotService
         if (string.IsNullOrWhiteSpace(input))
             return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, "Empty mbot command.");
 
-        if (!TryResolveInitialCommand(input, out mbotCommandSpec? command, out string canonical) || command == null)
-        {
-            string invalidCommand = GetWords(input).FirstOrDefault() ?? input.Trim();
-            string message = $"mbot: '{invalidCommand}' is not a valid command.";
-            PublishMessage(message);
-            return new mbotDispatchResult(false, mbotDispatchKind.Invalid, invalidCommand, message);
-        }
-
         List<string> words = GetWords(input);
         if (words.Count == 0)
         {
@@ -273,9 +260,10 @@ internal sealed class mbotService
             return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, message);
         }
 
+        string canonical = mbotCatalog.NormalizeCommandName(words[0]);
+        mbotCatalog.TryGetCommandSpec(canonical, out mbotCommandSpec? command);
         List<string> parameters = words.Skip(1).Take(8).ToList();
         string normalizedLine = BuildNormalizedCommandLine(canonical, parameters);
-        string? scriptReference = command.Kind == mbotCommandKind.Module ? TryResolveScriptReference(command) : null;
         var context = new mbotCommandContext(
             normalizedLine,
             canonical,
@@ -284,29 +272,41 @@ internal sealed class mbotService
             route,
             userName);
 
+        string? scriptReference = TryResolveScriptReference(canonical, command, out bool isModeScript);
         Compat.ApplyToSession(_interpreter, _database, _config, Settings, context, scriptReference);
 
-        if (command.Kind == mbotCommandKind.Internal)
-            return ExecuteNative(command, context);
-
-        if (scriptReference == null)
+        if (scriptReference != null)
         {
-            string message = $"mbot: no module path is available for '{canonical}'.";
-            PublishMessage(message);
-            return new mbotDispatchResult(false, mbotDispatchKind.Unsupported, canonical, message);
+            if (isModeScript && !HasHelpParameter(parameters))
+                Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", FormatModeName(canonical));
+
+            Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", scriptReference);
+
+            if (!TryLoadScript(scriptReference, out string? error))
+            {
+                string message = $"mbot: failed to load '{scriptReference}': {error}";
+                PublishMessage(message);
+                return new mbotDispatchResult(false, mbotDispatchKind.Script, canonical, message, scriptReference);
+            }
+
+            string loadedMessage = $"mbot: loaded {canonical} ({scriptReference}).";
+            PublishMessage(loadedMessage);
+            return new mbotDispatchResult(true, mbotDispatchKind.Script, canonical, loadedMessage, scriptReference);
         }
 
-        if (!TryLoadScript(scriptReference, out string? error))
+        if (command?.Kind == mbotCommandKind.Internal || mbotCatalog.IsInternalCommand(canonical))
         {
-            string message = $"mbot: failed to load '{scriptReference}': {error}";
-            PublishMessage(message);
-            return new mbotDispatchResult(false, mbotDispatchKind.Script, canonical, message, scriptReference);
+            mbotCommandSpec internalCommand = command ?? new mbotCommandSpec(
+                canonical,
+                mbotCommandKind.Internal,
+                $":INTERNAL_COMMANDS~{canonical}",
+                "Internal mombot-compatible command.");
+            return ExecuteNative(internalCommand, context);
         }
 
-        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", scriptReference);
-        string loadedMessage = $"mbot: loaded {canonical} ({scriptReference}).";
-        PublishMessage(loadedMessage);
-        return new mbotDispatchResult(true, mbotDispatchKind.Script, canonical, loadedMessage, scriptReference);
+        string messageInvalid = $"mbot: '{canonical}' is not a valid command.";
+        PublishMessage(messageInvalid);
+        return new mbotDispatchResult(false, mbotDispatchKind.Invalid, canonical, messageInvalid);
     }
 
     private mbotDispatchResult ExecuteNative(mbotCommandSpec command, mbotCommandContext context)
@@ -426,30 +426,172 @@ internal sealed class mbotService
         _gameInstance?.ClientMessage("\r\n" + message + "\r\n");
     }
 
-    private string? TryResolveScriptReference(mbotCommandSpec command)
+    private void NormalizeConfig()
     {
-        if (command.Kind != mbotCommandKind.Module || string.IsNullOrWhiteSpace(command.Source))
-            return null;
+        if (string.IsNullOrWhiteSpace(_config.ScriptRoot))
+            _config.ScriptRoot = "scripts/mbot";
 
-        string relative = command.Source
+        _config.WatcherEnabled = _config.Enabled;
+    }
+
+    private void SyncWatcherState()
+    {
+        _config.WatcherEnabled = _config.Enabled;
+        if (_config.Enabled && _gameInstance != null)
+            Watcher.Attach(_gameInstance, _database);
+        else
+            Watcher.Detach();
+    }
+
+    private string? TryResolveScriptReference(string canonical, mbotCommandSpec? command, out bool isModeScript)
+    {
+        isModeScript = false;
+
+        if (command?.Kind == mbotCommandKind.Module &&
+            TryResolveExplicitScriptReference(command.Source, out string? explicitReference, out string? explicitFullPath))
+        {
+            isModeScript = IsModeScriptPath(explicitFullPath);
+            return explicitReference;
+        }
+
+        if (TryResolveRecursiveScriptReference(canonical, out string? recursiveReference, out string? recursiveFullPath))
+        {
+            isModeScript = IsModeScriptPath(recursiveFullPath);
+            return recursiveReference;
+        }
+
+        return null;
+    }
+
+    private bool TryResolveExplicitScriptReference(string source, out string? scriptReference, out string? fullPath)
+    {
+        scriptReference = null;
+        fullPath = null;
+        if (string.IsNullOrWhiteSpace(source))
+            return false;
+
+        string relative = source
             .Replace('\\', Path.DirectorySeparatorChar)
             .Replace('/', Path.DirectorySeparatorChar);
 
-        string reference = Path.IsPathRooted(relative)
+        string configuredPath = Path.IsPathRooted(relative)
             ? relative
             : Path.Combine(_config.ScriptRoot, relative);
 
-        string fullPath = reference;
-        if (!Path.IsPathRooted(fullPath))
-        {
-            string? baseDir = _interpreter?.ProgramDir;
-            if (string.IsNullOrWhiteSpace(baseDir))
-                baseDir = Directory.GetCurrentDirectory();
+        string resolvedFullPath = ResolveAgainstProgramDirectory(configuredPath);
+        if (!File.Exists(resolvedFullPath))
+            return false;
 
-            fullPath = Path.Combine(baseDir, reference);
+        fullPath = resolvedFullPath;
+        scriptReference = BuildLoadReference(resolvedFullPath);
+        return true;
+    }
+
+    private bool TryResolveRecursiveScriptReference(string canonical, out string? scriptReference, out string? fullPath)
+    {
+        scriptReference = null;
+        fullPath = null;
+
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (string.IsNullOrWhiteSpace(scriptRoot) || !Directory.Exists(scriptRoot))
+            return false;
+
+        string visibleName = canonical + ".cts";
+        string hiddenName = "_" + canonical + ".cts";
+        var options = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+        };
+
+        string? match = Directory
+            .EnumerateFiles(scriptRoot, "*.cts", options)
+            .FirstOrDefault(path =>
+            {
+                string fileName = Path.GetFileName(path);
+                return string.Equals(fileName, visibleName, StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(fileName, hiddenName, StringComparison.OrdinalIgnoreCase);
+            });
+
+        if (match == null)
+            return false;
+
+        fullPath = Path.GetFullPath(match);
+        scriptReference = BuildLoadReference(fullPath);
+        return true;
+    }
+
+    private string? GetAbsoluteScriptRoot()
+    {
+        if (string.IsNullOrWhiteSpace(_config.ScriptRoot))
+            return null;
+
+        string root = Path.IsPathRooted(_config.ScriptRoot)
+            ? _config.ScriptRoot
+            : Path.Combine(GetProgramDirectory(), _config.ScriptRoot);
+
+        return Path.GetFullPath(root);
+    }
+
+    private string ResolveAgainstProgramDirectory(string path)
+    {
+        return Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(GetProgramDirectory(), path));
+    }
+
+    private string BuildLoadReference(string fullPath)
+    {
+        string programDirectory = Path.GetFullPath(GetProgramDirectory());
+        string candidate = Path.GetFullPath(fullPath);
+        string prefix = programDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+        if (candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return Path.GetRelativePath(programDirectory, candidate).Replace('\\', '/');
+
+        return candidate;
+    }
+
+    private string GetProgramDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_interpreter?.ProgramDir))
+            return _interpreter.ProgramDir;
+
+        return Directory.GetCurrentDirectory();
+    }
+
+    private bool IsModeScriptPath(string? fullPath)
+    {
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (string.IsNullOrWhiteSpace(fullPath) ||
+            string.IsNullOrWhiteSpace(scriptRoot) ||
+            !Path.IsPathRooted(fullPath))
+        {
+            return false;
         }
 
-        return File.Exists(fullPath) ? reference : null;
+        string relativePath = Path.GetRelativePath(scriptRoot, fullPath);
+        string[] segments = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return segments.Length > 0 && string.Equals(segments[0], "modes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasHelpParameter(IReadOnlyList<string> parameters)
+    {
+        return parameters.Any(parameter =>
+            string.Equals(parameter, "help", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(parameter, "?", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatModeName(string commandName)
+    {
+        if (string.IsNullOrWhiteSpace(commandName))
+            return "General";
+
+        if (commandName.Length == 1)
+            return commandName.ToUpperInvariant();
+
+        return char.ToUpperInvariant(commandName[0]) + commandName[1..];
     }
 
     private bool TryHandlePageLogin(string line)
