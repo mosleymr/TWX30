@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
@@ -13,11 +14,13 @@ public class AdvancedProxySettingsDialog : Window
     {
         public string Value { get; }
         public string Label { get; }
+        public bool IsBuiltIn { get; }
 
-        public HaggleModeOption(string value, string label)
+        public HaggleModeOption(string value, string label, bool isBuiltIn)
         {
             Value = value;
             Label = label;
+            IsBuiltIn = isBuiltIn;
         }
 
         public override string ToString() => Label;
@@ -31,7 +34,7 @@ public class AdvancedProxySettingsDialog : Window
 
     public string SelectedHaggleMode { get; private set; }
 
-    public AdvancedProxySettingsDialog(string currentHaggleMode)
+    public AdvancedProxySettingsDialog(string currentHaggleMode, IReadOnlyList<Core.NativeHaggleModeInfo>? availableModes = null)
     {
         Title = "Advanced Proxy Settings";
         Width = 520;
@@ -40,14 +43,9 @@ public class AdvancedProxySettingsDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = BgPanel;
 
-        var haggleOptions = new List<HaggleModeOption>
-        {
-            new(Core.NativeHaggleModes.ClampHeuristic, "Clamp Heuristic"),
-            new(Core.NativeHaggleModes.BlendHeuristic, "Blend Heuristic"),
-            new(Core.NativeHaggleModes.ServerDerived, "Server Derived"),
-            new(Core.NativeHaggleModes.ExcellentTarget, "Excellent Target"),
-            new(Core.NativeHaggleModes.Baseline, "Baseline"),
-        };
+        var haggleOptions = (availableModes ?? Core.NativeHaggleModes.BuiltInModes)
+            .Select(info => new HaggleModeOption(info.Id, info.DisplayName, info.IsBuiltIn))
+            .ToList();
 
         var haggleCombo = new ComboBox
         {

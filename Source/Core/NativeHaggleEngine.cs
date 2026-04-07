@@ -13,19 +13,37 @@ public static class NativeHaggleModes
     public const string ClampHeuristic = "clamp-heuristic";
     public const string ServerDerived = "server-derived";
     public const string ExcellentTarget = "excellent-target";
+    public const string Default = ClampHeuristic;
 
     public static string Normalize(string? mode)
     {
         string normalized = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return Default;
+
         return normalized switch
         {
+            "ephaggle" => ClampHeuristic,
+            "clamp heuristic" => ClampHeuristic,
             Baseline => Baseline,
+            "blend heuristic" => BlendHeuristic,
             BlendHeuristic => BlendHeuristic,
+            "enhanced haggle" => ServerDerived,
+            "server derived" => ServerDerived,
             ClampHeuristic => ClampHeuristic,
             ServerDerived => ServerDerived,
             ExcellentTarget => ExcellentTarget,
-            _ => ClampHeuristic,
+            _ => normalized,
         };
+    }
+
+    public static bool IsBuiltIn(string? mode)
+    {
+        string normalized = Normalize(mode);
+        return normalized == ClampHeuristic ||
+               normalized == BlendHeuristic ||
+               normalized == ServerDerived ||
+               normalized == Baseline;
     }
 
     public static IReadOnlyList<string> All { get; } = new[]
@@ -33,14 +51,15 @@ public static class NativeHaggleModes
         ClampHeuristic,
         BlendHeuristic,
         ServerDerived,
-        ExcellentTarget,
         Baseline,
     };
+
+    public static IReadOnlyList<NativeHaggleModeInfo> BuiltInModes => NativeHaggleModeCatalog.GetBuiltIns();
 }
 
 public sealed class NativeHaggleEngine
 {
-    private sealed class Candidate
+    internal sealed class Candidate
     {
         public int Mcic { get; set; }
         public int BaseVar { get; set; }
@@ -49,7 +68,7 @@ public sealed class NativeHaggleEngine
         public double ExactPrice { get; set; }
     }
 
-    private sealed class SessionState
+    internal sealed class SessionState
     {
         public int Sector { get; set; }
         public string RouteKey { get; set; } = string.Empty;
@@ -117,18 +136,7 @@ public sealed class NativeHaggleEngine
         public string BuySell { get; set; } = string.Empty;
     }
 
-    private sealed class ExcellentRouteState
-    {
-        public int GreatStreak { get; set; }
-        public int Cooldown { get; set; }
-        public int SuccessfulProbeCount { get; set; }
-        public int FailedProbeCount { get; set; }
-        public int FirstOfferExactHitFailures { get; set; }
-        public int NearExcellentCount { get; set; }
-        public int EarlyTowardOfferBias { get; set; }
-    }
-
-    private enum ServerProbeBranch
+    internal enum ServerProbeBranch
     {
         HiddenOverBid,
         BidOverHidden,
@@ -185,7 +193,8 @@ public sealed class NativeHaggleEngine
     private int _greatRewardCount;
     private int _excellentRewardCount;
     private string _firstBidMode = NativeHaggleModes.ClampHeuristic;
-    private readonly Dictionary<string, ExcellentRouteState> _excellentRouteStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, NativeHaggleModeExtension> _extensionModes = new(StringComparer.OrdinalIgnoreCase);
+    private string? _lastMissingModeId;
 
     public event Action? StatsChanged;
 
@@ -205,6 +214,8 @@ public sealed class NativeHaggleEngine
             : (int)Math.Round((_successfulHaggles * 100.0) / _completedHaggles, MidpointRounding.AwayFromZero);
 
     public string FirstBidMode => _firstBidMode;
+
+    public IReadOnlyList<NativeHaggleModeInfo> AvailableModes => NativeHaggleModeCatalog.GetAvailableModes(_extensionModes.Values);
 
     public NativeHaggleEngine()
     {
@@ -250,6 +261,20 @@ public sealed class NativeHaggleEngine
     public void SetFirstBidMode(string? mode)
     {
         _firstBidMode = NativeHaggleModes.Normalize(mode);
+    }
+
+    internal void RegisterMode(NativeHaggleModeExtension mode)
+    {
+        string modeId = NativeHaggleModes.Normalize(mode.ModeInfo.Id);
+        _extensionModes[modeId] = mode;
+        if (string.Equals(_lastMissingModeId, modeId, StringComparison.OrdinalIgnoreCase))
+            _lastMissingModeId = null;
+    }
+
+    internal void UnregisterMode(string? modeId)
+    {
+        string normalized = NativeHaggleModes.Normalize(modeId);
+        _extensionModes.Remove(normalized);
     }
 
     public static bool IsOfferLine(string line)
@@ -1313,10 +1338,11 @@ public sealed class NativeHaggleEngine
     private long ComputeBid(SessionState session, long offer, string firstBidMode)
     {
         string mode = NativeHaggleModes.Normalize(firstBidMode);
+        if (_extensionModes.TryGetValue(mode, out NativeHaggleModeExtension? extension))
+            return extension.ComputeBid(this, session, offer);
+
         if (mode == NativeHaggleModes.ServerDerived)
             return ComputeServerDerivedBid(session, offer);
-        if (mode == NativeHaggleModes.ExcellentTarget)
-            return ComputeExcellentTargetBid(session, offer);
 
         long exactBid = ComputeExactBid(session);
         return ApplyExperimentalFirstBidMode(session, offer, exactBid, mode);
@@ -1413,12 +1439,12 @@ public sealed class NativeHaggleEngine
         return adjustedBid;
     }
 
-    private static long ComputeServerDerivedBid(SessionState session, long offer)
+    internal static long ComputeServerDerivedBid(SessionState session, long offer)
     {
         return ComputeServerDerivedBid(session, offer, NativeHaggleModes.ClampHeuristic);
     }
 
-    private static long ComputeServerDerivedBid(SessionState session, long offer, string firstBidMode)
+    internal static long ComputeServerDerivedBid(SessionState session, long offer, string firstBidMode)
     {
         if (session.Candidates.Count == 0)
             return NormalizeBidForDirection(session, offer, offer);
@@ -1459,306 +1485,7 @@ public sealed class NativeHaggleEngine
         return bid;
     }
 
-    private long ComputeExcellentTargetBid(SessionState session, long offer)
-    {
-        string firstBidMode = ReadExcellentTargetFirstBidMode();
-        long baseBid = ComputeServerDerivedBid(session, offer, firstBidMode);
-        if (session.Candidates.Count == 0)
-            return baseBid;
-
-        if (!session.FinalOffer)
-        {
-            if (session.BidNumber == 0)
-            {
-                if (!string.IsNullOrWhiteSpace(session.RouteKey) &&
-                    _excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? exactHitRouteState) &&
-                    exactHitRouteState.Cooldown > 0)
-                {
-                    // Reuse the existing route cooldown to suppress risky round-1 exact-hit retries after a reject/no-transaction.
-                    session.FirstOfferExactHitApplied = false;
-                }
-                else if (TryGetFirstOfferExactHitBid(session, offer, out long exactHitBid, out string exactHitReason))
-                {
-                    session.FirstOfferExactHitApplied = true;
-                    GlobalModules.DebugLog(
-                        $"[NativeHaggle] Excellent-target first-hit round=1 offer={offer} baseBid={baseBid} bid={exactHitBid} reason={exactHitReason} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
-                    return exactHitBid;
-                }
-                else
-                {
-                    session.FirstOfferExactHitApplied = false;
-                }
-            }
-
-            int routeBias = 0;
-            if (session.BidNumber == 0 &&
-                !string.IsNullOrWhiteSpace(session.RouteKey) &&
-                _excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? routeState) &&
-                routeState.Cooldown <= 0)
-            {
-                routeBias = routeState.EarlyTowardOfferBias;
-            }
-
-            int soften = session.BidNumber == 0
-                ? ReadExcellentTargetFirstSoften()
-                : ReadExcellentTargetMidSoften();
-
-            long bid = baseBid;
-            if (soften > 0)
-                bid = MoveBidTowardOffer(session, offer, bid, soften);
-            if (routeBias > 0)
-                bid = MoveBidTowardOffer(session, offer, bid, routeBias);
-
-            int exactNudge = session.BidNumber == 0
-                ? ReadExcellentTargetFirstExactNudge()
-                : ReadExcellentTargetMidExactNudge();
-            if (exactNudge > 0)
-                bid = MoveBidTowardExactRange(session, bid, exactNudge);
-
-            bid = NormalizeBidForDirection(session, offer, bid);
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] Excellent-target early round={Math.Max(1, session.BidNumber + 1)} offer={offer} baseBid={baseBid} soften={soften} routeBias={routeBias} exactNudge={exactNudge} bid={bid} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
-            return bid;
-        }
-
-        (double minTarget, double maxTarget, string exactSource) = GetTrackedTargetTotalRange(session);
-        bool portSelling = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase);
-
-        // The server's reward path uses bid/hidden for port-selling routes and hidden/bid for port-buying routes.
-        // To move toward excellent, we therefore want bids at/above the exact total when the port is selling,
-        // and bids at/below the exact total when the port is buying.
-        double targetExactTotal = portSelling ? maxTarget : minTarget;
-        long targetBid = portSelling
-            ? (long)Math.Ceiling(targetExactTotal)
-            : (long)Math.Floor(targetExactTotal);
-
-        int maxNudge = ReadExcellentTargetNudge();
-        if (!string.IsNullOrWhiteSpace(session.RouteKey) &&
-            _excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? finalRouteState) &&
-            finalRouteState.Cooldown > 0)
-        {
-            if (maxNudge > 0)
-            {
-                GlobalModules.DebugLog(
-                    $"[NativeHaggle] Excellent-target cooldown route={session.RouteKey} cooldown={finalRouteState.Cooldown} suppressedFinalNudge={maxNudge}\n");
-            }
-            maxNudge = 0;
-        }
-
-        long finalBid = MoveBidTowardTarget(baseBid, targetBid, maxNudge, portSelling);
-
-        finalBid = NormalizeBidForDirection(session, offer, finalBid);
-        session.FinalTargetNudgeApplied = (int)(finalBid - baseBid);
-        finalBid = ApplyEmpiricalExcellentProbe(session, offer, baseBid, finalBid);
-
-        string baseProbe = DescribePredictedProbe(session, baseBid);
-        string finalProbe = DescribePredictedProbe(session, finalBid);
-        GlobalModules.DebugLog(
-            $"[NativeHaggle] Excellent-target bid round={Math.Max(1, session.BidNumber + 1)} offer={offer} targetExact={targetExactTotal:0.000000} exactRange={minTarget:0.000000}..{maxTarget:0.000000} exactSource={exactSource} baseBid={baseBid} targetBid={targetBid} maxNudge={maxNudge} bid={finalBid} baseProbe={baseProbe} finalProbe={finalProbe} candidates={session.Candidates.Count} sector={session.Sector} product={session.ProductKey} buysell={session.BuySell}\n");
-        return finalBid;
-    }
-
-    private long ApplyEmpiricalExcellentProbe(SessionState session, long offer, long baseBid, long currentBid)
-    {
-        session.EmpiricalProbeApplied = false;
-        session.EmpiricalProbeNudge = 0;
-
-        if (!ReadExcellentTargetEmpiricalProbeEnabled())
-            return currentBid;
-
-        if (!session.FinalOffer || string.IsNullOrWhiteSpace(session.RouteKey))
-            return currentBid;
-
-        ExcellentRouteState state = GetExcellentRouteState(session.RouteKey);
-        if (state.Cooldown > 0 || state.GreatStreak < 8)
-            return currentBid;
-
-        (double _, long thresholdBid) = ComputeServerThresholdBid(session);
-        bool portSelling = string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase);
-        long candidate = portSelling ? currentBid + 1 : currentBid - 1;
-
-        if (portSelling)
-        {
-            if (candidate > thresholdBid)
-                return currentBid;
-        }
-        else if (candidate < thresholdBid)
-        {
-            return currentBid;
-        }
-
-        candidate = NormalizeBidForDirection(session, offer, candidate);
-        if (candidate == currentBid)
-            return currentBid;
-
-        session.EmpiricalProbeApplied = true;
-        session.EmpiricalProbeNudge = (int)(candidate - baseBid);
-
-        GlobalModules.DebugLog(
-            $"[NativeHaggle] Excellent-target empirical probe route={session.RouteKey} greatStreak={state.GreatStreak} cooldown={state.Cooldown} baseBid={baseBid} currentBid={currentBid} thresholdBid={thresholdBid} probeBid={candidate} nudge={session.EmpiricalProbeNudge}\n");
-        return candidate;
-    }
-
-    private static bool ReadExcellentTargetEmpiricalProbeEnabled()
-    {
-        return ReadExcellentTargetFlag(
-            "TWX_HAGGLE_EXCELLENT_EMPIRICAL",
-            "/tmp/twx_haggle_excellent_empirical.txt",
-            defaultValue: false);
-    }
-
-    private static bool ReadExcellentTargetPortApproxEnabled()
-    {
-        return ReadExcellentTargetFlag(
-            "TWX_HAGGLE_EXCELLENT_PORT_APPROX",
-            "/tmp/twx_haggle_excellent_port_approx.txt",
-            defaultValue: true);
-    }
-
-    private static int ReadExcellentTargetPortApproxBiasHours()
-    {
-        return ReadExcellentTargetSetting(
-            "TWX_HAGGLE_EXCELLENT_PORT_BIAS_HOURS",
-            "/tmp/twx_haggle_excellent_port_bias_hours.txt",
-            defaultValue: 6,
-            maxValue: 240);
-    }
-
-    private static int ReadExcellentTargetPortApproxProductionRate()
-    {
-        return ReadExcellentTargetSetting(
-            "TWX_HAGGLE_EXCELLENT_PORT_PRODUCTION_RATE",
-            "/tmp/twx_haggle_excellent_port_production_rate.txt",
-            defaultValue: 10,
-            maxValue: 100);
-    }
-
-    private static int ReadExcellentTargetPortApproxMaxRegen()
-    {
-        return ReadExcellentTargetSetting(
-            "TWX_HAGGLE_EXCELLENT_PORT_MAX_REGEN",
-            "/tmp/twx_haggle_excellent_port_max_regen.txt",
-            defaultValue: 100,
-            maxValue: 1000);
-    }
-
-    private static int ReadExcellentTargetNudge()
-    {
-        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_NUDGE", "/tmp/twx_haggle_excellent_nudge.txt", defaultValue: 1, maxValue: 5);
-    }
-
-    private static string ReadExcellentTargetFirstBidMode()
-    {
-        const string defaultValue = NativeHaggleModes.ClampHeuristic;
-
-        string? raw = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXCELLENT_FIRST_MODE");
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            try
-            {
-                const string filePath = "/tmp/twx_haggle_excellent_first_mode.txt";
-                if (File.Exists(filePath))
-                    raw = File.ReadAllText(filePath).Trim();
-            }
-            catch
-            {
-                raw = null;
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(raw))
-            return defaultValue;
-
-        if (string.Equals(raw, "exact", StringComparison.OrdinalIgnoreCase))
-            return NativeHaggleModes.Baseline;
-        if (string.Equals(raw, "server", StringComparison.OrdinalIgnoreCase))
-            return defaultValue;
-
-        string normalized = NativeHaggleModes.Normalize(raw);
-        return normalized == NativeHaggleModes.ServerDerived || normalized == NativeHaggleModes.ExcellentTarget
-            ? defaultValue
-            : normalized;
-    }
-
-    private static int ReadExcellentTargetFirstSoften()
-    {
-        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_FIRST_SOFTEN", "/tmp/twx_haggle_excellent_first_soften.txt", defaultValue: 0, maxValue: 3);
-    }
-
-    private static bool ReadExcellentTargetFirstExactHitEnabled()
-    {
-        return ReadExcellentTargetFlag(
-            "TWX_HAGGLE_EXCELLENT_FIRST_EXACT_HIT",
-            "/tmp/twx_haggle_excellent_first_exact_hit.txt",
-            defaultValue: true);
-    }
-
-    private static int ReadExcellentTargetMidSoften()
-    {
-        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_MID_SOFTEN", "/tmp/twx_haggle_excellent_mid_soften.txt", defaultValue: 0, maxValue: 3);
-    }
-
-    private static int ReadExcellentTargetFirstExactNudge()
-    {
-        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_FIRST_EXACT_NUDGE", "/tmp/twx_haggle_excellent_first_exact_nudge.txt", defaultValue: 0, maxValue: 5);
-    }
-
-    private static int ReadExcellentTargetMidExactNudge()
-    {
-        return ReadExcellentTargetSetting("TWX_HAGGLE_EXCELLENT_MID_EXACT_NUDGE", "/tmp/twx_haggle_excellent_mid_exact_nudge.txt", defaultValue: 0, maxValue: 5);
-    }
-
-    private static int ReadExcellentTargetSetting(string envName, string filePath, int defaultValue, int maxValue)
-    {
-        string? raw = Environment.GetEnvironmentVariable(envName);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            try
-            {
-                if (File.Exists(filePath))
-                    raw = File.ReadAllText(filePath).Trim();
-            }
-            catch
-            {
-                raw = null;
-            }
-        }
-
-        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
-            return defaultValue;
-
-        if (parsed < 0)
-            return 0;
-        if (parsed > maxValue)
-            return maxValue;
-        return parsed;
-    }
-
-    private static bool ReadExcellentTargetFlag(string envName, string filePath, bool defaultValue)
-    {
-        string? raw = Environment.GetEnvironmentVariable(envName);
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            try
-            {
-                if (File.Exists(filePath))
-                    raw = File.ReadAllText(filePath).Trim();
-            }
-            catch
-            {
-                raw = null;
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(raw))
-            return defaultValue;
-
-        return raw.Equals("1", StringComparison.OrdinalIgnoreCase) ||
-               raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-               raw.Equals("on", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static long MoveBidTowardTarget(long baseBid, long targetBid, int maxNudge, bool increaseBid)
+    internal static long MoveBidTowardTarget(long baseBid, long targetBid, int maxNudge, bool increaseBid)
     {
         if (maxNudge <= 0)
             return baseBid;
@@ -1779,7 +1506,7 @@ public sealed class NativeHaggleEngine
         return Math.Max(targetBid, candidateBid);
     }
 
-    private static long MoveBidTowardOffer(SessionState session, long offer, long baseBid, int soften)
+    internal static long MoveBidTowardOffer(SessionState session, long offer, long baseBid, int soften)
     {
         if (soften <= 0)
             return baseBid;
@@ -1790,7 +1517,7 @@ public sealed class NativeHaggleEngine
         return Math.Max(offer + 1, baseBid - soften);
     }
 
-    private static long MoveBidTowardExactRange(SessionState session, long baseBid, int nudge)
+    internal static long MoveBidTowardExactRange(SessionState session, long baseBid, int nudge)
     {
         if (nudge <= 0 || session.Candidates.Count == 0)
             return baseBid;
@@ -1815,7 +1542,7 @@ public sealed class NativeHaggleEngine
         return MoveBidTowardTarget(baseBid, target, nudge, portSelling);
     }
 
-    private static (double MinExact, double MaxExact) GetCandidateExactRange(SessionState session)
+    internal static (double MinExact, double MaxExact) GetCandidateExactRange(SessionState session)
     {
         double minExact = 0;
         double maxExact = 0;
@@ -1831,7 +1558,7 @@ public sealed class NativeHaggleEngine
         return (minExact, maxExact);
     }
 
-    private static bool TryGetCollapsedCandidateExact(SessionState session, out double exact)
+    internal static bool TryGetCollapsedCandidateExact(SessionState session, out double exact)
     {
         (double minExact, double maxExact) = GetCandidateExactRange(session);
         if (minExact <= 0 || maxExact <= 0 || Math.Abs(maxExact - minExact) > 0.000001)
@@ -1844,13 +1571,12 @@ public sealed class NativeHaggleEngine
         return true;
     }
 
-    private static bool TryGetFirstOfferExactHitBid(SessionState session, long offer, out long bid, out string reason)
+    internal static bool TryGetFirstOfferExactHitBid(SessionState session, long offer, out long bid, out string reason)
     {
         bid = 0;
         reason = string.Empty;
 
-        if (!ReadExcellentTargetFirstExactHitEnabled() ||
-            session.BidNumber != 0 ||
+        if (session.BidNumber != 0 ||
             session.FinalOffer ||
             session.Percent != 100 ||
             session.Candidates.Count == 0 ||
@@ -1876,7 +1602,7 @@ public sealed class NativeHaggleEngine
         return true;
     }
 
-    private static bool TryGetCollapsedCandidateProbe(SessionState session, double exact, long bid, out double serverProbe, out int serverBucket)
+    internal static bool TryGetCollapsedCandidateProbe(SessionState session, double exact, long bid, out double serverProbe, out int serverBucket)
     {
         serverProbe = 0;
         serverBucket = 0;
@@ -1893,7 +1619,7 @@ public sealed class NativeHaggleEngine
         return true;
     }
 
-    private static bool TryGetPreferredExactRange(SessionState session, out double minExact, out double maxExact)
+    internal static bool TryGetPreferredExactRange(SessionState session, out double minExact, out double maxExact)
     {
         (minExact, maxExact) = GetCandidateExactRange(session);
         if (minExact > 0 && maxExact > 0 && minExact <= maxExact)
@@ -1911,14 +1637,14 @@ public sealed class NativeHaggleEngine
         return false;
     }
 
-    private static (double MinTotal, double MaxTotal, string Source) GetTrackedTargetTotalRange(SessionState session)
+    internal static (double MinTotal, double MaxTotal, string Source) GetTrackedTargetTotalRange(SessionState session)
     {
         return TryGetTargetExactRange(session, out double minTotal, out double maxTotal, out string source)
             ? (minTotal, maxTotal, source)
             : (0, 0, "n/a");
     }
 
-    private static (double Threshold, long ThresholdBid) ComputeServerThresholdBid(SessionState session)
+    internal static (double Threshold, long ThresholdBid) ComputeServerThresholdBid(SessionState session)
     {
         int roundNumber = Math.Max(1, session.BidNumber + 1);
         double chosenThreshold = 0;
@@ -1948,22 +1674,8 @@ public sealed class NativeHaggleEngine
             CultureInfo.InvariantCulture,
             $"{sector}:{productKey}:{buySell}");
 
-    private ExcellentRouteState GetExcellentRouteState(string routeKey)
+    internal static bool TryGetTargetExactRange(SessionState session, out double minExact, out double maxExact, out string source)
     {
-        if (!_excellentRouteStates.TryGetValue(routeKey, out ExcellentRouteState? state))
-        {
-            state = new ExcellentRouteState();
-            _excellentRouteStates[routeKey] = state;
-        }
-
-        return state;
-    }
-
-    private static bool TryGetTargetExactRange(SessionState session, out double minExact, out double maxExact, out string source)
-    {
-        if (TryGetExcellentExperimentalExactRange(session, out minExact, out maxExact, out source))
-            return true;
-
         if (TryGetPreferredExactRange(session, out minExact, out maxExact))
         {
             source = session.Candidates.Count > 0 ? "candidates" : "hidden-tracker";
@@ -1976,77 +1688,7 @@ public sealed class NativeHaggleEngine
         return false;
     }
 
-    private static bool TryGetExcellentExperimentalExactRange(SessionState session, out double minExact, out double maxExact, out string source)
-    {
-        minExact = 0;
-        maxExact = 0;
-        source = string.Empty;
-
-        if (!string.Equals(session.ActiveMode, NativeHaggleModes.ExcellentTarget, StringComparison.OrdinalIgnoreCase) ||
-            session.Candidates.Count == 0 ||
-            !ReadExcellentTargetPortApproxEnabled())
-        {
-            return false;
-        }
-
-        int productionRate = ReadExcellentTargetPortApproxProductionRate();
-        int maxRegen = ReadExcellentTargetPortApproxMaxRegen();
-        int biasHours = ReadExcellentTargetPortApproxBiasHours();
-        if (productionRate <= 0 || maxRegen <= 0)
-            return false;
-
-        double approxDays = session.PortReportAgeDays + (biasHours / 24.0);
-        if (approxDays <= 0.0000001)
-            return false;
-
-        double capDays = maxRegen / (double)productionRate;
-        if (capDays <= 0.0000001)
-            return false;
-
-        double cappedDays = Math.Min(approxDays, capDays);
-        int maxQty = Math.Max(session.PortQty, session.PortMaxQty);
-        if (maxQty <= session.PortQty)
-            return false;
-
-        bool initialized = false;
-        int minQty = int.MaxValue;
-        int maxQtyUsed = int.MinValue;
-
-        foreach (Candidate candidate in session.Candidates)
-        {
-            if (candidate.Productivity <= 0)
-                continue;
-
-            int qtyDelta = (int)PascalRoundInt((candidate.Productivity * cappedDays * productionRate) / 10.0, 0);
-            int effectiveQty = Math.Min(maxQty, session.PortQty + Math.Max(0, qtyDelta));
-            double exactPrice = ComputeCandidateExactPrice(session, candidate, effectiveQty);
-
-            if (!initialized || exactPrice < minExact)
-                minExact = exactPrice;
-            if (!initialized || exactPrice > maxExact)
-                maxExact = exactPrice;
-
-            initialized = true;
-            if (effectiveQty < minQty)
-                minQty = effectiveQty;
-            if (effectiveQty > maxQtyUsed)
-                maxQtyUsed = effectiveQty;
-        }
-
-        if (!initialized || minExact <= 0 || maxExact <= 0 || minExact > maxExact)
-        {
-            minExact = 0;
-            maxExact = 0;
-            return false;
-        }
-
-        source = string.Create(
-            CultureInfo.InvariantCulture,
-            $"report-age-approx(ageHours={session.PortReportAgeDays * 24.0:0.00},biasHours={biasHours},cappedDays={cappedDays:0.000},prodRate={productionRate},maxRegen={maxRegen},qty={session.PortQty}->{minQty}..{maxQtyUsed},maxQty={maxQty})");
-        return true;
-    }
-
-    private static double ComputeCandidateExactPrice(SessionState session, Candidate candidate, int effectiveQty)
+    internal static double ComputeCandidateExactPrice(SessionState session, Candidate candidate, int effectiveQty)
     {
         double expAdjust = session.Experience > 999
             ? 0
@@ -2063,7 +1705,7 @@ public sealed class NativeHaggleEngine
     }
 
     // This is still a ratio-only approximation until the real TradeData.+0x6c probe path is modeled.
-    private static bool TryGetServerProbeRange(
+    internal static bool TryGetServerProbeRange(
         SessionState session,
         long bid,
         out double serverProbeMin,
@@ -2197,7 +1839,7 @@ public sealed class NativeHaggleEngine
             $"rewardBucket={rewardBucket} impliedHidden={impliedHiddenMin:0.000000}..{impliedHiddenMax:0.000000} modelHidden={modelRange} modelSource={modelSource} hiddenDelta={deltaText} hiddenScale={scaleText}");
     }
 
-    private static string DescribePredictedProbe(SessionState session, long bid)
+    internal static string DescribePredictedProbe(SessionState session, long bid)
     {
         if (bid <= 0)
             return "probe=n/a";
@@ -2268,7 +1910,7 @@ public sealed class NativeHaggleEngine
             $"probeModel=ratio exact/bid={exactOverBidMin:0.00}..{exactOverBidMax:0.00} bucket={exactOverBidBucketMin}..{exactOverBidBucketMax} bid/exact={bidOverExactMin:0.00}..{bidOverExactMax:0.00} bucket={bidOverExactBucketMin}..{bidOverExactBucketMax} serverBranch={DescribeServerProbeBranch(branch)} serverProbe={serverProbeMin:0.00}..{serverProbeMax:0.00} serverBucket={serverBucketMin}..{serverBucketMax}");
     }
 
-    private static bool TryDescribeTrackedProbe(SessionState session, long bid, out string description)
+    internal static bool TryDescribeTrackedProbe(SessionState session, long bid, out string description)
     {
         if (bid <= 0 || !TryGetTargetExactRange(session, out double minExact, out double maxExact, out string exactSource))
         {
@@ -2298,12 +1940,12 @@ public sealed class NativeHaggleEngine
         return true;
     }
 
-    private static ServerProbeBranch GetServerProbeBranch(SessionState session, long bid)
+    internal static ServerProbeBranch GetServerProbeBranch(SessionState session, long bid)
     {
         return FallbackServerProbeBranch(session);
     }
 
-    private static bool TryGetServerProbeComparisonRange(SessionState session, out double hiddenMin, out double hiddenMax)
+    internal static bool TryGetServerProbeComparisonRange(SessionState session, out double hiddenMin, out double hiddenMax)
     {
         hiddenMin = 0;
         hiddenMax = 0;
@@ -2311,12 +1953,12 @@ public sealed class NativeHaggleEngine
         return TryGetTargetExactRange(session, out hiddenMin, out hiddenMax, out _);
     }
 
-    private static ServerProbeBranch FallbackServerProbeBranch(SessionState session) =>
+    internal static ServerProbeBranch FallbackServerProbeBranch(SessionState session) =>
         string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase)
             ? ServerProbeBranch.HiddenOverBid
             : ServerProbeBranch.BidOverHidden;
 
-    private static string DescribeServerProbeBranch(ServerProbeBranch branch) =>
+    internal static string DescribeServerProbeBranch(ServerProbeBranch branch) =>
         branch switch
         {
             ServerProbeBranch.BidOverHidden => "bid/hidden",
@@ -2327,12 +1969,12 @@ public sealed class NativeHaggleEngine
     private string GetActiveFirstBidMode()
     {
         string? overrideMode = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXPERIMENT");
-        return string.IsNullOrWhiteSpace(overrideMode)
-            ? _firstBidMode
-            : NativeHaggleModes.Normalize(overrideMode);
+        return ResolveConfiguredMode(
+            string.IsNullOrWhiteSpace(overrideMode) ? null : overrideMode,
+            _firstBidMode);
     }
 
-    private static long NormalizeBidForDirection(SessionState session, long offer, long bid)
+    internal static long NormalizeBidForDirection(SessionState session, long offer, long bid)
     {
         if (string.Equals(session.BuySell, "SELLING", StringComparison.OrdinalIgnoreCase))
         {
@@ -2344,6 +1986,32 @@ public sealed class NativeHaggleEngine
         if (bid <= offer)
             bid = offer + 1;
         return Math.Max(offer + 1, bid);
+    }
+
+    private string ResolveConfiguredMode(string? preferredMode, string? fallbackMode)
+    {
+        string preferred = NativeHaggleModes.Normalize(preferredMode);
+        if (NativeHaggleModes.IsBuiltIn(preferred) || _extensionModes.ContainsKey(preferred))
+        {
+            _lastMissingModeId = null;
+            return preferred;
+        }
+
+        string fallback = NativeHaggleModes.Normalize(fallbackMode);
+        if (NativeHaggleModes.IsBuiltIn(fallback) || _extensionModes.ContainsKey(fallback))
+        {
+            if (!string.IsNullOrWhiteSpace(preferredMode) &&
+                !string.Equals(_lastMissingModeId, preferred, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastMissingModeId = preferred;
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Mode '{preferred}' is unavailable; falling back to '{fallback}'.\n");
+            }
+            return fallback;
+        }
+
+        _lastMissingModeId = null;
+        return NativeHaggleModes.Default;
     }
 
     private static void PersistDerivedRanges(SessionState session)
@@ -2548,130 +2216,32 @@ public sealed class NativeHaggleEngine
         if (success)
             _successfulHaggles++;
 
-        UpdateExcellentRouteState(_session, success, reason);
+        GetActiveModeExtension(_session.ActiveMode)?.OnOutcome(this, _session, success, reason);
 
         string probe = (_session.LastCounter > 0)
             ? DescribePredictedProbe(_session, _session.LastCounter)
             : "probe=n/a";
         string rewardHidden = DescribeRewardHiddenComparison(_session);
         string rewardTier = string.IsNullOrWhiteSpace(_session.RewardTier) ? "-" : _session.RewardTier;
-        string routeState = DescribeExcellentRouteState(_session);
+        string routeState = DescribeModeState(_session);
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {rewardHidden} {routeState}\n");
         StatsChanged?.Invoke();
     }
 
-    private void UpdateExcellentRouteState(SessionState session, bool success, string reason)
+    private NativeHaggleModeExtension? GetActiveModeExtension(string? modeId)
     {
-        if (!string.Equals(session.ActiveMode, NativeHaggleModes.ExcellentTarget, StringComparison.OrdinalIgnoreCase) ||
-            string.IsNullOrWhiteSpace(session.RouteKey))
-            return;
-
-        ExcellentRouteState state = GetExcellentRouteState(session.RouteKey);
-        double serverProbeMin = 0;
-        double serverProbeMax = 0;
-        int serverBucketMin = 0;
-        int serverBucketMax = 0;
-        bool hasServerProbe = session.LastCounter > 0 &&
-            TryGetServerProbeRange(session, session.LastCounter, out serverProbeMin, out serverProbeMax, out serverBucketMin, out serverBucketMax);
-
-        if (success)
-        {
-            if (state.Cooldown > 0)
-                state.Cooldown--;
-
-            if (session.EmpiricalProbeApplied)
-            {
-                if (string.Equals(session.RewardTier, "great", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(session.RewardTier, "excellent", StringComparison.OrdinalIgnoreCase))
-                {
-                    state.SuccessfulProbeCount++;
-                }
-
-                state.GreatStreak = 0;
-                state.NearExcellentCount = 0;
-                return;
-            }
-
-            if (string.Equals(session.RewardTier, "excellent", StringComparison.OrdinalIgnoreCase))
-            {
-                state.GreatStreak = 0;
-                state.NearExcellentCount = 0;
-                GlobalModules.DebugLog(
-                    $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' rewardTier='{session.RewardTier}' probeModel=ratio serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
-                return;
-            }
-
-            if (string.Equals(session.RewardTier, "great", StringComparison.OrdinalIgnoreCase))
-            {
-                state.GreatStreak++;
-                state.NearExcellentCount = 0;
-                if (state.Cooldown <= 0)
-                    state.EarlyTowardOfferBias = 0;
-            }
-            else
-            {
-                state.GreatStreak = 0;
-                state.NearExcellentCount = 0;
-                if (state.Cooldown <= 0)
-                    state.EarlyTowardOfferBias = 0;
-            }
-
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' rewardTier='{session.RewardTier}' probeModel=ratio serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
-            return;
-        }
-
-        if (session.EmpiricalProbeApplied)
-        {
-            state.FailedProbeCount++;
-            state.Cooldown = 20;
-        }
-
-        if (session.FirstOfferExactHitApplied &&
-            string.Equals(reason, "credits-no-transaction", StringComparison.OrdinalIgnoreCase))
-        {
-            state.FailedProbeCount++;
-            state.FirstOfferExactHitFailures++;
-            state.Cooldown = Math.Max(state.Cooldown, 20);
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] Excellent-target first-hit backoff route={session.RouteKey} reason='{reason}' cooldown={state.Cooldown} probeFails={state.FailedProbeCount} firstHitFails={state.FirstOfferExactHitFailures}\n");
-        }
-
-        if (!session.EmpiricalProbeApplied &&
-            session.FinalTargetNudgeApplied != 0 &&
-            string.Equals(reason, "credits-no-transaction", StringComparison.OrdinalIgnoreCase))
-        {
-            state.FailedProbeCount++;
-            state.Cooldown = Math.Max(state.Cooldown, 20);
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] Excellent-target backoff route={session.RouteKey} finalNudge={session.FinalTargetNudgeApplied} reason='{reason}' cooldown={state.Cooldown} probeFails={state.FailedProbeCount}\n");
-        }
-
-        if (state.EarlyTowardOfferBias > 0 &&
-            string.Equals(reason, "credits-no-transaction", StringComparison.OrdinalIgnoreCase))
-        {
-            state.Cooldown = Math.Max(state.Cooldown, 12);
-            state.EarlyTowardOfferBias = 0;
-            state.NearExcellentCount = 0;
-        }
-
-        state.GreatStreak = 0;
-
-        GlobalModules.DebugLog(
-            $"[NativeHaggle] Excellent-route update route={session.RouteKey} success={success} reason='{reason}' probeModel=ratio serverProbe={(hasServerProbe ? serverProbeMax.ToString("0.00", CultureInfo.InvariantCulture) : "n/a")} serverBucket={(hasServerProbe ? serverBucketMax.ToString(CultureInfo.InvariantCulture) : "n/a")} greatStreak={state.GreatStreak} nearExcellent={state.NearExcellentCount} bias={state.EarlyTowardOfferBias} cooldown={state.Cooldown} probeWins={state.SuccessfulProbeCount} probeFails={state.FailedProbeCount}\n");
+        string normalized = NativeHaggleModes.Normalize(modeId);
+        return _extensionModes.TryGetValue(normalized, out NativeHaggleModeExtension? extension)
+            ? extension
+            : null;
     }
 
-    private string DescribeExcellentRouteState(SessionState session)
+    private string DescribeModeState(SessionState session)
     {
-        if (string.IsNullOrWhiteSpace(session.RouteKey) ||
-            !_excellentRouteStates.TryGetValue(session.RouteKey, out ExcellentRouteState? state))
-            return "excellentRoute=n/a";
-
-        return string.Create(
-            CultureInfo.InvariantCulture,
-            $"excellentRoute(greatStreak={state.GreatStreak},nearExcellent={state.NearExcellentCount},bias={state.EarlyTowardOfferBias},cooldown={state.Cooldown},probeWins={state.SuccessfulProbeCount},probeFails={state.FailedProbeCount},firstHitFails={state.FirstOfferExactHitFailures})");
+        NativeHaggleModeExtension? extension = GetActiveModeExtension(session.ActiveMode);
+        return extension?.DescribeState(this, session) ?? "modeState=n/a";
     }
 
     private static string NormalizeWeekday(string value)
@@ -2789,12 +2359,12 @@ public sealed class NativeHaggleEngine
         }
     }
 
-    private static long PascalRoundInt(double value, int precision)
+    internal static long PascalRoundInt(double value, int precision)
     {
         return (long)Math.Truncate(PascalRoundValue(value, precision));
     }
 
-    private static double PascalRoundValue(double value, int precision)
+    internal static double PascalRoundValue(double value, int precision)
     {
         double factor = Math.Pow(10, precision);
         double scaled = value * factor;

@@ -881,6 +881,9 @@ public class MainWindow : Window
             _appPrefs.DebugLoggingEnabled &&
             Core.GlobalModules.DebugMode;
         int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
+        int haggleGood = _gameInstance?.NativeHaggleGoodCount ?? 0;
+        int haggleGreat = _gameInstance?.NativeHaggleGreatCount ?? 0;
+        int haggleExcellent = _gameInstance?.NativeHaggleExcellentCount ?? 0;
 
         if (_sessionDb != null)
         {
@@ -897,7 +900,7 @@ public class MainWindow : Window
         }
 
         string haggleText = showHagglePct
-            ? $"  Haggle Pct: {hagglePct}%"
+            ? $"  Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : string.Empty;
         bool showMbot = _embeddedGameConfig?.Mtc?.mbot != null || _mbot.IsAttached;
         MTC.mbot.mbotStatusSnapshot mbotSnapshot = _mbot.GetStatusSnapshot();
@@ -1110,7 +1113,9 @@ public class MainWindow : Window
         await Task.Yield();
 
         _appPrefs.NativeHaggleMode = Core.NativeHaggleModes.Normalize(_appPrefs.NativeHaggleMode);
-        var dialog = new AdvancedProxySettingsDialog(_appPrefs.NativeHaggleMode);
+        IReadOnlyList<Core.NativeHaggleModeInfo> availableModes =
+            _gameInstance?.NativeHaggleModes ?? Core.NativeHaggleModes.BuiltInModes;
+        var dialog = new AdvancedProxySettingsDialog(_appPrefs.NativeHaggleMode, availableModes);
         bool saved = await dialog.ShowDialog<bool>(this);
         if (!saved)
             return;
@@ -1128,7 +1133,10 @@ public class MainWindow : Window
         if (_gameInstance != null)
             _gameInstance.SetNativeHaggleMode(selectedMode);
 
-        _parser.Feed($"\x1b[1;36m[Native haggle mode: {selectedMode}]\x1b[0m\r\n");
+        string selectedLabel = availableModes
+            .FirstOrDefault(info => string.Equals(info.Id, selectedMode, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName ?? selectedMode;
+        _parser.Feed($"\x1b[1;36m[Native haggle mode: {selectedLabel} ({selectedMode})]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildProxyMenu();
     }

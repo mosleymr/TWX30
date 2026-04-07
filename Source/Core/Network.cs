@@ -189,8 +189,12 @@ namespace TWXProxy.Core
         }
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
         public string NativeHaggleMode => _nativeHaggle.FirstBidMode;
+        public IReadOnlyList<NativeHaggleModeInfo> NativeHaggleModes => _nativeHaggle.AvailableModes;
         public int NativeHaggleCompletedCount => _nativeHaggle.CompletedHaggles;
         public int NativeHaggleSuccessfulCount => _nativeHaggle.SuccessfulHaggles;
+        public int NativeHaggleGoodCount => _nativeHaggle.GoodRewardCount;
+        public int NativeHaggleGreatCount => _nativeHaggle.GreatRewardCount;
+        public int NativeHaggleExcellentCount => _nativeHaggle.ExcellentRewardCount;
         public int NativeHaggleSuccessRatePercent => _nativeHaggle.SuccessRatePercent;
         public ModLog Logger => _log;
         public ProxyHistoryBuffer History { get; } = new();
@@ -1517,6 +1521,16 @@ namespace TWXProxy.Core
         public void SetNativeHaggleMode(string? mode)
         {
             _nativeHaggle.SetFirstBidMode(mode);
+        }
+
+        internal void RegisterNativeHaggleMode(NativeHaggleModeExtension mode)
+        {
+            _nativeHaggle.RegisterMode(mode);
+        }
+
+        internal void UnregisterNativeHaggleMode(string? modeId)
+        {
+            _nativeHaggle.UnregisterMode(modeId);
         }
 
         public void SetCommandChar(char commandChar)
