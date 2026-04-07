@@ -388,10 +388,33 @@ namespace TWXProxy.Core
             {
                 var path = CalculatePath(fromSector, toSector);
                 parameters[0].Value = (path.Count - 1).ToString(); // Distance is path length - 1
+
+                string pathDesc = path.Count > 0
+                    ? string.Join(" > ", path.Select(sectorNum =>
+                    {
+                        var sector = _activeDatabase.GetSector(sectorNum);
+                        string explored = sector?.Explored switch
+                        {
+                            ExploreType.No => "No",
+                            ExploreType.Calc => "Calc",
+                            ExploreType.Density => "Density",
+                            ExploreType.Yes => "Yes",
+                            _ => "?"
+                        };
+                        return $"{sectorNum}({explored})";
+                    }))
+                    : "<no path>";
+                string avoids = _avoidedSectors.Count > 0
+                    ? string.Join(",", _avoidedSectors.OrderBy(x => x))
+                    : "<none>";
+                GlobalModules.DebugLog(
+                    $"[GETDISTANCE] from={fromSector} to={toSector} distance={parameters[0].Value} path={pathDesc} avoids={avoids}\n");
             }
             else
             {
                 parameters[0].Value = "0";
+                GlobalModules.DebugLog(
+                    $"[GETDISTANCE] from={fromSector} to={toSector} distance=0 path=<invalid input> sectorCount={_activeDatabase?.SectorCount ?? 0}\n");
             }
             
             return CmdAction.None;
