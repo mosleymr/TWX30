@@ -1997,23 +1997,32 @@ public sealed class NativeHaggleEngine
 
     private string ResolveConfiguredMode(string? preferredMode, string? fallbackMode)
     {
-        string preferred = NativeHaggleModes.Normalize(preferredMode);
-        if (NativeHaggleModes.IsBuiltIn(preferred) || _extensionModes.ContainsKey(preferred))
+        if (!string.IsNullOrWhiteSpace(preferredMode))
         {
-            _lastMissingModeId = null;
-            return preferred;
+            string preferred = NativeHaggleModes.Normalize(preferredMode);
+            if (NativeHaggleModes.IsBuiltIn(preferred) || _extensionModes.ContainsKey(preferred))
+            {
+                _lastMissingModeId = null;
+                return preferred;
+            }
+
+            string fallbackForMissingPreferred = NativeHaggleModes.Normalize(fallbackMode);
+            if (NativeHaggleModes.IsBuiltIn(fallbackForMissingPreferred) || _extensionModes.ContainsKey(fallbackForMissingPreferred))
+            {
+                if (!string.Equals(_lastMissingModeId, preferred, StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastMissingModeId = preferred;
+                    GlobalModules.DebugLog(
+                        $"[NativeHaggle] Mode '{preferred}' is unavailable; falling back to '{fallbackForMissingPreferred}'.\n");
+                }
+                return fallbackForMissingPreferred;
+            }
         }
 
         string fallback = NativeHaggleModes.Normalize(fallbackMode);
         if (NativeHaggleModes.IsBuiltIn(fallback) || _extensionModes.ContainsKey(fallback))
         {
-            if (!string.IsNullOrWhiteSpace(preferredMode) &&
-                !string.Equals(_lastMissingModeId, preferred, StringComparison.OrdinalIgnoreCase))
-            {
-                _lastMissingModeId = preferred;
-                GlobalModules.DebugLog(
-                    $"[NativeHaggle] Mode '{preferred}' is unavailable; falling back to '{fallback}'.\n");
-            }
+            _lastMissingModeId = null;
             return fallback;
         }
 
