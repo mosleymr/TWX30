@@ -532,7 +532,7 @@ public sealed class NativeHaggleEngine
         }
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Armed sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
+            $"[NativeHaggle] Armed sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
     }
 
     private void ProcessCreditsLine(long credits, int emptyHolds)
@@ -1969,9 +1969,16 @@ public sealed class NativeHaggleEngine
     private string GetActiveFirstBidMode()
     {
         string? overrideMode = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXPERIMENT");
-        return ResolveConfiguredMode(
+        string resolved = ResolveConfiguredMode(
             string.IsNullOrWhiteSpace(overrideMode) ? null : overrideMode,
             _firstBidMode);
+        if (!string.IsNullOrWhiteSpace(overrideMode))
+        {
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] TWX_HAGGLE_EXPERIMENT override='{overrideMode}' selectedMode='{resolved}' configuredMode='{_firstBidMode}'\n");
+        }
+
+        return resolved;
     }
 
     internal static long NormalizeBidForDirection(SessionState session, long offer, long bid)
