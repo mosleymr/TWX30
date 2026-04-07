@@ -65,7 +65,7 @@ internal static class mbotCatalog
                 "stopall", "stop", "listall", "reset", "emq", "bot", "relog", "tow",
                 "refresh", "login", "logoff", "unlock", "lift", "with", "dep",
                 "callin", "about", "cn", "extern", "twarp", "bwarp", "pwarp",
-                "relog", "help", "switchbot",
+                "relog", "help", "switchbot", "stopmodules",
             })),
             new mbotInternalCommandGroup("Defense", Array.AsReadOnly(Array.Empty<string>())),
             new mbotInternalCommandGroup("Offense", Array.AsReadOnly(new[]
@@ -215,6 +215,11 @@ internal static class mbotCatalog
         int splitIndex = normalized.IndexOf(' ');
         if (splitIndex >= 0)
             normalized = normalized[..splitIndex];
+
+        if (normalized.EndsWith(".cts", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^4];
+        else if (normalized.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^3];
 
         mbotAliasSpec? alias = _initialAliases.FirstOrDefault(item =>
             string.Equals(item.Alias, normalized, StringComparison.OrdinalIgnoreCase));

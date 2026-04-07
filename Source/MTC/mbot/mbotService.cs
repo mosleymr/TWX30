@@ -324,6 +324,9 @@ internal sealed class mbotService
             case "stop":
                 return ExecuteStop(context);
 
+            case "stopmodules":
+                return ExecuteStopModules(canonical);
+
             case "listall":
                 return ExecuteListAll(canonical);
 
@@ -380,6 +383,20 @@ internal sealed class mbotService
             return PublishUnsupported(context.CommandName, $"mbot could not find a non-system script starting with '{selector}'.");
 
         return PublishNativeResult(context.CommandName, $"mbot stopped {stopped} script(s) matching '{selector}'.");
+    }
+
+    private mbotDispatchResult ExecuteStopModules(string canonical)
+    {
+        string lastLoaded = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        bool stopped = !string.IsNullOrWhiteSpace(lastLoaded) && StopScriptByName(lastLoaded);
+
+        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+
+        if (stopped)
+            return PublishNativeResult(canonical, $"mbot reset to General mode and stopped {lastLoaded}.");
+
+        return PublishNativeResult(canonical, "mbot reset to General mode.");
     }
 
     private mbotDispatchResult ExecuteListAll(string canonical)

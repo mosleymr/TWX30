@@ -52,6 +52,7 @@ public class MainWindow : Window
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
+    private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
@@ -85,6 +86,8 @@ public class MainWindow : Window
     private bool _updatingHaggleToggle;
     private bool _updatingMbotToggle;
     private bool _mbotPromptOpen;
+    private bool _mbotMacroPromptOpen;
+    private MbotGridContext? _mbotMacroContext;
     private readonly List<string> _mbotCommandHistory = [];
     private string _mbotPromptBuffer = string.Empty;
     private string _mbotPromptDraft = string.Empty;
@@ -402,7 +405,7 @@ public class MainWindow : Window
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _quickMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
         };
 
         return menu;
@@ -2501,6 +2504,8 @@ public class MainWindow : Window
 
         var proxyItems = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
         _proxyMenu.ItemsSource = proxyItems;
+        _botMenu.ItemsSource = BuildTopLevelBotMenuItems(hasInterpreter);
+        _botMenu.IsEnabled = true;
         _quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
         _quickMenu.IsEnabled = true;
         RebuildAiMenu();
@@ -2720,13 +2725,6 @@ public class MainWindow : Window
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
         var groups = Core.ProxyMenuCatalog.BuildQuickLoadGroups(programDir, scriptDirectory);
 
-        var botMenu = new MenuItem { Header = "_Bots", IsEnabled = _gameInstance != null };
-        botMenu.ItemsSource = BuildBotMenuItems(_gameInstance != null);
-        items.Add(botMenu);
-
-        if (groups.Count > 0)
-            items.Add(new Separator());
-
         foreach (var group in groups)
         {
             var groupMenu = new MenuItem { Header = group.Name };
@@ -2783,19 +2781,56 @@ public class MainWindow : Window
         return items;
     }
 
-    private List<object> BuildBotMenuItems(bool enabled)
+    private List<object> BuildTopLevelBotMenuItems(bool enabled)
+    {
+        var items = new List<object>();
+        bool proxyActive = _gameInstance != null;
+
+        string internalCaption = "mbot (Internal)";
+        if (_mbot.Enabled)
+            internalCaption += " (active)";
+
+        var internalItem = new MenuItem
+        {
+            Header = internalCaption,
+            IsEnabled = proxyActive,
+        };
+        internalItem.Click += (_, _) => _ = StartInternalMbotAsync();
+        items.Add(internalItem);
+
+        List<object> externalBots = BuildBotMenuItems(enabled, includeStatusMessage: false);
+        items.Add(new Separator());
+        if (externalBots.Count > 0)
+        {
+            items.AddRange(externalBots);
+        }
+        else
+        {
+            items.Add(new MenuItem
+            {
+                Header = enabled && proxyActive ? "No external bots configured" : "Proxy is not running",
+                IsEnabled = false,
+            });
+        }
+
+        return items;
+    }
+
+    private List<object> BuildBotMenuItems(bool enabled, bool includeStatusMessage = true)
     {
         var items = new List<object>();
         if (!enabled || _gameInstance == null)
         {
-            items.Add(new MenuItem { Header = "Proxy is not running", IsEnabled = false });
+            if (includeStatusMessage)
+                items.Add(new MenuItem { Header = "Proxy is not running", IsEnabled = false });
             return items;
         }
 
         var bots = _gameInstance.GetBotList();
         if (bots.Count == 0)
         {
-            items.Add(new MenuItem { Header = "No bots configured", IsEnabled = false });
+            if (includeStatusMessage)
+                items.Add(new MenuItem { Header = "No bots configured", IsEnabled = false });
             return items;
         }
 
@@ -2815,6 +2850,21 @@ public class MainWindow : Window
         }
 
         return items;
+    }
+
+    private async Task StartInternalMbotAsync()
+    {
+        await Task.Yield();
+
+        if (_gameInstance == null)
+        {
+            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            return;
+        }
+
+        ApplyMbotConfigChange(config => config.Enabled = true);
+        await ExecuteMbotUiCommandAsync("relog");
+        _termCtrl.Focus();
     }
 
     private async Task OpenAiAssistantAsync(string moduleId)
@@ -3014,6 +3064,9 @@ public class MainWindow : Window
         if (!_mbotPromptOpen)
             return false;
 
+        if (_mbotMacroPromptOpen)
+            return TryHandleMbotMacroPromptInput(bytes);
+
         if (bytes.Length == 0)
             return true;
 
@@ -3055,7 +3108,8 @@ public class MainWindow : Window
                     return true;
 
                 case 0x09:
-                    break;
+                    BeginMbotMacroPrompt();
+                    return true;
 
                 default:
                     if (value >= 0x20)
@@ -3074,6 +3128,43 @@ public class MainWindow : Window
             RedrawMbotPrompt();
         }
 
+        return true;
+    }
+
+    private bool TryHandleMbotMacroPromptInput(byte[] bytes)
+    {
+        if (!_mbotMacroPromptOpen)
+            return false;
+
+        if (bytes.Length == 0)
+            return true;
+
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x1B:
+                case 0x0D:
+                case 0x0A:
+                    EndMbotMacroPrompt();
+                    return true;
+
+                case 0x09:
+                    _ = ExecuteMbotMacroActionAsync(_ => ExecuteMbotUiCommandAsync("stopmodules"));
+                    return true;
+
+                case (byte)'?':
+                    PublishMbotLocalMessage(BuildMbotMacroHelpLine());
+                    return true;
+
+                default:
+                    if (TryHandleMbotMacroKey(value))
+                        return true;
+                    break;
+            }
+        }
+
+        PublishMbotLocalMessage(BuildMbotMacroHelpLine());
         return true;
     }
 
@@ -3106,6 +3197,39 @@ public class MainWindow : Window
         _mbotPromptBuffer = initialValue;
         _mbotPromptDraft = initialValue;
         _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
+        _mbotMacroPromptOpen = false;
+        _mbotMacroContext = null;
+        RedrawMbotPrompt();
+    }
+
+    private void BeginMbotMacroPrompt()
+    {
+        if (!_mbotPromptOpen || _mbotMacroPromptOpen)
+            return;
+
+        if (_gameInstance == null || !_gameInstance.IsConnected)
+        {
+            PublishMbotLocalMessage("mbot macros need an active game connection.");
+            return;
+        }
+
+        MbotGridContext context = BuildMbotGridContext();
+        if (context.Surface != MbotPromptSurface.Command &&
+            context.Surface != MbotPromptSurface.Citadel)
+        {
+            PublishMbotLocalMessage("mbot macros are available from command or citadel prompts.");
+            return;
+        }
+
+        _mbotMacroContext = context;
+        _mbotMacroPromptOpen = true;
+        RedrawMbotPrompt();
+    }
+
+    private void EndMbotMacroPrompt()
+    {
+        _mbotMacroPromptOpen = false;
+        _mbotMacroContext = null;
         RedrawMbotPrompt();
     }
 
@@ -3167,6 +3291,8 @@ public class MainWindow : Window
     private void ResetMbotPromptState()
     {
         _mbotPromptOpen = false;
+        _mbotMacroPromptOpen = false;
+        _mbotMacroContext = null;
         _mbotPromptBuffer = string.Empty;
         _mbotPromptDraft = string.Empty;
         _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
@@ -3178,8 +3304,8 @@ public class MainWindow : Window
             return;
 
         _parser.Feed("\r\x1b[K");
-        _parser.Feed(GetMbotPromptPrefix());
-        if (_mbotPromptBuffer.Length > 0)
+        _parser.Feed(_mbotMacroPromptOpen ? GetMbotMacroPromptPrefix() : GetMbotPromptPrefix());
+        if (!_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
             _parser.Feed(_mbotPromptBuffer);
         _buffer.Dirty = true;
         _termCtrl.Focus();
@@ -3191,6 +3317,103 @@ public class MainWindow : Window
         string mode = string.IsNullOrWhiteSpace(snapshot.Mode) ? "General" : snapshot.Mode;
         string botName = string.IsNullOrWhiteSpace(snapshot.BotName) ? "mbot" : snapshot.BotName;
         return $"\x1b[1;34m{{{mode}}}\x1b[0;37m {botName}\x1b[1;32m>\x1b[0m ";
+    }
+
+    private string GetMbotMacroPromptPrefix()
+    {
+        string options = "Tab=Reset H=Holo D=Dens S=Surround X=Xenter";
+        if (_mbotMacroContext is { AdjacentSectors.Count: > 0 } context)
+        {
+            string sectorKeys = string.Join(" ", context.AdjacentSectors
+                .Take(10)
+                .Select((sector, index) => $"{((index + 1) % 10)}={sector}"));
+            options += " " + sectorKeys;
+        }
+
+        return $"\x1b[1;33m{{{options}}}\x1b[0;37m mbot\x1b[1;32m>\x1b[0m ";
+    }
+
+    private string BuildMbotMacroHelpLine()
+    {
+        if (_mbotMacroContext is not { } context)
+            return "mbot macros: Tab=reset H=holo D=density S=surround X=xenter Esc=cancel";
+
+        string line = "mbot macros: Tab=reset H=holo D=density S=surround X=xenter";
+        if (context.AdjacentSectors.Count > 0)
+        {
+            string sectorKeys = string.Join(" ", context.AdjacentSectors
+                .Take(10)
+                .Select((sector, index) => $"{((index + 1) % 10)}={sector}"));
+            line += " " + sectorKeys;
+        }
+
+        return line + " Esc=cancel";
+    }
+
+    private bool TryHandleMbotMacroKey(byte value)
+    {
+        if (_mbotMacroContext is not { } context)
+        {
+            EndMbotMacroPrompt();
+            return true;
+        }
+
+        if (value >= (byte)'0' && value <= (byte)'9')
+        {
+            int index = value == (byte)'0' ? 9 : value - (byte)'1';
+            if (index >= 0 && index < context.AdjacentSectors.Count)
+            {
+                int sector = context.AdjacentSectors[index];
+                _ = ExecuteMbotMacroActionAsync(async macroContext =>
+                {
+                    if (macroContext.Surface == MbotPromptSurface.Citadel)
+                        await ExecuteMbotUiCommandAsync($"pgrid {sector} scan");
+                    else
+                        await SendMbotServerMacroAsync(BuildMbotMoveMacro(sector));
+                });
+                return true;
+            }
+        }
+
+        switch (char.ToUpperInvariant((char)value))
+        {
+            case 'H':
+                _ = ExecuteMbotMacroActionAsync(macroContext =>
+                    SendMbotServerMacroAsync(BuildMbotScanMacro(holo: true, macroContext)));
+                return true;
+
+            case 'D':
+                _ = ExecuteMbotMacroActionAsync(macroContext =>
+                    SendMbotServerMacroAsync(BuildMbotScanMacro(holo: false, macroContext)));
+                return true;
+
+            case 'S':
+                _ = ExecuteMbotMacroActionAsync(_ => ExecuteMbotUiCommandAsync("surround"));
+                return true;
+
+            case 'X':
+                _ = ExecuteMbotMacroActionAsync(_ => ExecuteMbotUiCommandAsync("xenter"));
+                return true;
+        }
+
+        return false;
+    }
+
+    private async Task ExecuteMbotMacroActionAsync(Func<MbotGridContext, Task> action)
+    {
+        MbotGridContext? context = _mbotMacroContext;
+        _mbotMacroPromptOpen = false;
+        _mbotMacroContext = null;
+
+        if (context == null)
+        {
+            RedrawMbotPrompt();
+            return;
+        }
+
+        await action(context);
+        if (_mbotPromptOpen)
+            RedrawMbotPrompt();
     }
 
     private void PublishMbotLocalMessage(string message)
@@ -3356,7 +3579,7 @@ public class MainWindow : Window
     {
         if (_gameInstance == null || !_gameInstance.IsConnected)
         {
-            await ShowMessageAsync("mbot", "This mbot action requires an active game connection.");
+            PublishMbotLocalMessage("This mbot action requires an active game connection.");
             return;
         }
 
@@ -4038,6 +4261,7 @@ public class MainWindow : Window
         _nativeDockMenu.Items.Clear();
         AddDockRoot(_scriptsMenu, "_Scripts");
         AddDockRoot(_proxyMenu, "_Proxy");
+        AddDockRoot(_botMenu, "_Bot");
         AddDockRoot(_quickMenu, "_Quick");
         AddDockRoot(_aiMenu, "_AI");
 
