@@ -1114,7 +1114,7 @@ public class MainWindow : Window
 
         _appPrefs.NativeHaggleMode = Core.NativeHaggleModes.Normalize(_appPrefs.NativeHaggleMode);
         IReadOnlyList<Core.NativeHaggleModeInfo> availableModes =
-            _gameInstance?.NativeHaggleModes ?? Core.NativeHaggleModes.BuiltInModes;
+            _gameInstance?.NativeHaggleModes ?? DiscoverAvailableNativeHaggleModes();
         var dialog = new AdvancedProxySettingsDialog(_appPrefs.NativeHaggleMode, availableModes);
         bool saved = await dialog.ShowDialog<bool>(this);
         if (!saved)
@@ -1139,6 +1139,19 @@ public class MainWindow : Window
         _parser.Feed($"\x1b[1;36m[Native haggle mode: {selectedLabel} ({selectedMode})]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildProxyMenu();
+    }
+
+    private IReadOnlyList<Core.NativeHaggleModeInfo> DiscoverAvailableNativeHaggleModes()
+    {
+        string scriptDirectory = GetEffectiveProxyScriptDirectory();
+        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+
+        return Core.NativeHaggleModeDiscovery.DiscoverFromDirectories(new[]
+        {
+            AppPaths.ModulesDir,
+            AppPaths.SharedModulesDir,
+            Path.Combine(programDir, "modules"),
+        });
     }
 
     // ── Menu actions ───────────────────────────────────────────────────────
@@ -2905,6 +2918,9 @@ public class MainWindow : Window
     {
         if (!string.IsNullOrWhiteSpace(CurrentInterpreter?.ScriptDirectory))
             return CurrentInterpreter.ScriptDirectory;
+
+        if (!string.IsNullOrWhiteSpace(_embeddedGameConfig?.ScriptDirectory))
+            return _embeddedGameConfig.ScriptDirectory;
 
         if (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
             return _appPrefs.ScriptsDirectory;

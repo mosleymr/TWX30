@@ -46,6 +46,7 @@ namespace TWXProxy.Core
         // Activated by "The shortest path (" or "  TO > " lines from the f command.
         private bool _inWarpLane;        // Currently inside an FM path response
         private int  _lastWarpLaneSect;  // Last sector parsed in the current path (0 = none yet)
+        private bool _inNavPointDisplay; // Inside "<Set Course to NavPoint>" preview output
 
         // Commerce / port report parsing state
         // Pascal: Process.ParsePortReport — triggered by "Commerce report for X:"
@@ -100,6 +101,13 @@ namespace TWXProxy.Core
         // Group 1 = sector number, Group 2 = optional constellation name after " in "
         private static readonly Regex _rxSector = new(
             @"^Sector\s{1,4}:\s*(\d+)(?:\s+in\s+(.+))?", RegexOptions.Compiled);
+
+        // "(T) Sector  : 1 in The Federation."
+        // "(S) Sector  : 1034 in The Federation."
+        // NavPoint previews prefix the sector header, so they must not reuse the
+        // current sector when parsing the following indented port lines.
+        private static readonly Regex _rxNavPointSector = new(
+            @"^\([A-Z]\)\s+Sector\s{1,4}:\s*(\d+)(?:\s+in\s+(.+))?", RegexOptions.Compiled);
 
         // "Warps to Sector(s) :  4497 - 5489 - 6477 - 15024 - 19702"
         // Parenthesised entries like "(3583)" are unexplored sectors and are still valid
@@ -503,6 +511,34 @@ namespace TWXProxy.Core
                 }
             }
 
+            if (_inNavPointDisplay)
+            {
+                var m = _rxNavPointSector.Match(trimmedLine);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int sn))
+                {
+                    _lastSector = sn;
+                    _sectorPos = SectorPos.None;
+
+                    if (m.Groups[2].Success)
+                    {
+                        string constName = m.Groups[2].Value.Trim();
+                        if (!string.IsNullOrEmpty(constName))
+                        {
+                            var navSector = GetOrCreate(db, sn);
+                            if (navSector != null)
+                            {
+                                navSector.Constellation = constName;
+                                db.SaveSector(navSector);
+                                GlobalModules.DebugLog($"[AutoRecorder] NavPoint sector {sn} constellation = {constName}\n");
+                            }
+                        }
+                    }
+
+                    GlobalModules.DebugLog($"[AutoRecorder] NavPoint preview sector -> {sn}\n");
+                    return;
+                }
+            }
+
             {
                 var stardock = _rxStardock.Match(trimmedLine);
                 if (stardock.Success && int.TryParse(stardock.Groups[1].Value, out int dockSector))
@@ -840,6 +876,23 @@ namespace TWXProxy.Core
                 return true;
             }
 
+            if (trimmedLine.StartsWith("<Set Course to NavPoint>", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetPromptDisplays(db);
+                _inNavPointDisplay = true;
+                _sectorPos = SectorPos.None;
+                GlobalModules.DebugLog("[AutoRecorder] Entered NavPoint preview\n");
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Choose NavPoint", StringComparison.OrdinalIgnoreCase))
+            {
+                _inNavPointDisplay = false;
+                _sectorPos = SectorPos.None;
+                GlobalModules.DebugLog("[AutoRecorder] Exited NavPoint preview\n");
+                return true;
+            }
+
             if (trimmedLine == ":")
             {
                 if (_inWarpLane)
@@ -898,6 +951,7 @@ namespace TWXProxy.Core
             _inPortCIM = false;
             _inWarpCIM = false;
             _inFigScan = false;
+            _inNavPointDisplay = false;
         }
 
         private void MarkDestroyedPort(ModDatabase db, int sectorNum)

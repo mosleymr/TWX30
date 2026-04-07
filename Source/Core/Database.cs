@@ -587,25 +587,37 @@ namespace TWXProxy.Core
 
             // Pascal parity: saving a live sector with a special port updates the
             // database header landmark sectors.
-            if (sector.SectorPort != null)
-            {
-                if (sector.SectorPort.ClassIndex == 9)
-                {
-                    _header.StarDock = (ushort)sector.Number;
-                }
+            bool isStarDock = sector.SectorPort?.ClassIndex == 9;
+            bool isAlpha = sector.SectorPort?.ClassIndex == 0 &&
+                           string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase);
+            bool isRylos = sector.SectorPort?.ClassIndex == 0 &&
+                           string.Equals(sector.SectorPort.Name, "Rylos", StringComparison.OrdinalIgnoreCase);
 
-                if (sector.SectorPort.ClassIndex == 0)
-                {
-                    string portName = sector.SectorPort.Name ?? string.Empty;
-                    if (string.Equals(portName, "Alpha Centauri", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _header.AlphaCentauri = (ushort)sector.Number;
-                    }
-                    else if (string.Equals(portName, "Rylos", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _header.Rylos = (ushort)sector.Number;
-                    }
-                }
+            if (isStarDock)
+            {
+                _header.StarDock = (ushort)sector.Number;
+            }
+            else if (_header.StarDock == sector.Number)
+            {
+                _header.StarDock = 65535;
+            }
+
+            if (isAlpha)
+            {
+                _header.AlphaCentauri = (ushort)sector.Number;
+            }
+            else if (_header.AlphaCentauri == sector.Number)
+            {
+                _header.AlphaCentauri = 65535;
+            }
+
+            if (isRylos)
+            {
+                _header.Rylos = (ushort)sector.Number;
+            }
+            else if (_header.Rylos == sector.Number)
+            {
+                _header.Rylos = 65535;
             }
 
             // Update warp-in cache for connected sectors
