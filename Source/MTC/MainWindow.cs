@@ -2096,9 +2096,6 @@ public class MainWindow : Window
 
     private IReadOnlyList<Core.NativeHaggleModeInfo> DiscoverAvailableNativeHaggleModes(Core.NativeHaggleTradeKind tradeKind)
     {
-        string scriptDirectory = GetEffectiveProxyScriptDirectory();
-        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
-
         return Core.NativeHaggleModeDiscovery.DiscoverFromDirectories(new[]
         {
             AppPaths.ModulesDir,

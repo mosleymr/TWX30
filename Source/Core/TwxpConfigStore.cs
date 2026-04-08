@@ -26,7 +26,7 @@ public static class TwxpConfigStore
     {
         string resolvedProgramDir = ResolveProgramDirectory(programDir);
         if (TryLoadSectionsFromConfig(resolvedProgramDir, out IReadOnlyList<TwxpConfigSection>? sections))
-            return sections;
+            return sections ?? Array.Empty<TwxpConfigSection>();
 
         foreach (string legacyPath in SharedPaths.GetLegacyTwxpConfigCandidates(resolvedProgramDir))
         {
