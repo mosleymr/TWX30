@@ -30,7 +30,7 @@
             <Label Text="Sectors"/>
             <Entry Text="{Binding Sectors}" Keyboard="Numeric" Placeholder="1000"/>
 
-            <Label Text="Script Directory"/>
+            <Label Text="Script Directory (Global)"/>
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                 <Entry Grid.Column="0"
                        Text="{Binding ScriptDirectory}"
@@ -39,6 +39,9 @@
                         Text="Browse"
                         Command="{Binding SelectScriptDirectoryCommand}"/>
             </Grid>
+            <Label Text="Applies to all games in TWXP."
+                   FontSize="12"
+                   TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray400}}"/>
             
             <HorizontalStackLayout Spacing="10" Margin="0,20,0,0">
                 <CheckBox IsChecked="{Binding AutoConnect}"/>

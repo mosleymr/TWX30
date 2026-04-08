@@ -117,7 +117,7 @@ public class GameConfigViewModel : BaseViewModel
 
     public string ScriptDirectory
     {
-        get => Config.ScriptDirectory;
+        get => Config.ScriptDirectory ?? string.Empty;
         set
         {
             if (Config.ScriptDirectory != value)

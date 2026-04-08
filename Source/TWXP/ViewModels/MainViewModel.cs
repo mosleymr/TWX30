@@ -11,6 +11,7 @@ public class MainViewModel : BaseViewModel
     private readonly IProxyService _proxyService;
     private readonly IDirectoryPickerService _directoryPickerService;
     private GameConfigViewModel? _selectedGame;
+    private string _scriptsDirectory = string.Empty;
 
     public ObservableCollection<GameConfigViewModel> Games { get; } = new();
     public GameConfigViewModel? SelectedGame
@@ -19,9 +20,25 @@ public class MainViewModel : BaseViewModel
         set => SetProperty(ref _selectedGame, value);
     }
 
+    public string ScriptsDirectory
+    {
+        get => _scriptsDirectory;
+        set
+        {
+            if (SetProperty(ref _scriptsDirectory, value))
+                OnPropertyChanged(nameof(ScriptsDirectoryDisplay));
+        }
+    }
+
+    public string ScriptsDirectoryDisplay
+        => string.IsNullOrWhiteSpace(ScriptsDirectory)
+            ? "Scripts Directory: (default)"
+            : $"Scripts Directory: {ScriptsDirectory}";
+
     public ICommand AddGameCommand { get; }
     public ICommand LoadGameCommand { get; }
     public ICommand LoadConfigsCommand { get; }
+    public ICommand SelectScriptsDirectoryCommand { get; }
 
     public MainViewModel(
         IGameConfigService configService,
@@ -35,8 +52,10 @@ public class MainViewModel : BaseViewModel
         AddGameCommand = new AsyncRelayCommand(async _ => await AddGameAsync());
         LoadGameCommand = new AsyncRelayCommand(async _ => await LoadGameAsync());
         LoadConfigsCommand = new AsyncRelayCommand(async _ => await LoadConfigsAsync());
+        SelectScriptsDirectoryCommand = new AsyncRelayCommand(async _ => await SelectScriptsDirectoryAsync());
 
         _proxyService.StatusChanged += OnGameStatusChanged;
+        _configService.ScriptsDirectoryChanged += OnScriptsDirectoryChanged;
     }
 
     public async Task InitializeAsync()
@@ -56,6 +75,7 @@ public class MainViewModel : BaseViewModel
         {
             Games.Clear();
             var configs = await _configService.LoadConfigsAsync();
+            ScriptsDirectory = await _configService.GetScriptsDirectoryAsync();
 
             foreach (var config in configs)
             {
@@ -79,7 +99,7 @@ public class MainViewModel : BaseViewModel
         var newConfig = new GameConfig
         {
             Name = $"Game {Games.Count + 1}",
-            ScriptDirectory = GameConfigService.GetDefaultScriptDirectory()
+            ScriptDirectory = ScriptsDirectory
         };
 
         var vm = new GameConfigViewModel(newConfig, _configService, _proxyService, _directoryPickerService, RemoveGame);
@@ -160,6 +180,15 @@ public class MainViewModel : BaseViewModel
         }
     }
 
+    private async Task SelectScriptsDirectoryAsync()
+    {
+        var selectedDirectory = await _directoryPickerService.PickDirectoryAsync();
+        if (string.IsNullOrWhiteSpace(selectedDirectory))
+            return;
+
+        await _configService.SetScriptsDirectoryAsync(selectedDirectory);
+    }
+
     private void OnGameStatusChanged(object? sender, GameStatusChangedEventArgs e)
     {
         var game = Games.FirstOrDefault(g => g.Config.Id == e.GameId);
@@ -167,6 +196,13 @@ public class MainViewModel : BaseViewModel
         {
             game.Status = e.Status;
         }
+    }
+
+    private void OnScriptsDirectoryChanged(object? sender, string scriptsDirectory)
+    {
+        ScriptsDirectory = scriptsDirectory;
+        foreach (var game in Games)
+            game.ScriptDirectory = scriptsDirectory;
     }
 
     private void RemoveGame(GameConfigViewModel game)

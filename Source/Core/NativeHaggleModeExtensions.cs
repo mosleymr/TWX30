@@ -7,28 +7,59 @@ using System.Runtime.Loader;
 
 namespace TWXProxy.Core;
 
+public enum NativeHaggleTradeKind
+{
+    Port,
+    Planet,
+}
+
 public sealed class NativeHaggleModeInfo
 {
-    public NativeHaggleModeInfo(string id, string displayName, bool isBuiltIn)
+    public NativeHaggleModeInfo(
+        string id,
+        string displayName,
+        bool isBuiltIn,
+        bool supportsPortTrades = true,
+        bool supportsPlanetTrades = false)
     {
         Id = NativeHaggleModes.Normalize(id);
         DisplayName = string.IsNullOrWhiteSpace(displayName) ? Id : displayName;
         IsBuiltIn = isBuiltIn;
+        SupportsPortTrades = supportsPortTrades;
+        SupportsPlanetTrades = supportsPlanetTrades;
     }
 
     public string Id { get; }
     public string DisplayName { get; }
     public bool IsBuiltIn { get; }
+    public bool SupportsPortTrades { get; }
+    public bool SupportsPlanetTrades { get; }
+
+    public bool SupportsTradeKind(NativeHaggleTradeKind tradeKind) =>
+        tradeKind == NativeHaggleTradeKind.Planet ? SupportsPlanetTrades : SupportsPortTrades;
 }
 
 internal abstract class NativeHaggleModeExtension
 {
-    protected NativeHaggleModeExtension(string id, string displayName)
+    protected NativeHaggleModeExtension(
+        string id,
+        string displayName,
+        bool supportsPortTrades = true,
+        bool supportsPlanetTrades = false)
     {
-        ModeInfo = new NativeHaggleModeInfo(id, displayName, isBuiltIn: false);
+        ModeInfo = new NativeHaggleModeInfo(
+            id,
+            displayName,
+            isBuiltIn: false,
+            supportsPortTrades: supportsPortTrades,
+            supportsPlanetTrades: supportsPlanetTrades);
     }
 
     public NativeHaggleModeInfo ModeInfo { get; }
+    public bool SupportsPortTrades => ModeInfo.SupportsPortTrades;
+    public bool SupportsPlanetTrades => ModeInfo.SupportsPlanetTrades;
+
+    public bool SupportsTradeKind(NativeHaggleTradeKind tradeKind) => ModeInfo.SupportsTradeKind(tradeKind);
 
     public abstract long ComputeBid(NativeHaggleEngine engine, NativeHaggleEngine.SessionState session, long offer);
 
@@ -43,13 +74,17 @@ internal static class NativeHaggleModeCatalog
 {
     private static readonly IReadOnlyList<NativeHaggleModeInfo> BuiltIns = new[]
     {
-        new NativeHaggleModeInfo(NativeHaggleModes.ClampHeuristic, "EPHaggle", isBuiltIn: true),
-        new NativeHaggleModeInfo(NativeHaggleModes.ServerDerived, "Enhanced Haggle", isBuiltIn: true),
-        new NativeHaggleModeInfo(NativeHaggleModes.BlendHeuristic, "Blend Heuristic", isBuiltIn: true),
-        new NativeHaggleModeInfo(NativeHaggleModes.Baseline, "Baseline", isBuiltIn: true),
+        new NativeHaggleModeInfo(NativeHaggleModes.ClampHeuristic, "EPHaggle", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
+        new NativeHaggleModeInfo(NativeHaggleModes.ServerDerived, "Enhanced Haggle", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
+        new NativeHaggleModeInfo(NativeHaggleModes.BlendHeuristic, "Blend Heuristic", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
+        new NativeHaggleModeInfo(NativeHaggleModes.Baseline, "Baseline", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
+        new NativeHaggleModeInfo(NativeHaggleModes.CherokeePlanet, "Cherokee Planet", isBuiltIn: true, supportsPortTrades: false, supportsPlanetTrades: true),
     };
 
     public static IReadOnlyList<NativeHaggleModeInfo> GetBuiltIns() => BuiltIns;
+
+    public static IReadOnlyList<NativeHaggleModeInfo> GetBuiltIns(NativeHaggleTradeKind tradeKind) =>
+        BuiltIns.Where(info => info.SupportsTradeKind(tradeKind)).ToList();
 
     public static IReadOnlyList<NativeHaggleModeInfo> GetAvailableModes(IEnumerable<NativeHaggleModeExtension> extensions)
     {
@@ -58,6 +93,15 @@ internal static class NativeHaggleModeCatalog
             .Select(extension => extension.ModeInfo)
             .OrderBy(info => info.DisplayName, StringComparer.OrdinalIgnoreCase));
         return modes;
+    }
+
+    public static IReadOnlyList<NativeHaggleModeInfo> GetAvailableModes(
+        IEnumerable<NativeHaggleModeExtension> extensions,
+        NativeHaggleTradeKind tradeKind)
+    {
+        return GetAvailableModes(extensions)
+            .Where(info => info.SupportsTradeKind(tradeKind))
+            .ToList();
     }
 
     public static IReadOnlyList<NativeHaggleModeInfo> GetAvailableModes(IEnumerable<NativeHaggleModeInfo> extensionModes)
@@ -80,18 +124,32 @@ internal static class NativeHaggleModeCatalog
         return modes;
     }
 
-    public static string GetDisplayName(string? modeId, IEnumerable<NativeHaggleModeExtension>? extensions = null)
+    public static IReadOnlyList<NativeHaggleModeInfo> GetAvailableModes(
+        IEnumerable<NativeHaggleModeInfo> extensionModes,
+        NativeHaggleTradeKind tradeKind)
+    {
+        return GetAvailableModes(extensionModes)
+            .Where(info => info.SupportsTradeKind(tradeKind))
+            .ToList();
+    }
+
+    public static NativeHaggleModeInfo? GetModeInfo(string? modeId, IEnumerable<NativeHaggleModeExtension>? extensions = null)
     {
         string normalized = NativeHaggleModes.Normalize(modeId);
 
         NativeHaggleModeInfo? builtIn = BuiltIns.FirstOrDefault(info =>
             string.Equals(info.Id, normalized, StringComparison.OrdinalIgnoreCase));
         if (builtIn != null)
-            return builtIn.DisplayName;
+            return builtIn;
 
-        NativeHaggleModeInfo? extension = extensions?.Select(item => item.ModeInfo).FirstOrDefault(info =>
+        return extensions?.Select(item => item.ModeInfo).FirstOrDefault(info =>
             string.Equals(info.Id, normalized, StringComparison.OrdinalIgnoreCase));
-        return extension?.DisplayName ?? normalized;
+    }
+
+    public static string GetDisplayName(string? modeId, IEnumerable<NativeHaggleModeExtension>? extensions = null)
+    {
+        string normalized = NativeHaggleModes.Normalize(modeId);
+        return GetModeInfo(normalized, extensions)?.DisplayName ?? normalized;
     }
 }
 

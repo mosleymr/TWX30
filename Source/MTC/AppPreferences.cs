@@ -29,8 +29,14 @@ public class AppPreferences
     /// <summary>When true, VM load/execute metrics are written to the shared log.</summary>
     public bool VmMetricsEnabled { get; set; } = true;
 
-    /// <summary>Global native haggle mode used by MTC across all games.</summary>
-    public string NativeHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.ClampHeuristic;
+    /// <summary>Global native haggle mode used by MTC across all games for port trades.</summary>
+    public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
+
+    /// <summary>Global native haggle mode used by MTC across all games for planet trades.</summary>
+    public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
+
+    /// <summary>When true, the alternate command-deck UI skin is active.</summary>
+    public bool CommandDeckSkinEnabled { get; set; }
 
     // ── Paths ──────────────────────────────────────────────────────────────
 
@@ -77,7 +83,9 @@ public class AppPreferences
                     new XElement("VerboseDebugLogging", VerboseDebugLogging),
                     new XElement("PreparedVmEnabled", PreparedVmEnabled),
                     new XElement("VmMetricsEnabled", VmMetricsEnabled),
-                    new XElement("NativeHaggleMode", NativeHaggleMode),
+                    new XElement("PortHaggleMode", PortHaggleMode),
+                    new XElement("PlanetHaggleMode", PlanetHaggleMode),
+                    new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                     new XElement("RecentFiles",
                         RecentFiles.Select(p => new XElement("File", p))
                     )
@@ -117,8 +125,17 @@ public class AppPreferences
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
 
-            string? nativeHaggleMode = (string?)root.Element("NativeHaggleMode");
-            prefs.NativeHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(nativeHaggleMode);
+            string? portHaggleMode = (string?)root.Element("PortHaggleMode");
+            string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
+            string? legacyNativeHaggleMode = (string?)root.Element("NativeHaggleMode");
+
+            prefs.PortHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(
+                string.IsNullOrWhiteSpace(portHaggleMode) ? legacyNativeHaggleMode : portHaggleMode);
+            prefs.PlanetHaggleMode = string.IsNullOrWhiteSpace(planetHaggleMode)
+                ? TWXProxy.Core.NativeHaggleModes.DefaultPlanet
+                : TWXProxy.Core.NativeHaggleModes.Normalize(planetHaggleMode);
+            if (bool.TryParse((string?)root.Element("CommandDeckSkinEnabled"), out bool commandDeckEnabled))
+                prefs.CommandDeckSkinEnabled = commandDeckEnabled;
 
             foreach (var el in root.Element("RecentFiles")?.Elements("File")
                                    ?? Enumerable.Empty<XElement>())

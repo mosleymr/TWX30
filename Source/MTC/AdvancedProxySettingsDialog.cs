@@ -32,9 +32,14 @@ public class AdvancedProxySettingsDialog : Window
     private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(170, 170, 170));
     private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
 
-    public string SelectedHaggleMode { get; private set; }
+    public string SelectedPortHaggleMode { get; private set; }
+    public string SelectedPlanetHaggleMode { get; private set; }
 
-    public AdvancedProxySettingsDialog(string currentHaggleMode, IReadOnlyList<Core.NativeHaggleModeInfo>? availableModes = null)
+    public AdvancedProxySettingsDialog(
+        string currentPortHaggleMode,
+        string currentPlanetHaggleMode,
+        IReadOnlyList<Core.NativeHaggleModeInfo>? availablePortModes = null,
+        IReadOnlyList<Core.NativeHaggleModeInfo>? availablePlanetModes = null)
     {
         Title = "Advanced Proxy Settings";
         Width = 520;
@@ -43,23 +48,44 @@ public class AdvancedProxySettingsDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = BgPanel;
 
-        var haggleOptions = (availableModes ?? Core.NativeHaggleModes.BuiltInModes)
+        var portHaggleOptions = (availablePortModes ?? Core.NativeHaggleModes.BuiltInModes
+                .Where(info => info.SupportsPortTrades)
+                .ToList())
             .Select(info => new HaggleModeOption(info.Id, info.DisplayName, info.IsBuiltIn))
             .ToList();
 
-        var haggleCombo = new ComboBox
+        var portHaggleCombo = new ComboBox
         {
-            ItemsSource = haggleOptions,
-            SelectedItem = haggleOptions.Find(option =>
-                string.Equals(option.Value, Core.NativeHaggleModes.Normalize(currentHaggleMode), StringComparison.OrdinalIgnoreCase)),
+            ItemsSource = portHaggleOptions,
+            SelectedItem = portHaggleOptions.Find(option =>
+                string.Equals(option.Value, Core.NativeHaggleModes.Normalize(currentPortHaggleMode), StringComparison.OrdinalIgnoreCase)),
             Background = BgInput,
             Foreground = FgNormal,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
-        if (haggleCombo.SelectedItem == null)
-            haggleCombo.SelectedIndex = 0;
+        if (portHaggleCombo.SelectedItem == null)
+            portHaggleCombo.SelectedIndex = 0;
 
-        var haggleRow = BuildRow("Haggle Mode:", haggleCombo);
+        var planetHaggleOptions = (availablePlanetModes ?? Core.NativeHaggleModes.BuiltInModes
+                .Where(info => info.SupportsPlanetTrades)
+                .ToList())
+            .Select(info => new HaggleModeOption(info.Id, info.DisplayName, info.IsBuiltIn))
+            .ToList();
+
+        var planetHaggleCombo = new ComboBox
+        {
+            ItemsSource = planetHaggleOptions,
+            SelectedItem = planetHaggleOptions.Find(option =>
+                string.Equals(option.Value, Core.NativeHaggleModes.Normalize(currentPlanetHaggleMode), StringComparison.OrdinalIgnoreCase)),
+            Background = BgInput,
+            Foreground = FgNormal,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        if (planetHaggleCombo.SelectedItem == null)
+            planetHaggleCombo.SelectedIndex = 0;
+
+        var portHaggleRow = BuildRow("Port Haggle:", portHaggleCombo);
+        var planetHaggleRow = BuildRow("Planet Haggle:", planetHaggleCombo);
 
         var btnSave = new Button
         {
@@ -81,7 +107,8 @@ public class AdvancedProxySettingsDialog : Window
 
         btnSave.Click += (_, _) =>
         {
-            SelectedHaggleMode = (haggleCombo.SelectedItem as HaggleModeOption)?.Value ?? Core.NativeHaggleModes.ClampHeuristic;
+            SelectedPortHaggleMode = (portHaggleCombo.SelectedItem as HaggleModeOption)?.Value ?? Core.NativeHaggleModes.Default;
+            SelectedPlanetHaggleMode = (planetHaggleCombo.SelectedItem as HaggleModeOption)?.Value ?? Core.NativeHaggleModes.DefaultPlanet;
             Close(true);
         };
 
@@ -95,13 +122,14 @@ public class AdvancedProxySettingsDialog : Window
             Children = { btnSave, btnCancel },
         };
 
-        SelectedHaggleMode = Core.NativeHaggleModes.Normalize(currentHaggleMode);
+        SelectedPortHaggleMode = Core.NativeHaggleModes.Normalize(currentPortHaggleMode);
+        SelectedPlanetHaggleMode = Core.NativeHaggleModes.Normalize(currentPlanetHaggleMode);
 
         Content = new StackPanel
         {
             Margin = new Thickness(16),
             Spacing = 4,
-            Children = { haggleRow, buttons },
+            Children = { portHaggleRow, planetHaggleRow, buttons },
         };
     }
 

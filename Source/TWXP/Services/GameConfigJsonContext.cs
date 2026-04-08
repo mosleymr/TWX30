@@ -8,6 +8,7 @@ namespace TWXP.Services;
 [JsonSerializable(typeof(List<GameConfig>))]
 [JsonSerializable(typeof(ObservableCollection<GameConfig>))]
 [JsonSerializable(typeof(GameConfig))]
+[JsonSerializable(typeof(GameRegistry))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 internal partial class GameConfigJsonContext : JsonSerializerContext

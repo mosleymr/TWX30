@@ -10,10 +10,12 @@ public static class NativeHaggleModes
 {
     public const string Baseline = "baseline";
     public const string BlendHeuristic = "blend-heuristic";
+    public const string CherokeePlanet = "cherokee-planet";
     public const string ClampHeuristic = "clamp-heuristic";
     public const string ServerDerived = "server-derived";
     public const string ExcellentTarget = "excellent-target";
     public const string Default = ClampHeuristic;
+    public const string DefaultPlanet = CherokeePlanet;
 
     public static string Normalize(string? mode)
     {
@@ -30,6 +32,9 @@ public static class NativeHaggleModes
             BlendHeuristic => BlendHeuristic,
             "enhanced haggle" => ServerDerived,
             "server derived" => ServerDerived,
+            "cherokee" => CherokeePlanet,
+            "cherokee planet" => CherokeePlanet,
+            CherokeePlanet => CherokeePlanet,
             ClampHeuristic => ClampHeuristic,
             ServerDerived => ServerDerived,
             ExcellentTarget => ExcellentTarget,
@@ -43,7 +48,8 @@ public static class NativeHaggleModes
         return normalized == ClampHeuristic ||
                normalized == BlendHeuristic ||
                normalized == ServerDerived ||
-               normalized == Baseline;
+               normalized == Baseline ||
+               normalized == CherokeePlanet;
     }
 
     public static IReadOnlyList<string> All { get; } = new[]
@@ -52,6 +58,7 @@ public static class NativeHaggleModes
         BlendHeuristic,
         ServerDerived,
         Baseline,
+        CherokeePlanet,
     };
 
     public static IReadOnlyList<NativeHaggleModeInfo> BuiltInModes => NativeHaggleModeCatalog.GetBuiltIns();
@@ -82,6 +89,7 @@ public sealed class NativeHaggleEngine
         public int Sector { get; set; }
         public string RouteKey { get; set; } = string.Empty;
         public string ActiveMode { get; set; } = string.Empty;
+        public string ActiveModeDisplayName { get; set; } = string.Empty;
         public string Weekday { get; set; } = "Sat";
         public bool IsPlanetTrade { get; set; }
         public string ProductKey { get; set; } = string.Empty;
@@ -127,6 +135,10 @@ public sealed class NativeHaggleEngine
         public int PlanetPortMaxInit { get; set; }
         public int PlanetMidHaggles { get; set; }
         public bool PlanetForceFailApplied { get; set; }
+        public double PlanetSolvedFactor { get; set; }
+        public double PlanetSolvedHiddenMin { get; set; }
+        public double PlanetSolvedHiddenMax { get; set; }
+        public int PlanetSolvedMcic { get; set; }
         public long PendingBid { get; set; }
         public long PendingBidOffer { get; set; }
         public bool PendingBidFinalOffer { get; set; }
@@ -401,10 +413,12 @@ public sealed class NativeHaggleEngine
     private int _goodRewardCount;
     private int _greatRewardCount;
     private int _excellentRewardCount;
-    private string _firstBidMode = NativeHaggleModes.ClampHeuristic;
+    private string _portBidMode = NativeHaggleModes.Default;
+    private string _planetBidMode = NativeHaggleModes.DefaultPlanet;
     private readonly Dictionary<string, NativeHaggleModeExtension> _extensionModes = new(StringComparer.OrdinalIgnoreCase);
     private readonly PlanetTradeRunState _planetTradeRunState = new();
-    private string? _lastMissingModeId;
+    private string? _lastMissingPortModeId;
+    private string? _lastMissingPlanetModeId;
 
     public event Action? StatsChanged;
 
@@ -423,9 +437,19 @@ public sealed class NativeHaggleEngine
             ? 0
             : (int)Math.Round((_successfulHaggles * 100.0) / _completedHaggles, MidpointRounding.AwayFromZero);
 
-    public string FirstBidMode => _firstBidMode;
+    public string FirstBidMode => _portBidMode;
 
-    public IReadOnlyList<NativeHaggleModeInfo> AvailableModes => NativeHaggleModeCatalog.GetAvailableModes(_extensionModes.Values);
+    public string PortHaggleMode => _portBidMode;
+
+    public string PlanetHaggleMode => _planetBidMode;
+
+    public IReadOnlyList<NativeHaggleModeInfo> AvailableModes => AvailablePortModes;
+
+    public IReadOnlyList<NativeHaggleModeInfo> AvailablePortModes =>
+        NativeHaggleModeCatalog.GetAvailableModes(_extensionModes.Values, NativeHaggleTradeKind.Port);
+
+    public IReadOnlyList<NativeHaggleModeInfo> AvailablePlanetModes =>
+        NativeHaggleModeCatalog.GetAvailableModes(_extensionModes.Values, NativeHaggleTradeKind.Planet);
 
     public NativeHaggleEngine()
     {
@@ -468,17 +492,30 @@ public sealed class NativeHaggleEngine
         return Enabled;
     }
 
-    public void SetFirstBidMode(string? mode)
+    public void SetFirstBidMode(string? mode) => SetPortHaggleMode(mode);
+
+    public void SetPortHaggleMode(string? mode)
     {
-        _firstBidMode = NativeHaggleModes.Normalize(mode);
+        _portBidMode = string.IsNullOrWhiteSpace(mode)
+            ? NativeHaggleModes.Default
+            : NativeHaggleModes.Normalize(mode);
+    }
+
+    public void SetPlanetHaggleMode(string? mode)
+    {
+        _planetBidMode = string.IsNullOrWhiteSpace(mode)
+            ? NativeHaggleModes.DefaultPlanet
+            : NativeHaggleModes.Normalize(mode);
     }
 
     internal void RegisterMode(NativeHaggleModeExtension mode)
     {
         string modeId = NativeHaggleModes.Normalize(mode.ModeInfo.Id);
         _extensionModes[modeId] = mode;
-        if (string.Equals(_lastMissingModeId, modeId, StringComparison.OrdinalIgnoreCase))
-            _lastMissingModeId = null;
+        if (string.Equals(_lastMissingPortModeId, modeId, StringComparison.OrdinalIgnoreCase))
+            _lastMissingPortModeId = null;
+        if (string.Equals(_lastMissingPlanetModeId, modeId, StringComparison.OrdinalIgnoreCase))
+            _lastMissingPlanetModeId = null;
     }
 
     internal void UnregisterMode(string? modeId)
@@ -696,7 +733,8 @@ public sealed class NativeHaggleEngine
         _session.ProductType = _pendingProductType;
         _session.BuySell = _pendingBuySell;
         _session.RouteKey = BuildRouteKey(sector, _pendingProductKey, _pendingBuySell, _pendingIsPlanetTrade);
-        _session.ActiveMode = GetActiveFirstBidMode();
+        _session.ActiveMode = GetActiveHaggleMode(_pendingIsPlanetTrade);
+        _session.ActiveModeDisplayName = NativeHaggleModeCatalog.GetDisplayName(_session.ActiveMode, _extensionModes.Values);
         _session.TradeQty = tradeQty;
         _session.PortQty = port.ProductAmount.GetValueOrDefault(_pendingProductType);
         _session.Percent = port.ProductPercent.GetValueOrDefault(_pendingProductType);
@@ -721,6 +759,10 @@ public sealed class NativeHaggleEngine
         _session.RewardTier = string.Empty;
         _session.RewardExperience = 0;
         _session.PlanetAcceptanceSeen = false;
+        _session.PlanetSolvedFactor = 0;
+        _session.PlanetSolvedHiddenMin = 0;
+        _session.PlanetSolvedHiddenMax = 0;
+        _session.PlanetSolvedMcic = 0;
         _session.EmpiricalProbeApplied = false;
         _session.EmpiricalProbeNudge = 0;
         _session.HiddenTotalMin = 0;
@@ -736,12 +778,20 @@ public sealed class NativeHaggleEngine
 
         PushScriptState(_session.StartCredits, abort: false);
 
-        if (UsesCherokeePlanetBaseline(_session))
+        if (_session.IsPlanetTrade)
         {
             EnsurePlanetTradeVisitState(_session.Sector);
             _session.PlanetTradeSettingPercent = ResolvePlanetTradeSettingPercent();
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} baseline=cherokee qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+            if (UsesCherokeePlanetBaseline(_session))
+            {
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' baseline=cherokee qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+            }
+            else
+            {
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' baseline=module qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+            }
             return;
         }
 
@@ -765,7 +815,7 @@ public sealed class NativeHaggleEngine
         }
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Armed sector={_session.Sector} tradeKind={(_session.IsPlanetTrade ? "planet" : "port")} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
+            $"[NativeHaggle] Armed sector={_session.Sector} tradeKind={(_session.IsPlanetTrade ? "planet" : "port")} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
     }
 
     private void ProcessCreditsLine(long credits, int emptyHolds)
@@ -913,12 +963,20 @@ public sealed class NativeHaggleEngine
             return null;
         }
 
-        if (UsesCherokeePlanetBaseline(_session))
+        if (_session.IsPlanetTrade)
         {
-            long planetBid = ComputeCherokeePlanetBid(_session, offer);
+            long planetBid = ComputeBid(_session, offer, _session.ActiveMode);
             StageBid(_session, offer, planetBid, finalOffer);
-            GlobalModules.DebugLog(
-                $"[NativeHaggle] planet-cherokee offer={offer} final={finalOffer} stagedBid={planetBid} mcic={_session.PlanetQualityMcic} multiple={_session.PlanetQualityMultiple} portMaxInit={_session.PlanetPortMaxInit} midHaggles={_session.PlanetMidHaggles} forceFail={_session.PlanetForceFailApplied} ptrade={_session.PlanetTradeSettingPercent}\n");
+            if (UsesCherokeePlanetBaseline(_session))
+            {
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] planet-cherokee offer={offer} final={finalOffer} stagedBid={planetBid} mcic={_session.PlanetQualityMcic} multiple={_session.PlanetQualityMultiple} portMaxInit={_session.PlanetPortMaxInit} midHaggles={_session.PlanetMidHaggles} forceFail={_session.PlanetForceFailApplied} ptrade={_session.PlanetTradeSettingPercent}\n");
+            }
+            else
+            {
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] planet-mode offer={offer} final={finalOffer} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' stagedBid={planetBid}\n");
+            }
             return null;
         }
 
@@ -1593,7 +1651,8 @@ public sealed class NativeHaggleEngine
 
     private static bool UsesCherokeePlanetBaseline(SessionState session) =>
         session.IsPlanetTrade &&
-        string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase);
+        string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(session.ActiveMode, NativeHaggleModes.CherokeePlanet, StringComparison.OrdinalIgnoreCase);
 
     private void EnsurePlanetTradeVisitState(int sector)
     {
@@ -1634,7 +1693,7 @@ public sealed class NativeHaggleEngine
         return Math.Max(1, percent);
     }
 
-    private long ComputeCherokeePlanetBid(SessionState session, long offer)
+    internal long ComputeCherokeePlanetBaselineBid(SessionState session, long offer)
     {
         if (session.BidNumber > 0 && (session.LastOffer <= 0 || session.LastCounter <= 0))
             return NormalizeBidForDirection(session, offer, ComputeHeuristicBid(session, offer));
@@ -1823,7 +1882,7 @@ public sealed class NativeHaggleEngine
     private long ComputeBid(SessionState session, long offer, string firstBidMode)
     {
         if (UsesCherokeePlanetBaseline(session))
-            return ComputeCherokeePlanetBid(session, offer);
+            return ComputeCherokeePlanetBaselineBid(session, offer);
 
         string mode = NativeHaggleModes.Normalize(firstBidMode);
         if (_extensionModes.TryGetValue(mode, out NativeHaggleModeExtension? extension))
@@ -2454,16 +2513,20 @@ public sealed class NativeHaggleEngine
             _ => "overlap",
         };
 
-    private string GetActiveFirstBidMode()
+    private string GetActiveHaggleMode(bool isPlanetTrade)
     {
-        string? overrideMode = Environment.GetEnvironmentVariable("TWX_HAGGLE_EXPERIMENT");
+        NativeHaggleTradeKind tradeKind = isPlanetTrade ? NativeHaggleTradeKind.Planet : NativeHaggleTradeKind.Port;
+        string configuredMode = isPlanetTrade ? _planetBidMode : _portBidMode;
+        string overrideVariable = isPlanetTrade ? "TWX_HAGGLE_PLANET_EXPERIMENT" : "TWX_HAGGLE_EXPERIMENT";
+        string? overrideMode = Environment.GetEnvironmentVariable(overrideVariable);
         string resolved = ResolveConfiguredMode(
             string.IsNullOrWhiteSpace(overrideMode) ? null : overrideMode,
-            _firstBidMode);
+            configuredMode,
+            tradeKind);
         if (!string.IsNullOrWhiteSpace(overrideMode))
         {
             GlobalModules.DebugLog(
-                $"[NativeHaggle] TWX_HAGGLE_EXPERIMENT override='{overrideMode}' selectedMode='{resolved}' configuredMode='{_firstBidMode}'\n");
+                $"[NativeHaggle] {overrideVariable} override='{overrideMode}' selectedMode='{resolved}' configuredMode='{configuredMode}' tradeKind={tradeKind}\n");
         }
 
         return resolved;
@@ -2483,39 +2546,60 @@ public sealed class NativeHaggleEngine
         return Math.Max(offer + 1, bid);
     }
 
-    private string ResolveConfiguredMode(string? preferredMode, string? fallbackMode)
+    private bool IsModeAvailableForTradeKind(string? modeId, NativeHaggleTradeKind tradeKind)
+    {
+        NativeHaggleModeInfo? info = NativeHaggleModeCatalog.GetModeInfo(modeId, _extensionModes.Values);
+        return info?.SupportsTradeKind(tradeKind) == true;
+    }
+
+    private string? GetLastMissingModeId(NativeHaggleTradeKind tradeKind) =>
+        tradeKind == NativeHaggleTradeKind.Planet ? _lastMissingPlanetModeId : _lastMissingPortModeId;
+
+    private void SetLastMissingModeId(NativeHaggleTradeKind tradeKind, string? modeId)
+    {
+        if (tradeKind == NativeHaggleTradeKind.Planet)
+            _lastMissingPlanetModeId = modeId;
+        else
+            _lastMissingPortModeId = modeId;
+    }
+
+    private string ResolveConfiguredMode(string? preferredMode, string? fallbackMode, NativeHaggleTradeKind tradeKind)
     {
         if (!string.IsNullOrWhiteSpace(preferredMode))
         {
             string preferred = NativeHaggleModes.Normalize(preferredMode);
-            if (NativeHaggleModes.IsBuiltIn(preferred) || _extensionModes.ContainsKey(preferred))
+            if (IsModeAvailableForTradeKind(preferred, tradeKind))
             {
-                _lastMissingModeId = null;
+                SetLastMissingModeId(tradeKind, null);
                 return preferred;
             }
 
-            string fallbackForMissingPreferred = NativeHaggleModes.Normalize(fallbackMode);
-            if (NativeHaggleModes.IsBuiltIn(fallbackForMissingPreferred) || _extensionModes.ContainsKey(fallbackForMissingPreferred))
+            string fallbackForMissingPreferred = string.IsNullOrWhiteSpace(fallbackMode)
+                ? (tradeKind == NativeHaggleTradeKind.Planet ? NativeHaggleModes.DefaultPlanet : NativeHaggleModes.Default)
+                : NativeHaggleModes.Normalize(fallbackMode);
+            if (IsModeAvailableForTradeKind(fallbackForMissingPreferred, tradeKind))
             {
-                if (!string.Equals(_lastMissingModeId, preferred, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(GetLastMissingModeId(tradeKind), preferred, StringComparison.OrdinalIgnoreCase))
                 {
-                    _lastMissingModeId = preferred;
+                    SetLastMissingModeId(tradeKind, preferred);
                     GlobalModules.DebugLog(
-                        $"[NativeHaggle] Mode '{preferred}' is unavailable; falling back to '{fallbackForMissingPreferred}'.\n");
+                        $"[NativeHaggle] Mode '{preferred}' is unavailable for {tradeKind}; falling back to '{fallbackForMissingPreferred}'.\n");
                 }
                 return fallbackForMissingPreferred;
             }
         }
 
-        string fallback = NativeHaggleModes.Normalize(fallbackMode);
-        if (NativeHaggleModes.IsBuiltIn(fallback) || _extensionModes.ContainsKey(fallback))
+        string fallback = string.IsNullOrWhiteSpace(fallbackMode)
+            ? (tradeKind == NativeHaggleTradeKind.Planet ? NativeHaggleModes.DefaultPlanet : NativeHaggleModes.Default)
+            : NativeHaggleModes.Normalize(fallbackMode);
+        if (IsModeAvailableForTradeKind(fallback, tradeKind))
         {
-            _lastMissingModeId = null;
+            SetLastMissingModeId(tradeKind, null);
             return fallback;
         }
 
-        _lastMissingModeId = null;
-        return NativeHaggleModes.Default;
+        SetLastMissingModeId(tradeKind, null);
+        return tradeKind == NativeHaggleTradeKind.Planet ? NativeHaggleModes.DefaultPlanet : NativeHaggleModes.Default;
     }
 
     private static void PersistDerivedRanges(SessionState session)
@@ -2741,7 +2825,7 @@ public sealed class NativeHaggleEngine
         string routeState = DescribeModeState(_session);
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {rewardHidden} {routeState}\n");
+            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {rewardHidden} {routeState}\n");
         StatsChanged?.Invoke();
     }
 

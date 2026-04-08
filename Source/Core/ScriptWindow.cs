@@ -188,6 +188,7 @@ namespace TWXProxy.Core
             string reference, string prompt, char hotkey, bool closeMenu, object script);
         void OpenMenu(string menuName, int flags);
         void CloseMenu(bool force);
+        void RemoveScriptMenus(object script);
         MenuItem? GetMenuByName(string menuName);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
         void SuspendMenuForInput();
@@ -268,6 +269,19 @@ namespace TWXProxy.Core
 
         public void CloseMenu(bool force)
         {
+            if (force)
+            {
+                if (_menuStack.Count == 0 && _suspendedMenuStack is not { Count: > 0 })
+                    return;
+
+                int clearedDepth = _menuStack.Count;
+                _menuStack.Clear();
+                _suspendedMenuStack = null;
+                Console.WriteLine($"[Menu] Closed menu stack (depth={clearedDepth})");
+                ClearMenuDisplay();
+                return;
+            }
+
             if (_menuStack.Count > 0)
             {
                 var menu = _menuStack.Pop();
@@ -277,6 +291,82 @@ namespace TWXProxy.Core
                 {
                     ClearMenuDisplay();
                 }
+            }
+        }
+
+        public void RemoveScriptMenus(object script)
+        {
+            bool stackChanged = false;
+            bool suspendedChanged = false;
+
+            var removedMenus = _menus.Values
+                .Where(menu => ReferenceEquals(menu.Script, script))
+                .Select(menu => menu.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (removedMenus.Count == 0)
+            {
+                if (ReferenceEquals(_inputScript, script))
+                {
+                    _inputScript = null;
+                    _inputVarParam = null;
+                    _inputSingleKey = false;
+                }
+                return;
+            }
+
+            foreach (string menuName in removedMenus)
+                _menus.Remove(menuName);
+
+            if (_menuStack.Count > 0)
+            {
+                var retainedStack = _menuStack
+                    .Reverse()
+                    .Where(menu => !ReferenceEquals(menu.Script, script) &&
+                                   !removedMenus.Contains(menu.Name))
+                    .ToList();
+
+                stackChanged = retainedStack.Count != _menuStack.Count;
+                if (stackChanged)
+                {
+                    _menuStack.Clear();
+                    foreach (var menu in retainedStack)
+                        _menuStack.Push(menu);
+                }
+            }
+
+            if (_suspendedMenuStack is { Count: > 0 })
+            {
+                var retainedSuspended = _suspendedMenuStack
+                    .Where(menu => !ReferenceEquals(menu.Script, script) &&
+                                   !removedMenus.Contains(menu.Name))
+                    .ToList();
+
+                suspendedChanged = retainedSuspended.Count != _suspendedMenuStack.Count;
+                _suspendedMenuStack = retainedSuspended.Count > 0 ? retainedSuspended : null;
+            }
+
+            if (ReferenceEquals(_inputScript, script))
+            {
+                _inputScript = null;
+                _inputVarParam = null;
+                _inputSingleKey = false;
+            }
+
+            GlobalModules.DebugLog(
+                $"[Menu] Removed {removedMenus.Count} menu item(s) for disposed script; " +
+                $"stackChanged={stackChanged} suspendedChanged={suspendedChanged}\n");
+
+            if (stackChanged)
+            {
+                if (_menuStack.Count > 0)
+                    DisplayScriptMenu(_menuStack.Peek());
+                else
+                    ClearMenuDisplay();
+            }
+            else if (suspendedChanged && _menuStack.Count == 0 && _suspendedMenuStack == null)
+            {
+                ClearMenuDisplay();
             }
         }
 
@@ -495,7 +585,7 @@ namespace TWXProxy.Core
                     // The menu text already says "Q - Terminate script", so close the
                     // menu UI and stop the owning script rather than merely dismissing it.
                     var rootMenu = _menuStack.Peek();
-                    CloseMenu(false);
+                    CloseMenu(true);
 
                     if (rootMenu.Script is Script rootScript)
                     {
@@ -556,7 +646,7 @@ namespace TWXProxy.Core
                         // Close menu if configured
                         if (matchingItem.CloseMenu)
                         {
-                            CloseMenu(false);
+                            CloseMenu(true);
                         }
                         
                         // Call Execute() to actually run the GOSUBed code

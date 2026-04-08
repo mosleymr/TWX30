@@ -5,6 +5,7 @@ namespace TWXP.Services;
 
 public interface IGameConfigService
 {
+    event EventHandler<string>? ScriptsDirectoryChanged;
     Task<ObservableCollection<GameConfig>> LoadConfigsAsync();
     Task SaveConfigAsync(GameConfig config);
     /// <summary>Remove the game from the active list without deleting its data file.</summary>
@@ -12,12 +13,20 @@ public interface IGameConfigService
     /// <summary>Remove the game from the active list and delete its GAMENAME.json data file.</summary>
     Task DeleteConfigAsync(string configId);
     Task<GameConfig?> GetConfigAsync(string configId);
+    Task<string> GetScriptsDirectoryAsync();
+    Task SetScriptsDirectoryAsync(string scriptDirectory);
+    Task<string> GetPortHaggleModeAsync();
+    Task SetPortHaggleModeAsync(string haggleMode);
+    Task<string> GetPlanetHaggleModeAsync();
+    Task SetPlanetHaggleModeAsync(string haggleMode);
 }
 
 public class GameConfigService : IGameConfigService
 {
     // The registry file stores a JSON array of file paths to loaded GAMENAME.json files.
     private readonly string _registryFile;
+
+    public event EventHandler<string>? ScriptsDirectoryChanged;
 
     public GameConfigService()
     {
@@ -30,12 +39,55 @@ public class GameConfigService : IGameConfigService
         return AppPaths.DefaultScriptDir;
     }
 
-    private static void ApplyDefaults(GameConfig config)
+    private static string NormalizeScriptDirectory(string? scriptDirectory)
     {
-        if (string.IsNullOrWhiteSpace(config.ScriptDirectory))
+        if (string.IsNullOrWhiteSpace(scriptDirectory))
+            return string.Empty;
+
+        string trimmed = scriptDirectory.Trim();
+        try
         {
-            config.ScriptDirectory = GetDefaultScriptDirectory();
+            trimmed = Path.GetFullPath(trimmed);
         }
+        catch
+        {
+            // Keep the original text if it cannot be normalized yet.
+        }
+
+        return trimmed.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static string ResolveEffectiveScriptDirectory(string? configuredScriptDirectory)
+    {
+        string normalized = NormalizeScriptDirectory(configuredScriptDirectory);
+        return string.IsNullOrWhiteSpace(normalized) ? GetDefaultScriptDirectory() : normalized;
+    }
+
+    private static string NormalizePortHaggleMode(string? haggleMode)
+    {
+        string normalized = TWXProxy.Core.NativeHaggleModes.Normalize(haggleMode);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? TWXProxy.Core.NativeHaggleModes.Default
+            : normalized;
+    }
+
+    private static string NormalizePlanetHaggleMode(string? haggleMode)
+    {
+        string normalized = TWXProxy.Core.NativeHaggleModes.Normalize(haggleMode);
+        return string.IsNullOrWhiteSpace(normalized)
+            ? TWXProxy.Core.NativeHaggleModes.DefaultPlanet
+            : normalized;
+    }
+
+    private static string NormalizeStoredPortHaggleMode(string? haggleMode) =>
+        string.IsNullOrWhiteSpace(haggleMode) ? string.Empty : NormalizePortHaggleMode(haggleMode);
+
+    private static string NormalizeStoredPlanetHaggleMode(string? haggleMode) =>
+        string.IsNullOrWhiteSpace(haggleMode) ? string.Empty : NormalizePlanetHaggleMode(haggleMode);
+
+    private static void ApplyDefaults(GameConfig config, string? registryScriptsDirectory)
+    {
+        config.ScriptDirectory = ResolveEffectiveScriptDirectory(registryScriptsDirectory);
 
         if (string.IsNullOrWhiteSpace(config.LoginScript))
         {
@@ -65,13 +117,13 @@ public class GameConfigService : IGameConfigService
     // Registry helpers (gameconfigs.json stores List<string> of file paths)
     // -------------------------------------------------------------------------
 
-    private async Task<List<string>> LoadRegistryAsync()
+    private async Task<GameRegistry> LoadRegistryAsync()
     {
         if (!File.Exists(_registryFile))
         {
             if (File.Exists(AppPaths.LegacyGameConfigFile))
                 return await MigrateLegacyRegistryAsync(AppPaths.LegacyGameConfigFile);
-            return new List<string>();
+            return new GameRegistry();
         }
 
         try
@@ -79,31 +131,52 @@ public class GameConfigService : IGameConfigService
             var json = await File.ReadAllTextAsync(_registryFile);
             var trimmed = json.AsSpan().TrimStart();
 
+            if (trimmed.Length == 0)
+                return new GameRegistry();
+
             // New format: ["path1","path2"]  — first non-bracket char is '"'
             // Old format: [{...}]            — first non-bracket char is '{'
-            if (trimmed.Length >= 2 && trimmed[1] == '{')
+            if (trimmed[0] == '[')
             {
-                // Migrate from old single-file format
-                var oldConfigs = System.Text.Json.JsonSerializer.Deserialize(
-                    json, GameConfigJsonContext.Default.ListGameConfig);
-                if (oldConfigs != null)
-                    return await MigrateOldConfigsAsync(oldConfigs);
-                return new List<string>();
+                if (trimmed.Length >= 2 && trimmed[1] == '{')
+                {
+                    // Migrate from old single-file format
+                    var oldConfigs = System.Text.Json.JsonSerializer.Deserialize(
+                        json, GameConfigJsonContext.Default.ListGameConfig);
+                    if (oldConfigs != null)
+                        return await MigrateOldConfigsAsync(oldConfigs);
+                    return new GameRegistry();
+                }
+
+                return new GameRegistry
+                {
+                    Games = System.Text.Json.JsonSerializer.Deserialize(
+                        json, GameConfigJsonContext.Default.ListString) ?? new List<string>()
+                };
             }
 
-            return System.Text.Json.JsonSerializer.Deserialize(
-                json, GameConfigJsonContext.Default.ListString) ?? new List<string>();
+            var registry = System.Text.Json.JsonSerializer.Deserialize(
+                json, GameConfigJsonContext.Default.GameRegistry) ?? new GameRegistry();
+            registry.Games ??= new List<string>();
+            registry.ScriptsDirectory = NormalizeScriptDirectory(registry.ScriptsDirectory);
+            registry.PortHaggleMode = NormalizeStoredPortHaggleMode(registry.PortHaggleMode);
+            registry.PlanetHaggleMode = NormalizeStoredPlanetHaggleMode(registry.PlanetHaggleMode);
+            return registry;
         }
         catch
         {
-            return new List<string>();
+            return new GameRegistry();
         }
     }
 
-    private async Task SaveRegistryAsync(List<string> paths)
+    private async Task SaveRegistryAsync(GameRegistry registry)
     {
+        registry.Games ??= new List<string>();
+        registry.ScriptsDirectory = NormalizeScriptDirectory(registry.ScriptsDirectory);
+        registry.PortHaggleMode = NormalizeStoredPortHaggleMode(registry.PortHaggleMode);
+        registry.PlanetHaggleMode = NormalizeStoredPlanetHaggleMode(registry.PlanetHaggleMode);
         var json = System.Text.Json.JsonSerializer.Serialize(
-            paths, GameConfigJsonContext.Default.ListString);
+            registry, GameConfigJsonContext.Default.GameRegistry);
         await File.WriteAllTextAsync(_registryFile, json);
     }
 
@@ -111,46 +184,60 @@ public class GameConfigService : IGameConfigService
     /// One-time migration: write each old GameConfig to its own GAMENAME.json
     /// and return the resulting list of file paths.
     /// </summary>
-    private async Task<List<string>> MigrateOldConfigsAsync(List<GameConfig> oldConfigs)
+    private async Task<GameRegistry> MigrateOldConfigsAsync(List<GameConfig> oldConfigs)
     {
-        var paths = new List<string>();
+        var registry = new GameRegistry();
         foreach (var config in oldConfigs)
         {
-            ApplyDefaults(config);
+            if (string.IsNullOrWhiteSpace(registry.ScriptsDirectory) && !string.IsNullOrWhiteSpace(config.ScriptDirectory))
+                registry.ScriptsDirectory = NormalizeScriptDirectory(config.ScriptDirectory);
+            if (string.IsNullOrWhiteSpace(registry.PortHaggleMode) && !string.IsNullOrWhiteSpace(config.NativeHaggleMode))
+                registry.PortHaggleMode = NormalizePortHaggleMode(config.NativeHaggleMode);
+
+            ApplyDefaults(config, registry.ScriptsDirectory);
             if (string.IsNullOrEmpty(config.GameDataFilePath))
                 config.GameDataFilePath = AppPaths.GameDataFileFor(config.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
+            string? runtimeScriptDirectory = config.ScriptDirectory;
+            string? runtimeNativeHaggleMode = config.NativeHaggleMode;
+            config.ScriptDirectory = null;
+            config.NativeHaggleMode = null;
             var json = System.Text.Json.JsonSerializer.Serialize(
                 config, GameConfigJsonContext.Default.GameConfig);
+            config.ScriptDirectory = runtimeScriptDirectory;
+            config.NativeHaggleMode = runtimeNativeHaggleMode;
             await File.WriteAllTextAsync(config.GameDataFilePath, json);
-            paths.Add(config.GameDataFilePath);
+            registry.Games.Add(config.GameDataFilePath);
         }
 
-        await SaveRegistryAsync(paths);
-        return paths;
+        await SaveRegistryAsync(registry);
+        return registry;
     }
 
-    private async Task<List<string>> MigrateLegacyRegistryAsync(string legacyRegistryFile)
+    private async Task<GameRegistry> MigrateLegacyRegistryAsync(string legacyRegistryFile)
     {
         try
         {
             var json = await File.ReadAllTextAsync(legacyRegistryFile);
             var trimmed = json.AsSpan().TrimStart();
 
-            if (trimmed.Length >= 2 && trimmed[1] == '{')
+            if (trimmed.Length == 0)
+                return new GameRegistry();
+
+            if (trimmed[0] == '[' && trimmed.Length >= 2 && trimmed[1] == '{')
             {
                 var oldConfigs = System.Text.Json.JsonSerializer.Deserialize(
                     json, GameConfigJsonContext.Default.ListGameConfig);
                 if (oldConfigs != null)
                     return await MigrateOldConfigsAsync(oldConfigs);
-                return new List<string>();
+                return new GameRegistry();
             }
 
             var oldPaths = System.Text.Json.JsonSerializer.Deserialize(
                 json, GameConfigJsonContext.Default.ListString) ?? new List<string>();
 
-            var migratedPaths = new List<string>();
+            var registry = new GameRegistry();
             foreach (string oldPath in oldPaths)
             {
                 if (!File.Exists(oldPath))
@@ -160,21 +247,32 @@ public class GameConfigService : IGameConfigService
                 if (config == null)
                     continue;
 
-                ApplyDefaults(config);
+                if (string.IsNullOrWhiteSpace(registry.ScriptsDirectory) && !string.IsNullOrWhiteSpace(config.ScriptDirectory))
+                    registry.ScriptsDirectory = NormalizeScriptDirectory(config.ScriptDirectory);
+                if (string.IsNullOrWhiteSpace(registry.PortHaggleMode) && !string.IsNullOrWhiteSpace(config.NativeHaggleMode))
+                    registry.PortHaggleMode = NormalizePortHaggleMode(config.NativeHaggleMode);
+
+                ApplyDefaults(config, registry.ScriptsDirectory);
                 config.GameDataFilePath = AppPaths.GameDataFileFor(config.Name);
                 Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
+                string? runtimeScriptDirectory = config.ScriptDirectory;
+                string? runtimeNativeHaggleMode = config.NativeHaggleMode;
+                config.ScriptDirectory = null;
+                config.NativeHaggleMode = null;
                 var gameJson = System.Text.Json.JsonSerializer.Serialize(
                     config, GameConfigJsonContext.Default.GameConfig);
+                config.ScriptDirectory = runtimeScriptDirectory;
+                config.NativeHaggleMode = runtimeNativeHaggleMode;
                 await File.WriteAllTextAsync(config.GameDataFilePath, gameJson);
-                migratedPaths.Add(config.GameDataFilePath);
+                registry.Games.Add(config.GameDataFilePath);
             }
 
-            await SaveRegistryAsync(migratedPaths);
-            return migratedPaths;
+            await SaveRegistryAsync(registry);
+            return registry;
         }
         catch
         {
-            return new List<string>();
+            return new GameRegistry();
         }
     }
 
@@ -205,7 +303,7 @@ public class GameConfigService : IGameConfigService
         var registry = await LoadRegistryAsync();
         var configs = new ObservableCollection<GameConfig>();
 
-        foreach (var filePath in registry)
+        foreach (var filePath in registry.Games)
         {
             if (!File.Exists(filePath))
                 continue;
@@ -214,7 +312,7 @@ public class GameConfigService : IGameConfigService
             if (config == null)
                 continue;
 
-            ApplyDefaults(config);
+            ApplyDefaults(config, registry.ScriptsDirectory);
             config.GameDataFilePath = filePath;
             configs.Add(config);
         }
@@ -224,7 +322,28 @@ public class GameConfigService : IGameConfigService
 
     public async Task SaveConfigAsync(GameConfig config)
     {
-        ApplyDefaults(config);
+        var registry = await LoadRegistryAsync();
+        string requestedScriptDirectory = NormalizeScriptDirectory(config.ScriptDirectory);
+        string currentRegistryScriptDirectory = NormalizeScriptDirectory(registry.ScriptsDirectory);
+        bool registryChanged = !string.Equals(
+            requestedScriptDirectory,
+            currentRegistryScriptDirectory,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (registryChanged)
+            registry.ScriptsDirectory = requestedScriptDirectory;
+
+        if (!string.IsNullOrWhiteSpace(config.NativeHaggleMode))
+        {
+            string normalizedPortHaggleMode = NormalizePortHaggleMode(config.NativeHaggleMode);
+            if (!string.Equals(registry.PortHaggleMode, normalizedPortHaggleMode, StringComparison.OrdinalIgnoreCase))
+            {
+                registry.PortHaggleMode = normalizedPortHaggleMode;
+                registryChanged = true;
+            }
+        }
+
+        ApplyDefaults(config, registry.ScriptsDirectory);
 
         // Determine the file path for this game's data file.
         if (string.IsNullOrEmpty(config.GameDataFilePath))
@@ -232,16 +351,27 @@ public class GameConfigService : IGameConfigService
 
         // Write the game data file (config + variables).
         Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
+        string? runtimeScriptDirectory = config.ScriptDirectory;
+        string? runtimeNativeHaggleMode = config.NativeHaggleMode;
+        config.ScriptDirectory = null;
+        config.NativeHaggleMode = null;
         var json = System.Text.Json.JsonSerializer.Serialize(
             config, GameConfigJsonContext.Default.GameConfig);
+        config.ScriptDirectory = runtimeScriptDirectory;
+        config.NativeHaggleMode = runtimeNativeHaggleMode;
         await File.WriteAllTextAsync(config.GameDataFilePath, json);
 
         // Register the file path if not already tracked.
-        var registry = await LoadRegistryAsync();
-        if (!registry.Contains(config.GameDataFilePath))
+        if (!registry.Games.Contains(config.GameDataFilePath))
         {
-            registry.Add(config.GameDataFilePath);
+            registry.Games.Add(config.GameDataFilePath);
+            registryChanged = true;
+        }
+
+        if (registryChanged)
+        {
             await SaveRegistryAsync(registry);
+            ScriptsDirectoryChanged?.Invoke(this, ResolveEffectiveScriptDirectory(registry.ScriptsDirectory));
         }
     }
 
@@ -254,7 +384,7 @@ public class GameConfigService : IGameConfigService
             return;
 
         var registry = await LoadRegistryAsync();
-        registry.Remove(config.GameDataFilePath);
+        registry.Games.Remove(config.GameDataFilePath);
         await SaveRegistryAsync(registry);
     }
 
@@ -267,10 +397,68 @@ public class GameConfigService : IGameConfigService
 
     public async Task<GameConfig?> GetConfigAsync(string configId)
     {
+        var registry = await LoadRegistryAsync();
         var configs = await LoadConfigsAsync();
         var config = configs.FirstOrDefault(c => c.Id == configId);
         if (config != null)
-            ApplyDefaults(config);
+            ApplyDefaults(config, registry.ScriptsDirectory);
         return config;
+    }
+
+    public async Task<string> GetScriptsDirectoryAsync()
+    {
+        var registry = await LoadRegistryAsync();
+        return ResolveEffectiveScriptDirectory(registry.ScriptsDirectory);
+    }
+
+    public async Task SetScriptsDirectoryAsync(string scriptDirectory)
+    {
+        var registry = await LoadRegistryAsync();
+        string normalized = NormalizeScriptDirectory(scriptDirectory);
+        if (string.Equals(
+                normalized,
+                NormalizeScriptDirectory(registry.ScriptsDirectory),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        registry.ScriptsDirectory = normalized;
+        await SaveRegistryAsync(registry);
+        ScriptsDirectoryChanged?.Invoke(this, ResolveEffectiveScriptDirectory(registry.ScriptsDirectory));
+    }
+
+    public async Task<string> GetPortHaggleModeAsync()
+    {
+        var registry = await LoadRegistryAsync();
+        return NormalizeStoredPortHaggleMode(registry.PortHaggleMode);
+    }
+
+    public async Task SetPortHaggleModeAsync(string haggleMode)
+    {
+        var registry = await LoadRegistryAsync();
+        string normalized = NormalizePortHaggleMode(haggleMode);
+        if (string.Equals(normalized, registry.PortHaggleMode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        registry.PortHaggleMode = normalized;
+        await SaveRegistryAsync(registry);
+    }
+
+    public async Task<string> GetPlanetHaggleModeAsync()
+    {
+        var registry = await LoadRegistryAsync();
+        return NormalizeStoredPlanetHaggleMode(registry.PlanetHaggleMode);
+    }
+
+    public async Task SetPlanetHaggleModeAsync(string haggleMode)
+    {
+        var registry = await LoadRegistryAsync();
+        string normalized = NormalizePlanetHaggleMode(haggleMode);
+        if (string.Equals(normalized, registry.PlanetHaggleMode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        registry.PlanetHaggleMode = normalized;
+        await SaveRegistryAsync(registry);
     }
 }

@@ -12,6 +12,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using Core = TWXProxy.Core;
 
@@ -59,9 +60,16 @@ public class MainWindow : Window
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
     private Menu            _menuBar       = new();
+    private readonly MenuItem _viewClassicSkin = new() { Header = "_Classic Console" };
+    private readonly MenuItem _viewCommandDeckSkin = new() { Header = "_Command Deck" };
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
     private readonly MTC.mbot.mbotService _mbot = new();
+    private readonly Border _shellHost = new();
+    private readonly Border _statusBar = new();
+    private DockPanel? _rootDock;
+    private TacticalMapControl? _tacticalMap;
+    private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
     private bool _nativeDockMenuAttached;
@@ -117,6 +125,14 @@ public class MainWindow : Window
 
     // ── Status bar text ───────────────────────────────────────────────────
     private TextBlock _statusText = new();
+    private TextBlock _hudHeaderSector = new();
+    private TextBlock _hudHeaderConnection = new();
+    private TextBlock _hudShipName = new();
+    private TextBlock _hudShipSubtitle = new();
+    private TextBlock _hudStarDock = new();
+    private TextBlock _hudRylos = new();
+    private TextBlock _hudAlpha = new();
+    private TextBlock _hudUniverse = new();
 
     // ── Colors ────────────────────────────────────────────────────────────
     // BgChrome is the medium-gray frame that encases the whole window
@@ -134,6 +150,24 @@ public class MainWindow : Window
     private static readonly IBrush ScannerActive  = new SolidColorBrush(Color.FromRgb(85,  255, 85));
     private static readonly IBrush ScannerInactive= new SolidColorBrush(Color.FromRgb(50,  50,  50));
     private static readonly IBrush ScannerFgInact = new SolidColorBrush(Color.FromRgb(130, 130, 130));
+    private static readonly IBrush HudWindow    = new SolidColorBrush(Color.FromRgb(8,  14, 20));
+    private static readonly IBrush HudMenu      = new SolidColorBrush(Color.FromRgb(16, 27, 36));
+    private static readonly IBrush HudShell     = new SolidColorBrush(Color.FromRgb(10,  21, 29));
+    private static readonly IBrush HudFrame     = new SolidColorBrush(Color.FromRgb(14,  33, 42));
+    private static readonly IBrush HudFrameAlt  = new SolidColorBrush(Color.FromRgb(18,  43, 53));
+    private static readonly IBrush HudHeader    = new SolidColorBrush(Color.FromRgb(16,  53, 67));
+    private static readonly IBrush HudHeaderAlt = new SolidColorBrush(Color.FromRgb(20,  64, 74));
+    private static readonly IBrush HudText      = new SolidColorBrush(Color.FromRgb(222, 238, 242));
+    private static readonly IBrush HudMuted     = new SolidColorBrush(Color.FromRgb(126, 170, 180));
+    private static readonly IBrush HudEdge      = new SolidColorBrush(Color.FromRgb(57, 112, 128));
+    private static readonly IBrush HudInnerEdge = new SolidColorBrush(Color.FromRgb(23,  81, 94));
+    private static readonly IBrush HudAccent    = new SolidColorBrush(Color.FromRgb(0,   212, 201));
+    private static readonly IBrush HudAccentHot = new SolidColorBrush(Color.FromRgb(255, 193, 74));
+    private static readonly IBrush HudAccentOk  = new SolidColorBrush(Color.FromRgb(118, 255, 141));
+    private static readonly IBrush HudAccentWarn= new SolidColorBrush(Color.FromRgb(255, 112, 112));
+    private static readonly IBrush HudStatus    = new SolidColorBrush(Color.FromRgb(11,  20, 28));
+    private static readonly FontFamily HudTitleFont = new("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif");
+    private static readonly Bitmap HudLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
 
     // ── Constructor ────────────────────────────────────────────────────────
     public MainWindow()
@@ -196,11 +230,14 @@ public class MainWindow : Window
             RouteTerminalInput(bytes, SendToTelnet);
         };
 
+        // Load persisted preferences (recent file list etc.) before the first shell build
+        // so we don't compose the visual tree twice on startup.
+        _appPrefs = AppPreferences.Load();
+        _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
+
         _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
         Content = BuildLayout();
 
-        // Load persisted preferences (recent file list etc.)
-        _appPrefs = AppPreferences.Load();
         ApplyDebugLoggingPreferences();
         RebuildRecentMenu();
         RebuildProxyMenu();
@@ -247,8 +284,9 @@ public class MainWindow : Window
 
     private Control BuildLayout()
     {
-        // Root: DockPanel – menu top, status bottom, content fill
+        // Root: DockPanel – menu top, status bottom, swappable shell in the middle.
         var dock = new DockPanel { Background = BgWindow };
+        _rootDock = dock;
 
         // ── Menu ──────────────────────────────────────────────────────────
         _menuBar = BuildMenuBar();
@@ -262,23 +300,31 @@ public class MainWindow : Window
         _statusText.Margin             = new Thickness(8, 0);
         _statusText.FontSize           = 13;
 
-        var statusBar = new Border
-        {
-            Background = BgStatus,
-            Height     = 26,
-            Child      = _statusText,
-        };
-        DockPanel.SetDock(statusBar, Dock.Bottom);
-        dock.Children.Add(statusBar);
+        _statusBar.Background = BgStatus;
+        _statusBar.Height = 26;
+        _statusBar.Child = _statusText;
+        DockPanel.SetDock(_statusBar, Dock.Bottom);
+        dock.Children.Add(_statusBar);
 
-        // ── Centre: sidebar + terminal ────────────────────────────────────
+        _shellHost.Background = Brushes.Transparent;
+        _shellHost.Padding = new Thickness(6, 4, 6, 4);
+        dock.Children.Add(_shellHost);
+
+        ApplySelectedSkin();
+        return dock;
+    }
+
+    private Control BuildClassicShell()
+    {
+        _tacticalMap = null;
+
         // Margin lets the gray BgChrome peek in on all four sides as a frame.
-        var grid = new Grid { Margin = new Thickness(6, 4, 6, 4) };
+        var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });   // gap
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var sidebar  = BuildSidebar();
+        var sidebar = BuildSidebar();
         Grid.SetColumn(sidebar, 0);
         grid.Children.Add(sidebar);
 
@@ -286,8 +332,712 @@ public class MainWindow : Window
         Grid.SetColumn(termArea, 2);
         grid.Children.Add(termArea);
 
-        dock.Children.Add(grid);
-        return dock;
+        return grid;
+    }
+
+    private Control BuildCommandDeckShell()
+    {
+        _tacticalMap = new TacticalMapControl(
+            () => _state.Sector,
+            () => _sessionDb)
+        {
+            MinHeight = 280,
+        };
+
+        var rootGrid = new Grid();
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        rootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var banner = BuildDeckBanner();
+        Grid.SetRow(banner, 0);
+        rootGrid.Children.Add(banner);
+
+        var body = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.45, GridUnitType.Star) });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.0, GridUnitType.Star) });
+
+        var top = new Grid();
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.05, GridUnitType.Star) });
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.18, GridUnitType.Star) });
+        Grid.SetRow(top, 0);
+        body.Children.Add(top);
+
+        var mapFrame = BuildHudFrame("TACTICAL OVERLAY", BuildDeckMapBody(), "LIVE");
+        Grid.SetColumn(mapFrame, 0);
+        top.Children.Add(mapFrame);
+
+        var consoleFrame = BuildHudFrame("GAMEPLAY CONSOLE", BuildDeckTerminalBody(), "ANSI");
+        Grid.SetColumn(consoleFrame, 2);
+        top.Children.Add(consoleFrame);
+
+        var bottom = new Grid { Margin = new Thickness(0, 12, 0, 0) };
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
+        Grid.SetRow(bottom, 1);
+        body.Children.Add(bottom);
+
+        var shipFrame = BuildHudFrame("SHIP BAY", BuildDeckShipPanel(), "SYSTEMS");
+        Grid.SetColumn(shipFrame, 0);
+        bottom.Children.Add(shipFrame);
+
+        var intelFrame = BuildHudFrame("COMMAND MATRIX", BuildDeckCenterPanels(), "INTEL");
+        Grid.SetColumn(intelFrame, 2);
+        bottom.Children.Add(intelFrame);
+
+        var logoFrame = BuildHudFrame("AUXILIARY PANEL", BuildLogoPanel(), "STANDBY");
+        Grid.SetColumn(logoFrame, 4);
+        bottom.Children.Add(logoFrame);
+
+        Grid.SetRow(body, 1);
+        rootGrid.Children.Add(body);
+
+        return new Border
+        {
+            Background = HudShell,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(22),
+            Padding = new Thickness(16),
+            Child = rootGrid,
+        };
+    }
+
+    private Control BuildDeckBanner()
+    {
+        _hudHeaderSector.FontFamily = HudTitleFont;
+        _hudHeaderSector.FontSize = 22;
+        _hudHeaderSector.FontWeight = FontWeight.SemiBold;
+        _hudHeaderSector.Foreground = HudAccentHot;
+        _hudHeaderSector.Text = "SECTOR ---";
+
+        var bannerGrid = new Grid();
+        bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        bannerGrid.Children.Add(new StackPanel
+        {
+            Spacing = 2,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Mayhem Tradewars Console",
+                    FontFamily = HudTitleFont,
+                    FontSize = 28,
+                    FontWeight = FontWeight.Bold,
+                    Foreground = HudAccent,
+                },
+                new TextBlock
+                {
+                    Text = "Command deck skin with split tactical map, console feed, and framed ship telemetry.",
+                    Foreground = HudMuted,
+                    FontSize = 13,
+                },
+            },
+        });
+
+        var chips = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                BuildDeckInfoChip("Sector", _hudHeaderSector, HudAccentHot),
+                BuildDeckInfoChip("Link", _hudHeaderConnection, HudAccent),
+            },
+        };
+        Grid.SetColumn(chips, 1);
+        bannerGrid.Children.Add(chips);
+
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(18, 14),
+            Child = bannerGrid,
+        };
+    }
+
+    private Control BuildDeckMapBody()
+    {
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        grid.Children.Add(BuildDeckInfoChip("Mode", new TextBlock { Text = "Live overlay" }, HudAccentHot));
+
+        var mapBorder = new Border
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            ClipToBounds = true,
+            Child = _tacticalMap!,
+        };
+        Grid.SetRow(mapBorder, 1);
+        grid.Children.Add(mapBorder);
+
+        return grid;
+    }
+
+    private Control BuildDeckTerminalBody()
+    {
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        grid.Children.Add(BuildDeckInfoChip("Mode", new TextBlock { Text = "Gameplay feed" }, HudAccent));
+
+        var terminalBorder = new Border
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            Background = Brushes.Black,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(6),
+            Child = new Border
+            {
+                Background = Brushes.Black,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(24, 54, 66)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Child = _termCtrl,
+            },
+        };
+        Grid.SetRow(terminalBorder, 1);
+        grid.Children.Add(terminalBorder);
+
+        return grid;
+    }
+
+    private Control BuildDeckShipPanel()
+    {
+        _hudShipName.FontFamily = HudTitleFont;
+        _hudShipName.FontSize = 22;
+        _hudShipName.FontWeight = FontWeight.Bold;
+        _hudShipName.Foreground = HudAccentOk;
+        _hudShipName.Text = "-";
+
+        _hudShipSubtitle.Foreground = HudMuted;
+        _hudShipSubtitle.FontSize = 12;
+        _hudShipSubtitle.Text = "Independent captain";
+
+        var badgeGrid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
+        badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var fightersBadge = BuildDeckStatBadge("FTR", _valFighters, HudAccentOk);
+        Grid.SetColumn(fightersBadge, 0);
+        badgeGrid.Children.Add(fightersBadge);
+
+        var shieldsBadge = BuildDeckStatBadge("SHD", _valShields, HudAccent);
+        Grid.SetColumn(shieldsBadge, 2);
+        badgeGrid.Children.Add(shieldsBadge);
+
+        var holdsBadge = BuildDeckStatBadge("HLD", _valHTotal, HudAccentHot);
+        Grid.SetColumn(holdsBadge, 4);
+        badgeGrid.Children.Add(holdsBadge);
+
+        var devices = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemWidth = 88,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
+        devices.Children.Add(BuildDeckDeviceChip("ETH", _valEther, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("BEA", _valBeacon, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("DIS", _valDisruptor, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("PHO", _valPhoton, HudAccentHot));
+        devices.Children.Add(BuildDeckDeviceChip("ARM", _valArmid, HudAccentWarn));
+        devices.Children.Add(BuildDeckDeviceChip("LIM", _valLimpet, HudAccentWarn));
+        devices.Children.Add(BuildDeckDeviceChip("GEN", _valGenesis, HudAccentOk));
+        devices.Children.Add(BuildDeckDeviceChip("ATO", _valAtomic, HudAccentHot));
+        devices.Children.Add(BuildDeckDeviceChip("COR", _valCorbo, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("CLK", _valCloak, HudAccentOk));
+        devices.Children.Add(BuildDeckDeviceChip("TW1", _valTW1, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("TW2", _valTW2, HudAccent));
+
+        var hero = new Grid();
+        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });
+        hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        hero.Children.Add(new Border
+        {
+            Width = 58,
+            Height = 58,
+            CornerRadius = new CornerRadius(29),
+            Background = HudHeader,
+            BorderBrush = HudAccent,
+            BorderThickness = new Thickness(1.5),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = new TextBlock
+            {
+                Text = "MTC",
+                FontFamily = HudTitleFont,
+                FontWeight = FontWeight.Bold,
+                FontSize = 18,
+                Foreground = HudText,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        });
+        var shipIdentity = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 2,
+            Children = { _hudShipName, _hudShipSubtitle },
+        };
+        Grid.SetColumn(shipIdentity, 1);
+        hero.Children.Add(shipIdentity);
+
+        var content = new StackPanel
+        {
+            Spacing = 12,
+            Children =
+            {
+                hero,
+                badgeGrid,
+                BuildDeckSection("Cargo Grid", new StackPanel
+                {
+                    Spacing = 6,
+                    Children =
+                    {
+                        BuildDeckMetricRow("Fuel Ore", _valFuelOre),
+                        BuildDeckMetricRow("Organics", _valOrganics),
+                        BuildDeckMetricRow("Equipment", _valEquipment),
+                        BuildDeckMetricRow("Colonists", _valColonists),
+                        BuildDeckMetricRow("Empty", _valEmpty),
+                    },
+                }),
+                BuildDeckSection("Device Rack", devices),
+                BuildDeckSection("Aux Systems", new StackPanel
+                {
+                    Spacing = 4,
+                    Children =
+                    {
+                        BuildScannerRow(),
+                        BuildHaggleRow(),
+                    },
+                }),
+            },
+        };
+
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = content,
+        };
+    }
+
+    private Control BuildDeckCenterPanels()
+    {
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(12) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var commander = BuildDeckMetricCard(
+            "Commander Link",
+            ("Pilot", _valName),
+            ("Sector", _valSector),
+            ("Turns", _valTurns));
+        Grid.SetRow(commander, 0);
+        Grid.SetColumn(commander, 0);
+        grid.Children.Add(commander);
+
+        var economy = BuildDeckMetricCard(
+            "Economy",
+            ("Credits", _valCred),
+            ("Experience", _valExper),
+            ("Alignment", _valAlignm));
+        Grid.SetRow(economy, 0);
+        Grid.SetColumn(economy, 2);
+        grid.Children.Add(economy);
+
+        var routes = BuildDeckMetricCard(
+            "Route Markers",
+            ("StarDock", _hudStarDock),
+            ("Rylos", _hudRylos),
+            ("Alpha", _hudAlpha),
+            ("Universe", _hudUniverse));
+        Grid.SetRow(routes, 2);
+        Grid.SetColumn(routes, 0);
+        grid.Children.Add(routes);
+
+        var drives = BuildDeckMetricCard(
+            "Drive Core",
+            ("Turns/Warp", _valTrnWarp),
+            ("TW-I", _valTW1),
+            ("TW-II", _valTW2));
+        Grid.SetRow(drives, 2);
+        Grid.SetColumn(drives, 2);
+        grid.Children.Add(drives);
+
+        return grid;
+    }
+
+    private Control BuildLogoPanel()
+    {
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var logoWell = new Border
+        {
+            Background = HudFrameAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(16),
+            Padding = new Thickness(18),
+            Child = new Grid
+            {
+                Children =
+                {
+                    new Border
+                    {
+                        Margin = new Thickness(12),
+                        CornerRadius = new CornerRadius(18),
+                        BorderBrush = HudAccent,
+                        BorderThickness = new Thickness(1),
+                    },
+                    new Image
+                    {
+                        Source = HudLogo,
+                        Stretch = Stretch.Uniform,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Opacity = 0.92,
+                    },
+                },
+            },
+        };
+        grid.Children.Add(logoWell);
+
+        var caption = new TextBlock
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            Text = "Default auxiliary frame. Good home for corp intel, bot telemetry, or message traffic.",
+            Foreground = HudMuted,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+        };
+        Grid.SetRow(caption, 1);
+        grid.Children.Add(caption);
+
+        return grid;
+    }
+
+    private Control BuildHudFrame(string title, Control body, string tag)
+    {
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerGrid.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontFamily = HudTitleFont,
+            FontSize = 17,
+            FontWeight = FontWeight.Bold,
+            Foreground = HudAccent,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var tagBorder = new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(10, 4),
+            Child = new TextBlock
+            {
+                Text = tag,
+                Foreground = HudMuted,
+                FontSize = 11,
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+        Grid.SetColumn(tagBorder, 1);
+        headerGrid.Children.Add(tagBorder);
+
+        var frameGrid = new Grid();
+        frameGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        frameGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        frameGrid.Children.Add(new Border
+        {
+            Background = HudHeader,
+            CornerRadius = new CornerRadius(14, 14, 0, 0),
+            Padding = new Thickness(14, 10),
+            Child = headerGrid,
+        });
+
+        var bodyBorder = new Border
+        {
+            Padding = new Thickness(14),
+            Child = body,
+        };
+        Grid.SetRow(bodyBorder, 1);
+        frameGrid.Children.Add(bodyBorder);
+
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = frameGrid,
+            },
+        };
+    }
+
+    private Control BuildDeckInfoChip(string label, Control valueControl, IBrush accent)
+    {
+        if (valueControl is TextBlock valueText)
+        {
+            valueText.Foreground = HudText;
+            valueText.FontFamily = HudTitleFont;
+            valueText.FontSize = 15;
+            valueText.FontWeight = FontWeight.SemiBold;
+            valueText.VerticalAlignment = VerticalAlignment.Center;
+        }
+
+        return new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
+            Padding = new Thickness(10, 6),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = label.ToUpperInvariant(),
+                        Foreground = HudMuted,
+                        FontSize = 11,
+                        FontWeight = FontWeight.SemiBold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    valueControl,
+                },
+            },
+        };
+    }
+
+    private Control BuildDeckStatBadge(string label, TextBlock value, IBrush accent)
+    {
+        value.Foreground = accent;
+        value.FontFamily = HudTitleFont;
+        value.FontSize = 24;
+        value.FontWeight = FontWeight.Bold;
+        value.TextAlignment = TextAlignment.Right;
+        value.Text = "0";
+
+        return new Border
+        {
+            Background = HudFrameAlt,
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(10, 8),
+            Child = new StackPanel
+            {
+                Spacing = 2,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = label,
+                        Foreground = HudMuted,
+                        FontSize = 11,
+                        FontWeight = FontWeight.SemiBold,
+                    },
+                    value,
+                },
+            },
+        };
+    }
+
+    private Control BuildDeckDeviceChip(string label, TextBlock value, IBrush accent)
+    {
+        value.Foreground = HudText;
+        value.FontSize = 18;
+        value.FontWeight = FontWeight.Bold;
+        value.TextAlignment = TextAlignment.Right;
+        value.Text = "0";
+
+        var chipGrid = new Grid();
+        chipGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        chipGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        chipGrid.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = HudMuted,
+            FontSize = 10,
+            FontWeight = FontWeight.SemiBold,
+        });
+        var valueHost = new ContentControl { Content = value };
+        Grid.SetRow(valueHost, 1);
+        chipGrid.Children.Add(valueHost);
+
+        return new Border
+        {
+            Margin = new Thickness(0, 0, 8, 8),
+            Background = HudHeaderAlt,
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(11),
+            Padding = new Thickness(8, 6),
+            Child = chipGrid,
+        };
+    }
+
+    private Control BuildDeckSection(string title, Control content)
+    {
+        return new StackPanel
+        {
+            Spacing = 8,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = title,
+                    FontFamily = HudTitleFont,
+                    FontSize = 14,
+                    FontWeight = FontWeight.SemiBold,
+                    Foreground = HudAccent,
+                },
+                content,
+            },
+        };
+    }
+
+    private Control BuildDeckMetricCard(string title, params (string Label, TextBlock Value)[] rows)
+    {
+        var stack = new StackPanel { Spacing = 8 };
+        foreach ((string label, TextBlock value) in rows)
+            stack.Children.Add(BuildDeckMetricRow(label, value));
+
+        return new Border
+        {
+            Background = HudFrameAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(12),
+            Child = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = title,
+                        FontFamily = HudTitleFont,
+                        FontSize = 14,
+                        FontWeight = FontWeight.SemiBold,
+                        Foreground = HudAccent,
+                    },
+                    stack,
+                },
+            },
+        };
+    }
+
+    private Control BuildDeckMetricRow(string label, TextBlock value)
+    {
+        value.Foreground = HudText;
+        value.FontSize = 17;
+        value.FontWeight = FontWeight.SemiBold;
+        value.TextAlignment = TextAlignment.Right;
+        value.MinWidth = 60;
+
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        Grid.SetColumn(value, 1);
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = HudMuted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(value);
+        return row;
+    }
+
+    private void ApplySelectedSkin()
+    {
+        Background = _useCommandDeckSkin ? HudWindow : BgWindow;
+        if (_rootDock != null)
+            _rootDock.Background = _useCommandDeckSkin ? HudWindow : BgWindow;
+
+        _menuBar.Background = _useCommandDeckSkin ? HudMenu : BgSidebar;
+        _menuBar.Foreground = _useCommandDeckSkin ? HudText : FgKey;
+        _statusBar.Background = _useCommandDeckSkin ? HudStatus : BgStatus;
+        _statusText.Foreground = _useCommandDeckSkin ? HudText : FgStatus;
+        _shellHost.Padding = _useCommandDeckSkin
+            ? new Thickness(10, 8, 10, 10)
+            : new Thickness(6, 4, 6, 4);
+        _shellHost.Child = _useCommandDeckSkin
+            ? BuildCommandDeckShell()
+            : BuildClassicShell();
+
+        RefreshSkinMenuState();
+        RefreshInfoPanels();
+    }
+
+    private void SetSkin(bool useCommandDeckSkin)
+    {
+        if (_useCommandDeckSkin == useCommandDeckSkin && _shellHost.Child != null)
+            return;
+
+        _useCommandDeckSkin = useCommandDeckSkin;
+        _appPrefs.CommandDeckSkinEnabled = useCommandDeckSkin;
+        _appPrefs.Save();
+        ApplySelectedSkin();
+    }
+
+    private void RefreshSkinMenuState()
+    {
+        _viewClassicSkin.Icon = _useCommandDeckSkin
+            ? null
+            : new TextBlock { Text = "●", Foreground = HudAccentOk };
+        _viewCommandDeckSkin.Icon = _useCommandDeckSkin
+            ? new TextBlock { Text = "●", Foreground = HudAccentOk }
+            : null;
     }
 
     // ── Menu bar ───────────────────────────────────────────────────────────
@@ -364,10 +1114,18 @@ public class MainWindow : Window
         var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
         viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
 
+        _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
+        _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
+        var skinMenu = new MenuItem
+        {
+            Header = "_Skin",
+            Items = { _viewClassicSkin, _viewCommandDeckSkin },
+        };
+
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewClear, viewFont, viewGameInfoItem, viewDbItem },
+            Items  = { viewClear, viewFont, new Separator(), skinMenu, new Separator(), viewGameInfoItem, viewDbItem },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -793,7 +1551,8 @@ public class MainWindow : Window
 
     private void RefreshInfoPanels()
     {
-        _valName.Text      = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
+        string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
+        _valName.Text      = traderName;
         _valSector.Text    = _state.Sector.ToString();
         _valTurns.Text     = _state.Turns.ToString();
         _valExper.Text     = _state.Experience.ToString("N0");
@@ -830,7 +1589,19 @@ public class MainWindow : Window
         UpdateScanInd(_scanIndH, _state.ScannerH);
         UpdateScanInd(_scanIndP, _state.ScannerP);
 
+        _hudHeaderSector.Text = _state.Sector > 0 ? _state.Sector.ToString("N0") : "---";
+        _hudShipName.Text = string.IsNullOrWhiteSpace(_state.ShipName) || _state.ShipName == "-"
+            ? "Unassigned Hull"
+            : _state.ShipName;
+        string captainText = traderName == "-" ? "Independent captain" : $"Capt. {traderName}";
+        string corpText = _state.Corp > 0 ? $"Corp {_state.Corp}" : "Free trader";
+        if (!string.IsNullOrWhiteSpace(_state.GameName))
+            _hudShipSubtitle.Text = $"{captainText}  //  {corpText}  //  {_state.GameName}";
+        else
+            _hudShipSubtitle.Text = $"{captainText}  //  {corpText}";
+
         RefreshStatusBar();
+        _tacticalMap?.InvalidateVisual();
     }
 
     private void RefreshStatusBar()
@@ -842,14 +1613,16 @@ public class MainWindow : Window
         string starDock = "-";
         string rylos = "-";
         string alpha = "-";
-        bool showHagglePct =
-            _gameInstance?.NativeHaggleEnabled == true &&
-            _appPrefs.DebugLoggingEnabled &&
-            Core.GlobalModules.DebugMode;
         int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
         int haggleGood = _gameInstance?.NativeHaggleGoodCount ?? 0;
         int haggleGreat = _gameInstance?.NativeHaggleGreatCount ?? 0;
         int haggleExcellent = _gameInstance?.NativeHaggleExcellentCount ?? 0;
+        bool showHagglePct =
+            _gameInstance != null &&
+            (_gameInstance.NativeHaggleEnabled ||
+             haggleGood > 0 ||
+             haggleGreat > 0 ||
+             haggleExcellent > 0);
 
         if (_sessionDb != null)
         {
@@ -876,6 +1649,18 @@ public class MainWindow : Window
 
         _statusText.Text =
             $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{mbotText}  {conn}";
+
+        _hudHeaderConnection.Text = _state.Connected
+            ? $"{_state.Host}:{_state.Port}"
+            : "OFFLINE";
+        _hudHeaderConnection.Foreground = _state.Connected ? HudAccentOk : HudAccentWarn;
+        _hudStarDock.Text = starDock;
+        _hudRylos.Text = rylos;
+        _hudAlpha.Text = alpha;
+        int universeCount = _sessionDb?.DBHeader.Sectors > 0
+            ? _sessionDb.DBHeader.Sectors
+            : _state.Sectors;
+        _hudUniverse.Text = universeCount > 0 ? universeCount.ToString("N0") : "-";
     }
 
     // ── Telnet events ──────────────────────────────────────────────────────
@@ -1054,41 +1839,44 @@ public class MainWindow : Window
     {
         await Task.Yield();
 
-        string currentMode = ResolveEmbeddedNativeHaggleMode(_gameInstance?.NativeHaggleMode ?? _embeddedGameConfig?.NativeHaggleMode);
-        _appPrefs.NativeHaggleMode = currentMode;
-        IReadOnlyList<Core.NativeHaggleModeInfo> availableModes =
-            _gameInstance?.NativeHaggleModes ?? DiscoverAvailableNativeHaggleModes();
-        var dialog = new AdvancedProxySettingsDialog(currentMode, availableModes);
+        string currentPortMode = ResolveGlobalPortHaggleMode();
+        string currentPlanetMode = ResolveGlobalPlanetHaggleMode();
+        _appPrefs.PortHaggleMode = currentPortMode;
+        _appPrefs.PlanetHaggleMode = currentPlanetMode;
+        IReadOnlyList<Core.NativeHaggleModeInfo> availablePortModes =
+            _gameInstance?.NativePortHaggleModes ?? DiscoverAvailableNativeHaggleModes(Core.NativeHaggleTradeKind.Port);
+        IReadOnlyList<Core.NativeHaggleModeInfo> availablePlanetModes =
+            _gameInstance?.NativePlanetHaggleModes ?? DiscoverAvailableNativeHaggleModes(Core.NativeHaggleTradeKind.Planet);
+        var dialog = new AdvancedProxySettingsDialog(currentPortMode, currentPlanetMode, availablePortModes, availablePlanetModes);
         bool saved = await dialog.ShowDialog<bool>(this);
         if (!saved)
             return;
 
-        string selectedMode = Core.NativeHaggleModes.Normalize(dialog.SelectedHaggleMode);
-        if (string.Equals(currentMode, selectedMode, StringComparison.OrdinalIgnoreCase))
+        string selectedPortMode = Core.NativeHaggleModes.Normalize(dialog.SelectedPortHaggleMode);
+        string selectedPlanetMode = Core.NativeHaggleModes.Normalize(dialog.SelectedPlanetHaggleMode);
+        if (string.Equals(currentPortMode, selectedPortMode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(currentPlanetMode, selectedPlanetMode, StringComparison.OrdinalIgnoreCase))
             return;
 
-        _appPrefs.NativeHaggleMode = selectedMode;
+        _appPrefs.PortHaggleMode = selectedPortMode;
+        _appPrefs.PlanetHaggleMode = selectedPlanetMode;
         _appPrefs.Save();
 
-        if (_embeddedGameConfig != null)
-        {
-            _embeddedGameConfig.NativeHaggleMode = selectedMode;
-            if (!string.IsNullOrWhiteSpace(_embeddedGameName))
-                await SaveEmbeddedGameConfigAsync(_embeddedGameName, _embeddedGameConfig);
-        }
-
         if (_gameInstance != null)
-            _gameInstance.SetNativeHaggleMode(selectedMode);
+            _gameInstance.SetNativeHaggleModes(selectedPortMode, selectedPlanetMode);
 
-        string selectedLabel = availableModes
-            .FirstOrDefault(info => string.Equals(info.Id, selectedMode, StringComparison.OrdinalIgnoreCase))
-            ?.DisplayName ?? selectedMode;
-        _parser.Feed($"\x1b[1;36m[Native haggle mode: {selectedLabel} ({selectedMode})]\x1b[0m\r\n");
+        string selectedPortLabel = availablePortModes
+            .FirstOrDefault(info => string.Equals(info.Id, selectedPortMode, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName ?? selectedPortMode;
+        string selectedPlanetLabel = availablePlanetModes
+            .FirstOrDefault(info => string.Equals(info.Id, selectedPlanetMode, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName ?? selectedPlanetMode;
+        _parser.Feed($"\x1b[1;36m[Native haggle modes: Port={selectedPortLabel} ({selectedPortMode}), Planet={selectedPlanetLabel} ({selectedPlanetMode})]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildProxyMenu();
     }
 
-    private IReadOnlyList<Core.NativeHaggleModeInfo> DiscoverAvailableNativeHaggleModes()
+    private IReadOnlyList<Core.NativeHaggleModeInfo> DiscoverAvailableNativeHaggleModes(Core.NativeHaggleTradeKind tradeKind)
     {
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
@@ -1098,7 +1886,9 @@ public class MainWindow : Window
             AppPaths.ModulesDir,
             AppPaths.SharedModulesDir,
             Path.Combine(programDir, "modules"),
-        });
+        })
+        .Where(info => info.SupportsTradeKind(tradeKind))
+        .ToList();
     }
 
     // ── Menu actions ───────────────────────────────────────────────────────
@@ -1144,6 +1934,8 @@ public class MainWindow : Window
         if (!saved)
             return;
 
+        await ClearScriptDirectoryFromAllGameConfigsAsync();
+        RefreshRuntimeScriptDirectoryFromPreferences();
         ApplyDebugLoggingPreferences();
         RebuildScriptsMenu();
     }
@@ -1348,12 +2140,101 @@ public class MainWindow : Window
         };
     }
 
-    private string ResolveEmbeddedNativeHaggleMode(string? configuredMode)
-    {
-        if (!string.IsNullOrWhiteSpace(configuredMode))
-            return Core.NativeHaggleModes.Normalize(configuredMode);
+    private string ResolveGlobalPortHaggleMode() => Core.NativeHaggleModes.Normalize(_appPrefs.PortHaggleMode);
 
-        return Core.NativeHaggleModes.Normalize(_appPrefs.NativeHaggleMode);
+    private string ResolveGlobalPlanetHaggleMode()
+    {
+        if (string.IsNullOrWhiteSpace(_appPrefs.PlanetHaggleMode))
+            return Core.NativeHaggleModes.DefaultPlanet;
+
+        string normalized = Core.NativeHaggleModes.Normalize(_appPrefs.PlanetHaggleMode);
+        return string.IsNullOrWhiteSpace(normalized) ? Core.NativeHaggleModes.DefaultPlanet : normalized;
+    }
+
+    private static string NormalizeScriptDirectoryValue(string? scriptDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(scriptDirectory))
+            return string.Empty;
+
+        string trimmed = scriptDirectory.Trim();
+        try
+        {
+            trimmed = Path.GetFullPath(trimmed);
+        }
+        catch
+        {
+            // Keep the original text if it cannot be normalized yet.
+        }
+
+        return trimmed.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private string GetConfiguredScriptsDirectoryValue()
+        => NormalizeScriptDirectoryValue(_appPrefs.ScriptsDirectory);
+
+    private string? ResolvePersistedGameScriptDirectory(string? existingGameScriptDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(GetConfiguredScriptsDirectoryValue()))
+            return null;
+
+        string normalizedExisting = NormalizeScriptDirectoryValue(existingGameScriptDirectory);
+        return string.IsNullOrWhiteSpace(normalizedExisting) ? null : normalizedExisting;
+    }
+
+    private string ResolveEffectiveScriptDirectory(string? gameScriptDirectory = null)
+    {
+        string configuredScriptsDirectory = GetConfiguredScriptsDirectoryValue();
+        if (!string.IsNullOrWhiteSpace(configuredScriptsDirectory))
+            return configuredScriptsDirectory;
+
+        string normalizedGameScriptDirectory = NormalizeScriptDirectoryValue(gameScriptDirectory);
+        if (!string.IsNullOrWhiteSpace(normalizedGameScriptDirectory))
+            return normalizedGameScriptDirectory;
+
+        return NormalizeScriptDirectoryValue(
+            OperatingSystem.IsWindows()
+                ? Core.WindowsInstallInfo.GetDefaultScriptsDirectory()
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+    }
+
+    private bool ClearGameConfigScriptDirectory(EmbeddedGameConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(config.ScriptDirectory))
+        {
+            return false;
+        }
+
+        config.ScriptDirectory = null;
+        return true;
+    }
+
+    private async Task ClearScriptDirectoryFromAllGameConfigsAsync()
+    {
+        if (string.IsNullOrWhiteSpace(GetConfiguredScriptsDirectoryValue()))
+            return;
+
+        if (_embeddedGameConfig != null)
+            ClearGameConfigScriptDirectory(_embeddedGameConfig);
+
+        AppPaths.EnsureTwxproxyGamesDir();
+        foreach (string path in Directory.EnumerateFiles(AppPaths.TwxproxyGamesDir, "*.json"))
+        {
+            EmbeddedGameConfig? config = await TryLoadGameConfigAsync(path);
+            if (config == null || !ClearGameConfigScriptDirectory(config))
+                continue;
+
+            await SaveEmbeddedGameConfigAsync(NormalizeGameName(config.Name), config);
+        }
+    }
+
+    private void RefreshRuntimeScriptDirectoryFromPreferences()
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter != null)
+        {
+            interpreter.ScriptDirectory = ResolveEffectiveScriptDirectory(_embeddedGameConfig?.ScriptDirectory);
+            interpreter.ProgramDir = GetEffectiveProxyProgramDir(interpreter.ScriptDirectory);
+        }
     }
 
     private EmbeddedGameConfig BuildEmbeddedGameConfigFromState(string gameName, EmbeddedGameConfig? existing = null)
@@ -1366,10 +2247,8 @@ public class MainWindow : Window
         config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
             ? AppPaths.TwxproxyDatabasePathForGame(gameName)
             : config.DatabasePath;
-        config.ScriptDirectory = string.IsNullOrWhiteSpace(config.ScriptDirectory)
-            ? (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty)
-            : config.ScriptDirectory;
-        config.NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(config.NativeHaggleMode);
+        config.ScriptDirectory = ResolvePersistedGameScriptDirectory(config.ScriptDirectory);
+        config.NativeHaggleMode = null;
         config.AutoReconnect = _state.AutoReconnect;
         config.UseLogin = _state.UseLogin;
         config.UseRLogin = _state.UseRLogin;
@@ -1438,9 +2317,8 @@ public class MainWindow : Window
         config.Port = profile.Port;
         config.Sectors = profile.Sectors;
         config.DatabasePath = databasePath;
-        if (string.IsNullOrWhiteSpace(config.ScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
-            config.ScriptDirectory = _appPrefs.ScriptsDirectory;
-        config.NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(config.NativeHaggleMode);
+        config.ScriptDirectory = ResolvePersistedGameScriptDirectory(config.ScriptDirectory);
+        config.NativeHaggleMode = null;
         config.AutoReconnect = profile.AutoReconnect;
         config.UseLogin = profile.UseLogin;
         config.UseRLogin = profile.UseRLogin;
@@ -1658,18 +2536,9 @@ public class MainWindow : Window
         // Open / create the session database using sectors from the game config.
         OpenSessionDatabase(gameName, gameConfig.Sectors, useSharedProxyDatabase: true);
 
-        // Resolve the effective script directory: game config -> app prefs -> platform default.
-        // TrimEnd removes any trailing separator so Path.GetDirectoryName returns the
-        // true parent folder rather than the same folder (which happens when the stored
-        // path ends with '/').
-        string effectiveScriptDir = (!string.IsNullOrWhiteSpace(gameConfig.ScriptDirectory)
-            ? gameConfig.ScriptDirectory
-            : (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory)
-                ? _appPrefs.ScriptsDirectory
-                : (OperatingSystem.IsWindows()
-                    ? Core.WindowsInstallInfo.GetDefaultScriptsDirectory()
-                    : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments))))
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // Resolve the effective script directory from the MTC-wide preference first,
+        // then fall back to older per-game state only when no app-level setting exists.
+        string effectiveScriptDir = ResolveEffectiveScriptDirectory(gameConfig.ScriptDirectory);
 
         // Create the script interpreter.
         // ProgramDir = parent of the scripts folder (matches ProxyService behaviour).
@@ -1728,10 +2597,9 @@ public class MainWindow : Window
         gi.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
-        gameConfig.NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(gameConfig.NativeHaggleMode);
         Core.GlobalModules.DebugLog(
-            $"[MTC] Embedded haggle startup prefsMode={Core.NativeHaggleModes.Normalize(_appPrefs.NativeHaggleMode)} gameConfigMode={gameConfig.NativeHaggleMode}\n");
-        gi.SetNativeHaggleMode(gameConfig.NativeHaggleMode);
+            $"[MTC] Embedded haggle startup prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
+        gi.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
         gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
         gi.ShipStatusUpdated += OnShipStatusUpdated;
@@ -1829,7 +2697,11 @@ public class MainWindow : Window
                             interpreter.TextEvent(scriptRemainder, false);
                         }
 
-                        gi.ProcessNativeHaggleLine(strippedRemainder);
+                        bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                        if (nativeHaggleResponded)
+                        {
+                            serverLineBuf.Clear();
+                        }
                     }
                     break;
                 }
@@ -2056,7 +2928,6 @@ public class MainWindow : Window
                     cfg.DatabasePath = string.IsNullOrWhiteSpace(cfg.DatabasePath)
                         ? AppPaths.TwxproxyDatabasePathForGame(cfg.Name)
                         : cfg.DatabasePath;
-                    cfg.NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(cfg.NativeHaggleMode);
                     cfg.Mtc ??= new EmbeddedMtcConfig();
                     cfg.Mtc.State ??= new EmbeddedMtcState();
                     return cfg;
@@ -2073,9 +2944,9 @@ public class MainWindow : Window
             Port    = _state.Port,
             Sectors = _state.Sectors,
             DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName),
-            ScriptDirectory = !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory) ? _appPrefs.ScriptsDirectory : string.Empty,
+            ScriptDirectory = null,
             NativeHaggleEnabled = true,
-            NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(null),
+            NativeHaggleMode = null,
             UseLogin = _state.UseLogin,
             UseRLogin = _state.UseRLogin,
             LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
@@ -2103,7 +2974,10 @@ public class MainWindow : Window
         {
             AppPaths.EnsureTwxproxyGamesDir();
             string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+            string? runtimeNativeHaggleMode = cfg.NativeHaggleMode;
+            cfg.NativeHaggleMode = null;
             var json = System.Text.Json.JsonSerializer.Serialize(cfg, _jsonOpts);
+            cfg.NativeHaggleMode = runtimeNativeHaggleMode;
             await File.WriteAllTextAsync(path, json);
         }
         catch { }
@@ -2119,8 +2993,6 @@ public class MainWindow : Window
         config = BuildEmbeddedGameConfigFromState(gameName, config);
         if (string.IsNullOrWhiteSpace(config.DatabasePath))
             config.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
-        if (string.IsNullOrWhiteSpace(config.ScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
-            config.ScriptDirectory = _appPrefs.ScriptsDirectory;
         await SaveEmbeddedGameConfigAsync(gameName, config);
         _embeddedGameConfig = config;
         _embeddedGameName = gameName;
@@ -2165,8 +3037,6 @@ public class MainWindow : Window
 
             EmbeddedGameConfig importedConfig = BuildEmbeddedGameConfigFromProfile(importedProfile, importedDatabasePath, config);
             importedConfig.Variables = config.Variables ?? new Dictionary<string, string>();
-            if (!string.IsNullOrWhiteSpace(config.ScriptDirectory))
-                importedConfig.ScriptDirectory = config.ScriptDirectory;
             await SaveEmbeddedGameConfigAsync(gameName, importedConfig);
             await ApplyLoadedGameConfigAsync(importedConfig, AppPaths.TwxproxyGameConfigFileFor(gameName), addToRecent);
             return;
@@ -3183,11 +4053,11 @@ public class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(CurrentInterpreter?.ScriptDirectory))
             return CurrentInterpreter.ScriptDirectory;
 
-        if (!string.IsNullOrWhiteSpace(_embeddedGameConfig?.ScriptDirectory))
-            return _embeddedGameConfig.ScriptDirectory;
-
         if (!string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
-            return _appPrefs.ScriptsDirectory;
+            return NormalizeScriptDirectoryValue(_appPrefs.ScriptsDirectory);
+
+        if (!string.IsNullOrWhiteSpace(_embeddedGameConfig?.ScriptDirectory))
+            return NormalizeScriptDirectoryValue(_embeddedGameConfig.ScriptDirectory);
 
         if (OperatingSystem.IsWindows())
             return Core.WindowsInstallInfo.GetDefaultScriptsDirectory();
@@ -4735,13 +5605,13 @@ public class MainWindow : Window
 
         string gameName = GetEmbeddedGameName();
         var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
-        string originalNativeHaggleMode = gameConfig.NativeHaggleMode;
-        gameConfig.NativeHaggleMode = ResolveEmbeddedNativeHaggleMode(gameConfig.NativeHaggleMode);
+        string? originalNativeHaggleMode = gameConfig.NativeHaggleMode;
+        gameConfig.NativeHaggleMode = null;
         string previousHost = gameConfig.Host;
         int previousPort = gameConfig.Port;
 
         bool configChanged =
-            !string.Equals(originalNativeHaggleMode ?? string.Empty, gameConfig.NativeHaggleMode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(originalNativeHaggleMode ?? string.Empty, gameConfig.NativeHaggleMode ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
             gameConfig.Host != _state.Host ||
             gameConfig.Port != _state.Port ||
@@ -4825,8 +5695,8 @@ public class MainWindow : Window
         _gameInstance.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
         _gameInstance.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled);
         Core.GlobalModules.DebugLog(
-            $"[MTC] Embedded haggle sync prefsMode={Core.NativeHaggleModes.Normalize(_appPrefs.NativeHaggleMode)} gameConfigMode={gameConfig.NativeHaggleMode}\n");
-        _gameInstance.SetNativeHaggleMode(gameConfig.NativeHaggleMode);
+            $"[MTC] Embedded haggle sync prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
+        _gameInstance.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
 
         bool endpointChanged = !string.Equals(previousHost, _state.Host, StringComparison.Ordinal) || previousPort != _state.Port;
         if (!_gameInstance.IsConnected && endpointChanged)

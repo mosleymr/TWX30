@@ -64,10 +64,14 @@ public class ProxyService : IProxyService
             // Create script interpreter for this game
             var interpreter = new TWXProxy.Core.ModInterpreter();
             
-            // Get script directory from config, default to "scripts" in app directory
-            string scriptDirectory = string.IsNullOrWhiteSpace(config.ScriptDirectory)
-                ? AppPaths.DefaultScriptDir
-                : config.ScriptDirectory;
+            // Use the top-level scripts directory from the registry when configured.
+            string configuredScriptsDirectory = await _configService.GetScriptsDirectoryAsync();
+            string scriptDirectory = string.IsNullOrWhiteSpace(configuredScriptsDirectory)
+                ? (string.IsNullOrWhiteSpace(config.ScriptDirectory)
+                    ? AppPaths.DefaultScriptDir
+                    : config.ScriptDirectory)
+                : configuredScriptsDirectory;
+            config.ScriptDirectory = scriptDirectory;
             Directory.CreateDirectory(scriptDirectory);
             
             // Set the program directory for the interpreter (used for relative paths).
@@ -111,7 +115,11 @@ public class ProxyService : IProxyService
             gameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
             gameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
             gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
-            gameInstance.SetNativeHaggleMode(config.NativeHaggleMode);
+            string portHaggleMode = await _configService.GetPortHaggleModeAsync();
+            string planetHaggleMode = await _configService.GetPlanetHaggleModeAsync();
+            if (string.IsNullOrWhiteSpace(portHaggleMode) && !string.IsNullOrWhiteSpace(config.NativeHaggleMode))
+                portHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(config.NativeHaggleMode);
+            gameInstance.SetNativeHaggleModes(portHaggleMode, planetHaggleMode);
             gameInstance.NativeHaggleChanged += enabled =>
             {
                 if (config.NativeHaggleEnabled == enabled)
@@ -299,11 +307,19 @@ public class ProxyService : IProxyService
                                 // registered during a prompt handler to fire on the next full line's TextLineEvent
                                 // instead of waiting for the line after that.
                                 interpreter.TextEvent(scriptRemainder, false);
-                                gameInstance.ProcessNativeHaggleLine(strippedRemainder);
+                                bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
+                                if (nativeHaggleResponded)
+                                {
+                                    proxyInstance.ServerLineBuffer.Clear();
+                                }
                             }
                             else
                             {
-                                gameInstance.ProcessNativeHaggleLine(strippedRemainder);
+                                bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
+                                if (nativeHaggleResponded)
+                                {
+                                    proxyInstance.ServerLineBuffer.Clear();
+                                }
                             }
                         }
                         break;

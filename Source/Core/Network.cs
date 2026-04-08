@@ -189,7 +189,11 @@ namespace TWXProxy.Core
         }
         public bool NativeHaggleEnabled => _nativeHaggle.Enabled;
         public string NativeHaggleMode => _nativeHaggle.FirstBidMode;
+        public string NativePortHaggleMode => _nativeHaggle.PortHaggleMode;
+        public string NativePlanetHaggleMode => _nativeHaggle.PlanetHaggleMode;
         public IReadOnlyList<NativeHaggleModeInfo> NativeHaggleModes => _nativeHaggle.AvailableModes;
+        public IReadOnlyList<NativeHaggleModeInfo> NativePortHaggleModes => _nativeHaggle.AvailablePortModes;
+        public IReadOnlyList<NativeHaggleModeInfo> NativePlanetHaggleModes => _nativeHaggle.AvailablePlanetModes;
         public int NativeHaggleCompletedCount => _nativeHaggle.CompletedHaggles;
         public int NativeHaggleSuccessfulCount => _nativeHaggle.SuccessfulHaggles;
         public int NativeHaggleGoodCount => _nativeHaggle.GoodRewardCount;
@@ -1525,6 +1529,22 @@ namespace TWXProxy.Core
             _nativeHaggle.SetFirstBidMode(mode);
         }
 
+        public void SetNativePortHaggleMode(string? mode)
+        {
+            _nativeHaggle.SetPortHaggleMode(mode);
+        }
+
+        public void SetNativePlanetHaggleMode(string? mode)
+        {
+            _nativeHaggle.SetPlanetHaggleMode(mode);
+        }
+
+        public void SetNativeHaggleModes(string? portMode, string? planetMode)
+        {
+            _nativeHaggle.SetPortHaggleMode(portMode);
+            _nativeHaggle.SetPlanetHaggleMode(planetMode);
+        }
+
         internal void RegisterNativeHaggleMode(NativeHaggleModeExtension mode)
         {
             _nativeHaggle.RegisterMode(mode);
@@ -1541,14 +1561,19 @@ namespace TWXProxy.Core
                 _commandChar = commandChar;
         }
 
-        public void ProcessNativeHaggleLine(string line)
+        public bool ProcessNativeHaggleLine(string line)
         {
             if (string.IsNullOrWhiteSpace(line))
-                return;
+                return false;
 
             string? response = _nativeHaggle.HandleLine(line);
             if (!string.IsNullOrEmpty(response))
+            {
                 SendNativeHaggleResponse(response);
+                return true;
+            }
+
+            return false;
         }
 
         public void ObserveScriptSend(string text)

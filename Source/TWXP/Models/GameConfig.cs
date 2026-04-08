@@ -13,12 +13,14 @@ public class GameConfig
     public char CommandChar { get; set; } = '$';
     public int Sectors { get; set; } = 1000;
     public string DatabasePath { get; set; } = string.Empty;
-    public string ScriptDirectory { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ScriptDirectory { get; set; }
     public bool AutoConnect { get; set; }
     public bool AutoReconnect { get; set; }
     public int ReconnectDelaySeconds { get; set; } = 5;
     public bool NativeHaggleEnabled { get; set; } = true;
-    public string NativeHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.ClampHeuristic;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NativeHaggleMode { get; set; }
     public bool UseCache { get; set; } = true;
     public int BubbleSize { get; set; } = 25;
     public bool LocalEcho { get; set; } = true;

@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace MTC;
 
 /// <summary>
@@ -8,6 +10,8 @@ namespace MTC;
 /// </summary>
 public class AnsiParser
 {
+    private static readonly char[] Cp437Glyphs = BuildCp437GlyphTable();
+
     // ── Parser state machine ───────────────────────────────────────────────
     private enum State
     {
@@ -130,9 +134,21 @@ public class AnsiParser
             case 0x0C: _buf.LineFeed(); break;  // FF
             case 0x0D: _buf.CarriageReturn(); break;
             default:
-                if (b >= 0x20) _buf.WriteChar((char)b);  // printable
+                if (b >= 0x20) _buf.WriteChar(Cp437Glyphs[b]);  // printable DOS/ANSI glyph
                 break;
         }
+    }
+
+    private static char[] BuildCp437GlyphTable()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var encoding = Encoding.GetEncoding(437);
+        var table = new char[256];
+
+        for (int i = 0; i < table.Length; i++)
+            table[i] = encoding.GetChars([(byte)i])[0];
+
+        return table;
     }
 
     // ── CSI dispatch ───────────────────────────────────────────────────────

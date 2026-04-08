@@ -1401,12 +1401,12 @@ namespace TWXProxy.Core
                 $"waitText='{_waitText}' waitingInput={_waitingForInput} subDepth={_subStack.Count} " +
                 $"triggers=[{triggerSummary}]\n");
 
+            if (_menuItemList.Count > 0 && GlobalModules.TWXMenu != null)
+                GlobalModules.TWXMenu.RemoveScriptMenus(this);
+
             // Free up menu items
             while (_menuItemList.Count > 0)
             {
-                // if (_menuItemList[0] == TWXMenu.CurrentMenu)
-                //     TWXMenu.CloseMenu(false);
-
                 _menuItemList.RemoveAt(0);
             }
 
@@ -3723,7 +3723,12 @@ namespace TWXProxy.Core
             // - "start/execute" handlers that close the menu and resume the script
             if (resumeAfterMenu)
             {
-                _subStack.Push(_codePos);
+                // Pascal menu "start" items run inside the existing `gosub :menu`
+                // frame. They should jump into the script body and let the eventual
+                // RETURN unwind the original menu call, not push a fresh return point
+                // at the current paused code position (which can be EOF-adjacent).
+                GotoLabel(labelName);
+                return;
             }
             else
             {
