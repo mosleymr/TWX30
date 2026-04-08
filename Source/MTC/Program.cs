@@ -11,6 +11,7 @@ GlobalModules.ProgramDir = MTC.AppPaths.ProgramDir;
 GlobalModules.PreferPreparedVm = prefs.PreparedVmEnabled;
 GlobalModules.EnableVmMetrics = prefs.VmMetricsEnabled;
 MTC.AppPaths.EnsureDebugLogDir();
+MTC.AppPaths.ResetStartupDebugLogs();
 GlobalModules.ConfigureDebugLogging(
     MTC.AppPaths.GetDebugLogPath(),
     prefs.DebugLoggingEnabled,

@@ -141,6 +141,24 @@ public static class AppPaths
     public static void EnsureDebugLogDir(string? scriptDirectory = null)
         => Directory.CreateDirectory(GetDebugLogDir(scriptDirectory));
 
+    public static void ResetStartupDebugLogs(string? scriptDirectory = null)
+    {
+        string logDir = GetDebugLogDir(scriptDirectory);
+        Directory.CreateDirectory(logDir);
+
+        foreach (string path in Directory.EnumerateFiles(logDir, "*_debug.log"))
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // Ignore startup cleanup failures; logging will still fall back to append/create.
+            }
+        }
+    }
+
     private static string SanitizeLogIdentity(string? gameName)
     {
         string resolved = string.IsNullOrWhiteSpace(gameName) ? "mtc" : gameName;
