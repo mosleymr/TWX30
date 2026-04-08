@@ -238,6 +238,9 @@ public class MainWindow : Window
                 _buffer.Dirty = true;
             });
 
+        Core.GlobalModules.GlobalAutoRecorder.GenesisTorpsChanged += delta =>
+            Dispatcher.UIThread.Post(() => OnGenesisTorpsChanged(delta));
+
         _state.Changed += () => Dispatcher.UIThread.Post(RefreshInfoPanels);
 
         // Wire keyboard → telnet
@@ -1765,6 +1768,27 @@ public class MainWindow : Window
             }
         });
     }
+
+    private void OnGenesisTorpsChanged(int delta)
+    {
+        if (delta == 0)
+            return;
+
+        if (_gameInstance != null)
+        {
+            _gameInstance.AdjustGenesisTorps(delta);
+            return;
+        }
+
+        int updated = _state.Genesis + delta;
+        _state.Genesis = updated < 0 ? 0 : updated;
+        _state.NotifyChanged();
+        RefreshInfoPanels();
+
+        if (_currentProfilePath != null)
+            _ = SaveCurrentGameConfigAsync();
+    }
+
     // ── Info panel refresh ─────────────────────────────────────────────────
 
     private void RefreshInfoPanels()

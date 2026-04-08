@@ -83,6 +83,9 @@ namespace TWXProxy.Core
                     var scriptObj = interpreter.GetScript(i);
                     if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
+                        if (scriptObj == null)
+                            continue;
+
                         GlobalModules.DebugLog($"[STOP] Found and stopping script at index {i}: '{scriptObj.ScriptName}'\n");
                         interpreter.Stop(i);
                     }
@@ -147,6 +150,9 @@ namespace TWXProxy.Core
                     var scriptObj = interpreter.GetScript(i);
                     if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
+                        if (scriptObj == null)
+                            continue;
+
                         scriptObj.Pause();
                         Console.WriteLine($"[Script] PAUSESCRIPT: Paused {filename}");
                         break;
@@ -182,6 +188,9 @@ namespace TWXProxy.Core
                     var scriptObj = interpreter.GetScript(i);
                     if (ScriptReferenceMatches(interpreter, scriptObj, filename))
                     {
+                        if (scriptObj == null)
+                            continue;
+
                         scriptObj.Resume();
                         Console.WriteLine($"[Script] RESUMESCRIPT: Resumed {filename}");
                         break;

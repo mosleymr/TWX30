@@ -97,6 +97,12 @@ namespace TWXProxy.Core
         public event Action? LandmarkSectorsChanged;
 
         /// <summary>
+        /// Raised when the server confirms a planet build, which consumes one
+        /// genesis torpedo from the player's ship inventory.
+        /// </summary>
+        public event Action<int>? GenesisTorpsChanged;
+
+        /// <summary>
         /// Clears parser state when a session or active database changes so stale
         /// display/report mode from a previous game cannot bleed into the next one.
         /// </summary>
@@ -308,6 +314,9 @@ namespace TWXProxy.Core
             string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
             string trimmedLine = rawLine.Trim();
 
+            if (ShouldIgnoreRecorderCommLine(rawLine))
+                return;
+
             // Log any line that looks warp-related so we can trace what the game sends
             if (rawLine.IndexOf("Warp", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 rawLine.IndexOf("Long Range", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -324,6 +333,9 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog($"[AutoRecorder] SKIPPED (db==null): '{rawLine}'\n");
                 return;
             }
+
+            if (TryProcessGenesisTorpedoState(trimmedLine))
+                return;
 
             if (TryProcessPrompt(db, rawLine, trimmedLine))
                 return;
@@ -865,6 +877,9 @@ namespace TWXProxy.Core
                 return;
 
             string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
+            if (ShouldIgnoreRecorderCommLine(rawLine))
+                return;
+
             string trimmedLine = rawLine.Trim();
             TryProcessPrompt(ScriptRef.ActiveDatabase, rawLine, trimmedLine);
         }
@@ -1257,7 +1272,7 @@ namespace TWXProxy.Core
 
         private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
         {
-            if (ShouldIgnoreWatcherSpoofLine(rawLine))
+            if (ShouldIgnoreRecorderCommLine(rawLine))
                 return false;
 
             if (trimmedLine.StartsWith("For getting caught your alignment went down by", StringComparison.OrdinalIgnoreCase))
@@ -1380,7 +1395,17 @@ namespace TWXProxy.Core
             return false;
         }
 
-        private static bool ShouldIgnoreWatcherSpoofLine(string line)
+        private bool TryProcessGenesisTorpedoState(string trimmedLine)
+        {
+            if (!trimmedLine.StartsWith("For building this planet you receive", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            GenesisTorpsChanged?.Invoke(-1);
+            GlobalModules.DebugLog("[AutoRecorder] Planet build detected, genesis torps delta=-1\n");
+            return true;
+        }
+
+        private static bool ShouldIgnoreRecorderCommLine(string line)
         {
             if (string.IsNullOrEmpty(line))
                 return false;

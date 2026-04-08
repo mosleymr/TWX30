@@ -294,6 +294,22 @@ namespace TWXProxy.Core
             _shipInfoParser.FeedLine(line);
         }
 
+        public void AdjustGenesisTorps(int delta)
+        {
+            if (delta == 0)
+                return;
+
+            ShipStatus snapshot;
+            lock (_shipStatusLock)
+            {
+                int updated = _currentShipStatus.GenesisTorps + delta;
+                _currentShipStatus.GenesisTorps = updated < 0 ? 0 : updated;
+                snapshot = CloneShipStatus(_currentShipStatus);
+            }
+
+            ShipStatusUpdated?.Invoke(CloneShipStatus(snapshot));
+        }
+
         private static ShipStatus CloneShipStatus(ShipStatus status) => new()
         {
             TraderName = status.TraderName,
