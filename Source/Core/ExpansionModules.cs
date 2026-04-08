@@ -112,7 +112,7 @@ public sealed class ExpansionModuleHostOptions
     public string GameName { get; init; } = string.Empty;
     public string ProgramDir { get; init; } = string.Empty;
     public string ScriptDirectory { get; init; } = string.Empty;
-    public string ModuleDataRootDirectory { get; init; } = Path.Combine(SharedPaths.AppDataDir, "module-data");
+    public string ModuleDataRootDirectory { get; init; } = SharedPaths.GetModuleDataRootDir();
     public IEnumerable<string> ModuleDirectories { get; init; } = Array.Empty<string>();
     public required GameInstance GameInstance { get; init; }
     public ModInterpreter? Interpreter { get; init; }

@@ -12,6 +12,7 @@ public static class SharedConfigFile
     public const string SharedPathsSectionName = "SharedPaths";
     public const string MtcPrefsSectionName = "MtcPrefs";
     public const string TwxpPrefsSectionName = "TwxpPrefs";
+    public const string TwxpConfigSectionName = "TwxpCfg";
 
     public static XDocument CreateEmptyDocument()
         => new(new XElement(RootElementName));

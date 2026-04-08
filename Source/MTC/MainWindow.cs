@@ -1276,6 +1276,9 @@ public class MainWindow : Window
         var fileSaveAs    = new MenuItem { Header = "Save _As…" };
         fileSaveAs.Click += (_, _) => _ = OnSaveConnectionAsync(saveAs: true);
 
+        var fileResetGame = new MenuItem { Header = "_Reset Game…" };
+        fileResetGame.Click += (_, _) => _ = OnResetGameAsync();
+
         var fileConnect    = _fileConnect;
         _fileConnect.Click += (_, _) => OnConnect();
 
@@ -1292,6 +1295,7 @@ public class MainWindow : Window
         {
             Header = "_File",
             Items  = { fileNew, fileEdit, fileOpen, _recentMenu, fileSave, fileSaveAs,
+                       new Separator(), fileResetGame,
                        new Separator(), fileNewWin,
                        new Separator(), fileConnect, fileDisconnect,
                        new Separator(), filePrefs,
@@ -2135,6 +2139,165 @@ public class MainWindow : Window
             return;
         }
         _telnet.Disconnect();
+    }
+
+    private async Task OnResetGameAsync()
+    {
+        _menuBar.Close();
+
+        string gameName = NormalizeGameName(_embeddedGameName ?? DeriveGameName());
+        if (string.IsNullOrWhiteSpace(gameName))
+        {
+            await ShowMessageAsync("Reset Game", "No game is currently loaded.");
+            return;
+        }
+
+        bool confirmed = await ShowConfirmAsync(
+            "Reset Game",
+            $"This will reset all game data and settings for '{gameName}'.\n\nAre you sure?",
+            "Yes",
+            "Cancel");
+        if (!confirmed)
+            return;
+
+        bool restartEmbeddedProxy = _state.EmbeddedProxy && _gameInstance != null;
+        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        config.Name = gameName;
+        config.DatabasePath = ResolveResetDatabasePath(gameName, config);
+
+        Core.DataHeader sourceHeader = ResolveResetSourceHeader(config.DatabasePath);
+        Core.DataHeader resetHeader = BuildResetDatabaseHeader(config, sourceHeader);
+
+        try
+        {
+            if (_gameInstance != null)
+            {
+                await StopEmbeddedAsync();
+            }
+            else if (_telnet.IsConnected)
+            {
+                _telnet.Disconnect();
+            }
+
+            try { _sessionDb?.CloseDatabase(); } catch { }
+            _sessionDb = null;
+            Core.ScriptRef.SetActiveDatabase(null);
+            Core.ScriptRef.OnVariableSaved = null;
+            Core.ScriptRef.ClearCurrentGameVars();
+
+            Directory.CreateDirectory(Path.GetDirectoryName(config.DatabasePath)!);
+            var db = new Core.ModDatabase();
+            db.CreateDatabase(config.DatabasePath, resetHeader);
+            db.CloseDatabase();
+
+            config.Variables.Clear();
+            config.Mtc ??= new EmbeddedMtcConfig();
+            config.Mtc.State = new EmbeddedMtcState();
+            await SaveEmbeddedGameConfigAsync(gameName, config);
+
+            _currentProfilePath = configPath;
+            _embeddedGameConfig = config;
+            _embeddedGameName = gameName;
+            ApplyProfile(BuildProfileFromConfig(config));
+            OnGameSelected();
+
+            _parser.Feed($"\x1b[1;36m[Game reset: {gameName}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+
+            if (restartEmbeddedProxy)
+                await DoConnectEmbeddedAsync();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Reset Game Error", ex.Message);
+        }
+    }
+
+    private string ResolveResetDatabasePath(string gameName, EmbeddedGameConfig config)
+    {
+        if (!string.IsNullOrWhiteSpace(_sessionDb?.DatabasePath))
+            return _sessionDb.DatabasePath;
+
+        if (!string.IsNullOrWhiteSpace(config.DatabasePath))
+            return config.DatabasePath;
+
+        return _state.EmbeddedProxy
+            ? AppPaths.TwxproxyDatabasePathForGame(gameName)
+            : AppPaths.DatabasePathForGame(gameName);
+    }
+
+    private Core.DataHeader ResolveResetSourceHeader(string databasePath)
+    {
+        if (_sessionDb != null)
+            return _sessionDb.DBHeader;
+
+        if (!string.IsNullOrWhiteSpace(databasePath) && File.Exists(databasePath))
+        {
+            try
+            {
+                var db = new Core.ModDatabase();
+                db.OpenDatabase(databasePath);
+                var header = db.DBHeader;
+                db.CloseDatabase();
+                return header;
+            }
+            catch
+            {
+            }
+        }
+
+        return new Core.DataHeader();
+    }
+
+    private Core.DataHeader BuildResetDatabaseHeader(EmbeddedGameConfig config, Core.DataHeader sourceHeader)
+    {
+        string loginScript = string.IsNullOrWhiteSpace(config.LoginScript)
+            ? (string.IsNullOrWhiteSpace(sourceHeader.LoginScript) ? "0_Login.cts" : sourceHeader.LoginScript)
+            : config.LoginScript;
+
+        char gameLetter = !string.IsNullOrWhiteSpace(config.GameLetter)
+            ? char.ToUpperInvariant(config.GameLetter[0])
+            : sourceHeader.Game;
+
+        char commandChar = config.CommandChar == '\0'
+            ? (sourceHeader.CommandChar == '\0' ? '$' : sourceHeader.CommandChar)
+            : config.CommandChar;
+
+        int sectorCount = config.Sectors > 0
+            ? config.Sectors
+            : (sourceHeader.Sectors > 0 ? sourceHeader.Sectors : (_state.Sectors > 0 ? _state.Sectors : 1000));
+
+        int serverPort = config.Port > 0
+            ? config.Port
+            : (sourceHeader.ServerPort > 0 ? sourceHeader.ServerPort : _state.Port);
+
+        int listenPort = config.ListenPort > 0
+            ? config.ListenPort
+            : (sourceHeader.ListenPort > 0 ? sourceHeader.ListenPort : 2300);
+
+        return new Core.DataHeader
+        {
+            ProgramName = sourceHeader.ProgramName,
+            Version = sourceHeader.Version == 0 ? (byte)Core.DatabaseConstants.DatabaseVersion : sourceHeader.Version,
+            Sectors = sectorCount,
+            Address = string.IsNullOrWhiteSpace(config.Host)
+                ? (string.IsNullOrWhiteSpace(sourceHeader.Address) ? _state.Host : sourceHeader.Address)
+                : config.Host,
+            Description = sourceHeader.Description,
+            ServerPort = (ushort)Math.Clamp(serverPort, 0, ushort.MaxValue),
+            ListenPort = (ushort)Math.Clamp(listenPort, 0, ushort.MaxValue),
+            LoginScript = loginScript,
+            Password = config.Password ?? string.Empty,
+            LoginName = config.LoginName ?? string.Empty,
+            Game = gameLetter,
+            IconFile = sourceHeader.IconFile,
+            UseRLogin = config.UseRLogin,
+            UseLogin = config.UseLogin,
+            RobFactor = sourceHeader.RobFactor,
+            StealFactor = sourceHeader.StealFactor,
+            CommandChar = commandChar,
+        };
     }
 
     private async Task ShowAboutAsync()

@@ -13,18 +13,20 @@ public static class SharedPaths
     private const string ProgramDirLocatorFileName = "programdir.txt";
 
     /// <summary>
-     /// Shared TWX Proxy root directory.
-     /// macOS   : ~/Library/twxproxy
-     /// Windows : %LOCALAPPDATA%\twxproxy
-     /// Linux   : ~/.local/share/twxproxy
+    /// Bootstrap and legacy-migration root.
+    /// Regular app data should live under ProgramDir; this app-data root remains
+    /// for the non-Windows program-dir locator and for one-time legacy imports.
+    /// macOS   : ~/Library/twxproxy
+    /// Windows : %LOCALAPPDATA%\twxproxy
+    /// Linux   : ~/.local/share/twxproxy
     /// </summary>
     public static string AppDataDir => BuildSharedDataDir();
 
     /// <summary>Directory where shared .xdb database files are stored.</summary>
-    public static string DatabaseDir => Path.Combine(AppDataDir, "databases");
+    public static string DatabaseDir => GetGamesDir();
 
     /// <summary>Directory where shared proxy capture/log files are stored.</summary>
-    public static string LogDir => Path.Combine(AppDataDir, "logs");
+    public static string LogDir => GetLogsDir();
 
     /// <summary>Path to the shared XML config file.</summary>
     public static string ConfigFilePath => GetConfigFilePath();
@@ -42,10 +44,13 @@ public static class SharedPaths
     public static string ProgramDirLocatorPath => Path.Combine(AppDataDir, ProgramDirLocatorFileName);
 
     /// <summary>Directory where shared expansion-module DLLs can be dropped for both apps.</summary>
-    public static string ModulesDir => Path.Combine(AppDataDir, "modules");
+    public static string ModulesDir => GetModulesDir();
 
-    /// <summary>Legacy TWX proxy configuration file used for quick-load and bot metadata.</summary>
-    public static string TwxpConfigPath => BuildTwxpConfigPath();
+    /// <summary>Legacy app-data module location kept only for backwards compatibility.</summary>
+    public static string LegacyModulesDir => Path.Combine(AppDataDir, "modules");
+
+    /// <summary>Legacy app-data TWX proxy configuration file kept for migration.</summary>
+    public static string LegacyTwxpConfigPath => BuildLegacyTwxpConfigPath();
 
     /// <summary>Returns the shared .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
@@ -99,6 +104,30 @@ public static class SharedPaths
 
     public static string GetGamesDir(string? programDir = null)
         => Path.Combine(NormalizeDirectory(programDir ?? ResolveProgramDir()), "games");
+
+    public static string GetLogsDir(string? programDir = null)
+        => Path.Combine(NormalizeDirectory(programDir ?? ResolveProgramDir()), "logs");
+
+    public static string GetModulesDir(string? programDir = null)
+        => Path.Combine(NormalizeDirectory(programDir ?? ResolveProgramDir()), "modules");
+
+    public static string GetModuleDataRootDir(string? programDir = null)
+        => Path.Combine(GetModulesDir(programDir), "data");
+
+    public static IEnumerable<string> GetLegacyTwxpConfigCandidates(string? programDir = null)
+    {
+        string activeProgramDir = NormalizeDirectory(programDir ?? ResolveProgramDir());
+        string inProgramDir = Path.Combine(activeProgramDir, "twxp.cfg");
+        yield return inProgramDir;
+
+        if (!string.Equals(
+                NormalizeDirectory(inProgramDir),
+                NormalizeDirectory(LegacyTwxpConfigPath),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            yield return LegacyTwxpConfigPath;
+        }
+    }
 
     public static bool IsPathUnderDirectory(string? path, string? directory)
     {
@@ -191,7 +220,7 @@ public static class SharedPaths
         return Path.Combine(xdgData, "twxproxy");
     }
 
-    private static string BuildTwxpConfigPath()
+    private static string BuildLegacyTwxpConfigPath()
     {
         if (OperatingSystem.IsWindows())
             return Path.Combine(WindowsInstallInfo.GetInstalledProgramDirOrDefault(), "twxp.cfg");

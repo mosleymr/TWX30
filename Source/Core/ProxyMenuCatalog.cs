@@ -29,7 +29,8 @@ public static class ProxyMenuCatalog
         if (!Directory.Exists(scriptsRoot))
             return Array.Empty<QuickLoadGroup>();
 
-        var quickLoadMap = ReadQuickLoadSection(programDir);
+        var configSections = TwxpConfigStore.LoadSections(programDir);
+        var quickLoadMap = ReadQuickLoadSection(configSections);
         var groups = new SortedDictionary<string, List<QuickLoadEntry>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (string file in Directory.EnumerateFiles(scriptsRoot))
@@ -65,19 +66,19 @@ public static class ProxyMenuCatalog
     public static IReadOnlyList<BotConfig> LoadBotConfigs(string? programDir, string? scriptDirectory)
     {
         string scriptsRoot = ResolveScriptsRoot(programDir, scriptDirectory);
-        string configPath = ResolveConfigPath(programDir);
-        if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
+        var sections = TwxpConfigStore.LoadSections(programDir);
+        if (sections.Count == 0)
             return Array.Empty<BotConfig>();
-
-        var sections = ReadIniSections(configPath);
         var bots = new List<BotConfig>();
 
-        foreach ((string sectionName, Dictionary<string, string> values) in sections)
+        foreach (TwxpConfigSection section in sections)
         {
+            string sectionName = section.Name;
             if (!sectionName.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             string alias = sectionName["bot:".Length..].Trim();
+            Dictionary<string, string> values = section.Values;
             if (!values.TryGetValue("Name", out string? botName) || string.IsNullOrWhiteSpace(botName))
                 continue;
 
@@ -156,16 +157,12 @@ public static class ProxyMenuCatalog
         return virtualGroup;
     }
 
-    private static Dictionary<string, string> ReadQuickLoadSection(string? programDir)
+    private static Dictionary<string, string> ReadQuickLoadSection(IReadOnlyList<TwxpConfigSection> sections)
     {
-        string configPath = ResolveConfigPath(programDir);
-        if (string.IsNullOrWhiteSpace(configPath) || !File.Exists(configPath))
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach ((string sectionName, Dictionary<string, string> values) in ReadIniSections(configPath))
+        foreach (TwxpConfigSection section in sections)
         {
-            if (sectionName.Equals("QuickLoad", StringComparison.OrdinalIgnoreCase))
-                return new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+            if (section.Name.Equals("QuickLoad", StringComparison.OrdinalIgnoreCase))
+                return new Dictionary<string, string>(section.Values, StringComparer.OrdinalIgnoreCase);
         }
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -219,8 +216,15 @@ public static class ProxyMenuCatalog
 
     private static string ResolveConfigPath(string? programDir)
     {
-        if (File.Exists(SharedPaths.TwxpConfigPath))
-            return SharedPaths.TwxpConfigPath;
+        string sharedConfigPath = SharedPaths.GetConfigFilePath(programDir);
+        if (File.Exists(sharedConfigPath))
+            return sharedConfigPath;
+
+        foreach (string legacyPath in SharedPaths.GetLegacyTwxpConfigCandidates(programDir))
+        {
+            if (File.Exists(legacyPath))
+                return legacyPath;
+        }
 
         string root = string.IsNullOrWhiteSpace(programDir)
             ? GetDefaultProgramDir()

@@ -266,6 +266,15 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Clear the current game's shared savevar/loadvar cache without
+        /// touching persisted globals or program variables.
+        /// </summary>
+        public static void ClearCurrentGameVars()
+        {
+            _currentGameVars.Clear();
+        }
+
+        /// <summary>
         /// Inject or override a value in the current game's in-memory loadvar cache
         /// without persisting it to disk.
         /// </summary>

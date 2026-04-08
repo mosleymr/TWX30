@@ -10,13 +10,12 @@ namespace MTC;
 /// </summary>
 public static class AppPaths
 {
-    private static readonly string _appDataDir = Core.SharedPaths.AppDataDir;
     private static readonly string _legacyLocalAppDataDir = BuildLegacyLocalAppDataDir();
     private static string _configuredProgramDir = Core.SharedPaths.TryGetStoredProgramDir()
         ?? Core.SharedPaths.GetDefaultProgramDir();
 
-    /// <summary>Root directory for all MTC application data.</summary>
-    public static string AppDataDir => _appDataDir;
+    /// <summary>Legacy/bootstrap app-data root retained only for migration paths.</summary>
+    public static string AppDataDir => Core.SharedPaths.AppDataDir;
 
     public static string ProgramDir => GetEffectiveProgramDir();
 
@@ -44,8 +43,8 @@ public static class AppPaths
     /// <summary>Directory where MTC-only expansion modules can be placed.</summary>
     public static string ModulesDir => Path.Combine(ProgramDir, "modules");
 
-    /// <summary>Directory where MTC expansion modules can persist per-module state.</summary>
-    public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data", "mtc");
+    /// <summary>Directory where expansion modules persist state.</summary>
+    public static string ModuleDataDir => Core.SharedPaths.GetModuleDataRootDir(ProgramDir);
 
     public static string TwxproxyDatabaseDir => DatabaseDir;
 
@@ -100,8 +99,6 @@ public static class AppPaths
         => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName) + ".json");
 
     public static string ConfigFilePath => Core.SharedPaths.ConfigFilePath;
-
-    public static string TwxpConfigPath => Core.SharedPaths.TwxpConfigPath;
 
     /// <summary>Ensure the shared twxproxy games directory exists.</summary>
     public static void EnsureTwxproxyGamesDir() => Directory.CreateDirectory(TwxproxyGamesDir);

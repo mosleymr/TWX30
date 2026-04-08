@@ -6,17 +6,11 @@ namespace TWXP.Services;
 /// </summary>
 public static class AppPaths
 {
-    private static readonly string _appDataDir = TWXProxy.Core.SharedPaths.AppDataDir;
     private static readonly string _legacyAppDataDir = BuildLegacyAppDataDir();
     private static string _configuredProgramDir = TWXProxy.Core.SharedPathSettingsStore.Load().ProgramDirectory;
 
-    /// <summary>
-    /// Root directory for all TWX Proxy application data.
-    ///   macOS   : ~/Library/Containers/&lt;bundle-id&gt;/Data/Library/Application Support/twxproxy/
-    ///   Windows : C:\Users\&lt;Username&gt;\AppData\Local\twxproxy\
-    ///   Linux   : ~/.local/share/twxproxy/
-    /// </summary>
-    public static string AppDataDir => _appDataDir;
+    /// <summary>Legacy/bootstrap app-data root retained only for migration paths.</summary>
+    public static string AppDataDir => TWXProxy.Core.SharedPaths.AppDataDir;
 
     public static string ProgramDir => GetEffectiveProgramDir();
 
@@ -81,8 +75,8 @@ public static class AppPaths
     /// <summary>Directory where TWXP-only expansion modules can be placed.</summary>
     public static string ModulesDir => Path.Combine(ProgramDir, "modules");
 
-    /// <summary>Directory where TWXP expansion modules can persist per-module state.</summary>
-    public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data", "twxp");
+    /// <summary>Directory where expansion modules persist state.</summary>
+    public static string ModuleDataDir => TWXProxy.Core.SharedPaths.GetModuleDataRootDir(ProgramDir);
 
     /// <summary>Directory where shared expansion modules can be placed for both apps.</summary>
     public static string SharedModulesDir => TWXProxy.Core.SharedPaths.ModulesDir;
@@ -102,7 +96,6 @@ public static class AppPaths
         Directory.CreateDirectory(ConfigDir);
         Directory.CreateDirectory(GamesDir);
         Directory.CreateDirectory(DatabaseDir);
-        Directory.CreateDirectory(LegacyDatabaseDir);
         Directory.CreateDirectory(LogsDir);
         Directory.CreateDirectory(ModulesDir);
         Directory.CreateDirectory(ModuleDataDir);

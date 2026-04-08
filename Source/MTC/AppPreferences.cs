@@ -42,10 +42,7 @@ public class AppPreferences
     public bool CommandDeckSkinEnabled { get; set; }
 
     private static string LegacySharedPrefsPath()
-    {
-        Directory.CreateDirectory(AppPaths.AppDataDir);
-        return Path.Combine(AppPaths.AppDataDir, "prefs.xml");
-    }
+        => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
 
     private static string LegacyDefaultPath()
         => Path.Combine(
