@@ -435,7 +435,7 @@ public class MainWindow : Window
         _deckSurface.Children.Add(panel);
         _deckPanels[panelId] = panel;
 
-        Panel.SetZIndex(panel, state.ZIndex);
+        panel.ZIndex = state.ZIndex;
         panel.MoveTo(state.Left, state.Top);
         if (state.Minimized)
             panel.SetMinimized(true);
@@ -520,9 +520,9 @@ public class MainWindow : Window
 
     private void BringDeckPanelToFront(FloatingDeckPanel panel)
     {
-        Panel.SetZIndex(panel, _deckNextZIndex++);
+        panel.ZIndex = _deckNextZIndex++;
         if (_deckPanelStates.TryGetValue(panel.PanelId, out DeckPanelState? state))
-            state.ZIndex = Panel.GetZIndex(panel);
+            state.ZIndex = panel.ZIndex;
     }
 
     private void OnDeckPanelStateChanged(FloatingDeckPanel panel)
@@ -533,7 +533,7 @@ public class MainWindow : Window
         (state.Left, state.Top) = panel.GetPosition();
         state.Minimized = panel.IsMinimized;
         state.Closed = panel.IsClosed;
-        state.ZIndex = Panel.GetZIndex(panel);
+        state.ZIndex = panel.ZIndex;
     }
 
     private void ShowDeckPanel(string panelId)
@@ -583,6 +583,8 @@ public class MainWindow : Window
         _hudHeaderSector.Text = "SECTOR ---";
 
         var bannerGrid = new Grid();
+        bannerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        bannerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bannerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -601,7 +603,7 @@ public class MainWindow : Window
                 },
                 new TextBlock
                 {
-                    Text = "Command deck skin with split tactical map, console feed, and framed ship telemetry.",
+                    Text = "Drag, minimize, or close the internal windows. Gameplay console stays anchored to the deck.",
                     Foreground = HudMuted,
                     FontSize = 13,
                 },
@@ -622,6 +624,21 @@ public class MainWindow : Window
         };
         Grid.SetColumn(chips, 1);
         bannerGrid.Children.Add(chips);
+
+        var launchBar = new WrapPanel
+        {
+            ItemSpacing = 8,
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        launchBar.Children.Add(BuildDeckLauncherButton("Map", () => ShowDeckPanel("map")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Console", () => ShowDeckPanel("console")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Ship", () => ShowDeckPanel("ship")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Intel", () => ShowDeckPanel("intel")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Logo", () => ShowDeckPanel("logo")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Reset Layout", RestoreDeckLayout));
+        Grid.SetRow(launchBar, 1);
+        Grid.SetColumnSpan(launchBar, 2);
+        bannerGrid.Children.Add(launchBar);
 
         return new Border
         {
@@ -1018,6 +1035,22 @@ public class MainWindow : Window
                 },
             },
         };
+    }
+
+    private Control BuildDeckLauncherButton(string text, Action onClick)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            Foreground = HudText,
+            Padding = new Thickness(12, 6),
+            FontSize = 12,
+        };
+        button.Click += (_, _) => onClick();
+        return button;
     }
 
     private Control BuildDeckStatBadge(string label, TextBlock value, IBrush accent)
