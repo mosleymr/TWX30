@@ -1058,10 +1058,12 @@ namespace TWXProxy.Core
             // Replace lone CR with CRLF to prevent terminal display issues
             output = output.Replace("\r", "\r\n");
             
-            // Broadcast to all connected clients via TWXServer
+            // Match Pascal TWX behavior: ECHO goes to deaf clients too so
+            // interactive bot menus can temporarily mute server traffic
+            // without hiding their own UI.
             if (GlobalModules.TWXServer != null)
             {
-                GlobalModules.TWXServer.Broadcast(output);
+                GlobalModules.TWXServer.Broadcast(output, broadcastDeaf: true);
             }
             else
             {
@@ -1083,11 +1085,10 @@ namespace TWXProxy.Core
             // Replace lone CR with CRLF to prevent terminal display issues
             output = output.Replace("\r", "\r\n");
             
-            // Broadcast to all connected clients with CP437 encoding flag
-            // The actual CP437 encoding would be handled by the server implementation
+            // Match Pascal TWX behavior: ECHOEX also reaches deaf clients.
             if (GlobalModules.TWXServer != null)
             {
-                GlobalModules.TWXServer.Broadcast(output);
+                GlobalModules.TWXServer.Broadcast(output, broadcastDeaf: true);
             }
             else
             {
@@ -2046,6 +2047,19 @@ namespace TWXProxy.Core
                 {
                     string menuName = parameters[0].Value.ToUpperInvariant();
                     GlobalModules.DebugLog($"[OpenMenu] Opening menu '{menuName}'...\n");
+
+                    // Pascal TWX exposes certain built-in proxy actions as OPENMENU
+                    // targets even though they are not script-defined menus.
+                    if (menuName == "TWX_STOPALLFAST")
+                    {
+                        GlobalModules.TWXServer?.Broadcast("\r\nStopping all non-system scripts\r\n", broadcastDeaf: true);
+
+                        if (GetActiveInterpreter() is ModInterpreter interpreter)
+                            interpreter.StopAll(false);
+
+                        return CmdAction.None;
+                    }
+
                     GlobalModules.TWXMenu.OpenMenu(menuName, 0);
 
                     if (parameters.Length > 1 && parameters[1].Value == "0")

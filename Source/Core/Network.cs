@@ -125,6 +125,8 @@ namespace TWXProxy.Core
         private readonly object _deferredLocalOutputLock = new();
         private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
         private int _serverDataDispatchDepth;
+        private int _suppressScriptPipeToggleMessageCount;
+        private int _suppressScriptPipeTogglePromptCount;
         
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -948,7 +950,8 @@ namespace TWXProxy.Core
                     }
                     else
                     {
-                        await SendToLocalAsync(cleanData, token: token);
+                        if (!ShouldSuppressScriptPipeToggleOutput(cleanData))
+                            await SendToLocalAsync(cleanData, token: token);
                         await FlushDeferredLocalOutputAsync(token);
                         LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
@@ -1111,10 +1114,21 @@ namespace TWXProxy.Core
                                 {
                                     bool keypressMode = scriptWaitingForInput && (_interpreter?.HasKeypressInputWaiting ?? false);
                                     bool textOutConsumed = false;
+                                    bool enteredInputWait = false;
                                     if (_interpreter != null && !scriptWaitingForInput)
+                                    {
                                         textOutConsumed = _interpreter.TextOutEvent(c.ToString(), null);
+                                        enteredInputWait = _interpreter.IsAnyScriptWaitingForInput();
+                                    }
 
-                                    bool sendToServer = !textOutConsumed && !scriptWaitingForInput;
+                                    // If a text-out trigger on this exact character just opened a
+                                    // GETINPUT/GETCONSOLEINPUT wait, do not also forward that same
+                                    // character to the server or reuse it as the pending reply.
+                                    bool suppressCurrentCharForNewInputWait = !scriptWaitingForInput && enteredInputWait;
+
+                                    bool sendToServer = !textOutConsumed &&
+                                                        !scriptWaitingForInput &&
+                                                        !suppressCurrentCharForNewInputWait;
                                     if (sendToServer && _serverStream != null && _serverClient?.Connected == true)
                                     {
                                         bool negotiationInProgress;
@@ -1154,8 +1168,10 @@ namespace TWXProxy.Core
                                         }
                                     }
 
-                                    if (!textOutConsumed)
+                                    if (!textOutConsumed && !suppressCurrentCharForNewInputWait)
                                         LocalDataReceived?.Invoke(this, new DataReceivedEventArgs(new byte[] { b }));
+                                    else if (suppressCurrentCharForNewInputWait)
+                                        GlobalModules.DebugLog($"[INPUT] Suppressed trigger character {b} ('{c}') after text-out handler opened input wait\n");
                                 }
                             }
                         }
@@ -1579,6 +1595,49 @@ namespace TWXProxy.Core
         public void ObserveScriptSend(string text)
         {
             _nativeHaggle.ObserveScriptSend(text);
+
+            if (text == "|")
+            {
+                Interlocked.Increment(ref _suppressScriptPipeToggleMessageCount);
+                GlobalModules.DebugLog("[MSGTOGGLE] Armed suppression for next script-triggered message toggle response\n");
+            }
+        }
+
+        private bool ShouldSuppressScriptPipeToggleOutput(byte[] cleanData)
+        {
+            if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0 &&
+                Volatile.Read(ref _suppressScriptPipeTogglePromptCount) <= 0)
+            {
+                return false;
+            }
+
+            string text = Encoding.Latin1.GetString(cleanData);
+            bool containsToggleMessage =
+                text.Contains("Silencing all messages.", StringComparison.Ordinal) ||
+                text.Contains("Displaying all messages.", StringComparison.Ordinal);
+            bool containsPrompt =
+                text.Contains("(?=Help)? :", StringComparison.Ordinal) ||
+                text.Contains("Main> ", StringComparison.Ordinal) ||
+                text.Contains("Script> ", StringComparison.Ordinal);
+
+            if (containsToggleMessage && Volatile.Read(ref _suppressScriptPipeToggleMessageCount) > 0)
+            {
+                Interlocked.Decrement(ref _suppressScriptPipeToggleMessageCount);
+                if (!containsPrompt)
+                    Interlocked.Increment(ref _suppressScriptPipeTogglePromptCount);
+
+                GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of script-triggered message toggle response\n");
+                return true;
+            }
+
+            if (containsPrompt && Volatile.Read(ref _suppressScriptPipeTogglePromptCount) > 0)
+            {
+                Interlocked.Decrement(ref _suppressScriptPipeTogglePromptCount);
+                GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of follow-up prompt after script-triggered message toggle\n");
+                return true;
+            }
+
+            return false;
         }
 
         private void SendNativeHaggleResponse(string response)
@@ -1651,6 +1710,15 @@ namespace TWXProxy.Core
                 return;
 
             SendToLocalAsync(data).Wait();
+        }
+
+        public void Broadcast(string message, bool broadcastDeaf)
+        {
+            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            if (TryQueueDeferredLocalOutput(data, broadcastDeaf))
+                return;
+
+            SendToLocalAsync(data, broadcastDeaf: broadcastDeaf).Wait();
         }
 
         public void ClientMessage(string message)

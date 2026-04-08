@@ -2604,13 +2604,85 @@ public sealed class NativeHaggleEngine
 
     private static void PersistDerivedRanges(SessionState session)
     {
-        if (session.Candidates.Count == 0)
+        if (!TryGetCandidateRange(session, out int minMcic, out int maxMcic, out int minProductivity, out int maxProductivity))
             return;
 
-        int minMcic = 0;
-        int maxMcic = 0;
-        int minProductivity = 0;
-        int maxProductivity = 0;
+        ModDatabase? db = ScriptRef.GetActiveDatabase();
+        if (db == null)
+            return;
+
+        WriteInt(db, session.Sector, session.ProductKey + "-", minMcic);
+        WriteInt(db, session.Sector, session.ProductKey + "+", maxMcic);
+        WriteInt(db, session.Sector, session.ProductKey + "L", minProductivity);
+        WriteInt(db, session.Sector, session.ProductKey + "H", maxProductivity);
+    }
+
+    private void PersistMcicCompatibilityParameters(SessionState session, bool success)
+    {
+        if (!success)
+            return;
+
+        ModDatabase? db = ScriptRef.GetActiveDatabase();
+        if (db == null)
+            return;
+
+        if (!TryGetPersistableMcicRange(session, out int minMcic, out int maxMcic, out int representativeMcic))
+            return;
+
+        WriteInt(db, session.Sector, session.ProductKey + "-", minMcic);
+        WriteInt(db, session.Sector, session.ProductKey + "+", maxMcic);
+
+        string? legacyAlias = GetLegacyMcicAlias(session.ProductKey);
+        if (!string.IsNullOrEmpty(legacyAlias))
+            WriteInt(db, session.Sector, legacyAlias, Math.Abs(representativeMcic));
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Persisted MCIC sector={session.Sector} product={session.ProductKey} buysell={session.BuySell} legacyKey='{legacyAlias ?? "-"}' legacyValue={Math.Abs(representativeMcic)} range={minMcic}..{maxMcic}\n");
+    }
+
+    private static bool TryGetPersistableMcicRange(SessionState session, out int minMcic, out int maxMcic, out int representativeMcic)
+    {
+        minMcic = 0;
+        maxMcic = 0;
+        representativeMcic = 0;
+
+        if (session.IsPlanetTrade)
+        {
+            int mcic = session.PlanetSolvedMcic != 0
+                ? session.PlanetSolvedMcic
+                : session.PlanetQualityMcic;
+            if (mcic == 0)
+                return false;
+
+            minMcic = mcic;
+            maxMcic = mcic;
+            representativeMcic = mcic;
+            return true;
+        }
+
+        if (!TryGetCandidateRange(session, out minMcic, out maxMcic, out _, out _))
+            return false;
+
+        representativeMcic = minMcic == maxMcic
+            ? minMcic
+            : (int)PascalRoundInt((minMcic + maxMcic) / 2.0, 0);
+        return true;
+    }
+
+    private static bool TryGetCandidateRange(
+        SessionState session,
+        out int minMcic,
+        out int maxMcic,
+        out int minProductivity,
+        out int maxProductivity)
+    {
+        minMcic = 0;
+        maxMcic = 0;
+        minProductivity = 0;
+        maxProductivity = 0;
+
+        if (session.Candidates.Count == 0)
+            return false;
 
         foreach (Candidate candidate in session.Candidates)
         {
@@ -2624,15 +2696,16 @@ public sealed class NativeHaggleEngine
                 maxProductivity = candidate.Productivity;
         }
 
-        ModDatabase? db = ScriptRef.GetActiveDatabase();
-        if (db == null)
-            return;
-
-        WriteInt(db, session.Sector, session.ProductKey + "-", minMcic);
-        WriteInt(db, session.Sector, session.ProductKey + "+", maxMcic);
-        WriteInt(db, session.Sector, session.ProductKey + "L", minProductivity);
-        WriteInt(db, session.Sector, session.ProductKey + "H", maxProductivity);
+        return true;
     }
+
+    private static string? GetLegacyMcicAlias(string productKey) => productKey switch
+    {
+        "FUEL" => "OREMCIC",
+        "ORGANICS" => "ORGMCIC",
+        "EQUIPMENT" => "EQUMCIC",
+        _ => null,
+    };
 
     private static bool TryEnableHeuristicFallback(SessionState session, long offer, string reason)
     {
@@ -2813,6 +2886,7 @@ public sealed class NativeHaggleEngine
         if (success)
             _successfulHaggles++;
 
+        PersistMcicCompatibilityParameters(_session, success);
         ApplyPlanetTradeOutcome(_session, success);
         if (!UsesCherokeePlanetBaseline(_session))
             GetActiveModeExtension(_session.ActiveMode)?.OnOutcome(this, _session, success, reason);

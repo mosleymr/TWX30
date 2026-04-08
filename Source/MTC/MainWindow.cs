@@ -2096,16 +2096,23 @@ public class MainWindow : Window
     private async void OnConnect()
     {
         if (_state.EmbeddedProxy)
-            await DoConnectEmbeddedAsync();
+        {
+            if (_gameInstance == null)
+                await DoConnectEmbeddedAsync();
+
+            if (_gameInstance != null && !_gameInstance.IsConnected)
+                await ConnectEmbeddedServerAsync();
+        }
         else
             DoConnect();
     }
 
-    private void OnDisconnect()
+    private async void OnDisconnect()
     {
         if (_gameInstance != null)
         {
-            _pendingEmbeddedStop = StopEmbeddedAsync();
+            if (_gameInstance.IsConnected)
+                await _gameInstance.DisconnectFromServerAsync();
             return;
         }
         if (!_telnet.IsConnected)
@@ -3057,7 +3064,7 @@ public class MainWindow : Window
         // before any server connection is made. The server connection is triggered by
         // the $c command (typed by the user or called from a script via the connect command).
         _termCtrl.IsConnected = true;
-        OnGameConnected();   // disable Connect menu item, enable Disconnect
+        OnGameDisconnected();   // proxy is live, but the game server is not connected yet
         _parser.Feed($"\x1b[1;32m[Embedded proxy ready — type \x1b[1;33m$c\x1b[1;32m to connect to {_state.Host}:{_state.Port}, or start a script]\x1b[0m\r\n");
         _buffer.Dirty = true;
     }
@@ -3107,6 +3114,23 @@ public class MainWindow : Window
         RefreshStatusBar();
         UpdateHaggleToggleState();
         _buffer.Dirty = true;
+    }
+
+    private async Task ConnectEmbeddedServerAsync()
+    {
+        if (_gameInstance == null || _gameInstance.IsConnected)
+            return;
+
+        try
+        {
+            await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes("\r\nConnecting to server...\r\n"));
+            await _gameInstance.ConnectToServerAsync();
+            await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes("Connected!\r\n"));
+        }
+        catch (Exception ex)
+        {
+            await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes($"\r\nConnection failed: {ex.Message}\r\n"));
+        }
     }
 
     /// <summary>

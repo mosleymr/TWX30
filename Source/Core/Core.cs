@@ -262,6 +262,7 @@ namespace TWXProxy.Core
     public interface ITWXServer : IModServer
     {
         void Broadcast(string message);
+        void Broadcast(string message, bool broadcastDeaf);
         void ClientMessage(string message);
         void AddQuickText(string key, string value);
         void ClearQuickText(string? key = null);

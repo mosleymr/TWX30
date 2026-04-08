@@ -1818,11 +1818,40 @@ namespace TWXProxy.Core
 
         private static SectorData? GetOrCreate(ModDatabase db, int sectorNum)
         {
-            // SectorCount == 0 means universe size is unknown (live capture, no .twx loaded) — allow any positive number.
-            if (sectorNum <= 0 || (db.SectorCount > 0 && sectorNum > db.SectorCount))
+            if (sectorNum <= 0)
             {
                 GlobalModules.DebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={db.SectorCount}\n");
                 return null;
+            }
+
+            int sectorCount = db.SectorCount;
+            if (sectorCount > 0 && sectorCount != int.MaxValue && sectorNum > sectorCount)
+            {
+                try
+                {
+                    DataHeader header = db.DBHeader;
+                    int previousSectors = header.Sectors;
+                    if (sectorNum > previousSectors)
+                    {
+                        header.Sectors = sectorNum;
+                        db.ReplaceHeader(header);
+                        db.SaveDatabase();
+                        GlobalModules.DebugLog(
+                            $"[AutoRecorder] Auto-grew database sectors old={previousSectors} new={sectorNum}\n");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    GlobalModules.DebugLog(
+                        $"[AutoRecorder] Failed to auto-grow database for sector={sectorNum} dbSectorCount={sectorCount} error='{ex.Message}'\n");
+                }
+
+                sectorCount = db.SectorCount;
+                if (sectorCount > 0 && sectorCount != int.MaxValue && sectorNum > sectorCount)
+                {
+                    GlobalModules.DebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={sectorCount}\n");
+                    return null;
+                }
             }
 
             var sector = db.GetSector(sectorNum);

@@ -1325,6 +1325,7 @@ namespace TWXProxy.Core
         private bool _waitingForInput;
         private bool _keypressMode;         // true when waiting for a single keypress (empty prompt)
         private CmdParam? _inputVarParam;
+        private string? _suppressNextNestedKeypressValue;
 #pragma warning disable CS0169 // Field is never used
         private bool _silent;
         private bool _system;
@@ -3905,10 +3906,26 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[LIE] waiting={_waitingForInput} kpm={_keypressMode} var={pname} text='{text.TrimEnd('\r', '\n')}'\n");
             if (_waitingForInput && _inputVarParam != null)
             {
+                string trimmed = text.TrimEnd('\r', '\n');
+
+                // If the previous single-key handler opened another immediate
+                // single-key wait (for example Mombot Tab-~ opening the
+                // preferences menu), do not let the same physical keypress
+                // satisfy both waits. The user should have to press the next
+                // key explicitly.
+                if (_keypressMode &&
+                    _suppressNextNestedKeypressValue != null &&
+                    string.Equals(trimmed, _suppressNextNestedKeypressValue, StringComparison.Ordinal))
+                {
+                    GlobalModules.DebugLog($"[LIE] Suppressing duplicated nested keypress '{trimmed}'\n");
+                    _suppressNextNestedKeypressValue = null;
+                    return false;
+                }
+
+                _suppressNextNestedKeypressValue = null;
                 Console.WriteLine($"[Script.LocalInputEvent] Received input: '{text}', storing and resuming");
                 
                 // Store the input in the variable
-                string trimmed = text.TrimEnd('\r', '\n');
                 _inputVarParam.Value = trimmed;
 
                 // When a credential variable is set via line-input (not keypress), persist it.
@@ -3983,6 +4000,14 @@ namespace TWXProxy.Core
                         if (menuMgr.HasSuspendedMenu)
                             menuMgr.RedisplayCurrentMenu();
                     }
+                }
+
+                // When a keypress handler immediately opens another keypress
+                // wait, suppress the same key from satisfying that new wait.
+                if (!completed && _waitingForInput && _keypressMode)
+                {
+                    _suppressNextNestedKeypressValue = trimmed;
+                    GlobalModules.DebugLog($"[LIE] Nested keypress wait armed; suppressing repeated key '{trimmed}' once\n");
                 }
                 
                 return completed;

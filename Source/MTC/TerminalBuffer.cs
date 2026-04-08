@@ -95,6 +95,10 @@ public class TerminalBuffer
     public int Rows    { get; private set; }
 
     private TerminalCell[,] _cells;
+    private TerminalCell[,]? _resizeBackupCells;
+    private int _resizeBackupColumns;
+    private int _resizeBackupRows;
+    private bool _suppressResizeBackupInvalidation;
 
     // ── Scrollback buffer ──────────────────────────────────────────────────
     /// <summary>Maximum number of lines retained in the off-screen scrollback buffer.</summary>
@@ -145,6 +149,7 @@ public class TerminalBuffer
 
     public void SetCell(int row, int col, char ch, TermColor fg, TermColor bg)
     {
+        InvalidateResizeBackup();
         if (row < 0 || row >= Rows || col < 0 || col >= Columns) return;
         _cells[row, col] = new TerminalCell { Char = ch, Foreground = fg, Background = bg };
         Dirty = true;
@@ -207,6 +212,7 @@ public class TerminalBuffer
 
     public void ScrollUp(int lines = 1)
     {
+        InvalidateResizeBackup();
         for (int n = 0; n < lines; n++)
         {
             // Save the departing top line to the scrollback buffer (only when
@@ -231,6 +237,7 @@ public class TerminalBuffer
 
     public void ScrollDown(int lines = 1)
     {
+        InvalidateResizeBackup();
         for (int n = 0; n < lines; n++)
         {
             for (int r = ScrollBottom; r > ScrollTop; r--)
@@ -245,6 +252,7 @@ public class TerminalBuffer
 
     public void EraseLine(int row, int fromCol, int toCol)
     {
+        InvalidateResizeBackup();
         for (int c = fromCol; c <= toCol && c < Columns; c++)
             _cells[row, c] = new TerminalCell { Char = ' ', Foreground = CurrentFg, Background = CurrentBg };
         Dirty = true;
@@ -261,6 +269,7 @@ public class TerminalBuffer
 
     public void InsertChars(int count)
     {
+        InvalidateResizeBackup();
         for (int c = Columns - 1; c >= CursorCol + count; c--)
             _cells[CursorRow, c] = _cells[CursorRow, c - count];
         EraseLine(CursorRow, CursorCol, CursorCol + count - 1);
@@ -268,6 +277,7 @@ public class TerminalBuffer
 
     public void DeleteChars(int count)
     {
+        InvalidateResizeBackup();
         for (int c = CursorCol; c < Columns - count; c++)
             _cells[CursorRow, c] = _cells[CursorRow, c + count];
         EraseLine(CursorRow, Columns - count, Columns - 1);
@@ -285,17 +295,35 @@ public class TerminalBuffer
         columns = Math.Max(10, columns);
         rows    = Math.Max(3,  rows);
 
+        bool shrinking = columns < Columns || rows < Rows;
+        bool growing = columns > Columns || rows > Rows;
+
+        if (shrinking && _resizeBackupCells == null)
+            SaveResizeBackup();
+
+        TerminalCell[,] sourceCells = _cells;
+        int sourceColumns = Columns;
+        int sourceRows = Rows;
+        bool restoreFromBackup = growing && _resizeBackupCells != null;
+        if (restoreFromBackup)
+        {
+            sourceCells = _resizeBackupCells!;
+            sourceColumns = _resizeBackupColumns;
+            sourceRows = _resizeBackupRows;
+        }
+
         var newCells = new TerminalCell[rows, columns];
         for (int r = 0; r < rows; r++)
             for (int c = 0; c < columns; c++)
                 newCells[r, c] = TerminalCell.Default;
 
-        int copyRows = Math.Min(rows, Rows);
-        int copyCols = Math.Min(columns, Columns);
+        int copyRows = Math.Min(rows, sourceRows);
+        int copyCols = Math.Min(columns, sourceColumns);
         for (int r = 0; r < copyRows; r++)
             for (int c = 0; c < copyCols; c++)
-                newCells[r, c] = _cells[r, c];
+                newCells[r, c] = sourceCells[r, c];
 
+        _suppressResizeBackupInvalidation = true;
         _cells       = newCells;
         Columns      = columns;
         Rows         = rows;
@@ -303,6 +331,15 @@ public class TerminalBuffer
         ScrollBottom = rows - 1;
         CursorCol    = Math.Clamp(CursorCol, 0, columns - 1);
         CursorRow    = Math.Clamp(CursorRow, 0, rows    - 1);
+        _suppressResizeBackupInvalidation = false;
+
+        if (_resizeBackupCells != null &&
+            columns >= _resizeBackupColumns &&
+            rows >= _resizeBackupRows)
+        {
+            ClearResizeBackup();
+        }
+
         Dirty        = true;
     }
 
@@ -310,6 +347,7 @@ public class TerminalBuffer
 
     public void Reset()
     {
+        InvalidateResizeBackup();
         for (int r = 0; r < Rows; r++)
             for (int c = 0; c < Columns; c++)
                 _cells[r, c] = TerminalCell.Default;
@@ -322,5 +360,36 @@ public class TerminalBuffer
         // Intentionally do NOT clear _scrollback here — a terminal reset (ESC c)
         // from the server should not destroy the session scroll history.
         Dirty        = true;
+    }
+
+    private void SaveResizeBackup()
+    {
+        _resizeBackupCells = CloneCells(_cells, Rows, Columns);
+        _resizeBackupColumns = Columns;
+        _resizeBackupRows = Rows;
+    }
+
+    private static TerminalCell[,] CloneCells(TerminalCell[,] cells, int rows, int columns)
+    {
+        var clone = new TerminalCell[rows, columns];
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < columns; c++)
+                clone[r, c] = cells[r, c];
+        return clone;
+    }
+
+    private void ClearResizeBackup()
+    {
+        _resizeBackupCells = null;
+        _resizeBackupColumns = 0;
+        _resizeBackupRows = 0;
+    }
+
+    private void InvalidateResizeBackup()
+    {
+        if (_suppressResizeBackupInvalidation)
+            return;
+
+        ClearResizeBackup();
     }
 }
