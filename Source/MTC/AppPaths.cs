@@ -12,12 +12,16 @@ public static class AppPaths
 {
     private static readonly string _appDataDir = Core.SharedPaths.AppDataDir;
     private static readonly string _legacyLocalAppDataDir = BuildLegacyLocalAppDataDir();
+    private static string _configuredProgramDir = Core.SharedPaths.TryGetStoredProgramDir()
+        ?? Core.SharedPaths.GetDefaultProgramDir();
 
     /// <summary>Root directory for all MTC application data.</summary>
     public static string AppDataDir => _appDataDir;
 
-    /// <summary>Directory where .xdb database files are stored.</summary>
-    public static string DatabaseDir => Core.SharedPaths.DatabaseDir;
+    public static string ProgramDir => GetEffectiveProgramDir();
+
+    /// <summary>Directory where game JSON files and databases are stored.</summary>
+    public static string DatabaseDir => Path.Combine(ProgramDir, "games");
 
     /// <summary>Legacy pre-3.0 MTC-only database directory used for one-time migration.</summary>
     public static string LegacyDatabaseDir => Path.Combine(_legacyLocalAppDataDir, "databases");
@@ -29,19 +33,21 @@ public static class AppPaths
     public static string DebugLogDir => Path.Combine(GetEffectiveProgramDir(), "logs");
 
     /// <summary>Path to the MTC debug log file for the active TWX program directory.</summary>
-    public static string DebugLogPath => Path.Combine(DebugLogDir, "mtc_debug.log");
+    public static string DebugLogPath => GetDebugLogPath();
+
+    /// <summary>Path to the dedicated port/native haggle debug log.</summary>
+    public static string PortHaggleDebugLogPath => Path.Combine(DebugLogDir, "mtc_haggle_debug.log");
+
+    /// <summary>Path to the dedicated planet negotiation debug log.</summary>
+    public static string PlanetHaggleDebugLogPath => Path.Combine(DebugLogDir, "mtc_neg_debug.log");
 
     /// <summary>Directory where MTC-only expansion modules can be placed.</summary>
-    public static string ModulesDir => Path.Combine(AppDataDir, "modules-mtc");
+    public static string ModulesDir => Path.Combine(ProgramDir, "modules");
 
     /// <summary>Directory where MTC expansion modules can persist per-module state.</summary>
     public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data", "mtc");
 
-    /// <summary>
-    /// Directory where embedded-proxy mode shares databases with the standalone proxy.
-    /// On macOS this is ~/Library/twxproxy/databases.
-    /// </summary>
-    public static string TwxproxyDatabaseDir => Core.SharedPaths.DatabaseDir;
+    public static string TwxproxyDatabaseDir => DatabaseDir;
 
     /// <summary>Directory where shared expansion modules can be placed for both MTC and TWXP.</summary>
     public static string SharedModulesDir => Core.SharedPaths.ModulesDir;
@@ -63,11 +69,12 @@ public static class AppPaths
 
     /// <summary>Returns the shared TWX Proxy .xdb path for a given game name.</summary>
     public static string TwxproxyDatabasePathForGame(string gameName)
-        => Core.SharedPaths.DatabasePathForGame(gameName);
+        => DatabasePathForGame(gameName);
 
     /// <summary>Ensure required directories exist.</summary>
     public static void EnsureDirectories()
     {
+        Directory.CreateDirectory(ProgramDir);
         Directory.CreateDirectory(DatabaseDir);
         Directory.CreateDirectory(LogDir);
         Directory.CreateDirectory(TwxproxyGamesDir);
@@ -77,7 +84,7 @@ public static class AppPaths
 
     public static void EnsureTwxproxyDatabaseDir()
     {
-        Core.SharedPaths.EnsureDatabaseDir();
+        Directory.CreateDirectory(TwxproxyDatabaseDir);
     }
 
     public static void EnsureSharedModulesDir()
@@ -85,44 +92,63 @@ public static class AppPaths
         Core.SharedPaths.EnsureModuleDir();
     }
 
-    /// <summary>
-    /// Directory where shared game JSON files live (shared with the standalone proxy).
-    /// </summary>
-    public static string TwxproxyGamesDir => Core.SharedPaths.GamesDir;
+    /// <summary>Directory where shared game JSON files live for the configured TWX program folder.</summary>
+    public static string TwxproxyGamesDir => Path.Combine(ProgramDir, "games");
 
     /// <summary>Returns the path to the shared TWXP game config JSON for a given game name.</summary>
-    public static string TwxproxyGameConfigFileFor(string gameName) => Core.SharedPaths.GameConfigPathForGame(gameName);
+    public static string TwxproxyGameConfigFileFor(string gameName)
+        => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName) + ".json");
+
+    public static string ConfigFilePath => Core.SharedPaths.ConfigFilePath;
 
     public static string TwxpConfigPath => Core.SharedPaths.TwxpConfigPath;
 
     /// <summary>Ensure the shared twxproxy games directory exists.</summary>
     public static void EnsureTwxproxyGamesDir() => Directory.CreateDirectory(TwxproxyGamesDir);
 
+    public static void SetConfiguredProgramDir(string? programDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(programDirectory))
+            return;
+
+        _configuredProgramDir = Path.GetFullPath(programDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        Core.GlobalModules.ProgramDir = _configuredProgramDir;
+    }
+
     public static string GetEffectiveProgramDir(string? scriptDirectory = null)
     {
-        if (!string.IsNullOrWhiteSpace(scriptDirectory))
-        {
-            string trimmed = scriptDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (!string.IsNullOrWhiteSpace(trimmed))
-                return Path.GetDirectoryName(trimmed) ?? trimmed;
-        }
+        if (!string.IsNullOrWhiteSpace(_configuredProgramDir))
+            return _configuredProgramDir;
 
-        if (!string.IsNullOrWhiteSpace(Core.GlobalModules.ProgramDir))
-            return Core.GlobalModules.ProgramDir;
-
-        return OperatingSystem.IsWindows()
-            ? Core.WindowsInstallInfo.GetInstalledProgramDirOrDefault()
-            : Environment.CurrentDirectory;
+        return Core.SharedPaths.ResolveProgramDir(scriptDirectory);
     }
 
     public static string GetDebugLogDir(string? scriptDirectory = null)
         => Path.Combine(GetEffectiveProgramDir(scriptDirectory), "logs");
 
     public static string GetDebugLogPath(string? scriptDirectory = null)
-        => Path.Combine(GetDebugLogDir(scriptDirectory), "mtc_debug.log");
+        => GetDebugLogPathForGame(null, scriptDirectory);
+
+    public static string GetDebugLogPathForGame(string? gameName, string? scriptDirectory = null)
+        => Path.Combine(
+            GetDebugLogDir(scriptDirectory),
+            $"{SanitizeLogIdentity(gameName)}_debug.log");
+
+    public static string GetPortHaggleDebugLogPath(string? scriptDirectory = null)
+        => Path.Combine(GetDebugLogDir(scriptDirectory), "mtc_haggle_debug.log");
+
+    public static string GetPlanetHaggleDebugLogPath(string? scriptDirectory = null)
+        => Path.Combine(GetDebugLogDir(scriptDirectory), "mtc_neg_debug.log");
 
     public static void EnsureDebugLogDir(string? scriptDirectory = null)
         => Directory.CreateDirectory(GetDebugLogDir(scriptDirectory));
+
+    private static string SanitizeLogIdentity(string? gameName)
+    {
+        string resolved = string.IsNullOrWhiteSpace(gameName) ? "mtc" : gameName;
+        return Core.SharedPaths.SanitizeFileComponent(resolved);
+    }
 
     private static string BuildLegacyLocalAppDataDir()
     {

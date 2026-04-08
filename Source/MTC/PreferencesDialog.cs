@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Core = TWXProxy.Core;
 
 namespace MTC;
 
@@ -31,15 +32,72 @@ public class PreferencesDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background            = BgPanel;
 
+        string defaultProgramDir = string.IsNullOrWhiteSpace(prefs.ProgramDirectory)
+            ? Core.SharedPaths.GetDefaultProgramDir()
+            : prefs.ProgramDirectory;
+        string defaultScriptsDir = string.IsNullOrWhiteSpace(prefs.ScriptsDirectory)
+            ? Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(defaultProgramDir)
+            : prefs.ScriptsDirectory;
+
+        // ── Program Directory ───────────────────────────────────────────
+        var txtProgramDir = new TextBox
+        {
+            Text                = defaultProgramDir,
+            Watermark           = "path to TWX program directory",
+            Background          = BgInput,
+            Foreground          = FgNormal,
+            BorderBrush         = BdInput,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
         // ── Scripts Directory ────────────────────────────────────────────
         var txtScripts = new TextBox
         {
-            Text                = prefs.ScriptsDirectory,
+            Text                = defaultScriptsDir,
             Watermark           = "path to scripts folder",
             Background          = BgInput,
             Foreground          = FgNormal,
             BorderBrush         = BdInput,
             HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+
+        var btnBrowseProgramDir = new Button
+        {
+            Content    = "Browse…",
+            Background = BgButton,
+            Foreground = FgNormal,
+            Margin     = new Thickness(6, 0, 0, 0),
+        };
+
+        btnBrowseProgramDir.Click += async (_, _) =>
+        {
+            var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+            if (storage == null) return;
+
+            string currentProgramDir = Directory.Exists(txtProgramDir.Text)
+                ? txtProgramDir.Text!
+                : Core.SharedPaths.GetDefaultProgramDir();
+            string previousDefaultScripts = Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(currentProgramDir);
+
+            var startFolder = await storage.TryGetFolderFromPathAsync(currentProgramDir);
+            var folders = await storage.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title                  = "Select TWX Program Directory",
+                SuggestedStartLocation = startFolder,
+                AllowMultiple          = false,
+            });
+
+            if (folders.Count == 0)
+                return;
+
+            string selectedProgramDir = folders[0].Path.LocalPath;
+            txtProgramDir.Text = selectedProgramDir;
+
+            if (string.IsNullOrWhiteSpace(txtScripts.Text) ||
+                string.Equals(txtScripts.Text, previousDefaultScripts, StringComparison.OrdinalIgnoreCase))
+            {
+                txtScripts.Text = Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(selectedProgramDir);
+            }
         };
 
         var btnBrowse = new Button
@@ -81,6 +139,15 @@ public class PreferencesDialog : Window
         inputRow.Children.Add(txtScripts);
         inputRow.Children.Add(btnBrowse);
 
+        var programDirRow = new Grid();
+        programDirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        programDirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(txtProgramDir, 0);
+        Grid.SetColumn(btnBrowseProgramDir, 1);
+        programDirRow.Children.Add(txtProgramDir);
+        programDirRow.Children.Add(btnBrowseProgramDir);
+
+        var programDirectoryRow = BuildRow("Program Directory:", programDirRow);
         var scriptsRow = BuildRow("Scripts Directory:", inputRow);
 
         var chkDebug = new CheckBox
@@ -94,6 +161,22 @@ public class PreferencesDialog : Window
         {
             Content = "Enable verbose debug logging",
             IsChecked = prefs.VerboseDebugLogging,
+            Foreground = FgNormal,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var chkDebugPortHaggle = new CheckBox
+        {
+            Content = "Debug port haggle to mtc_haggle_debug.log",
+            IsChecked = prefs.DebugPortHaggleEnabled,
+            Foreground = FgNormal,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var chkDebugPlanetHaggle = new CheckBox
+        {
+            Content = "Debug planet haggle to mtc_neg_debug.log",
+            IsChecked = prefs.DebugPlanetHaggleEnabled,
             Foreground = FgNormal,
             Margin = new Thickness(0, 4, 0, 0),
         };
@@ -125,7 +208,7 @@ public class PreferencesDialog : Window
         var debugRow = BuildRow("Debug Logging:", new StackPanel
         {
             Spacing = 2,
-            Children = { chkDebug, chkVerbose },
+            Children = { chkDebug, chkVerbose, chkDebugPortHaggle, chkDebugPlanetHaggle },
         });
 
         var vmRow = BuildRow("Virtual Machine:", new StackPanel
@@ -155,10 +238,15 @@ public class PreferencesDialog : Window
 
         btnSave.Click += (_, _) =>
         {
-            prefs.ScriptsDirectory = txtScripts.Text?.Trim()
-                ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            prefs.ProgramDirectory = txtProgramDir.Text?.Trim()
+                ?? Core.SharedPaths.GetDefaultProgramDir();
+            prefs.ScriptsDirectory = string.IsNullOrWhiteSpace(txtScripts.Text)
+                ? Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(prefs.ProgramDirectory)
+                : txtScripts.Text.Trim();
             prefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
             prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
+            prefs.DebugPortHaggleEnabled = chkDebugPortHaggle.IsChecked == true;
+            prefs.DebugPlanetHaggleEnabled = chkDebugPlanetHaggle.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
             prefs.Save();
@@ -180,7 +268,7 @@ public class PreferencesDialog : Window
         {
             Margin   = new Thickness(16),
             Spacing  = 4,
-            Children = { scriptsRow, debugRow, vmRow, buttons },
+            Children = { programDirectoryRow, scriptsRow, debugRow, vmRow, buttons },
         };
     }
 

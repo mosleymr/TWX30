@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Windows.Input;
 using TWXP.Models;
 using TWXP.Services;
+using TWXProxy.Core;
 
 namespace TWXP.ViewModels;
 
@@ -11,6 +12,7 @@ public class MainViewModel : BaseViewModel
     private readonly IProxyService _proxyService;
     private readonly IDirectoryPickerService _directoryPickerService;
     private GameConfigViewModel? _selectedGame;
+    private string _programDirectory = string.Empty;
     private string _scriptsDirectory = string.Empty;
 
     public ObservableCollection<GameConfigViewModel> Games { get; } = new();
@@ -35,9 +37,25 @@ public class MainViewModel : BaseViewModel
             ? "Scripts Directory: (default)"
             : $"Scripts Directory: {ScriptsDirectory}";
 
+    public string ProgramDirectory
+    {
+        get => _programDirectory;
+        set
+        {
+            if (SetProperty(ref _programDirectory, value))
+                OnPropertyChanged(nameof(ProgramDirectoryDisplay));
+        }
+    }
+
+    public string ProgramDirectoryDisplay
+        => string.IsNullOrWhiteSpace(ProgramDirectory)
+            ? "Program Directory: (default)"
+            : $"Program Directory: {ProgramDirectory}";
+
     public ICommand AddGameCommand { get; }
     public ICommand LoadGameCommand { get; }
     public ICommand LoadConfigsCommand { get; }
+    public ICommand SelectProgramDirectoryCommand { get; }
     public ICommand SelectScriptsDirectoryCommand { get; }
 
     public MainViewModel(
@@ -52,14 +70,21 @@ public class MainViewModel : BaseViewModel
         AddGameCommand = new AsyncRelayCommand(async _ => await AddGameAsync());
         LoadGameCommand = new AsyncRelayCommand(async _ => await LoadGameAsync());
         LoadConfigsCommand = new AsyncRelayCommand(async _ => await LoadConfigsAsync());
+        SelectProgramDirectoryCommand = new AsyncRelayCommand(async _ => await SelectProgramDirectoryAsync());
         SelectScriptsDirectoryCommand = new AsyncRelayCommand(async _ => await SelectScriptsDirectoryAsync());
 
         _proxyService.StatusChanged += OnGameStatusChanged;
+        _configService.ProgramDirectoryChanged += OnProgramDirectoryChanged;
         _configService.ScriptsDirectoryChanged += OnScriptsDirectoryChanged;
     }
 
     public async Task InitializeAsync()
     {
+        ProgramDirectory = await _configService.GetProgramDirectoryAsync();
+        ScriptsDirectory = await _configService.GetScriptsDirectoryAsync();
+        if (!SharedPaths.HasStoredProgramDir())
+            await SelectProgramDirectoryAsync();
+
         await LoadConfigsAsync();
         await _proxyService.ConnectAutoStartGamesAsync(Games.Select(g => g.Config));
     }
@@ -75,6 +100,7 @@ public class MainViewModel : BaseViewModel
         {
             Games.Clear();
             var configs = await _configService.LoadConfigsAsync();
+            ProgramDirectory = await _configService.GetProgramDirectoryAsync();
             ScriptsDirectory = await _configService.GetScriptsDirectoryAsync();
 
             foreach (var config in configs)
@@ -189,6 +215,16 @@ public class MainViewModel : BaseViewModel
         await _configService.SetScriptsDirectoryAsync(selectedDirectory);
     }
 
+    private async Task SelectProgramDirectoryAsync()
+    {
+        var selectedDirectory = await _directoryPickerService.PickDirectoryAsync();
+        if (string.IsNullOrWhiteSpace(selectedDirectory))
+            return;
+
+        await _configService.SetProgramDirectoryAsync(selectedDirectory);
+        await LoadConfigsAsync();
+    }
+
     private void OnGameStatusChanged(object? sender, GameStatusChangedEventArgs e)
     {
         var game = Games.FirstOrDefault(g => g.Config.Id == e.GameId);
@@ -203,6 +239,11 @@ public class MainViewModel : BaseViewModel
         ScriptsDirectory = scriptsDirectory;
         foreach (var game in Games)
             game.ScriptDirectory = scriptsDirectory;
+    }
+
+    private void OnProgramDirectoryChanged(object? sender, string programDirectory)
+    {
+        ProgramDirectory = programDirectory;
     }
 
     private void RemoveGame(GameConfigViewModel game)

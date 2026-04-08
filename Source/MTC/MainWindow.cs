@@ -249,6 +249,7 @@ public class MainWindow : Window
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
+        AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
 
         _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
@@ -276,10 +277,12 @@ public class MainWindow : Window
             _nativeDockMenuAttached = false;
             RefreshNativeAppMenu();
             RefreshNativeDockMenu();
+            _ = EnsureSharedPathsConfiguredAsync();
         };
         Activated += (_, _) => _termCtrl.Focus();
         Closed    += (_, _) =>
         {
+            _appPrefs.Save();
             _nativeAppMenuReady = false;
             _nativeAppMenuAttached = false;
             _nativeDockMenuAttached = false;
@@ -449,6 +452,14 @@ public class MainWindow : Window
             return state;
 
         state = CreateDefaultDeckPanelState(panelId);
+        if (_appPrefs.TryGetDeckPanelLayout(panelId, out AppPreferences.DeckPanelLayout? savedLayout))
+        {
+            state.Left = savedLayout.Left;
+            state.Top = savedLayout.Top;
+            state.ZIndex = savedLayout.ZIndex > 0 ? savedLayout.ZIndex : state.ZIndex;
+            state.Closed = savedLayout.Closed;
+            state.Minimized = savedLayout.Minimized;
+        }
         _deckPanelStates[panelId] = state;
         _deckNextZIndex = Math.Max(_deckNextZIndex, state.ZIndex + 1);
         return state;
@@ -534,6 +545,7 @@ public class MainWindow : Window
         state.Minimized = panel.IsMinimized;
         state.Closed = panel.IsClosed;
         state.ZIndex = panel.ZIndex;
+        _appPrefs.SetDeckPanelLayout(panel.PanelId, state.Left, state.Top, state.ZIndex, state.Closed, state.Minimized);
     }
 
     private void ShowDeckPanel(string panelId)
@@ -555,6 +567,8 @@ public class MainWindow : Window
     private void RestoreDeckLayout()
     {
         _deckPanelStates.Clear();
+        _appPrefs.CommandDeckPanels.Clear();
+        _appPrefs.Save();
         if (_useCommandDeckSkin)
             ApplySelectedSkin();
     }
@@ -2141,6 +2155,7 @@ public class MainWindow : Window
         if (!saved)
             return;
 
+        AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
         ApplyDebugLoggingPreferences();
@@ -2153,25 +2168,42 @@ public class MainWindow : Window
         if (string.IsNullOrWhiteSpace(debugScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
             debugScriptDirectory = _appPrefs.ScriptsDirectory;
 
-        string programDir = AppPaths.GetEffectiveProgramDir(debugScriptDirectory);
+        AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+        string programDir = AppPaths.ProgramDir;
         Core.GlobalModules.ProgramDir = programDir;
         Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
         Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
-        AppPaths.EnsureDebugLogDir(debugScriptDirectory);
+        AppPaths.EnsureDebugLogDir();
         Core.GlobalModules.ConfigureDebugLogging(
-            AppPaths.GetDebugLogPath(debugScriptDirectory),
+            AppPaths.GetDebugLogPathForGame(GetDebugLogGameName()),
             _appPrefs.DebugLoggingEnabled,
             _appPrefs.VerboseDebugLogging);
-        RefreshSessionLogTarget(debugScriptDirectory);
+        Core.GlobalModules.ConfigureHaggleDebugLogging(
+            AppPaths.GetPortHaggleDebugLogPath(),
+            _appPrefs.DebugPortHaggleEnabled,
+            AppPaths.GetPlanetHaggleDebugLogPath(),
+            _appPrefs.DebugPlanetHaggleEnabled);
+        RefreshSessionLogTarget();
         if (_gameInstance != null)
-            _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir(debugScriptDirectory);
+            _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
+    }
+
+    private string GetDebugLogGameName()
+    {
+        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
+            return _embeddedGameName;
+
+        if (!string.IsNullOrWhiteSpace(_state.GameName) || !string.IsNullOrEmpty(_currentProfilePath))
+            return DeriveGameName();
+
+        return "game";
     }
 
     private void RefreshSessionLogTarget(string? scriptDirectory = null)
     {
-        string programDir = AppPaths.GetEffectiveProgramDir(scriptDirectory);
+        string programDir = AppPaths.ProgramDir;
         _sessionLog.ProgramDir = programDir;
-        _sessionLog.LogDirectory = AppPaths.GetDebugLogDir(scriptDirectory);
+        _sessionLog.LogDirectory = AppPaths.GetDebugLogDir();
         _sessionLog.SetLogIdentity(DeriveGameName());
     }
 
@@ -2748,8 +2780,7 @@ public class MainWindow : Window
         string effectiveScriptDir = ResolveEffectiveScriptDirectory(gameConfig.ScriptDirectory);
 
         // Create the script interpreter.
-        // ProgramDir = parent of the scripts folder (matches ProxyService behaviour).
-        string programDir = Path.GetDirectoryName(effectiveScriptDir) ?? effectiveScriptDir;
+        string programDir = AppPaths.ProgramDir;
         var interpreter = new Core.ModInterpreter();
         interpreter.ScriptDirectory = effectiveScriptDir;
         interpreter.ProgramDir      = programDir;
@@ -3807,7 +3838,49 @@ public class MainWindow : Window
         history.Click += (_, _) => _ = ShowProxyHistoryAsync();
         items.Add(history);
 
+        items.Add(new Separator());
+
+        var debugPortHaggle = new MenuItem
+        {
+            Header = _appPrefs.DebugPortHaggleEnabled ? "Disable Port Haggle Debug" : "Debug Port Haggle",
+            IsEnabled = true,
+        };
+        debugPortHaggle.Click += (_, _) => TogglePortHaggleDebugLogging();
+        items.Add(debugPortHaggle);
+
+        var debugPlanetHaggle = new MenuItem
+        {
+            Header = _appPrefs.DebugPlanetHaggleEnabled ? "Disable Planet Haggle Debug" : "Debug Planet Haggle",
+            IsEnabled = true,
+        };
+        debugPlanetHaggle.Click += (_, _) => TogglePlanetHaggleDebugLogging();
+        items.Add(debugPlanetHaggle);
+
         return items;
+    }
+
+    private void TogglePortHaggleDebugLogging()
+    {
+        _appPrefs.DebugPortHaggleEnabled = !_appPrefs.DebugPortHaggleEnabled;
+        _appPrefs.Save();
+        ApplyDebugLoggingPreferences();
+        string status = _appPrefs.DebugPortHaggleEnabled ? "enabled" : "disabled";
+        _parser.Feed($"\x1b[1;36m[Port haggle debug {status}: {AppPaths.GetPortHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
+        _buffer.Dirty = true;
+        RebuildScriptsMenu();
+        RefreshNativeAppMenu();
+    }
+
+    private void TogglePlanetHaggleDebugLogging()
+    {
+        _appPrefs.DebugPlanetHaggleEnabled = !_appPrefs.DebugPlanetHaggleEnabled;
+        _appPrefs.Save();
+        ApplyDebugLoggingPreferences();
+        string status = _appPrefs.DebugPlanetHaggleEnabled ? "enabled" : "disabled";
+        _parser.Feed($"\x1b[1;36m[Planet haggle debug {status}: {AppPaths.GetPlanetHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
+        _buffer.Dirty = true;
+        RebuildScriptsMenu();
+        RefreshNativeAppMenu();
     }
 
     private List<object> BuildQuickMenuItems(bool enabled)
@@ -4287,16 +4360,54 @@ public class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_embeddedGameConfig?.ScriptDirectory))
             return NormalizeScriptDirectoryValue(_embeddedGameConfig.ScriptDirectory);
 
-        if (OperatingSystem.IsWindows())
-            return Core.WindowsInstallInfo.GetDefaultScriptsDirectory();
-
-        return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        return Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(_appPrefs.ProgramDirectory);
     }
 
     private static string GetEffectiveProxyProgramDir(string scriptDirectory)
     {
+        if (!string.IsNullOrWhiteSpace(AppPaths.ProgramDir))
+            return AppPaths.ProgramDir;
+
         string trimmed = scriptDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return Path.GetDirectoryName(trimmed) ?? trimmed;
+    }
+
+    private async Task EnsureSharedPathsConfiguredAsync()
+    {
+        if (_appPrefs.HasConfiguredSharedPaths)
+            return;
+
+        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage == null)
+            return;
+
+        string defaultProgramDir = Core.SharedPaths.GetDefaultProgramDir();
+        IStorageFolder? startFolder = null;
+        try
+        {
+            startFolder = await storage.TryGetFolderFromPathAsync(defaultProgramDir);
+        }
+        catch
+        {
+        }
+
+        var folders = await storage.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "Select TWX Program Directory",
+            SuggestedStartLocation = startFolder,
+            AllowMultiple = false,
+        });
+
+        if (folders.Count == 0)
+            return;
+
+        string programDir = folders[0].Path.LocalPath;
+        _appPrefs.ProgramDirectory = programDir;
+        _appPrefs.ScriptsDirectory = Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(programDir);
+        _appPrefs.Save();
+        AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+        ApplyDebugLoggingPreferences();
+        RebuildScriptsMenu();
     }
 
     private async Task OnProxyLoadScriptAsync()

@@ -126,7 +126,7 @@ namespace TWXProxy.Core
         public static object? PersistenceManager { get; set; }
         public static string ProgramDir { get; set; } = OperatingSystem.IsWindows()
             ? WindowsInstallInfo.GetInstalledProgramDirOrDefault()
-            : Environment.CurrentDirectory;
+            : AppContext.BaseDirectory;
 
         /// <summary>Auto-recorder that parses game text and updates the sector database.</summary>
         public static AutoRecorder GlobalAutoRecorder { get; } = new AutoRecorder();
@@ -143,6 +143,8 @@ namespace TWXProxy.Core
         /// Set to true only when diagnosing deep variable-evaluation bugs.
         /// </summary>
         public static bool VerboseDebugMode { get; set; } = false;
+        public static bool PortHaggleDebugMode { get; set; } = false;
+        public static bool PlanetHaggleDebugMode { get; set; } = false;
 
         /// <summary>
         /// When true, logs comparison operation results (ISEQUAL, ISGREATER, etc.) with both
@@ -170,8 +172,12 @@ namespace TWXProxy.Core
         public static bool EnableSourceScriptCache { get; set; } = true;
 
         public static string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
+        public static string PortHaggleDebugLogPath { get; set; } = "/tmp/twxp_haggle_debug.log";
+        public static string PlanetHaggleDebugLogPath { get; set; } = "/tmp/twxp_neg_debug.log";
         private static readonly object _debugLock = new object();
         private static StreamWriter? _debugWriter = null;
+        private static StreamWriter? _portHaggleWriter = null;
+        private static StreamWriter? _planetHaggleWriter = null;
 
         private static bool LogWriterEnabled => DebugMode || EnableVmMetrics;
 
@@ -209,6 +215,45 @@ namespace TWXProxy.Core
             }
         }
 
+        private static StreamWriter? CreateAppendWriter(string path, string header)
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            bool fileExists = File.Exists(path);
+            bool writeHeader = !fileExists || new FileInfo(path).Length == 0;
+            var writer = new StreamWriter(path, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
+            {
+                AutoFlush = true
+            };
+
+            if (writeHeader)
+                writer.WriteLine(header);
+            else
+                writer.WriteLine($"=== {header.Trim('=',' ')} {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+
+            writer.Flush();
+            return writer;
+        }
+
+        private static void EnsureTradeDebugWriters()
+        {
+            if (PortHaggleDebugMode && _portHaggleWriter == null)
+            {
+                _portHaggleWriter = CreateAppendWriter(
+                    PortHaggleDebugLogPath,
+                    $"=== Port Haggle Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+            }
+
+            if (PlanetHaggleDebugMode && _planetHaggleWriter == null)
+            {
+                _planetHaggleWriter = CreateAppendWriter(
+                    PlanetHaggleDebugLogPath,
+                    $"=== Planet Haggle Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+            }
+        }
+
         public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled)
         {
             lock (_debugLock)
@@ -236,12 +281,54 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void ConfigureHaggleDebugLogging(
+            string? portHaggleDebugLogPath,
+            bool portEnabled,
+            string? planetHaggleDebugLogPath,
+            bool planetEnabled)
+        {
+            lock (_debugLock)
+            {
+                if (!string.IsNullOrWhiteSpace(portHaggleDebugLogPath))
+                    PortHaggleDebugLogPath = portHaggleDebugLogPath;
+                if (!string.IsNullOrWhiteSpace(planetHaggleDebugLogPath))
+                    PlanetHaggleDebugLogPath = planetHaggleDebugLogPath;
+
+                bool portChanged = PortHaggleDebugMode != portEnabled;
+                bool planetChanged = PlanetHaggleDebugMode != planetEnabled;
+                PortHaggleDebugMode = portEnabled;
+                PlanetHaggleDebugMode = planetEnabled;
+
+                if (!PortHaggleDebugMode || portChanged)
+                {
+                    _portHaggleWriter?.Dispose();
+                    _portHaggleWriter = null;
+                }
+
+                if (!PlanetHaggleDebugMode || planetChanged)
+                {
+                    _planetHaggleWriter?.Dispose();
+                    _planetHaggleWriter = null;
+                }
+
+                try
+                {
+                    EnsureTradeDebugWriters();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[HAGGLE LOG INIT ERROR] {ex.Message}");
+                }
+            }
+        }
+
         /// <summary>
         /// Initialize/clear the debug log file. Call this at application startup.
         /// </summary>
         public static void InitializeDebugLog()
         {
             ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode);
+            ConfigureHaggleDebugLogging(PortHaggleDebugLogPath, PortHaggleDebugMode, PlanetHaggleDebugLogPath, PlanetHaggleDebugMode);
         }
 
         /// <summary>
@@ -249,8 +336,16 @@ namespace TWXProxy.Core
         /// </summary>
         public static void FlushDebugLog()
         {
-            if (!LogWriterEnabled) return;
-            try { lock (_debugLock) { _debugWriter?.Flush(); } }
+            if (!LogWriterEnabled && !PortHaggleDebugMode && !PlanetHaggleDebugMode) return;
+            try
+            {
+                lock (_debugLock)
+                {
+                    _debugWriter?.Flush();
+                    _portHaggleWriter?.Flush();
+                    _planetHaggleWriter?.Flush();
+                }
+            }
             catch { /* ignore */ }
         }
 
@@ -287,6 +382,42 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Console.WriteLine($"[VM METRIC LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void PortHaggleDebug(string message)
+        {
+            if (!PortHaggleDebugMode) return;
+
+            try
+            {
+                lock (_debugLock)
+                {
+                    EnsureTradeDebugWriters();
+                    _portHaggleWriter?.Write($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PORT HAGGLE LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void PlanetHaggleDebug(string message)
+        {
+            if (!PlanetHaggleDebugMode) return;
+
+            try
+            {
+                lock (_debugLock)
+                {
+                    EnsureTradeDebugWriters();
+                    _planetHaggleWriter?.Write($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PLANET HAGGLE LOG ERROR] {ex.Message}: {message}");
             }
         }
     }

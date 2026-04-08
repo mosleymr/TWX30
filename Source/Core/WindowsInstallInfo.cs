@@ -39,6 +39,14 @@ public static class WindowsInstallInfo
         return Path.Combine(GetInstalledProgramDirOrDefault(), "scripts");
     }
 
+    public static void SetInstalledProgramDir(string programDir)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(programDir))
+            return;
+
+        WriteRegistryString(RegistryHive.CurrentUser, ProgramDirValueName, Path.GetFullPath(programDir));
+    }
+
     [SupportedOSPlatform("windows")]
     private static string? ReadRegistryString(RegistryHive hive, string valueName)
     {
@@ -57,6 +65,23 @@ public static class WindowsInstallInfo
         }
 
         return null;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void WriteRegistryString(RegistryHive hive, string valueName, string value)
+    {
+        try
+        {
+            foreach (RegistryView view in GetViews())
+            {
+                using RegistryKey baseKey = RegistryKey.OpenBaseKey(hive, view);
+                using RegistryKey key = baseKey.CreateSubKey(RegistryKeyPath, writable: true);
+                key.SetValue(valueName, value, RegistryValueKind.String);
+            }
+        }
+        catch
+        {
+        }
     }
 
     [SupportedOSPlatform("windows")]

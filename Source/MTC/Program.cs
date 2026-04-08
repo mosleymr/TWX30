@@ -6,14 +6,20 @@ using TWXProxy.Core;
 Console.SetOut(TextWriter.Null);
 
 var prefs = MTC.AppPreferences.Load();
-GlobalModules.ProgramDir = MTC.AppPaths.GetEffectiveProgramDir(prefs.ScriptsDirectory);
+MTC.AppPaths.SetConfiguredProgramDir(prefs.ProgramDirectory);
+GlobalModules.ProgramDir = MTC.AppPaths.ProgramDir;
 GlobalModules.PreferPreparedVm = prefs.PreparedVmEnabled;
 GlobalModules.EnableVmMetrics = prefs.VmMetricsEnabled;
-MTC.AppPaths.EnsureDebugLogDir(prefs.ScriptsDirectory);
+MTC.AppPaths.EnsureDebugLogDir();
 GlobalModules.ConfigureDebugLogging(
-    MTC.AppPaths.GetDebugLogPath(prefs.ScriptsDirectory),
+    MTC.AppPaths.GetDebugLogPath(),
     prefs.DebugLoggingEnabled,
     prefs.VerboseDebugLogging);
+GlobalModules.ConfigureHaggleDebugLogging(
+    MTC.AppPaths.GetPortHaggleDebugLogPath(),
+    prefs.DebugPortHaggleEnabled,
+    MTC.AppPaths.GetPlanetHaggleDebugLogPath(),
+    prefs.DebugPlanetHaggleEnabled);
 
 AppBuilder.Configure<MTC.App>()
     .UsePlatformDetect()

@@ -1,151 +1,288 @@
+using System.Globalization;
 using System.Xml.Linq;
+using Core = TWXProxy.Core;
 
 namespace MTC;
 
 /// <summary>
 /// Lightweight application-level preferences (not per-connection).
-/// Persisted under the shared twxproxy user-data root.
-/// Stores UI-level preferences such as recent files and scripts directory.
+/// Persisted in <programdir>/config.twx under the MtcPrefs section, with
+/// shared program/scripts paths stored in the SharedPaths section.
 /// </summary>
 public class AppPreferences
 {
     public const int MaxRecentFiles = 5;
 
-    /// <summary>Paths of recently opened game configs or databases, newest first.</summary>
+    public sealed class DeckPanelLayout
+    {
+        public string PanelId { get; set; } = string.Empty;
+        public double Left { get; set; }
+        public double Top { get; set; }
+        public int ZIndex { get; set; }
+        public bool Closed { get; set; }
+        public bool Minimized { get; set; }
+    }
+
     public List<string> RecentFiles { get; } = [];
+    public Dictionary<string, DeckPanelLayout> CommandDeckPanels { get; }
+        = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Directory where the user stores TWX scripts. Empty = not configured.</summary>
+    public string ProgramDirectory { get; set; } = string.Empty;
     public string ScriptsDirectory { get; set; } = string.Empty;
+    public bool HasConfiguredSharedPaths { get; private set; }
 
-    /// <summary>When true, writes debug output to the shared MTC debug log.</summary>
     public bool DebugLoggingEnabled { get; set; }
-
-    /// <summary>When true, includes very high-frequency diagnostic logging.</summary>
     public bool VerboseDebugLogging { get; set; }
-
-    /// <summary>When true, scripts prefer the prepared VM execution path.</summary>
+    public bool DebugPortHaggleEnabled { get; set; }
+    public bool DebugPlanetHaggleEnabled { get; set; }
     public bool PreparedVmEnabled { get; set; } = true;
-
-    /// <summary>When true, VM load/execute metrics are written to the shared log.</summary>
     public bool VmMetricsEnabled { get; set; } = true;
-
-    /// <summary>Global native haggle mode used by MTC across all games for port trades.</summary>
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
-
-    /// <summary>Global native haggle mode used by MTC across all games for planet trades.</summary>
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
-
-    /// <summary>When true, the alternate command-deck UI skin is active.</summary>
     public bool CommandDeckSkinEnabled { get; set; }
 
-    // ── Paths ──────────────────────────────────────────────────────────────
-
-    private static string DefaultPath()
+    private static string LegacySharedPrefsPath()
     {
-        var dir = AppPaths.AppDataDir;
-        Directory.CreateDirectory(dir);
-        return Path.Combine(dir, "prefs.xml");
+        Directory.CreateDirectory(AppPaths.AppDataDir);
+        return Path.Combine(AppPaths.AppDataDir, "prefs.xml");
     }
 
     private static string LegacyDefaultPath()
-    {
-        var dir = Path.Combine(
+        => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config", "MTC");
-        return Path.Combine(dir, "prefs.xml");
-    }
+            ".config",
+            "MTC",
+            "prefs.xml");
 
-    // ── Recent file helpers ────────────────────────────────────────────────
-
-    /// <summary>
-    /// Adds <paramref name="path"/> to the front of the recent list,
-    /// de-duplicating and capping at <see cref="MaxRecentFiles"/>.
-    /// </summary>
     public void AddRecent(string path)
     {
-        RecentFiles.RemoveAll(p =>
-            string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        RecentFiles.RemoveAll(existing =>
+            string.Equals(existing, path, StringComparison.OrdinalIgnoreCase));
         RecentFiles.Insert(0, path);
         while (RecentFiles.Count > MaxRecentFiles)
             RecentFiles.RemoveAt(RecentFiles.Count - 1);
     }
 
-    // ── Serialisation ──────────────────────────────────────────────────────
+    public bool TryGetDeckPanelLayout(string panelId, out DeckPanelLayout layout)
+        => CommandDeckPanels.TryGetValue(panelId, out layout!);
+
+    public void SetDeckPanelLayout(string panelId, double left, double top, int zIndex, bool closed, bool minimized)
+    {
+        CommandDeckPanels[panelId] = new DeckPanelLayout
+        {
+            PanelId = panelId,
+            Left = left,
+            Top = top,
+            ZIndex = zIndex,
+            Closed = closed,
+            Minimized = minimized,
+        };
+    }
 
     public void Save()
     {
         try
         {
-            var doc = new XDocument(
-                new XElement("MtcPrefs",
-                    new XElement("ScriptsDirectory", ScriptsDirectory),
-                    new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
-                    new XElement("VerboseDebugLogging", VerboseDebugLogging),
-                    new XElement("PreparedVmEnabled", PreparedVmEnabled),
-                    new XElement("VmMetricsEnabled", VmMetricsEnabled),
-                    new XElement("PortHaggleMode", PortHaggleMode),
-                    new XElement("PlanetHaggleMode", PlanetHaggleMode),
-                    new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
-                    new XElement("RecentFiles",
-                        RecentFiles.Select(p => new XElement("File", p))
-                    )
-                )
+            ProgramDirectory = NormalizeDirectoryValue(ProgramDirectory);
+            if (string.IsNullOrWhiteSpace(ProgramDirectory))
+                ProgramDirectory = Core.SharedPaths.ResolveProgramDir(ScriptsDirectory);
+
+            ScriptsDirectory = NormalizeDirectoryValue(ScriptsDirectory);
+            if (string.IsNullOrWhiteSpace(ScriptsDirectory))
+                ScriptsDirectory = Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(ProgramDirectory);
+
+            Core.SharedPathSettingsStore.Save(ProgramDirectory, ScriptsDirectory);
+            string configPath = Core.SharedPaths.GetConfigFilePath(ProgramDirectory);
+            var document = Core.SharedConfigFile.LoadOrCreate(configPath);
+
+            var section = new XElement(
+                Core.SharedConfigFile.MtcPrefsSectionName,
+                new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
+                new XElement("VerboseDebugLogging", VerboseDebugLogging),
+                new XElement("DebugPortHaggleEnabled", DebugPortHaggleEnabled),
+                new XElement("DebugPlanetHaggleEnabled", DebugPlanetHaggleEnabled),
+                new XElement("PreparedVmEnabled", PreparedVmEnabled),
+                new XElement("VmMetricsEnabled", VmMetricsEnabled),
+                new XElement("PortHaggleMode", PortHaggleMode),
+                new XElement("PlanetHaggleMode", PlanetHaggleMode),
+                new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
+                new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
+                new XElement("CommandDeckPanels",
+                    CommandDeckPanels.Values
+                        .OrderBy(layout => layout.PanelId, StringComparer.OrdinalIgnoreCase)
+                        .Select(layout => new XElement("Panel",
+                            new XAttribute("Id", layout.PanelId),
+                            new XAttribute("Left", layout.Left.ToString(CultureInfo.InvariantCulture)),
+                            new XAttribute("Top", layout.Top.ToString(CultureInfo.InvariantCulture)),
+                            new XAttribute("ZIndex", layout.ZIndex),
+                            new XAttribute("Closed", layout.Closed),
+                            new XAttribute("Minimized", layout.Minimized))))
             );
-            doc.Save(DefaultPath());
+
+            Core.SharedConfigFile.ReplaceSection(document, Core.SharedConfigFile.MtcPrefsSectionName, section);
+            Core.SharedConfigFile.Save(document, configPath);
+            HasConfiguredSharedPaths = true;
         }
-        catch { /* non-fatal – prefs are best-effort */ }
+        catch
+        {
+            // Best-effort persistence.
+        }
     }
 
     public static AppPreferences Load()
     {
         var prefs = new AppPreferences();
+
         try
         {
-            string path = DefaultPath();
-            if (!File.Exists(path))
+            Core.SharedPathSettings sharedPaths = Core.SharedPathSettingsStore.Load();
+            prefs.ProgramDirectory = NormalizeDirectoryValue(sharedPaths.ProgramDirectory);
+            prefs.ScriptsDirectory = NormalizeDirectoryValue(sharedPaths.ScriptsDirectory);
+            prefs.HasConfiguredSharedPaths = sharedPaths.IsConfigured;
+
+            string configPath = Core.SharedPaths.GetConfigFilePath(prefs.ProgramDirectory);
+            XDocument document;
+            if (File.Exists(configPath))
             {
-                string legacyPath = LegacyDefaultPath();
-                if (!File.Exists(legacyPath))
-                    return prefs;
-                path = legacyPath;
+                document = XDocument.Load(configPath);
+            }
+            else
+            {
+                document = LoadLegacyDocument();
             }
 
-            var root = XDocument.Load(path).Root;
-            if (root == null) return prefs;
-
-            string? sd = (string?)root.Element("ScriptsDirectory");
-            if (!string.IsNullOrWhiteSpace(sd)) prefs.ScriptsDirectory = sd;
+            XElement? root = Core.SharedConfigFile.GetSection(document, Core.SharedConfigFile.MtcPrefsSectionName);
+            if (root == null)
+                return prefs;
 
             if (bool.TryParse((string?)root.Element("DebugLoggingEnabled"), out bool debugEnabled))
                 prefs.DebugLoggingEnabled = debugEnabled;
             if (bool.TryParse((string?)root.Element("VerboseDebugLogging"), out bool verboseEnabled))
                 prefs.VerboseDebugLogging = verboseEnabled;
+            if (bool.TryParse((string?)root.Element("DebugPortHaggleEnabled"), out bool debugPortHaggleEnabled))
+                prefs.DebugPortHaggleEnabled = debugPortHaggleEnabled;
+            if (bool.TryParse((string?)root.Element("DebugPlanetHaggleEnabled"), out bool debugPlanetHaggleEnabled))
+                prefs.DebugPlanetHaggleEnabled = debugPlanetHaggleEnabled;
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
+            if (bool.TryParse((string?)root.Element("CommandDeckSkinEnabled"), out bool commandDeckEnabled))
+                prefs.CommandDeckSkinEnabled = commandDeckEnabled;
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
             string? legacyNativeHaggleMode = (string?)root.Element("NativeHaggleMode");
-
             prefs.PortHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(
                 string.IsNullOrWhiteSpace(portHaggleMode) ? legacyNativeHaggleMode : portHaggleMode);
             prefs.PlanetHaggleMode = string.IsNullOrWhiteSpace(planetHaggleMode)
                 ? TWXProxy.Core.NativeHaggleModes.DefaultPlanet
                 : TWXProxy.Core.NativeHaggleModes.Normalize(planetHaggleMode);
-            if (bool.TryParse((string?)root.Element("CommandDeckSkinEnabled"), out bool commandDeckEnabled))
-                prefs.CommandDeckSkinEnabled = commandDeckEnabled;
 
-            foreach (var el in root.Element("RecentFiles")?.Elements("File")
+            foreach (XElement element in root.Element("RecentFiles")?.Elements("File")
                                    ?? Enumerable.Empty<XElement>())
             {
-                string? p = (string?)el;
-                if (!string.IsNullOrWhiteSpace(p) && File.Exists(p))
-                    prefs.RecentFiles.Add(p);
+                string? path = ResolveRecentFilePath((string?)element, prefs.ProgramDirectory);
+                if (!string.IsNullOrWhiteSpace(path))
+                    prefs.RecentFiles.Add(path);
+            }
+
+            foreach (XElement panel in root.Element("CommandDeckPanels")?.Elements("Panel")
+                                   ?? Enumerable.Empty<XElement>())
+            {
+                string? panelId = (string?)panel.Attribute("Id");
+                if (string.IsNullOrWhiteSpace(panelId))
+                    continue;
+
+                prefs.CommandDeckPanels[panelId] = new DeckPanelLayout
+                {
+                    PanelId = panelId,
+                    Left = ParseDouble(panel.Attribute("Left")),
+                    Top = ParseDouble(panel.Attribute("Top")),
+                    ZIndex = ParseInt(panel.Attribute("ZIndex")),
+                    Closed = ParseBool(panel.Attribute("Closed")),
+                    Minimized = ParseBool(panel.Attribute("Minimized")),
+                };
+            }
+
+            string? legacyScriptsDirectory = NormalizeDirectoryValue((string?)root.Element("ScriptsDirectory"));
+            if (!string.IsNullOrWhiteSpace(legacyScriptsDirectory) &&
+                !prefs.HasConfiguredSharedPaths)
+            {
+                prefs.ScriptsDirectory = legacyScriptsDirectory;
+                prefs.ProgramDirectory = Core.SharedPaths.ResolveProgramDir(legacyScriptsDirectory);
+                prefs.HasConfiguredSharedPaths = true;
             }
         }
-        catch { /* ignore corrupt prefs */ }
+        catch
+        {
+            // Ignore corrupt prefs.
+        }
+
         return prefs;
     }
+
+    private static XDocument LoadLegacyDocument()
+    {
+        foreach (string legacyPath in new[] { LegacySharedPrefsPath(), LegacyDefaultPath() })
+        {
+            try
+            {
+                if (File.Exists(legacyPath))
+                    return XDocument.Load(legacyPath);
+            }
+            catch
+            {
+            }
+        }
+
+        return Core.SharedConfigFile.CreateEmptyDocument();
+    }
+
+    private static string? ResolveRecentFilePath(string? path, string programDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        string normalized = NormalizeDirectoryValue(path);
+        if (File.Exists(normalized))
+            return normalized;
+
+        string gamesDir = Path.Combine(programDirectory, "games");
+        string candidate = Path.Combine(gamesDir, Path.GetFileName(normalized));
+        if (File.Exists(candidate))
+            return candidate;
+
+        string legacyCandidate = Path.Combine(Core.SharedPaths.LegacyGamesDir, Path.GetFileName(normalized));
+        return File.Exists(legacyCandidate) ? legacyCandidate : null;
+    }
+
+    private static string NormalizeDirectoryValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        try
+        {
+            return Path.GetFullPath(value.Trim())
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return value.Trim();
+        }
+    }
+
+    private static double ParseDouble(XAttribute? attribute)
+        => double.TryParse(attribute?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
+            ? value
+            : 0;
+
+    private static int ParseInt(XAttribute? attribute)
+        => int.TryParse(attribute?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : 0;
+
+    private static bool ParseBool(XAttribute? attribute)
+        => bool.TryParse(attribute?.Value, out bool value) && value;
 }

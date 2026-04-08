@@ -570,7 +570,7 @@ public sealed class NativeHaggleEngine
         Match holdMatch = RxHoldPrompt.Match(line);
         if (holdMatch.Success)
         {
-            ParseHoldPrompt(holdMatch);
+            ParseHoldPrompt(holdMatch, line);
             return null;
         }
 
@@ -585,6 +585,7 @@ public sealed class NativeHaggleEngine
         if (initialSell.Success)
         {
             GlobalModules.DebugLog($"[NativeHaggle] Offer line SELLING: '{line}'\n");
+            WriteTradeDebug(_session, $"[NativeHaggle] TEXT offerKind=SELLING text='{line}'\n");
             return HandleOffer(ParseLong(initialSell.Groups[1].Value), "SELLING", finalOffer: false);
         }
 
@@ -592,6 +593,7 @@ public sealed class NativeHaggleEngine
         if (initialBuy.Success)
         {
             GlobalModules.DebugLog($"[NativeHaggle] Offer line BUYING: '{line}'\n");
+            WriteTradeDebug(_session, $"[NativeHaggle] TEXT offerKind=BUYING text='{line}'\n");
             return HandleOffer(ParseLong(initialBuy.Groups[1].Value), "BUYING", finalOffer: false);
         }
 
@@ -599,6 +601,7 @@ public sealed class NativeHaggleEngine
         if (finalMatch.Success)
         {
             GlobalModules.DebugLog($"[NativeHaggle] Offer line FINAL: '{line}'\n");
+            WriteTradeDebug(_session, $"[NativeHaggle] TEXT offerKind=FINAL text='{line}'\n");
             return HandleOffer(ParseLong(finalMatch.Groups[1].Value), _session?.BuySell ?? string.Empty, finalOffer: true);
         }
 
@@ -621,11 +624,34 @@ public sealed class NativeHaggleEngine
         // Suppression is temporarily disabled for debugging.
     }
 
+    private static void WriteTradeDebug(bool isPlanetTrade, string message)
+    {
+        if (isPlanetTrade)
+            GlobalModules.PlanetHaggleDebug(message);
+        else
+            GlobalModules.PortHaggleDebug(message);
+    }
+
+    private static void WriteTradeDebug(SessionState? session, string message)
+    {
+        if (session == null)
+            return;
+
+        WriteTradeDebug(session.IsPlanetTrade, message);
+    }
+
     private void UpdatePassiveState(string line)
     {
         Match tradeSuccessMatch = RxTradeSuccess.Match(line);
         if (tradeSuccessMatch.Success)
         {
+            if (_session?.IsPlanetTrade == true)
+            {
+                GlobalModules.DebugLog($"[NativeHaggle] Ignoring unexpected planet reward line text='{line}'\n");
+                WriteTradeDebug(_session, $"[NativeHaggle] TEXT unexpectedReward text='{line}'\n");
+                return;
+            }
+
             string rewardTier = tradeSuccessMatch.Groups[1].Value.Trim().ToLowerInvariant();
             int rewardExperience = ParseInt(tradeSuccessMatch.Groups[2].Value);
             if (_session != null)
@@ -649,6 +675,7 @@ public sealed class NativeHaggleEngine
 
             GlobalModules.DebugLog(
                 $"[NativeHaggle] Reward line tier='{rewardTier}' exp={rewardExperience} text='{line}'\n");
+            WriteTradeDebug(_session, $"[NativeHaggle] TEXT reward tier='{rewardTier}' exp={rewardExperience} text='{line}'\n");
             RecordOutcome(success: true, $"trade-success-line:{rewardTier}");
         }
 
@@ -671,6 +698,7 @@ public sealed class NativeHaggleEngine
         {
             _session.PlanetAcceptanceSeen = true;
             GlobalModules.DebugLog($"[NativeHaggle] Planet acceptance line text='{line}'\n");
+            WriteTradeDebug(_session, $"[NativeHaggle] TEXT accept text='{line}'\n");
             return;
         }
 
@@ -699,7 +727,7 @@ public sealed class NativeHaggleEngine
             StartPortSession();
     }
 
-    private void ParseHoldPrompt(Match holdMatch)
+    private void ParseHoldPrompt(Match holdMatch, string line)
     {
         EnsureSession();
         _pendingIsPlanetTrade = string.Equals(holdMatch.Groups[1].Value, "units", StringComparison.OrdinalIgnoreCase);
@@ -707,6 +735,9 @@ public sealed class NativeHaggleEngine
         _pendingProductType = ProductTypeFromKey(_pendingProductKey);
         string action = holdMatch.Groups[3].Value.ToUpperInvariant();
         _pendingBuySell = action == "BUY" ? "SELLING" : "BUYING";
+        WriteTradeDebug(
+            _pendingIsPlanetTrade,
+            $"[NativeHaggle] PROMPT product={_pendingProductKey} action={action} text='{line}'\n");
     }
 
     private void ArmSession(int tradeQty)
@@ -723,6 +754,9 @@ public sealed class NativeHaggleEngine
         {
             GlobalModules.DebugLog(
                 $"[NativeHaggle] No port data for sector {sector}, manual haggle required. dbSectorCount={db?.SectorCount ?? -1} sectorFound={(sectorData != null ? 1 : 0)}\n");
+            WriteTradeDebug(
+                _pendingIsPlanetTrade,
+                $"[NativeHaggle] ABORT missing-port-data sector={sector} product={_pendingProductKey ?? "-"} buysell={_pendingBuySell ?? "-"} dbSectorCount={db?.SectorCount ?? -1} sectorFound={(sectorData != null ? 1 : 0)}\n");
             Reset("missing-port-data");
             return;
         }
@@ -786,11 +820,15 @@ public sealed class NativeHaggleEngine
             {
                 GlobalModules.DebugLog(
                     $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' baseline=cherokee qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] ARMED route={_session.RouteKey} mode={_session.ActiveMode} modeName='{_session.ActiveModeDisplayName}' baseline=cherokee qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent}\n");
             }
             else
             {
                 GlobalModules.DebugLog(
                     $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' baseline=module qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] ARMED route={_session.RouteKey} mode={_session.ActiveMode} modeName='{_session.ActiveModeDisplayName}' baseline=module qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent}\n");
             }
             return;
         }
@@ -816,6 +854,8 @@ public sealed class NativeHaggleEngine
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] Armed sector={_session.Sector} tradeKind={(_session.IsPlanetTrade ? "planet" : "port")} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
+        WriteTradeDebug(_session,
+            $"[NativeHaggle] ARMED route={_session.RouteKey} mode={_session.ActiveMode} modeName='{_session.ActiveModeDisplayName}' qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} mcic={_session.McicMin}..{_session.McicMax} prod={_session.LowProductivity}..{_session.HighProductivity}\n");
     }
 
     private void ProcessCreditsLine(long credits, int emptyHolds)
@@ -847,6 +887,8 @@ public sealed class NativeHaggleEngine
 
                 GlobalModules.DebugLog(
                     $"[NativeHaggle] Planet success finalized on credits line sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} credits={credits} emptyHolds={emptyHolds}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] TEXT credits success credits={credits} emptyHolds={emptyHolds}\n");
                 RecordOutcome(success: true, "credits-line:planet-accepted");
                 return;
             }
@@ -858,6 +900,8 @@ public sealed class NativeHaggleEngine
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] No transaction detected sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} startCredits={_session.StartCredits} endCredits={credits} startEmpty={_session.StartEmptyHolds} endEmpty={emptyHolds} bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)}\n");
+        WriteTradeDebug(_session,
+            $"[NativeHaggle] TEXT no-transaction endCredits={credits} emptyHolds={emptyHolds} bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter}\n");
         if (_session.BidNumber <= 1)
         {
             _retryHint = new RetryHint
@@ -960,6 +1004,8 @@ public sealed class NativeHaggleEngine
 
             GlobalModules.DebugLog(
                 $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+            WriteTradeDebug(_session,
+                $"[NativeHaggle] ALGO heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
             return null;
         }
 
@@ -971,11 +1017,15 @@ public sealed class NativeHaggleEngine
             {
                 GlobalModules.DebugLog(
                     $"[NativeHaggle] planet-cherokee offer={offer} final={finalOffer} stagedBid={planetBid} mcic={_session.PlanetQualityMcic} multiple={_session.PlanetQualityMultiple} portMaxInit={_session.PlanetPortMaxInit} midHaggles={_session.PlanetMidHaggles} forceFail={_session.PlanetForceFailApplied} ptrade={_session.PlanetTradeSettingPercent}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] ALGO planet-cherokee offer={offer} final={finalOffer} stagedBid={planetBid} mcic={_session.PlanetQualityMcic} multiple={_session.PlanetQualityMultiple} ptrade={_session.PlanetTradeSettingPercent}\n");
             }
             else
             {
                 GlobalModules.DebugLog(
                     $"[NativeHaggle] planet-mode offer={offer} final={finalOffer} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' stagedBid={planetBid}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] ALGO planet-mode offer={offer} final={finalOffer} mode={_session.ActiveMode} modeName='{_session.ActiveModeDisplayName}' stagedBid={planetBid}\n");
             }
             return null;
         }
@@ -991,6 +1041,8 @@ public sealed class NativeHaggleEngine
 
                     GlobalModules.DebugLog(
                         $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+                    WriteTradeDebug(_session,
+                        $"[NativeHaggle] ALGO heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
                     return null;
                 }
 
@@ -1010,6 +1062,8 @@ public sealed class NativeHaggleEngine
 
                     GlobalModules.DebugLog(
                         $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+                    WriteTradeDebug(_session,
+                        $"[NativeHaggle] ALGO heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
                     return null;
                 }
 
@@ -1026,6 +1080,8 @@ public sealed class NativeHaggleEngine
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] offer={offer} final={finalOffer} candidates={_session.Candidates.Count} stagedBid={bid}\n");
+        WriteTradeDebug(_session,
+            $"[NativeHaggle] ALGO staged offer={offer} final={finalOffer} stagedBid={bid} candidates={_session.Candidates.Count}\n");
         return null;
     }
 
@@ -1050,6 +1106,8 @@ public sealed class NativeHaggleEngine
 
         GlobalModules.DebugLog(
             $"[NativeHaggle] Prompt offer={offer} final={finalOffer} bidNumber={_session.BidNumber} bid={bid} {probe}\n");
+        WriteTradeDebug(_session,
+            $"[NativeHaggle] SEND offer={offer} final={finalOffer} bidNumber={_session.BidNumber} bid={bid} {probe}\n");
         return bid.ToString(CultureInfo.InvariantCulture);
     }
 
@@ -2891,15 +2949,31 @@ public sealed class NativeHaggleEngine
         if (!UsesCherokeePlanetBaseline(_session))
             GetActiveModeExtension(_session.ActiveMode)?.OnOutcome(this, _session, success, reason);
 
-        string probe = (_session.LastCounter > 0)
-            ? DescribePredictedProbe(_session, _session.LastCounter)
-            : "probe=n/a";
-        string rewardHidden = DescribeRewardHiddenComparison(_session);
-        string rewardTier = string.IsNullOrWhiteSpace(_session.RewardTier) ? "-" : _session.RewardTier;
         string routeState = DescribeModeState(_session);
 
-        GlobalModules.DebugLog(
-            $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {rewardHidden} {routeState}\n");
+        if (_session.IsPlanetTrade)
+        {
+            string probe = (_session.LastCounter > 0)
+                ? DescribePredictedProbe(_session, _session.LastCounter)
+                : "probe=n/a";
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {routeState}\n");
+            WriteTradeDebug(_session,
+                $"[NativeHaggle] OUTCOME success={success} reason='{reason}' route={_session.RouteKey} bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {routeState}\n");
+        }
+        else
+        {
+            string probe = (_session.LastCounter > 0)
+                ? DescribePredictedProbe(_session, _session.LastCounter)
+                : "probe=n/a";
+            string rewardHidden = DescribeRewardHiddenComparison(_session);
+            string rewardTier = string.IsNullOrWhiteSpace(_session.RewardTier) ? "-" : _session.RewardTier;
+
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Outcome recorded success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} completed={_completedHaggles} successful={_successfulHaggles} good={_goodRewardCount} great={_greatRewardCount} excellent={_excellentRewardCount} pct={SuccessRatePercent}% sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} route={_session.RouteKey} activeMode={_session.ActiveMode} activeModeName='{_session.ActiveModeDisplayName}' bidNumber={_session.BidNumber} empiricalProbe={_session.EmpiricalProbeApplied} empiricalNudge={_session.EmpiricalProbeNudge} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {DescribeStartCargoSnapshot(_session)} {probe} {rewardHidden} {routeState}\n");
+            WriteTradeDebug(_session,
+                $"[NativeHaggle] OUTCOME success={success} reason='{reason}' rewardTier='{rewardTier}' rewardExp={_session.RewardExperience} route={_session.RouteKey} bidNumber={_session.BidNumber} lastOffer={_session.LastOffer} lastCounter={_session.LastCounter} {routeState}\n");
+        }
         StatsChanged?.Invoke();
     }
 

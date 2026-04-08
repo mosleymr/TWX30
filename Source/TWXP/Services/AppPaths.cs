@@ -2,12 +2,13 @@ namespace TWXP.Services;
 
 /// <summary>
 /// Resolves platform-specific paths for TWX Proxy application data.
-/// All persistent files (game configs, databases, logs) live under AppDataDir.
+/// Shared game files and the unified config live under the active program directory.
 /// </summary>
 public static class AppPaths
 {
     private static readonly string _appDataDir = TWXProxy.Core.SharedPaths.AppDataDir;
     private static readonly string _legacyAppDataDir = BuildLegacyAppDataDir();
+    private static string _configuredProgramDir = TWXProxy.Core.SharedPathSettingsStore.Load().ProgramDirectory;
 
     /// <summary>
     /// Root directory for all TWX Proxy application data.
@@ -17,34 +18,34 @@ public static class AppPaths
     /// </summary>
     public static string AppDataDir => _appDataDir;
 
-    /// <summary>Directory where game configuration JSON is stored.</summary>
-    public static string ConfigDir => AppDataDir;
+    public static string ProgramDir => GetEffectiveProgramDir();
+
+    /// <summary>Directory where the unified shared config file is stored.</summary>
+    public static string ConfigDir => ProgramDir;
 
     /// <summary>Legacy pre-unification app-data root used for migration.</summary>
     public static string LegacyConfigDir => _legacyAppDataDir;
 
-    /// <summary>Path to the game registry JSON file (list of loaded game data file paths).</summary>
-    public static string GameConfigFile => Path.Combine(ConfigDir, "gameconfigs.json");
+    /// <summary>Path to the shared XML config file.</summary>
+    public static string ConfigFile => TWXProxy.Core.SharedPaths.GetConfigFilePath(ProgramDir);
 
     public static string LegacyGameConfigFile => Path.Combine(LegacyConfigDir, "gameconfigs.json");
 
     /// <summary>Directory where per-game data JSON files are stored.</summary>
-    public static string GamesDir => TWXProxy.Core.SharedPaths.GamesDir;
+    public static string GamesDir => Path.Combine(ProgramDir, "games");
 
     /// <summary>Returns the GAMENAME.json path for a given game name.</summary>
     public static string GameDataFileFor(string gameName)
     {
         string safe = string.Concat(gameName.Split(Path.GetInvalidFileNameChars()));
         if (string.IsNullOrWhiteSpace(safe)) safe = "game";
-        return TWXProxy.Core.SharedPaths.GameConfigPathForGame(gameName);
+        return Path.Combine(GamesDir, TWXProxy.Core.SharedPaths.SanitizeFileComponent(gameName) + ".json");
     }
 
     /// <summary>
-    /// Directory where shared .xdb database files are stored.
-    /// This is intentionally outside the app-specific config root so MTC embedded-proxy
-    /// mode and the standalone proxy see the same universe database.
+    /// Directory where per-game databases are stored alongside the game JSON files.
     /// </summary>
-    public static string DatabaseDir => TWXProxy.Core.SharedPaths.DatabaseDir;
+    public static string DatabaseDir => GamesDir;
 
     /// <summary>
     /// Legacy per-app database directory used before the shared-database change.
@@ -59,12 +60,13 @@ public static class AppPaths
     ///   Linux   : /usr/local/share/twxproxy/scripts
     /// Users can override this per-game in Settings.
     /// </summary>
-    public static string DefaultScriptDir => BuildDefaultScriptDir();
+    public static string DefaultScriptDir => TWXProxy.Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(ProgramDir);
 
     /// <summary>Returns the .xdb path for a given game name.</summary>
     public static string DatabasePathForGame(string gameName)
     {
-        return TWXProxy.Core.SharedPaths.DatabasePathForGame(gameName);
+        string safe = TWXProxy.Core.SharedPaths.SanitizeFileComponent(gameName);
+        return Path.Combine(DatabaseDir, safe + ".xdb");
     }
 
     public static string LegacyDatabasePathForGame(string gameName)
@@ -74,10 +76,10 @@ public static class AppPaths
     }
 
     /// <summary>Directory where per-game debug logs are stored.</summary>
-    public static string LogsDir => TWXProxy.Core.SharedPaths.LogDir;
+    public static string LogsDir => Path.Combine(ProgramDir, "logs");
 
     /// <summary>Directory where TWXP-only expansion modules can be placed.</summary>
-    public static string ModulesDir => Path.Combine(AppDataDir, "modules-twxp");
+    public static string ModulesDir => Path.Combine(ProgramDir, "modules");
 
     /// <summary>Directory where TWXP expansion modules can persist per-module state.</summary>
     public static string ModuleDataDir => Path.Combine(AppDataDir, "module-data", "twxp");
@@ -96,34 +98,31 @@ public static class AppPaths
     /// <summary>Ensure all required directories exist.</summary>
     public static void EnsureDirectories()
     {
+        Directory.CreateDirectory(ProgramDir);
         Directory.CreateDirectory(ConfigDir);
-        TWXProxy.Core.SharedPaths.EnsureGamesDir();
+        Directory.CreateDirectory(GamesDir);
         Directory.CreateDirectory(DatabaseDir);
         Directory.CreateDirectory(LegacyDatabaseDir);
         Directory.CreateDirectory(LogsDir);
         Directory.CreateDirectory(ModulesDir);
         Directory.CreateDirectory(ModuleDataDir);
         TWXProxy.Core.SharedPaths.EnsureModuleDir();
-        // Do NOT auto-create DefaultScriptDir — it may be a shared system path
-        // that already exists or requires admin rights to create.
     }
 
-    private static string BuildDefaultScriptDir()
+    public static void SetConfiguredProgramDir(string? programDir)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return TWXProxy.Core.WindowsInstallInfo.GetDefaultScriptsDirectory();
-        }
+        if (string.IsNullOrWhiteSpace(programDir))
+            return;
 
-        if (OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst())
-        {
-            // /Library/Application Support/twxproxy/scripts
-            return Path.Combine("/Library", "Application Support", "twxproxy", "scripts");
-        }
-
-        // Linux / other
-        return "/usr/local/share/twxproxy/scripts";
+        _configuredProgramDir = Path.GetFullPath(programDir)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        TWXProxy.Core.GlobalModules.ProgramDir = _configuredProgramDir;
     }
+
+    public static string GetEffectiveProgramDir()
+        => string.IsNullOrWhiteSpace(_configuredProgramDir)
+            ? TWXProxy.Core.SharedPaths.ResolveProgramDir()
+            : _configuredProgramDir;
 
     private static string BuildLegacyAppDataDir()
     {

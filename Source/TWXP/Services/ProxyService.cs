@@ -74,13 +74,9 @@ public class ProxyService : IProxyService
             config.ScriptDirectory = scriptDirectory;
             Directory.CreateDirectory(scriptDirectory);
             
-            // Set the program directory for the interpreter (used for relative paths).
-            // In the Pascal version the install dir (e.g. C:\TWXProxy) contained the
-            // "scripts" sub-folder, so ProgramDir = parent of scriptDirectory.
-            string programDir = Path.GetDirectoryName(scriptDirectory)
-                ?? (OperatingSystem.IsWindows()
-                    ? TWXProxy.Core.WindowsInstallInfo.GetInstalledProgramDirOrDefault()
-                    : AppContext.BaseDirectory);
+            // ProgramDir stays anchored to the configured TWX program directory
+            // even when scripts are redirected elsewhere.
+            string programDir = AppPaths.ProgramDir;
             interpreter.ProgramDir = programDir;
             GlobalModules.ProgramDir = programDir;
             interpreter.ScriptDirectory = scriptDirectory;
@@ -691,12 +687,15 @@ public class ProxyService : IProxyService
         });
     }
 
-    public Task<TwxImportResult> ImportTwxAsync(string gameId, string inputPath, bool keepRecent)
+    public async Task<TwxImportResult> ImportTwxAsync(string gameId, string inputPath, bool keepRecent)
     {
-        return WithDatabaseAsync(gameId, database =>
+        TwxImportResult result = new(0, 0, false, 0);
+        await WithDatabaseAsync(gameId, database =>
         {
-            return Task.FromResult(ProxyGameOperations.ImportTwx(database, inputPath, keepRecent));
+            result = ProxyGameOperations.ImportTwx(database, inputPath, keepRecent);
+            return Task.CompletedTask;
         });
+        return result;
     }
 
     public Task<bool> BeginLogPlaybackAsync(string gameId, string capturePath)
