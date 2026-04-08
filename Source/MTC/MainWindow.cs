@@ -68,6 +68,10 @@ public class MainWindow : Window
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
     private DockPanel? _rootDock;
+    private Canvas? _deckSurface;
+    private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DeckPanelState> _deckPanelStates = new(StringComparer.OrdinalIgnoreCase);
+    private int _deckNextZIndex = 100;
     private TacticalMapControl? _tacticalMap;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
@@ -168,6 +172,18 @@ public class MainWindow : Window
     private static readonly IBrush HudStatus    = new SolidColorBrush(Color.FromRgb(11,  20, 28));
     private static readonly FontFamily HudTitleFont = new("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif");
     private static readonly Bitmap HudLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
+
+    private sealed class DeckPanelState
+    {
+        public required string PanelId { get; init; }
+        public required double Left { get; set; }
+        public required double Top { get; set; }
+        public required double Width { get; init; }
+        public required double BodyHeight { get; init; }
+        public required int ZIndex { get; set; }
+        public bool Closed { get; set; }
+        public bool Minimized { get; set; }
+    }
 
     // ── Constructor ────────────────────────────────────────────────────────
     public MainWindow()
@@ -337,11 +353,12 @@ public class MainWindow : Window
 
     private Control BuildCommandDeckShell()
     {
+        _deckPanels.Clear();
         _tacticalMap = new TacticalMapControl(
             () => _state.Sector,
             () => _sessionDb)
         {
-            MinHeight = 280,
+            MinHeight = 220,
         };
 
         var rootGrid = new Grid();
@@ -352,48 +369,30 @@ public class MainWindow : Window
         Grid.SetRow(banner, 0);
         rootGrid.Children.Add(banner);
 
-        var body = new Grid { Margin = new Thickness(0, 14, 0, 0) };
-        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.45, GridUnitType.Star) });
-        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.0, GridUnitType.Star) });
+        _deckSurface = new Canvas
+        {
+            ClipToBounds = true,
+        };
+        _deckSurface.SizeChanged += (_, _) => ClampDeckPanelsToSurface();
 
-        var top = new Grid();
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.05, GridUnitType.Star) });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.18, GridUnitType.Star) });
-        Grid.SetRow(top, 0);
-        body.Children.Add(top);
+        var surfaceRoot = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+        surfaceRoot.Children.Add(new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(18),
+        });
+        surfaceRoot.Children.Add(_deckSurface);
 
-        var mapFrame = BuildHudFrame("TACTICAL OVERLAY", BuildDeckMapBody(), "LIVE");
-        Grid.SetColumn(mapFrame, 0);
-        top.Children.Add(mapFrame);
+        CreateDeckPanel("map", "TACTICAL OVERLAY", "LIVE", BuildDeckMapBody(), canClose: true);
+        CreateDeckPanel("console", "GAMEPLAY CONSOLE", "ANSI", BuildDeckTerminalBody(), canClose: false);
+        CreateDeckPanel("ship", "SHIP BAY", "SYSTEMS", BuildDeckShipPanel(), canClose: true);
+        CreateDeckPanel("intel", "COMMAND MATRIX", "INTEL", BuildDeckCenterPanels(), canClose: true);
+        CreateDeckPanel("logo", "AUXILIARY PANEL", "STANDBY", BuildLogoPanel(), canClose: true);
 
-        var consoleFrame = BuildHudFrame("GAMEPLAY CONSOLE", BuildDeckTerminalBody(), "ANSI");
-        Grid.SetColumn(consoleFrame, 2);
-        top.Children.Add(consoleFrame);
-
-        var bottom = new Grid { Margin = new Thickness(0, 12, 0, 0) };
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-        bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
-        Grid.SetRow(bottom, 1);
-        body.Children.Add(bottom);
-
-        var shipFrame = BuildHudFrame("SHIP BAY", BuildDeckShipPanel(), "SYSTEMS");
-        Grid.SetColumn(shipFrame, 0);
-        bottom.Children.Add(shipFrame);
-
-        var intelFrame = BuildHudFrame("COMMAND MATRIX", BuildDeckCenterPanels(), "INTEL");
-        Grid.SetColumn(intelFrame, 2);
-        bottom.Children.Add(intelFrame);
-
-        var logoFrame = BuildHudFrame("AUXILIARY PANEL", BuildLogoPanel(), "STANDBY");
-        Grid.SetColumn(logoFrame, 4);
-        bottom.Children.Add(logoFrame);
-
-        Grid.SetRow(body, 1);
-        rootGrid.Children.Add(body);
+        Grid.SetRow(surfaceRoot, 1);
+        rootGrid.Children.Add(surfaceRoot);
 
         return new Border
         {
@@ -404,6 +403,175 @@ public class MainWindow : Window
             Padding = new Thickness(16),
             Child = rootGrid,
         };
+    }
+
+    private void CreateDeckPanel(string panelId, string title, string tag, Control body, bool canClose)
+    {
+        if (_deckSurface == null)
+            return;
+
+        DeckPanelState state = GetOrCreateDeckPanelState(panelId);
+        var panel = new FloatingDeckPanel(
+            panelId,
+            title,
+            tag,
+            body,
+            state.Width,
+            state.BodyHeight,
+            canClose,
+            HudFrame,
+            HudFrameAlt,
+            HudHeader,
+            HudHeaderAlt,
+            HudEdge,
+            HudInnerEdge,
+            HudAccent,
+            HudMuted,
+            HudTitleFont);
+
+        panel.Activated += BringDeckPanelToFront;
+        panel.StateChanged += OnDeckPanelStateChanged;
+
+        _deckSurface.Children.Add(panel);
+        _deckPanels[panelId] = panel;
+
+        Panel.SetZIndex(panel, state.ZIndex);
+        panel.MoveTo(state.Left, state.Top);
+        if (state.Minimized)
+            panel.SetMinimized(true);
+        if (state.Closed)
+            panel.SetClosed(true);
+    }
+
+    private DeckPanelState GetOrCreateDeckPanelState(string panelId)
+    {
+        if (_deckPanelStates.TryGetValue(panelId, out DeckPanelState? state))
+            return state;
+
+        state = CreateDefaultDeckPanelState(panelId);
+        _deckPanelStates[panelId] = state;
+        _deckNextZIndex = Math.Max(_deckNextZIndex, state.ZIndex + 1);
+        return state;
+    }
+
+    private DeckPanelState CreateDefaultDeckPanelState(string panelId)
+    {
+        double surfaceWidth = Math.Max(860, (Bounds.Width > 100 ? Bounds.Width : Width) - 64);
+        double surfaceHeight = Math.Max(460, (Bounds.Height > 100 ? Bounds.Height : Height) - 170);
+
+        return panelId switch
+        {
+            "map" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = 18,
+                Top = 18,
+                Width = Math.Min(460, Math.Max(380, surfaceWidth * 0.40)),
+                BodyHeight = Math.Min(290, Math.Max(230, surfaceHeight * 0.48)),
+                ZIndex = 110,
+            },
+            "console" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = Math.Max(260, surfaceWidth * 0.36),
+                Top = 18,
+                Width = Math.Min(660, Math.Max(520, surfaceWidth * 0.58)),
+                BodyHeight = Math.Min(330, Math.Max(250, surfaceHeight * 0.56)),
+                ZIndex = 120,
+            },
+            "ship" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = 26,
+                Top = Math.Max(170, surfaceHeight * 0.44),
+                Width = 340,
+                BodyHeight = Math.Min(290, Math.Max(230, surfaceHeight * 0.42)),
+                ZIndex = 130,
+            },
+            "intel" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = Math.Max(260, surfaceWidth * 0.33),
+                Top = Math.Max(210, surfaceHeight * 0.50),
+                Width = Math.Min(450, Math.Max(380, surfaceWidth * 0.40)),
+                BodyHeight = Math.Min(250, Math.Max(210, surfaceHeight * 0.34)),
+                ZIndex = 140,
+            },
+            "logo" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = Math.Max(620, surfaceWidth - 314),
+                Top = Math.Max(220, surfaceHeight * 0.54),
+                Width = 280,
+                BodyHeight = Math.Min(220, Math.Max(180, surfaceHeight * 0.28)),
+                ZIndex = 150,
+            },
+            _ => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = 20,
+                Top = 20,
+                Width = 360,
+                BodyHeight = 220,
+                ZIndex = _deckNextZIndex++,
+            },
+        };
+    }
+
+    private void BringDeckPanelToFront(FloatingDeckPanel panel)
+    {
+        Panel.SetZIndex(panel, _deckNextZIndex++);
+        if (_deckPanelStates.TryGetValue(panel.PanelId, out DeckPanelState? state))
+            state.ZIndex = Panel.GetZIndex(panel);
+    }
+
+    private void OnDeckPanelStateChanged(FloatingDeckPanel panel)
+    {
+        if (!_deckPanelStates.TryGetValue(panel.PanelId, out DeckPanelState? state))
+            return;
+
+        (state.Left, state.Top) = panel.GetPosition();
+        state.Minimized = panel.IsMinimized;
+        state.Closed = panel.IsClosed;
+        state.ZIndex = Panel.GetZIndex(panel);
+    }
+
+    private void ShowDeckPanel(string panelId)
+    {
+        if (!_useCommandDeckSkin)
+        {
+            SetSkin(true);
+            return;
+        }
+
+        if (_deckPanels.TryGetValue(panelId, out FloatingDeckPanel? panel) &&
+            _deckPanelStates.TryGetValue(panelId, out DeckPanelState? state))
+        {
+            panel.Restore(state.Left, state.Top);
+            BringDeckPanelToFront(panel);
+        }
+    }
+
+    private void RestoreDeckLayout()
+    {
+        _deckPanelStates.Clear();
+        if (_useCommandDeckSkin)
+            ApplySelectedSkin();
+    }
+
+    private void ClampDeckPanelsToSurface()
+    {
+        if (_deckSurface == null)
+            return;
+
+        foreach (FloatingDeckPanel panel in _deckPanels.Values)
+        {
+            if (!panel.IsVisible)
+                continue;
+
+            (double left, double top) = panel.GetPosition();
+            panel.MoveTo(left, top);
+        }
     }
 
     private Control BuildDeckBanner()
@@ -568,8 +736,6 @@ public class MainWindow : Window
         devices.Children.Add(BuildDeckDeviceChip("ATO", _valAtomic, HudAccentHot));
         devices.Children.Add(BuildDeckDeviceChip("COR", _valCorbo, HudAccent));
         devices.Children.Add(BuildDeckDeviceChip("CLK", _valCloak, HudAccentOk));
-        devices.Children.Add(BuildDeckDeviceChip("TW1", _valTW1, HudAccent));
-        devices.Children.Add(BuildDeckDeviceChip("TW2", _valTW2, HudAccent));
 
         var hero = new Grid();
         hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });
@@ -1011,6 +1177,7 @@ public class MainWindow : Window
         _shellHost.Padding = _useCommandDeckSkin
             ? new Thickness(10, 8, 10, 10)
             : new Thickness(6, 4, 6, 4);
+        _shellHost.Child = null;
         _shellHost.Child = _useCommandDeckSkin
             ? BuildCommandDeckShell()
             : BuildClassicShell();
