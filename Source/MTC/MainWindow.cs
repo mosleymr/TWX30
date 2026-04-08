@@ -3604,17 +3604,10 @@ public class MainWindow : Window
             new Separator(),
         };
 
-        var stopNonSystem = new MenuItem { Header = "Stop All _Non-System Scripts", IsEnabled = hasInterpreter };
-        stopNonSystem.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: false);
-        items.Add(stopNonSystem);
-
-        var stopAll = new MenuItem { Header = "Stop _All Scripts", IsEnabled = hasInterpreter };
-        stopAll.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: true);
-        items.Add(stopAll);
-
-        var stopScriptMenu = new MenuItem { Header = "Stop _Script", IsEnabled = hasInterpreter };
-        stopScriptMenu.ItemsSource = BuildStopScriptItems();
-        items.Add(stopScriptMenu);
+        var stopMenu = new MenuItem { Header = "_Stop", IsEnabled = hasInterpreter };
+        stopMenu.ItemsSource = BuildStopMenuItems();
+        stopMenu.SubmenuOpened += (_, _) => stopMenu.ItemsSource = BuildStopMenuItems();
+        items.Add(stopMenu);
 
         var mbotMenu = new MenuItem { Header = "_mbot", IsEnabled = _embeddedGameConfig?.Mtc?.mbot != null || _gameInstance != null };
         mbotMenu.ItemsSource = BuildMbotMenuItems();
@@ -3641,7 +3634,7 @@ public class MainWindow : Window
         return items;
     }
 
-    private List<object> BuildStopScriptItems()
+    private List<object> BuildStopMenuItems()
     {
         var items = new List<object>();
         var interpreter = CurrentInterpreter;
@@ -3651,12 +3644,23 @@ public class MainWindow : Window
             return items;
         }
 
+        var stopAll = new MenuItem { Header = "_All Scripts" };
+        stopAll.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: true);
+        items.Add(stopAll);
+
+        var stopNonSystem = new MenuItem { Header = "All _Non-System Scripts" };
+        stopNonSystem.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: false);
+        items.Add(stopNonSystem);
+
         var scripts = Core.ProxyGameOperations.GetRunningScripts(interpreter);
         if (scripts.Count == 0)
         {
+            items.Add(new Separator());
             items.Add(new MenuItem { Header = "No active scripts", IsEnabled = false });
             return items;
         }
+
+        items.Add(new Separator());
 
         foreach (var script in scripts)
         {
