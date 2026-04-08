@@ -69,8 +69,7 @@ internal sealed class mbotService
         _database = database;
         _interpreter = interpreter;
         _config = config ?? new mbotConfig();
-        if (_config.AutoStart)
-            _config.Enabled = true;
+        _config.Enabled = false;
         NormalizeConfig();
         ResetAuthorizedUsers();
         SyncWatcherState();
@@ -87,10 +86,13 @@ internal sealed class mbotService
 
     public void ApplyConfig(mbotConfig? config)
     {
+        bool wasEnabled = _config.Enabled;
         _config = config ?? new mbotConfig();
         NormalizeConfig();
         ResetAuthorizedUsers();
         SyncWatcherState();
+        if (!wasEnabled && _config.Enabled)
+            ArmRelogFlagsIfEnabled();
     }
 
     public IReadOnlyList<Core.RunningScriptInfo> GetRunningScripts()
@@ -128,6 +130,23 @@ internal sealed class mbotService
     public bool StopScriptByName(string scriptName)
     {
         return Core.ProxyGameOperations.StopScriptByName(_interpreter, scriptName);
+    }
+
+    public IReadOnlyList<string> GetStartupScriptReferences()
+    {
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (string.IsNullOrWhiteSpace(scriptRoot))
+            return Array.Empty<string>();
+
+        string startupRoot = Path.Combine(scriptRoot, "startups");
+        if (!Directory.Exists(startupRoot))
+            return Array.Empty<string>();
+
+        return Directory
+            .EnumerateFiles(startupRoot, "*.cts", SearchOption.TopDirectoryOnly)
+            .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
+            .Select(path => BuildLoadReference(Path.GetFullPath(path)))
+            .ToArray();
     }
 
     public void StopAllNonSystemScripts()
@@ -419,7 +438,7 @@ internal sealed class mbotService
     private mbotDispatchResult ExecuteBotStatus(string canonical)
     {
         mbotStatusSnapshot snapshot = GetStatusSnapshot();
-        PublishMessage($"mbot: enabled={snapshot.Enabled} autostart={snapshot.AutoStart} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
+        PublishMessage($"mbot: enabled={snapshot.Enabled} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
         PublishMessage($"mbot: botname={snapshot.BotName} team={snapshot.TeamName} subspace={snapshot.SubspaceChannel} mode={snapshot.Mode}");
         PublishMessage($"mbot: self={snapshot.AcceptSelfCommands} subspaceCmds={snapshot.AcceptSubspaceCommands} private={snapshot.AcceptPrivateCommands} authUsers={snapshot.AuthorizedUsers.Count}");
         PublishMessage($"mbot: scriptRoot={snapshot.ScriptRoot}");
@@ -458,6 +477,16 @@ internal sealed class mbotService
             Watcher.Attach(_gameInstance, _database);
         else
             Watcher.Detach();
+    }
+
+    private void ArmRelogFlagsIfEnabled()
+    {
+        if (!_config.Enabled)
+            return;
+
+        Core.ScriptRef.SetCurrentGameVar("$doRelog", "1");
+        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "1");
+        Core.GlobalModules.DebugLog("[mbot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
     }
 
     private string? TryResolveScriptReference(string canonical, mbotCommandSpec? command, out bool isModeScript)

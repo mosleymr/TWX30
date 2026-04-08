@@ -1028,10 +1028,21 @@ namespace TWXProxy.Core
             {
                 int depth = 0;
                 bool isOuter = true;
+                bool inQuote = false;
                 for (int i = 0; i < eq.Length; i++)
                 {
-                    if (eq[i] == '(') depth++;
-                    else if (eq[i] == ')') depth--;
+                    char c = eq[i];
+                    if (c == '"')
+                    {
+                        inQuote = !inQuote;
+                        continue;
+                    }
+
+                    if (inQuote)
+                        continue;
+
+                    if (c == '(') depth++;
+                    else if (c == ')') depth--;
                     if (depth == 0 && i < eq.Length - 1) { isOuter = false; break; }
                 }
                 if (!isOuter) break;

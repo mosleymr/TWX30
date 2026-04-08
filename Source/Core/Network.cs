@@ -594,6 +594,7 @@ namespace TWXProxy.Core
                 // Wipe the entire in-memory script-var cache so no savevar values
                 // survive into the next proxy session.
                 ScriptRef.ClearAllScriptVars();
+                GlobalModules.GlobalAutoRecorder.ResetState($"game-stop:{_gameName}");
 
                 CloseConnections();
                 Log($"[{_gameName}] Stopped");
@@ -646,6 +647,7 @@ namespace TWXProxy.Core
 
             try
             {
+                GlobalModules.GlobalAutoRecorder.ResetState($"server-connect:{_gameName}");
                 _serverClient = new TcpClient();
                 await _serverClient.ConnectAsync(_serverAddress, _serverPort, token);
                 _serverStream = _serverClient.GetStream();

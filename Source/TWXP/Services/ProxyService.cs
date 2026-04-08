@@ -162,6 +162,18 @@ public class ProxyService : IProxyService
                     // Sync all runtime-owned header fields, including login automation settings.
                     var header = sessionDb.DBHeader;
                     var updates = BuildHeader(config);
+                    bool headerDirty = header.Sectors != updates.Sectors ||
+                                       header.Address != updates.Address ||
+                                       header.ServerPort != updates.ServerPort ||
+                                       header.ListenPort != updates.ListenPort ||
+                                       header.CommandChar != updates.CommandChar ||
+                                       header.Description != updates.Description ||
+                                       header.UseLogin != updates.UseLogin ||
+                                       header.UseRLogin != updates.UseRLogin ||
+                                       header.LoginScript != updates.LoginScript ||
+                                       header.LoginName != updates.LoginName ||
+                                       header.Password != updates.Password ||
+                                       header.Game != updates.Game;
                     header.Sectors = updates.Sectors;
                     header.Address = updates.Address;
                     header.ServerPort = updates.ServerPort;
@@ -175,6 +187,8 @@ public class ProxyService : IProxyService
                     header.Password = updates.Password;
                     header.Game = updates.Game;
                     sessionDb.ReplaceHeader(header);
+                    if (headerDirty)
+                        sessionDb.SaveDatabase();
                     TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Opened existing database: {dbPath}\n");
                 }
                 else
@@ -758,6 +772,18 @@ public class ProxyService : IProxyService
             database.UseCache = config.UseCache;
             var header = database.DBHeader;
             var updates = BuildHeader(config);
+            bool headerDirty = header.Sectors != updates.Sectors ||
+                               header.Address != updates.Address ||
+                               header.ServerPort != updates.ServerPort ||
+                               header.ListenPort != updates.ListenPort ||
+                               header.CommandChar != updates.CommandChar ||
+                               header.Description != updates.Description ||
+                               header.UseLogin != updates.UseLogin ||
+                               header.UseRLogin != updates.UseRLogin ||
+                               header.LoginScript != updates.LoginScript ||
+                               header.LoginName != updates.LoginName ||
+                               header.Password != updates.Password ||
+                               header.Game != updates.Game;
             header.Sectors = updates.Sectors;
             header.Address = updates.Address;
             header.ServerPort = updates.ServerPort;
@@ -771,6 +797,8 @@ public class ProxyService : IProxyService
             header.Password = updates.Password;
             header.Game = updates.Game;
             database.ReplaceHeader(header);
+            if (headerDirty)
+                database.SaveDatabase();
         }
         else
         {

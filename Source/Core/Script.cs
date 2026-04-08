@@ -1349,6 +1349,7 @@ namespace TWXProxy.Core
         private int _execScriptID;
 #pragma warning restore CS0649
         private Stack<int> _subStack;
+        private Stack<int> _nonResumingMenuHandlerDepths;
         private List<CmdParam> _cmdParams;
         private Dictionary<int, CmdParam[]> _dispatchParamCache;
         private CmdParam?[] _scratchParams;
@@ -1368,6 +1369,7 @@ namespace TWXProxy.Core
             _keypressMode = false;
             _inputVarParam = null;
             _subStack = new Stack<int>();
+            _nonResumingMenuHandlerDepths = new Stack<int>();
             _cmdParams = new List<CmdParam>(20);
             _dispatchParamCache = new Dictionary<int, CmdParam[]>();
             _scratchParams = Array.Empty<CmdParam?>();
@@ -1427,6 +1429,7 @@ namespace TWXProxy.Core
 
             // Free up sub stack
             _subStack.Clear();
+            _nonResumingMenuHandlerDepths.Clear();
 
             _cmdParams.Clear();
 
@@ -3084,7 +3087,8 @@ namespace TWXProxy.Core
 
                         case CmdAction.Pause:
                             _paused = true;
-                            _pausedReason = PauseReason.Command;
+                            if (_pausedReason == PauseReason.None)
+                                _pausedReason = PauseReason.Command;
                             _resetLoopDetectionOnNextExecute = true;
                             if (GlobalModules.VerboseDebugMode)
                                 GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
@@ -3559,7 +3563,8 @@ namespace TWXProxy.Core
                         
                         case CmdAction.Pause:
                             _paused = true;
-                            _pausedReason = PauseReason.Command;
+                            if (_pausedReason == PauseReason.None)
+                                _pausedReason = PauseReason.Command;
                             _resetLoopDetectionOnNextExecute = true;
                             if (GlobalModules.VerboseDebugMode)
                                 GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
@@ -3711,17 +3716,28 @@ namespace TWXProxy.Core
             GotoLabel(labelName);
         }
 
-        public void GosubFromMenu(string labelName)
+        public void GosubFromMenu(string labelName, bool resumeAfterMenu = false)
         {
-            // When calling GOSUB from menu (not from bytecode), we push a safe return position
-            // that will cause Execute() to stop immediately when RETURN is hit
-            if (_cmp != null && _cmp.Code != null)
+            // Menu handlers fall into two groups:
+            // - config/input handlers that should return to the menu runtime
+            // - "start/execute" handlers that close the menu and resume the script
+            if (resumeAfterMenu)
             {
-                _subStack.Push(_cmp.Code.Length); // Push end-of-bytecode position
+                _subStack.Push(_codePos);
             }
             else
             {
-                _subStack.Push(_codePos); // Fallback to current position
+                // When calling GOSUB from menu (not from bytecode), push a safe return position
+                // that will cause Execute() to stop immediately when RETURN is hit.
+                _nonResumingMenuHandlerDepths.Push(_subStack.Count);
+                if (_cmp != null && _cmp.Code != null)
+                {
+                    _subStack.Push(_cmp.Code.Length);
+                }
+                else
+                {
+                    _subStack.Push(_codePos);
+                }
             }
             GotoLabel(labelName);
         }
@@ -3734,6 +3750,34 @@ namespace TWXProxy.Core
             int returnPos = _subStack.Pop();
             GlobalModules.DebugLog($"[RETURN] Restoring codePos={returnPos}, remainingDepth={_subStack.Count}\n");
             _codePos = returnPos;
+            CleanupCompletedMenuHandlerDepths();
+        }
+
+        public bool CompletePendingNonResumingMenuHandler()
+        {
+            if (_nonResumingMenuHandlerDepths.Count == 0)
+                return false;
+
+            int targetDepth = _nonResumingMenuHandlerDepths.Pop();
+            while (_subStack.Count > targetDepth)
+                _subStack.Pop();
+
+            if (_cmp?.Code != null)
+                _codePos = _cmp.Code.Length;
+
+            GlobalModules.DebugLog(
+                $"[MENU_HANDLER] Finalized non-resuming handler targetDepth={targetDepth} remainingDepth={_subStack.Count} codePos={_codePos}\n");
+            CleanupCompletedMenuHandlerDepths();
+            return true;
+        }
+
+        private void CleanupCompletedMenuHandlerDepths()
+        {
+            while (_nonResumingMenuHandlerDepths.Count > 0 &&
+                   _subStack.Count <= _nonResumingMenuHandlerDepths.Peek())
+            {
+                _nonResumingMenuHandlerDepths.Pop();
+            }
         }
 
         public void DumpVars(string searchName)

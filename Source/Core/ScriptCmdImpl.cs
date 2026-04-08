@@ -29,6 +29,7 @@ using System.IO;
 using System.Linq;
 using System.Globalization;
 using System.Diagnostics;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace TWXProxy.Core
@@ -71,6 +72,183 @@ namespace TWXProxy.Core
         private static string ConvertBoolToString(bool value)
         {
             return value ? "1" : "0";
+        }
+
+        private static string FormatTwxTime(DateTime now, string? format)
+        {
+            if (string.IsNullOrWhiteSpace(format))
+                return now.ToShortTimeString();
+
+            string trimmed = format.Trim();
+            switch (trimmed)
+            {
+                case "h":
+                    return now.Hour.ToString(CultureInfo.InvariantCulture);
+                case "hh":
+                    return now.Hour.ToString("00", CultureInfo.InvariantCulture);
+                case "n":
+                case "m":
+                    return now.Minute.ToString(CultureInfo.InvariantCulture);
+                case "nn":
+                    return now.Minute.ToString("00", CultureInfo.InvariantCulture);
+                case "s":
+                    return now.Second.ToString(CultureInfo.InvariantCulture);
+                case "ss":
+                    return now.Second.ToString("00", CultureInfo.InvariantCulture);
+                case "z":
+                    return now.Millisecond.ToString("0", CultureInfo.InvariantCulture);
+                case "zz":
+                    return now.Millisecond.ToString("00", CultureInfo.InvariantCulture);
+                case "zzz":
+                    return now.Millisecond.ToString("000", CultureInfo.InvariantCulture);
+                case "t":
+                case "T":
+                    return now.ToShortTimeString();
+            }
+
+            string translated = TranslateTwxDateTimeFormat(trimmed);
+            return now.ToString(translated, CultureInfo.InvariantCulture);
+        }
+
+        private static string TranslateTwxDateTimeFormat(string format)
+        {
+            var sb = new StringBuilder(format.Length * 2);
+
+            for (int i = 0; i < format.Length;)
+            {
+                if (MatchesFormatToken(format, i, "am/pm"))
+                {
+                    sb.Append("tt");
+                    i += 5;
+                    continue;
+                }
+
+                char c = format[i];
+                if (!char.IsLetter(c))
+                {
+                    sb.Append(c);
+                    i++;
+                    continue;
+                }
+
+                int runLength = 1;
+                while (i + runLength < format.Length &&
+                       char.ToLowerInvariant(format[i + runLength]) == char.ToLowerInvariant(c))
+                {
+                    runLength++;
+                }
+
+                switch (char.ToLowerInvariant(c))
+                {
+                    case 'y':
+                        sb.Append(runLength switch
+                        {
+                            1 => "y",
+                            2 => "yy",
+                            3 => "yyy",
+                            _ => "yyyy"
+                        });
+                        break;
+
+                    case 'd':
+                        sb.Append(runLength switch
+                        {
+                            1 => "d",
+                            2 => "dd",
+                            3 => "ddd",
+                            _ => "dddd"
+                        });
+                        break;
+
+                    case 'h':
+                        sb.Append(runLength == 1 ? "H" : "HH");
+                        break;
+
+                    case 'n':
+                        sb.Append(runLength == 1 ? "m" : "mm");
+                        break;
+
+                    case 'm':
+                        if (LooksLikeMinuteToken(format, i, runLength))
+                        {
+                            sb.Append(runLength == 1 ? "m" : "mm");
+                        }
+                        else
+                        {
+                            sb.Append(runLength switch
+                            {
+                                1 => "M",
+                                2 => "MM",
+                                3 => "MMM",
+                                _ => "MMMM"
+                            });
+                        }
+                        break;
+
+                    case 's':
+                        sb.Append(runLength == 1 ? "s" : "ss");
+                        break;
+
+                    case 'z':
+                        sb.Append(runLength switch
+                        {
+                            1 => "f",
+                            2 => "ff",
+                            _ => "fff"
+                        });
+                        break;
+
+                    case 't':
+                        sb.Append("tt");
+                        break;
+
+                    default:
+                        sb.Append(format, i, runLength);
+                        break;
+                }
+
+                i += runLength;
+            }
+
+            return sb.ToString();
+        }
+
+        private static bool LooksLikeMinuteToken(string format, int start, int runLength)
+        {
+            char prev = FindFormatNeighbor(format, start - 1, -1);
+            char next = FindFormatNeighbor(format, start + runLength, 1);
+
+            if (prev == ':' || next == ':')
+                return true;
+
+            return IsTimeTokenNeighbor(prev) || IsTimeTokenNeighbor(next);
+        }
+
+        private static char FindFormatNeighbor(string format, int index, int step)
+        {
+            while (index >= 0 && index < format.Length)
+            {
+                char c = format[index];
+                if (!char.IsWhiteSpace(c))
+                    return c;
+                index += step;
+            }
+
+            return '\0';
+        }
+
+        private static bool IsTimeTokenNeighbor(char c)
+        {
+            char lower = char.ToLowerInvariant(c);
+            return lower is 'h' or 'n' or 's' or 'z' or 't';
+        }
+
+        private static bool MatchesFormatToken(string format, int index, string token)
+        {
+            if (index + token.Length > format.Length)
+                return false;
+
+            return string.Compare(format, index, token, 0, token.Length, StringComparison.OrdinalIgnoreCase) == 0;
         }
 
         private static void UpdateParam(CmdParam param, double value, int precision)
@@ -1266,10 +1444,9 @@ namespace TWXProxy.Core
             // CMD: gettime var [format]
             if (parameters.Length > 1)
             {
-                // Custom format
                 try
                 {
-                    parameters[0].Value = DateTime.Now.ToString(parameters[1].Value);
+                    parameters[0].Value = FormatTwxTime(DateTime.Now, parameters[1].Value);
                 }
                 catch
                 {
@@ -1875,7 +2052,10 @@ namespace TWXProxy.Core
                         return CmdAction.None;
 
                     if (script is Script s)
+                    {
                         s.PausedReason = PauseReason.OpenMenu;
+                        s.CompletePendingNonResumingMenuHandler();
+                    }
 
                     return CmdAction.Pause;
                 }
@@ -2000,15 +2180,20 @@ namespace TWXProxy.Core
             // Sets menu option flags (Q=quit, ?=help, +=add)
             try
             {
-                // Debug: show parameters
-                GlobalModules.TWXServer?.ClientMessage($"[DEBUG SETMENUOPTIONS] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\r\n");
+                if (GlobalModules.DebugMode)
+                {
+                    GlobalModules.DebugLog($"[DEBUG SETMENUOPTIONS] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\n");
+                }
                 
                 string menuName = parameters[0].Value.ToUpper();
                 bool optionQ = parameters[1].Value == "1";
                 bool optionHelp = parameters[2].Value == "1";
                 bool optionPlus = parameters[3].Value == "1";
                 
-                GlobalModules.TWXServer?.ClientMessage($"[DEBUG SETMENUOPTIONS] menu='{menuName}' Q={optionQ} ?={optionHelp} +={optionPlus}\r\n");
+                if (GlobalModules.DebugMode)
+                {
+                    GlobalModules.DebugLog($"[DEBUG SETMENUOPTIONS] menu='{menuName}' Q={optionQ} ?={optionHelp} +={optionPlus}\n");
+                }
                 
                 if (GlobalModules.TWXMenu != null)
                 {
@@ -2021,7 +2206,7 @@ namespace TWXProxy.Core
             }
             catch (Exception ex)
             {
-                GlobalModules.TWXServer?.ClientMessage($"[SetMenuOptions] Error: {ex.Message}\r\n");
+                GlobalModules.DebugLog($"[SetMenuOptions] Error: {ex.Message}\n");
             }
             return CmdAction.None;
         }

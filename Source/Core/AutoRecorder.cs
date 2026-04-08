@@ -96,6 +96,45 @@ namespace TWXProxy.Core
         /// </summary>
         public event Action? LandmarkSectorsChanged;
 
+        /// <summary>
+        /// Clears parser state when a session or active database changes so stale
+        /// display/report mode from a previous game cannot bleed into the next one.
+        /// </summary>
+        public void ResetState(string reason = "manual")
+        {
+            _lastSector = 0;
+            _inDensityScan = false;
+            _inHoloScan = false;
+            _currentSector = 0;
+            _densityFromSector = 0;
+            _densityScanSectors.Clear();
+            _sectorPos = SectorPos.None;
+            _currentTrader.Name = string.Empty;
+            _currentTrader.ShipType = string.Empty;
+            _currentTrader.ShipName = string.Empty;
+            _currentTrader.Fighters = 0;
+            _currentShip.Name = string.Empty;
+            _currentShip.Owner = string.Empty;
+            _currentShip.ShipType = string.Empty;
+            _currentShip.Fighters = 0;
+            _inLandList = false;
+            _landListSector = 0;
+            _inWarpLane = false;
+            _lastWarpLaneSect = 0;
+            _inNavPointDisplay = false;
+            _inPortReport = false;
+            _portReportSector = 0;
+            _portReportHasFuel = false;
+            _portReportHasOrg = false;
+            _pendingPortReportSectorOverride = 0;
+            _inCIM = false;
+            _inPortCIM = false;
+            _inWarpCIM = false;
+            _inFigScan = false;
+
+            GlobalModules.DebugLog($"[AutoRecorder] State reset reason={reason}\n");
+        }
+
         // ── Compiled Regex ─────────────────────────────────────────────────────
         // "Sector  : 3942 in The Crucible" — sector display header (D command, holo scan)
         // Group 1 = sector number, Group 2 = optional constellation name after " in "
@@ -266,14 +305,15 @@ namespace TWXProxy.Core
         {
             if (string.IsNullOrWhiteSpace(line)) return;
 
-            string rawLine = line.TrimEnd('\r', '\n');
+            string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
             string trimmedLine = rawLine.Trim();
 
             // Log any line that looks warp-related so we can trace what the game sends
             if (rawLine.IndexOf("Warp", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 rawLine.IndexOf("Long Range", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 rawLine.IndexOf("Holo", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                rawLine.IndexOf("Sector", StringComparison.OrdinalIgnoreCase) >= 0)
+                rawLine.IndexOf("Sector", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rawLine.IndexOf("Port", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 GlobalModules.DebugLog($"[AutoRecorder] RAW inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport} lastSect={_lastSector}: '{rawLine}'\n");
             }
@@ -377,9 +417,18 @@ namespace TWXProxy.Core
                     db.SavePlanet(new Planet { Id = planetId, Name = pname, LastSector = _landListSector });
                     return;
                 }
-                // Blank or non-entry line ends the list
-                if (string.IsNullOrWhiteSpace(trimmedLine)) { _inLandList = false; return; }
-                return;  // skip "Owned by:" continuation lines etc.
+                // Owned-by continuation lines belong to the active land list.
+                if (trimmedLine.StartsWith("Owned by:", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                // Any other line ends the list; fall through so the new display/prompt
+                // can be parsed normally instead of being swallowed by stale list state.
+                _inLandList = false;
+                _landListSector = 0;
+                if (string.IsNullOrWhiteSpace(trimmedLine))
+                    return;
+
+                GlobalModules.DebugLog($"[AutoRecorder] Land list ended by line: '{trimmedLine}'\n");
             }
 
             // ── Planet detail page ─────────────────────────────────────────────
@@ -815,7 +864,7 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
-            string rawLine = line.TrimEnd('\r', '\n');
+            string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
             string trimmedLine = rawLine.Trim();
             TryProcessPrompt(ScriptRef.ActiveDatabase, rawLine, trimmedLine);
         }
@@ -838,7 +887,7 @@ namespace TWXProxy.Core
 
             if (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal))
             {
-                ResetPromptDisplays(db);
+                ResetPromptDisplays(db, preservePortReport: _inPortReport || _pendingPortReportSectorOverride > 0);
 
                 var mc = _rxCommandSector.Match(trimmedLine);
                 if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
@@ -853,7 +902,7 @@ namespace TWXProxy.Core
 
             if (trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal))
             {
-                ResetPromptDisplays(db);
+                ResetPromptDisplays(db, preservePortReport: _inPortReport || _pendingPortReportSectorOverride > 0);
 
                 var mc = _rxComputerSector.Match(trimmedLine);
                 if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
@@ -933,7 +982,38 @@ namespace TWXProxy.Core
             return false;
         }
 
-        private void ResetPromptDisplays(ModDatabase? db)
+        private static string NormalizeRecorderLine(string line)
+        {
+            if (string.IsNullOrEmpty(line))
+                return string.Empty;
+
+            string stripped = AnsiCodes.StripANSI(line);
+            char[]? buffer = null;
+            int length = 0;
+
+            for (int i = 0; i < stripped.Length; i++)
+            {
+                char ch = stripped[i];
+                bool keep = ch == '\t' || ch >= ' ';
+                if (keep)
+                {
+                    if (buffer != null)
+                        buffer[length] = ch;
+                    length++;
+                    continue;
+                }
+
+                if (buffer == null)
+                {
+                    buffer = stripped.ToCharArray();
+                    length = i;
+                }
+            }
+
+            return buffer == null ? stripped : new string(buffer, 0, length);
+        }
+
+        private void ResetPromptDisplays(ModDatabase? db, bool preservePortReport = false)
         {
             _inWarpLane = false;
             _lastWarpLaneSect = 0;
@@ -945,13 +1025,21 @@ namespace TWXProxy.Core
             _densityScanSectors.Clear();
             _inDensityScan = false;
             _inHoloScan = false;
-            _inPortReport = false;
-            _pendingPortReportSectorOverride = 0;
+            if (!preservePortReport)
+            {
+                _inPortReport = false;
+                _portReportSector = 0;
+                _portReportHasFuel = false;
+                _portReportHasOrg = false;
+                _pendingPortReportSectorOverride = 0;
+            }
             _inCIM = false;
             _inPortCIM = false;
             _inWarpCIM = false;
             _inFigScan = false;
             _inNavPointDisplay = false;
+            _inLandList = false;
+            _landListSector = 0;
         }
 
         private void MarkDestroyedPort(ModDatabase db, int sectorNum)
@@ -1731,7 +1819,11 @@ namespace TWXProxy.Core
         private static SectorData? GetOrCreate(ModDatabase db, int sectorNum)
         {
             // SectorCount == 0 means universe size is unknown (live capture, no .twx loaded) — allow any positive number.
-            if (sectorNum <= 0 || (db.SectorCount > 0 && sectorNum > db.SectorCount)) return null;
+            if (sectorNum <= 0 || (db.SectorCount > 0 && sectorNum > db.SectorCount))
+            {
+                GlobalModules.DebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={db.SectorCount}\n");
+                return null;
+            }
 
             var sector = db.GetSector(sectorNum);
             if (sector != null) return sector;

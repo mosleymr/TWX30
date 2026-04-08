@@ -72,9 +72,12 @@ public class ShipInfoParser
             bool parsed = ParseSlashLine(line);
             if (parsed)
             {
-                // The "/" response is 4 lines; fire after the last one
-                // (identified by containing "Aln " and "Exp ")
-                if (line.Contains("Aln ") && line.Contains("Exp "))
+                // Older servers often ended the "/" block on a line that contained both
+                // "Aln " and "Exp ". Newer/wrapped displays can split alignment and
+                // experience across separate lines, with the last line carrying
+                // "Exp ...", "Corp ...", and "Ship ...". Treat either layout as a
+                // complete slash-status update.
+                if (IsSlashTerminalLine(line))
                     Updated?.Invoke(_s);
             }
             return;
@@ -158,6 +161,16 @@ public class ShipInfoParser
         }
 
         return any;
+    }
+
+    private static bool IsSlashTerminalLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return false;
+
+        return (line.Contains("Aln ", StringComparison.Ordinal) && line.Contains("Exp ", StringComparison.Ordinal)) ||
+               line.Contains("Ship ", StringComparison.Ordinal) ||
+               (line.Contains("Exp ", StringComparison.Ordinal) && line.Contains("Corp ", StringComparison.Ordinal));
     }
 
     // ── "I" multi-line parser ─────────────────────────────────────────────

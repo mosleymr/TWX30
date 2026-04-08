@@ -551,6 +551,15 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetActiveDatabase(ModDatabase? database)
         {
+            if (!ReferenceEquals(_activeDatabase, database))
+            {
+                string reason = database == null
+                    ? "active-database-cleared"
+                    : $"active-database-set:{database.DatabaseName}";
+                GlobalModules.GlobalAutoRecorder.ResetState(reason);
+                _currentSector = 0;
+            }
+
             _activeDatabase = database;
             GlobalModules.TWXDatabase = database;
 

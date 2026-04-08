@@ -29,6 +29,9 @@ internal sealed class mbotCompatContext
         string safePlanet = ReadCurrent("$BOT~SAFE_PLANET", "0");
         string botIsDeaf = ReadCurrent("$BOT~BOTISDEAF", "0");
         string silentRunning = ReadCurrent("$BOT~SILENT_RUNNING", "0");
+        string loginUserName = ReadCurrent("$BOT~USERNAME", string.Empty);
+        string serverName = ReadCurrent("$BOT~SERVERNAME", string.Empty);
+        string gameLetter = ReadCurrent("$BOT~LETTER", ReadCurrent("$LETTER", string.Empty));
 
         var vars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -45,7 +48,9 @@ internal sealed class mbotCompatContext
             ["$BOT~PASSWORD"] = settings.LoginPassword,
             ["$BOT~MODE"] = string.IsNullOrWhiteSpace(mode) ? "General" : mode,
             ["$USER_INTERFACE~ROUTING"] = context.Route,
-            ["$BOT~USERNAME"] = context.UserName,
+            ["$BOT~USERNAME"] = loginUserName,
+            ["$BOT~SERVERNAME"] = serverName,
+            ["$BOT~LETTER"] = gameLetter,
             ["$BOT~COMMAND_CALLER"] = string.IsNullOrWhiteSpace(context.UserName) ? "self" : context.UserName,
             ["$BOT~PARMS"] = context.Parameters.Count.ToString(),
             ["$BOT~MOMBOT_DIRECTORY"] = scriptRootLeaf,

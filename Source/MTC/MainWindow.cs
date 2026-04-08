@@ -52,7 +52,7 @@ public class MainWindow : Window
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
-    private MenuItem        _botMenu       = new() { Header = "_Bot" };
+    private MenuItem        _botMenu       = new() { Header = "_mbot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
@@ -74,17 +74,7 @@ public class MainWindow : Window
         Margin = new Thickness(8, 0, 0, 0),
         VerticalAlignment = VerticalAlignment.Center,
     };
-    private readonly ToggleSwitch _mbotToggle = new()
-    {
-        OffContent = "Off",
-        OnContent = "On",
-        IsEnabled = false,
-        IsChecked = false,
-        Margin = new Thickness(8, 0, 0, 0),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
     private bool _updatingHaggleToggle;
-    private bool _updatingMbotToggle;
     private bool _mbotPromptOpen;
     private bool _mbotMacroPromptOpen;
     private MbotGridContext? _mbotMacroContext;
@@ -207,8 +197,6 @@ public class MainWindow : Window
         };
 
         _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
-        _mbotToggle.IsCheckedChanged += (_, _) => OnMbotToggleRequested();
-
         Content = BuildLayout();
 
         // Load persisted preferences (recent file list etc.)
@@ -221,7 +209,6 @@ public class MainWindow : Window
         _parser.Feed("\x1b[2J\x1b[H");
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
-        RefreshMbotUi();
         _buffer.Dirty = true;
 
         // 50 ms refresh – pushes buffer changes to UI
@@ -540,8 +527,6 @@ public class MainWindow : Window
         // Scanner indicators
         panel.Children.Add(BuildScannerRow());
         panel.Children.Add(BuildHaggleRow());
-        panel.Children.Add(BuildMbotRow());
-
         panel.Children.Add(new Border { Height = 6 });
         return panel;
     }
@@ -617,25 +602,6 @@ public class MainWindow : Window
         Grid.SetColumn(_haggleToggle, 1);
         row.Children.Add(label);
         row.Children.Add(_haggleToggle);
-        return row;
-    }
-
-    private Control BuildMbotRow()
-    {
-        var row = new Grid { Margin = new Thickness(6, 2, 6, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock
-        {
-            Text = "mbot",
-            Foreground = FgKey,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(label, 0);
-        Grid.SetColumn(_mbotToggle, 1);
-        row.Children.Add(label);
-        row.Children.Add(_mbotToggle);
         return row;
     }
 
@@ -1027,25 +993,6 @@ public class MainWindow : Window
         }
     }
 
-    private void OnMbotToggleRequested()
-    {
-        if (_updatingMbotToggle)
-            return;
-
-        if (_embeddedGameConfig == null)
-        {
-            RefreshMbotUi();
-            return;
-        }
-
-        bool enabled = _mbotToggle.IsChecked == true;
-        ApplyMbotConfigChange(config => config.Enabled = enabled);
-        _parser.Feed(enabled
-            ? "\x1b[1;36m[mbot enabled]\x1b[0m\r\n"
-            : "\x1b[1;36m[mbot disabled]\x1b[0m\r\n");
-        _buffer.Dirty = true;
-    }
-
     private void ApplyMbotConfigChange(Action<MTC.mbot.mbotConfig> update)
     {
         _embeddedGameConfig ??= new EmbeddedGameConfig();
@@ -1055,7 +1002,6 @@ public class MainWindow : Window
         update(_embeddedGameConfig.Mtc.mbot);
         _embeddedGameConfig.Mtc.mbot.WatcherEnabled = _embeddedGameConfig.Mtc.mbot.Enabled;
         _mbot.ApplyConfig(_embeddedGameConfig.Mtc.mbot);
-        RefreshMbotUi();
         RefreshStatusBar();
         RebuildProxyMenu();
         _ = SaveCurrentGameConfigAsync();
@@ -1063,15 +1009,11 @@ public class MainWindow : Window
 
     private void RefreshMbotUi()
     {
-        MTC.mbot.mbotConfig? config = _embeddedGameConfig?.Mtc?.mbot;
-        bool hasProfile = config != null || _embeddedGameConfig != null;
+        if (_mbot.Enabled)
+            return;
 
-        config ??= _mbot.IsAttached ? _mbot.Config : new MTC.mbot.mbotConfig();
-
-        _updatingMbotToggle = true;
-        _mbotToggle.IsEnabled = hasProfile;
-        _mbotToggle.IsChecked = config.Enabled;
-        _updatingMbotToggle = false;
+        if (_mbotPromptOpen)
+            CancelMbotPrompt();
     }
 
     private void OnNativeHaggleChanged(bool enabled)
@@ -1610,7 +1552,6 @@ public class MainWindow : Window
         _state.ScannerH       = p.ScannerH;
         _state.ScannerP       = p.ScannerP;
         _mbot.ApplyConfig(_embeddedGameConfig?.Mtc?.mbot);
-        RefreshMbotUi();
         RefreshStatusBar();
         _state.NotifyChanged();
     }
@@ -1793,6 +1734,7 @@ public class MainWindow : Window
         gi.SetNativeHaggleMode(gameConfig.NativeHaggleMode);
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
         gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
+        gi.ShipStatusUpdated += OnShipStatusUpdated;
 
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
@@ -2012,8 +1954,9 @@ public class MainWindow : Window
         };
 
         _gameInstance = gi;
+        gameConfig.Mtc.mbot.Enabled = false;
+        gameConfig.Mtc.mbot.AutoStart = false;
         _mbot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mbot);
-        RefreshMbotUi();
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
         OnNativeHaggleChanged(gi.NativeHaggleEnabled);
@@ -2057,13 +2000,14 @@ public class MainWindow : Window
         var gi = _gameInstance;
         _gameInstance = null;
         _mbot.DetachSession();
-        RefreshMbotUi();
         var moduleHost = _moduleHost;
         _moduleHost = null;
         if (gi != null)
             gi.NativeHaggleChanged -= OnNativeHaggleChanged;
         if (gi != null)
             gi.NativeHaggleStatsChanged -= OnNativeHaggleStatsChanged;
+        if (gi != null)
+            gi.ShipStatusUpdated -= OnShipStatusUpdated;
         if (gi != null)
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
         if (moduleHost != null)
@@ -2486,17 +2430,36 @@ public class MainWindow : Window
                 db.OpenDatabase(dbPath);
                 db.UseCache = _embeddedGameConfig?.UseCache ?? true;
                 var header = db.DBHeader;
+                bool headerDirty = false;
+                if (sectors > 0)
+                {
+                    headerDirty |= header.Sectors != sectors;
+                    header.Sectors = sectors;
+                }
+                headerDirty |= header.Address != _state.Host;
                 header.Address = _state.Host;
+                headerDirty |= header.ServerPort != (ushort)_state.Port;
                 header.ServerPort = (ushort)_state.Port;
+                headerDirty |= header.ListenPort != (ushort)(_embeddedGameConfig?.ListenPort ?? 2300);
                 header.ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300);
+                headerDirty |= header.CommandChar != (_embeddedGameConfig?.CommandChar ?? '$');
                 header.CommandChar = _embeddedGameConfig?.CommandChar ?? '$';
+                headerDirty |= header.UseLogin != _state.UseLogin;
                 header.UseLogin = _state.UseLogin;
+                headerDirty |= header.UseRLogin != _state.UseRLogin;
                 header.UseRLogin = _state.UseRLogin;
+                headerDirty |= header.LoginScript != (string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript);
                 header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+                headerDirty |= header.LoginName != _state.LoginName;
                 header.LoginName = _state.LoginName;
+                headerDirty |= header.Password != _state.Password;
                 header.Password = _state.Password;
-                header.Game = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+                char gameChar = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+                headerDirty |= header.Game != gameChar;
+                header.Game = gameChar;
                 db.ReplaceHeader(header);
+                if (headerDirty)
+                    db.SaveDatabase();
             }
             else
             {
@@ -2660,13 +2623,13 @@ public class MainWindow : Window
             IsEnabled = false,
         });
 
-        var toggleEnabled = new MenuItem { Header = snapshot.Enabled ? "Disable _mbot" : "Enable _mbot", IsEnabled = _embeddedGameConfig != null };
-        toggleEnabled.Click += (_, _) => ApplyMbotConfigChange(mbot => mbot.Enabled = !config.Enabled);
-        items.Add(toggleEnabled);
+        var start = new MenuItem { Header = "_Start", IsEnabled = proxyActive && !snapshot.Enabled };
+        start.Click += (_, _) => _ = StartInternalMbotAsync();
+        items.Add(start);
 
-        var toggleAutoStart = new MenuItem { Header = config.AutoStart ? "Disable Auto-_Start" : "Enable Auto-_Start", IsEnabled = _embeddedGameConfig != null };
-        toggleAutoStart.Click += (_, _) => ApplyMbotConfigChange(mbot => mbot.AutoStart = !config.AutoStart);
-        items.Add(toggleAutoStart);
+        var stop = new MenuItem { Header = "S_top", IsEnabled = proxyActive && snapshot.Enabled };
+        stop.Click += (_, _) => _ = StopInternalMbotAsync();
+        items.Add(stop);
         items.Add(new Separator());
 
         var runCommand = new MenuItem { Header = "Open _Prompt", IsEnabled = proxyActive && snapshot.Enabled };
@@ -2820,37 +2783,7 @@ public class MainWindow : Window
 
     private List<object> BuildTopLevelBotMenuItems(bool enabled)
     {
-        var items = new List<object>();
-        bool proxyActive = _gameInstance != null;
-
-        string internalCaption = "mbot (Internal)";
-        if (_mbot.Enabled)
-            internalCaption += " (active)";
-
-        var internalItem = new MenuItem
-        {
-            Header = internalCaption,
-            IsEnabled = proxyActive,
-        };
-        internalItem.Click += (_, _) => _ = StartInternalMbotAsync();
-        items.Add(internalItem);
-
-        List<object> externalBots = BuildBotMenuItems(enabled, includeStatusMessage: false);
-        items.Add(new Separator());
-        if (externalBots.Count > 0)
-        {
-            items.AddRange(externalBots);
-        }
-        else
-        {
-            items.Add(new MenuItem
-            {
-                Header = enabled && proxyActive ? "No external bots configured" : "Proxy is not running",
-                IsEnabled = false,
-            });
-        }
-
-        return items;
+        return BuildMbotMenuItems();
     }
 
     private List<object> BuildBotMenuItems(bool enabled, bool includeStatusMessage = true)
@@ -2899,9 +2832,324 @@ public class MainWindow : Window
             return;
         }
 
-        ApplyMbotConfigChange(config => config.Enabled = true);
-        await ExecuteMbotUiCommandAsync("relog");
+        if (_gameInstance.IsConnected)
+        {
+            SeedMbotRelogVarsFromCurrentState();
+            ApplyMbotConfigChange(config => config.Enabled = true);
+            LoadMbotStartupScripts();
+            ShowMbotStartupBanner(connected: true);
+            await SendMbotStartupAnnouncementsAsync();
+            ApplyMbotExecutionRefresh();
+        }
+        else
+        {
+            var dialog = new MTC.mbot.mbotRelogDialog(BuildMbotRelogDefaults());
+            if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+            {
+                _termCtrl.Focus();
+                return;
+            }
+
+            ApplyMbotRelogDialogResult(dialog.Result);
+            ApplyMbotConfigChange(config => config.Enabled = true);
+            ShowMbotStartupBanner(connected: false);
+            await ExecuteMbotUiCommandAsync("relog");
+        }
+
         _termCtrl.Focus();
+    }
+
+    private async Task StopInternalMbotAsync()
+    {
+        await Task.Yield();
+
+        if (_gameInstance == null)
+        {
+            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            return;
+        }
+
+        CancelMbotPrompt();
+        string scriptRoot = (_mbot.Config.ScriptRoot ?? string.Empty)
+            .Replace('\\', '/')
+            .Trim()
+            .Trim('/');
+        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        foreach (var script in _mbot.GetRunningScripts())
+        {
+            if (script.IsSystemScript)
+                continue;
+
+            string name = script.Name ?? string.Empty;
+            string normalizedName = name.Replace('\\', '/');
+            bool underMbotRoot = !string.IsNullOrWhiteSpace(scriptRoot) &&
+                                 (normalizedName.StartsWith(scriptRoot + "/", StringComparison.OrdinalIgnoreCase) ||
+                                  normalizedName.Contains("/" + scriptRoot + "/", StringComparison.OrdinalIgnoreCase));
+            bool isLastLoaded = !string.IsNullOrWhiteSpace(lastLoadedModule) &&
+                                string.Equals(name, lastLoadedModule, StringComparison.OrdinalIgnoreCase);
+
+            if (underMbotRoot || isLastLoaded)
+                _mbot.StopScriptByName(name);
+        }
+
+        ApplyMbotConfigChange(config => config.Enabled = false);
+        Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
+        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
+        Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
+        Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
+        Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
+        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+        PublishMbotLocalMessage("mbot stopped.");
+        ApplyMbotExecutionRefresh();
+    }
+
+    private MTC.mbot.mbotRelogDialogResult BuildMbotRelogDefaults()
+    {
+        string stateLogin = NormalizeMbotValue(_state.LoginName, treatSelfAsEmpty: true);
+        string botName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            _mbot.Settings.BotName,
+            "mbot");
+        string serverName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            stateLogin);
+        string loginName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
+            stateLogin);
+        string password = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
+            _state.Password);
+        string gameLetter = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
+            _state.GameLetter);
+        string delayValue = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTGAMEDELAY", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$startGameDelay", string.Empty),
+            "0");
+        int delayMinutes = int.TryParse(delayValue, out int parsedDelay) && parsedDelay >= 0 ? parsedDelay : 0;
+        string botCommand = NormalizeMbotValue(Core.ScriptRef.GetCurrentGameVar("$command_to_issue", string.Empty));
+        string startMacro = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTMACRO", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~startMacro", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$startMacro", string.Empty));
+
+        bool newGameDay1 = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "false"), "true", StringComparison.OrdinalIgnoreCase);
+        bool newGameOlder = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "false"), "true", StringComparison.OrdinalIgnoreCase);
+
+        MTC.mbot.mbotRelogLoginType loginType = newGameDay1
+            ? MTC.mbot.mbotRelogLoginType.NewGameAccountCreation
+            : newGameOlder
+                ? MTC.mbot.mbotRelogLoginType.NormalRelog
+                : MTC.mbot.mbotRelogLoginType.ReturnAfterDestroyed;
+
+        return new MTC.mbot.mbotRelogDialogResult(
+            loginType,
+            botName,
+            serverName,
+            loginName,
+            password,
+            NormalizeGameLetter(gameLetter),
+            delayMinutes,
+            "nothing",
+            botCommand,
+            startMacro);
+    }
+
+    private void ApplyMbotRelogDialogResult(MTC.mbot.mbotRelogDialogResult result)
+    {
+        SetMbotCurrentVars(result.BotName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
+        SetMbotCurrentVars(
+            FirstMeaningfulMbotValue(
+                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+                result.BotName),
+            "$BOT~BOT_TEAM_NAME",
+            "$bot_team_name");
+        SetMbotCurrentVars(result.ServerName, "$BOT~SERVERNAME", "$servername");
+        SetMbotCurrentVars(result.LoginName, "$BOT~USERNAME", "$username");
+        SetMbotCurrentVars(result.Password, "$BOT~PASSWORD", "$password");
+        SetMbotCurrentVars(NormalizeGameLetter(result.GameLetter), "$BOT~LETTER", "$letter");
+        SetMbotCurrentVars(result.DelayMinutes.ToString(), "$BOT~STARTGAMEDELAY", "$startGameDelay");
+        SetMbotCurrentVars(result.BotCommand, "$command_to_issue");
+        SetMbotCurrentVars(result.MacroAfterLogin, "$BOT~STARTMACRO", "$bot~startMacro", "$startMacro");
+        SetMbotCurrentVars("General", "$BOT~MODE", "$mode");
+        SetMbotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
+        SetMbotCurrentVars("1", "$BOT~DORELOG", "$doRelog");
+
+        switch (result.LoginType)
+        {
+            case MTC.mbot.mbotRelogLoginType.NewGameAccountCreation:
+                SetMbotCurrentVars("1", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                SetMbotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                SetMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+                break;
+            case MTC.mbot.mbotRelogLoginType.ReturnAfterDestroyed:
+                SetMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                SetMbotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                SetMbotCurrentVars("1", "$BOT~ISSHIPDESTROYED");
+                break;
+            default:
+                SetMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                SetMbotCurrentVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                SetMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+                break;
+        }
+
+        string relogMessage = $"{result.BotName} connected and ready.*";
+        SetMbotCurrentVars(relogMessage, "$relog_message");
+    }
+
+    private void SeedMbotRelogVarsFromCurrentState()
+    {
+        string stateLogin = NormalizeMbotValue(_state.LoginName, treatSelfAsEmpty: true);
+        string botName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            _mbot.Settings.BotName,
+            "mbot");
+        string serverName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            stateLogin);
+        string loginName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
+            stateLogin);
+        string password = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
+            _state.Password);
+        string gameLetter = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
+            _state.GameLetter);
+
+        SetMbotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
+        SetMbotCurrentVars(serverName, "$BOT~SERVERNAME", "$servername");
+        SetMbotCurrentVars(loginName, "$BOT~USERNAME", "$username");
+        SetMbotCurrentVars(password, "$BOT~PASSWORD", "$password");
+        SetMbotCurrentVars(NormalizeGameLetter(gameLetter), "$BOT~LETTER", "$letter");
+        SetMbotCurrentVars("1", "$BOT~DORELOG", "$doRelog");
+        SetMbotCurrentVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+        SetMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+        SetMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+        SetMbotCurrentVars("General", "$BOT~MODE", "$mode");
+        SetMbotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
+    }
+
+    private void LoadMbotStartupScripts()
+    {
+        foreach (string startupScript in _mbot.GetStartupScriptReferences())
+        {
+            _mbot.StopScriptByName(startupScript);
+            if (!_mbot.TryLoadScript(startupScript, out string? error))
+                PublishMbotLocalMessage($"mbot: failed to load startup '{startupScript}': {error}");
+        }
+    }
+
+    private void ShowMbotStartupBanner(bool connected)
+    {
+        string botName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            _mbot.Settings.BotName,
+            "mbot");
+        string stateLabel = connected ? "online" : "relog armed";
+        string banner =
+            "\r\n" +
+            "\u001b[1;36m=== mbot 1.0 ===\u001b[0m\r\n" +
+            $"\u001b[1;33m{botName}\u001b[0m \u001b[1;32m{stateLabel}\u001b[0m\r\n" +
+            "\u001b[38;5;245mUse > to open the mbot prompt.\u001b[0m\r\n";
+
+        if (_gameInstance != null)
+            _gameInstance.ClientMessage(banner);
+        else
+            _parser.Feed(banner);
+
+        _buffer.Dirty = true;
+    }
+
+    private async Task SendMbotStartupAnnouncementsAsync()
+    {
+        if (_gameInstance == null || !_gameInstance.IsConnected)
+            return;
+
+        string botName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            _mbot.Settings.BotName,
+            "mbot");
+        string loginName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+        string gameLetter = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+        string dorelog = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
+            "0");
+
+        await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
+            $"'{{{botName}}} - is ACTIVE: Version - 1.0 - type \"{botName} help\" for command list*"));
+        await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
+            $"'{{{botName}}} - to login - send a corporate memo*"));
+
+        if (string.IsNullOrWhiteSpace(loginName) ||
+            string.IsNullOrWhiteSpace(gameLetter) ||
+            !string.Equals(dorelog, "1", StringComparison.OrdinalIgnoreCase))
+        {
+            await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
+                $"'{{{botName}}} - Auto Relog - Not Active*"));
+        }
+    }
+
+    private static void SetMbotCurrentVars(string value, params string[] names)
+    {
+        foreach (string name in names)
+            Core.ScriptRef.SetCurrentGameVar(name, value);
+    }
+
+    private static string FirstMeaningfulMbotValue(params string?[] candidates)
+    {
+        foreach (string? candidate in candidates)
+        {
+            string normalized = NormalizeMbotValue(candidate, treatSelfAsEmpty: true);
+            if (!string.IsNullOrEmpty(normalized))
+                return normalized;
+        }
+
+        return string.Empty;
+    }
+
+    private static string NormalizeMbotValue(string? value, bool treatSelfAsEmpty = false)
+    {
+        string trimmed = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return string.Empty;
+        if (string.Equals(trimmed, "0", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+        if (treatSelfAsEmpty && string.Equals(trimmed, "self", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+        return trimmed;
+    }
+
+    private static string NormalizeGameLetter(string? value)
+    {
+        string normalized = NormalizeMbotValue(value);
+        return string.IsNullOrEmpty(normalized) ? string.Empty : normalized[..1].ToUpperInvariant();
     }
 
     private async Task OpenAiAssistantAsync(string moduleId)
@@ -4525,17 +4773,36 @@ public class MainWindow : Window
         if (_sessionDb != null)
         {
             var header = _sessionDb.DBHeader;
+            bool headerDirty = false;
+            if (gameConfig.Sectors > 0)
+            {
+                headerDirty |= header.Sectors != gameConfig.Sectors;
+                header.Sectors = gameConfig.Sectors;
+            }
+            headerDirty |= header.Address != _state.Host;
             header.Address = _state.Host;
+            headerDirty |= header.ServerPort != (ushort)_state.Port;
             header.ServerPort = (ushort)_state.Port;
+            headerDirty |= header.ListenPort != (ushort)gameConfig.ListenPort;
             header.ListenPort = (ushort)gameConfig.ListenPort;
+            headerDirty |= header.CommandChar != (gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar);
             header.CommandChar = gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar;
+            headerDirty |= header.UseLogin != _state.UseLogin;
             header.UseLogin = _state.UseLogin;
+            headerDirty |= header.UseRLogin != _state.UseRLogin;
             header.UseRLogin = _state.UseRLogin;
+            headerDirty |= header.LoginScript != (string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript);
             header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
+            headerDirty |= header.LoginName != _state.LoginName;
             header.LoginName = _state.LoginName;
+            headerDirty |= header.Password != _state.Password;
             header.Password = _state.Password;
-            header.Game = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+            char gameChar = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
+            headerDirty |= header.Game != gameChar;
+            header.Game = gameChar;
             _sessionDb.ReplaceHeader(header);
+            if (headerDirty)
+                _sessionDb.SaveDatabase();
             Core.ScriptRef.SetActiveDatabase(_sessionDb);
         }
 

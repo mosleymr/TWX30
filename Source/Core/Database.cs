@@ -305,12 +305,15 @@ namespace TWXProxy.Core
             _headerLock.EnterWriteLock();
             try
             {
+                int previousSectors = _header.Sectors;
                 if (updates.Sectors > 0)       _header.Sectors     = updates.Sectors;
                 if (!string.IsNullOrEmpty(updates.Address)) _header.Address = updates.Address;
                 if (updates.ServerPort  != 0)  _header.ServerPort  = updates.ServerPort;
                 if (updates.ListenPort  != 0)  _header.ListenPort  = updates.ListenPort;
                 if (updates.CommandChar != '\0') _header.CommandChar = updates.CommandChar;
                 if (!string.IsNullOrEmpty(updates.Description)) _header.Description = updates.Description;
+                if (_header.Sectors > previousSectors)
+                    EnsureSectorCapacity(_header.Sectors);
             }
             finally
             {
@@ -328,11 +331,34 @@ namespace TWXProxy.Core
             _headerLock.EnterWriteLock();
             try
             {
+                int previousSectors = _header.Sectors;
                 _header = header;
+                if (_header.Sectors > previousSectors)
+                    EnsureSectorCapacity(_header.Sectors);
             }
             finally
             {
                 _headerLock.ExitWriteLock();
+            }
+        }
+
+        /// <summary>
+        /// Ensures the in-memory sector map contains blank sector records up to the
+        /// configured universe size. This allows an existing database to grow after
+        /// creation when the game sector count is corrected upward.
+        /// </summary>
+        private void EnsureSectorCapacity(int sectorCount)
+        {
+            if (sectorCount <= 0)
+                return;
+
+            for (int i = 1; i <= sectorCount; i++)
+            {
+                _sectors.TryAdd(i, new SectorData
+                {
+                    Number = i,
+                    Explored = ExploreType.No
+                });
             }
         }
 

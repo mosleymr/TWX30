@@ -14,13 +14,18 @@ AVALONIA_TELEMETRY_OPTOUT=1 dotnet publish MTC/MTC.csproj \
     -r osx-arm64 \
     --self-contained true \
     -p:PublishSingleFile=true \
+    -p:IncludeNativeLibrariesForSelfExtract=true \
+    -p:EnableCompressionInSingleFile=true \
+    -p:PublishTrimmed=false \
     2>&1 | grep -v "^$"
 
 BIN="MTC/bin/Release/net10.0/osx-arm64/publish/MTC"
 
 # Also copy to the shortcut path the user runs from
-DEST="MTC/publish/osx-arm64/MTC"
-mkdir -p "$(dirname "$DEST")"
+DEST_DIR="MTC/publish/osx-arm64"
+DEST="$DEST_DIR/MTC"
+rm -rf "$DEST_DIR"
+mkdir -p "$DEST_DIR"
 cp "$BIN" "$DEST"
 xattr -d com.apple.quarantine "$DEST" 2>/dev/null || true
 xattr -d com.apple.quarantine "$BIN"  2>/dev/null || true

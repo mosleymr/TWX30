@@ -59,6 +59,15 @@ public static class NativeHaggleModes
 
 public sealed class NativeHaggleEngine
 {
+    private readonly record struct PlanetTradeQualityEntry(int Threshold, int Mcic, int Multiple);
+
+    private readonly record struct PlanetTradeProductModel(
+        long BaseValue,
+        int BasePercent,
+        int BasePercentInverse,
+        int FallbackPortMax,
+        PlanetTradeQualityEntry[] QualityTable);
+
     internal sealed class Candidate
     {
         public int Mcic { get; set; }
@@ -74,6 +83,7 @@ public sealed class NativeHaggleEngine
         public string RouteKey { get; set; } = string.Empty;
         public string ActiveMode { get; set; } = string.Empty;
         public string Weekday { get; set; } = "Sat";
+        public bool IsPlanetTrade { get; set; }
         public string ProductKey { get; set; } = string.Empty;
         public ProductType ProductType { get; set; }
         public string BuySell { get; set; } = string.Empty; // Port perspective: SELLING or BUYING
@@ -111,12 +121,19 @@ public sealed class NativeHaggleEngine
         public DateTime PortReportUpdate { get; set; }
         public double PortReportAgeDays { get; set; }
         public int PortMaxQty { get; set; }
+        public int PlanetTradeSettingPercent { get; set; } = 100;
+        public int PlanetQualityMcic { get; set; }
+        public int PlanetQualityMultiple { get; set; }
+        public int PlanetPortMaxInit { get; set; }
+        public int PlanetMidHaggles { get; set; }
+        public bool PlanetForceFailApplied { get; set; }
         public long PendingBid { get; set; }
         public long PendingBidOffer { get; set; }
         public bool PendingBidFinalOffer { get; set; }
         public bool OutcomeRecorded { get; set; }
         public string RewardTier { get; set; } = string.Empty;
         public int RewardExperience { get; set; }
+        public bool PlanetAcceptanceSeen { get; set; }
         public int FinalTargetNudgeApplied { get; set; }
         public bool FirstOfferExactHitApplied { get; set; }
         public bool EmpiricalProbeApplied { get; set; }
@@ -132,8 +149,20 @@ public sealed class NativeHaggleEngine
     private sealed class RetryHint
     {
         public int Sector { get; set; }
+        public bool IsPlanetTrade { get; set; }
         public string ProductKey { get; set; } = string.Empty;
         public string BuySell { get; set; } = string.Empty;
+    }
+
+    private sealed class PlanetTradeRunState
+    {
+        public int Sector { get; set; } = -1;
+        public int OreSellFailures { get; set; }
+        public int OrgSellFailures { get; set; }
+        public int EquSellFailures { get; set; }
+        public bool ThisOreFailed { get; set; }
+        public bool ThisOrgFailed { get; set; }
+        public bool ThisEquFailed { get; set; }
     }
 
     internal enum ServerProbeBranch
@@ -143,12 +172,188 @@ public sealed class NativeHaggleEngine
         Overlap,
     }
 
+    private static readonly PlanetTradeQualityEntry[] FuelOrePlanetQualityTable = ParsePlanetQualityTable(
+        """
+        436,-90,1494
+        434,-89,1488
+        433,-88,1482
+        431,-87,1476
+        429,-86,1470
+        427,-85,1464
+        425,-84,1458
+        424,-83,1452
+        422,-82,1446
+        420,-81,1440
+        418,-80,1434
+        416,-79,1428
+        414,-78,1423
+        412,-77,1417
+        411,-76,1411
+        409,-75,1405
+        407,-74,1399
+        405,-73,1393
+        403,-72,1387
+        401,-71,1381
+        399,-70,1375
+        397,-69,1369
+        396,-68,1363
+        394,-67,1357
+        392,-66,1351
+        390,-65,1345
+        388,-64,1341
+        386,-63,1336
+        384,-62,1330
+        382,-61,1324
+        380,-60,1318
+        378,-59,1312
+        376,-58,1306
+        374,-57,1300
+        372,-56,1294
+        370,-55,1291
+        368,-54,1285
+        366,-53,1279
+        364,-52,1273
+        362,-51,1267
+        360,-50,1261
+        358,-49,1255
+        356,-48,1249
+        354,-46,1246
+        352,-46,1240
+        350,-45,1234
+        348,-44,1228
+        346,-43,1222
+        344,-42,1219
+        342,-41,1209
+        340,-40,1208
+        """);
+
+    private static readonly PlanetTradeQualityEntry[] OrganicsPlanetQualityTable = ParsePlanetQualityTable(
+        """
+        813,-75,1405
+        810,-74,1399
+        806,-73,1393
+        802,-72,1387
+        798,-71,1381
+        795,-70,1375
+        791,-69,1369
+        787,-68,1363
+        783,-67,1357
+        779,-66,1351
+        775,-65,1345
+        772,-64,1339
+        768,-63,1336
+        764,-62,1330
+        760,-61,1324
+        756,-60,1318
+        752,-59,1312
+        748,-58,1306
+        744,-57,1300
+        740,-56,1294
+        737,-55,1291
+        733,-54,1285
+        729,-53,1279
+        725,-52,1273
+        721,-51,1267
+        717,-50,1261
+        713,-49,1255
+        709,-48,1252
+        705,-47,1246
+        701,-46,1236
+        697,-45,1233
+        693,-44,1227
+        688,-43,1224
+        684,-42,1214
+        680,-41,1213
+        676,-40,1203
+        672,-39,1200
+        668,-38,1194
+        664,-37,1191
+        660,-36,1181
+        656,-35,1178
+        651,-34,1172
+        647,-33,1166
+        643,-32,1160
+        639,-31,1157
+        635,-30,1154
+        """);
+
+    private static readonly PlanetTradeQualityEntry[] EquipmentPlanetQualityTable = ParsePlanetQualityTable(
+        """
+        1393,-65,1347
+        1386,-64,1341
+        1379,-63,1336
+        1372,-62,1330
+        1365,-61,1324
+        1358,-60,1319
+        1351,-59,1313
+        1344,-58,1307
+        1337,-57,1302
+        1329,-56,1296
+        1323,-55,1291
+        1315,-54,1285
+        1308,-53,1279
+        1301,-52,1274
+        1294,-51,1268
+        1287,-50,1262
+        1279,-49,1254
+        1272,-48,1247
+        1265,-47,1246
+        1258,-46,1241
+        1251,-45,1235
+        1243,-44,1229
+        1236,-43,1224
+        1229,-42,1218
+        1221,-41,1213
+        1214,-40,1208
+        1206,-39,1201
+        1199,-38,1196
+        1192,-37,1190
+        1184,-36,1185
+        1177,-35,1180
+        1169,-34,1174
+        1162,-33,1169
+        1154,-32,1164
+        1147,-31,1158
+        1139,-30,1152
+        1132,-29,1149
+        1124,-28,1144
+        1116,-27,1136
+        1109,-26,1132
+        1101,-25,1126
+        1093,-24,1122
+        1086,-23,1117
+        1078,-22,1110
+        1071,-21,1105
+        1063,-20,1102
+        """);
+
+    private static readonly PlanetTradeProductModel FuelOrePlanetProductModel = new(
+        BaseValue: 256055800,
+        BasePercent: 11725,
+        BasePercentInverse: 88275,
+        FallbackPortMax: 340,
+        QualityTable: FuelOrePlanetQualityTable);
+
+    private static readonly PlanetTradeProductModel OrganicsPlanetProductModel = new(
+        BaseValue: 506276400,
+        BasePercent: 11287,
+        BasePercentInverse: 88713,
+        FallbackPortMax: 635,
+        QualityTable: OrganicsPlanetQualityTable);
+
+    private static readonly PlanetTradeProductModel EquipmentPlanetProductModel = new(
+        BaseValue: 906281000,
+        BasePercent: 10989,
+        BasePercentInverse: 89010,
+        FallbackPortMax: 1063,
+        QualityTable: EquipmentPlanetQualityTable);
+
     private static readonly Regex RxCommandPrompt = new(@"command \[tl=", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxCommerceReport = new(
         @"^Commerce report for .+?:\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)\s+([A-Za-z]{3,5})\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxCredits = new(
-        @"^You have ([\d,]+) credits and (\d+) empty cargo holds\.",
+        @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?\.",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxExpGain = new(
         @"receive (\d+) experience point",
@@ -156,8 +361,11 @@ public sealed class NativeHaggleEngine
     private static readonly Regex RxTradeSuccess = new(
         @"^For your (good|great|excellent) trading you receive ([\d,]+) experience point",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex RxPlanetAccepted = new(
+        @"(?:you drive a hard bargain, but )?we'?ll take them\.",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxHoldPrompt = new(
-        @"^How many holds of (Fuel Ore|Organics|Equipment) do you want to (buy|sell) \[(\d+)\]\?",
+        @"^How many (holds|units) of (Fuel Ore|Organics|Equipment) do you want to (buy|sell) \[(\d+)\]\?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RxAgreed = new(
         @"^Agreed,\s+([\d,]+)\s+units\.",
@@ -181,6 +389,7 @@ public sealed class NativeHaggleEngine
     private string? _pendingProductKey;
     private ProductType _pendingProductType;
     private string? _pendingBuySell;
+    private bool _pendingIsPlanetTrade;
     private long _lastKnownCredits;
     private bool _hasLastKnownCredits;
     private int _lastKnownEmptyHolds;
@@ -194,6 +403,7 @@ public sealed class NativeHaggleEngine
     private int _excellentRewardCount;
     private string _firstBidMode = NativeHaggleModes.ClampHeuristic;
     private readonly Dictionary<string, NativeHaggleModeExtension> _extensionModes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly PlanetTradeRunState _planetTradeRunState = new();
     private string? _lastMissingModeId;
 
     public event Action? StatsChanged;
@@ -409,12 +619,21 @@ public sealed class NativeHaggleEngine
         if (creditsMatch.Success)
         {
             long credits = ParseLong(creditsMatch.Groups[1].Value);
-            int emptyHolds = ParseInt(creditsMatch.Groups[2].Value);
+            int emptyHolds = creditsMatch.Groups[2].Success
+                ? ParseInt(creditsMatch.Groups[2].Value)
+                : ResolveStartingEmptyHolds();
             _lastKnownCredits = credits;
             _hasLastKnownCredits = true;
             _lastKnownEmptyHolds = emptyHolds;
             _hasLastKnownEmptyHolds = true;
             ProcessCreditsLine(credits, emptyHolds);
+            return;
+        }
+
+        if (_session != null && _session.IsPlanetTrade && RxPlanetAccepted.IsMatch(line))
+        {
+            _session.PlanetAcceptanceSeen = true;
+            GlobalModules.DebugLog($"[NativeHaggle] Planet acceptance line text='{line}'\n");
             return;
         }
 
@@ -434,6 +653,7 @@ public sealed class NativeHaggleEngine
         };
         _pendingProductKey = null;
         _pendingBuySell = null;
+        _pendingIsPlanetTrade = false;
     }
 
     private void EnsureSession()
@@ -445,9 +665,10 @@ public sealed class NativeHaggleEngine
     private void ParseHoldPrompt(Match holdMatch)
     {
         EnsureSession();
-        _pendingProductKey = ProductKeyFromPrompt(holdMatch.Groups[1].Value);
+        _pendingIsPlanetTrade = string.Equals(holdMatch.Groups[1].Value, "units", StringComparison.OrdinalIgnoreCase);
+        _pendingProductKey = ProductKeyFromPrompt(holdMatch.Groups[2].Value);
         _pendingProductType = ProductTypeFromKey(_pendingProductKey);
-        string action = holdMatch.Groups[2].Value.ToUpperInvariant();
+        string action = holdMatch.Groups[3].Value.ToUpperInvariant();
         _pendingBuySell = action == "BUY" ? "SELLING" : "BUYING";
     }
 
@@ -463,16 +684,18 @@ public sealed class NativeHaggleEngine
         Port? port = sectorData?.SectorPort;
         if (port == null)
         {
-            GlobalModules.DebugLog($"[NativeHaggle] No port data for sector {sector}, manual haggle required.\n");
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] No port data for sector {sector}, manual haggle required. dbSectorCount={db?.SectorCount ?? -1} sectorFound={(sectorData != null ? 1 : 0)}\n");
             Reset("missing-port-data");
             return;
         }
 
         _session.Sector = sector;
+        _session.IsPlanetTrade = _pendingIsPlanetTrade;
         _session.ProductKey = _pendingProductKey;
         _session.ProductType = _pendingProductType;
         _session.BuySell = _pendingBuySell;
-        _session.RouteKey = BuildRouteKey(sector, _pendingProductKey, _pendingBuySell);
+        _session.RouteKey = BuildRouteKey(sector, _pendingProductKey, _pendingBuySell, _pendingIsPlanetTrade);
         _session.ActiveMode = GetActiveFirstBidMode();
         _session.TradeQty = tradeQty;
         _session.PortQty = port.ProductAmount.GetValueOrDefault(_pendingProductType);
@@ -497,6 +720,7 @@ public sealed class NativeHaggleEngine
         _session.FirstOfferExactHitApplied = false;
         _session.RewardTier = string.Empty;
         _session.RewardExperience = 0;
+        _session.PlanetAcceptanceSeen = false;
         _session.EmpiricalProbeApplied = false;
         _session.EmpiricalProbeNudge = 0;
         _session.HiddenTotalMin = 0;
@@ -511,6 +735,15 @@ public sealed class NativeHaggleEngine
         _session.Candidates.Clear();
 
         PushScriptState(_session.StartCredits, abort: false);
+
+        if (UsesCherokeePlanetBaseline(_session))
+        {
+            EnsurePlanetTradeVisitState(_session.Sector);
+            _session.PlanetTradeSettingPercent = ResolvePlanetTradeSettingPercent();
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Armed sector={_session.Sector} tradeKind=planet product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} baseline=cherokee qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} ptrade={_session.PlanetTradeSettingPercent} exp={_session.Experience} weekday={_session.Weekday} {DescribeStartCargoSnapshot(_session)}\n");
+            return;
+        }
 
         ConfigureProductConstants(_session);
         if (!PrepareRanges(_session, db))
@@ -532,7 +765,7 @@ public sealed class NativeHaggleEngine
         }
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Armed sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
+            $"[NativeHaggle] Armed sector={_session.Sector} tradeKind={(_session.IsPlanetTrade ? "planet" : "port")} product={_session.ProductKey} buysell={_session.BuySell} activeMode={_session.ActiveMode} qty={_session.TradeQty} portQty={_session.PortQty} percent={_session.Percent} portMaxQty={_session.PortMaxQty} reportAgeHours={_session.PortReportAgeDays * 24.0:0.00} exp={_session.Experience} weekday={_session.Weekday} lowProd={_session.LowProductivity} highProd={_session.HighProductivity} mcicMin={_session.McicMin} mcicMax={_session.McicMax} {DescribeStartCargoSnapshot(_session)}\n");
     }
 
     private void ProcessCreditsLine(long credits, int emptyHolds)
@@ -556,6 +789,18 @@ public sealed class NativeHaggleEngine
         bool success = IsSuccessfulTrade(_session, credits, emptyHolds);
         if (success)
         {
+            if (_session.IsPlanetTrade)
+            {
+                _session.PlanetAcceptanceSeen = true;
+                if (RetryHintMatches(_session))
+                    _retryHint = null;
+
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Planet success finalized on credits line sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell} credits={credits} emptyHolds={emptyHolds}\n");
+                RecordOutcome(success: true, "credits-line:planet-accepted");
+                return;
+            }
+
             if (RetryHintMatches(_session))
                 _retryHint = null;
             return;
@@ -568,6 +813,7 @@ public sealed class NativeHaggleEngine
             _retryHint = new RetryHint
             {
                 Sector = _session.Sector,
+                IsPlanetTrade = _session.IsPlanetTrade,
                 ProductKey = _session.ProductKey,
                 BuySell = _session.BuySell,
             };
@@ -599,6 +845,7 @@ public sealed class NativeHaggleEngine
             return false;
 
         return _retryHint.Sector == session.Sector &&
+               _retryHint.IsPlanetTrade == session.IsPlanetTrade &&
                string.Equals(_retryHint.ProductKey, session.ProductKey, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(_retryHint.BuySell, session.BuySell, StringComparison.OrdinalIgnoreCase);
     }
@@ -663,6 +910,15 @@ public sealed class NativeHaggleEngine
 
             GlobalModules.DebugLog(
                 $"[NativeHaggle] heuristic offer={offer} final={finalOffer} stagedBid={heuristicBid}\n");
+            return null;
+        }
+
+        if (UsesCherokeePlanetBaseline(_session))
+        {
+            long planetBid = ComputeCherokeePlanetBid(_session, offer);
+            StageBid(_session, offer, planetBid, finalOffer);
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] planet-cherokee offer={offer} final={finalOffer} stagedBid={planetBid} mcic={_session.PlanetQualityMcic} multiple={_session.PlanetQualityMultiple} portMaxInit={_session.PlanetPortMaxInit} midHaggles={_session.PlanetMidHaggles} forceFail={_session.PlanetForceFailApplied} ptrade={_session.PlanetTradeSettingPercent}\n");
             return null;
         }
 
@@ -1335,8 +1591,240 @@ public sealed class NativeHaggleEngine
         return session.Candidates.Count > 0;
     }
 
+    private static bool UsesCherokeePlanetBaseline(SessionState session) =>
+        session.IsPlanetTrade &&
+        string.Equals(session.BuySell, "BUYING", StringComparison.OrdinalIgnoreCase);
+
+    private void EnsurePlanetTradeVisitState(int sector)
+    {
+        if (_planetTradeRunState.Sector == sector)
+            return;
+
+        _planetTradeRunState.Sector = sector;
+        _planetTradeRunState.ThisOreFailed = false;
+        _planetTradeRunState.ThisOrgFailed = false;
+        _planetTradeRunState.ThisEquFailed = false;
+    }
+
+    private static PlanetTradeProductModel GetPlanetTradeProductModel(ProductType productType) => productType switch
+    {
+        ProductType.FuelOre => FuelOrePlanetProductModel,
+        ProductType.Organics => OrganicsPlanetProductModel,
+        _ => EquipmentPlanetProductModel,
+    };
+
+    private static PlanetTradeQualityEntry GetPlanetTradeQualityEntry(PlanetTradeProductModel model, long portMaxInit)
+    {
+        foreach (PlanetTradeQualityEntry entry in model.QualityTable)
+        {
+            if (portMaxInit >= entry.Threshold)
+                return entry;
+        }
+
+        PlanetTradeQualityEntry fallback = model.QualityTable[^1];
+        return new PlanetTradeQualityEntry(fallback.Threshold, 0, fallback.Multiple);
+    }
+
+    private static int GetPlanetPercentFromBase(SessionState session)
+    {
+        int percent = session.Percent;
+        if (percent < 100)
+            percent++;
+
+        return Math.Max(1, percent);
+    }
+
+    private long ComputeCherokeePlanetBid(SessionState session, long offer)
+    {
+        if (session.BidNumber > 0 && (session.LastOffer <= 0 || session.LastCounter <= 0))
+            return NormalizeBidForDirection(session, offer, ComputeHeuristicBid(session, offer));
+
+        PlanetTradeProductModel model = GetPlanetTradeProductModel(session.ProductType);
+
+        if (session.BidNumber == 0)
+        {
+            long portMaxInit = ComputeCherokeePlanetPortMaxInit(session, offer, model);
+            PlanetTradeQualityEntry quality = GetPlanetTradeQualityEntry(model, portMaxInit);
+
+            session.PlanetPortMaxInit = (int)Math.Max(0, portMaxInit);
+            session.PlanetQualityMcic = quality.Mcic;
+            session.PlanetQualityMultiple = quality.Multiple;
+            session.PlanetMidHaggles = 0;
+            session.PlanetForceFailApplied = false;
+
+            long counter = offer;
+            counter /= 10;
+            counter *= quality.Multiple;
+            counter /= 100;
+            return NormalizeBidForDirection(session, offer, counter);
+        }
+
+        if (session.FinalOffer)
+        {
+            bool forceFail = ShouldForceFailCherokeePlanetTrade(session);
+            session.PlanetForceFailApplied = forceFail;
+
+            if (forceFail)
+            {
+                MarkPlanetTradeForceFail(session);
+                return NormalizeBidForDirection(session, offer, session.LastCounter);
+            }
+
+            long offerChange = offer - session.LastOffer;
+            offerChange *= GetCherokeePlanetFinalOfferMultiplier(session.ProductType);
+            offerChange /= 10;
+
+            long counter = session.LastCounter - offerChange;
+            counter -= 10;
+            return NormalizeBidForDirection(session, offer, counter);
+        }
+
+        session.PlanetMidHaggles++;
+        session.PlanetForceFailApplied = false;
+
+        long midOfferChange = offer - session.LastOffer;
+        int offset;
+        if (session.PlanetQualityMcic > -35)
+        {
+            midOfferChange *= 75;
+            midOfferChange /= 100;
+            offset = 25;
+        }
+        else if (session.PlanetQualityMcic > -55)
+        {
+            midOfferChange *= 65;
+            midOfferChange /= 100;
+            offset = 25;
+        }
+        else
+        {
+            midOfferChange *= 60;
+            midOfferChange /= 100;
+            offset = 10;
+        }
+
+        long midCounter = session.LastCounter - midOfferChange;
+        midCounter -= offset;
+        return NormalizeBidForDirection(session, offer, midCounter);
+    }
+
+    private static long ComputeCherokeePlanetPortMaxInit(SessionState session, long offer, PlanetTradeProductModel model)
+    {
+        long tradeSetting = Math.Max(1, session.PlanetTradeSettingPercent);
+        long tradeQty = Math.Max(1, session.TradeQty);
+
+        long portMaxInit = offer;
+        portMaxInit *= 100;
+        portMaxInit /= tradeSetting;
+        portMaxInit *= 100;
+        portMaxInit /= tradeQty;
+
+        int percentFromBase = GetPlanetPercentFromBase(session);
+        if (percentFromBase == 100)
+        {
+            portMaxInit /= 10;
+            return portMaxInit;
+        }
+
+        if (percentFromBase < 15)
+            return model.FallbackPortMax;
+
+        long adjustedPercent = percentFromBase;
+        adjustedPercent *= 1000;
+        adjustedPercent -= model.BasePercent;
+        if (adjustedPercent <= 0)
+            return model.FallbackPortMax;
+
+        portMaxInit *= 100000;
+        portMaxInit -= model.BaseValue;
+        portMaxInit /= adjustedPercent;
+        portMaxInit *= model.BasePercentInverse;
+        portMaxInit += model.BaseValue;
+        portMaxInit /= 1000000;
+        return portMaxInit;
+    }
+
+    private bool ShouldForceFailCherokeePlanetTrade(SessionState session)
+    {
+        if (!UsesCherokeePlanetBaseline(session))
+            return false;
+
+        int qty = session.TradeQty;
+        int mcic = session.PlanetQualityMcic;
+        int midHaggles = session.PlanetMidHaggles;
+
+        return session.ProductType switch
+        {
+            ProductType.FuelOre => mcic <= -75 &&
+                                   qty >= 25000 &&
+                                   midHaggles < 1 &&
+                                   _planetTradeRunState.OreSellFailures < 2,
+            ProductType.Organics => (mcic <= -60 &&
+                                     qty >= 25000 &&
+                                     midHaggles < 2 &&
+                                     (_planetTradeRunState.ThisOreFailed || _planetTradeRunState.OrgSellFailures < 4)) ||
+                                    (mcic <= -60 &&
+                                     qty >= 15000 &&
+                                     midHaggles < 1 &&
+                                     (_planetTradeRunState.ThisOreFailed || _planetTradeRunState.OrgSellFailures < 2)),
+            _ => (mcic <= -55 &&
+                  qty >= 20000 &&
+                  midHaggles < 2 &&
+                  (_planetTradeRunState.ThisOreFailed || _planetTradeRunState.ThisOrgFailed || _planetTradeRunState.EquSellFailures < 4)) ||
+                 (mcic <= -55 &&
+                  qty >= 12000 &&
+                  midHaggles < 1 &&
+                  (_planetTradeRunState.ThisOreFailed || _planetTradeRunState.ThisOrgFailed || _planetTradeRunState.EquSellFailures < 2)),
+        };
+    }
+
+    private void MarkPlanetTradeForceFail(SessionState session)
+    {
+        switch (session.ProductType)
+        {
+            case ProductType.FuelOre:
+                _planetTradeRunState.ThisOreFailed = true;
+                break;
+            case ProductType.Organics:
+                _planetTradeRunState.ThisOrgFailed = true;
+                break;
+            case ProductType.Equipment:
+                _planetTradeRunState.ThisEquFailed = true;
+                break;
+        }
+    }
+
+    private void ApplyPlanetTradeOutcome(SessionState session, bool success)
+    {
+        if (success || !UsesCherokeePlanetBaseline(session))
+            return;
+
+        switch (session.ProductType)
+        {
+            case ProductType.FuelOre:
+                _planetTradeRunState.OreSellFailures++;
+                break;
+            case ProductType.Organics:
+                _planetTradeRunState.OrgSellFailures++;
+                break;
+            case ProductType.Equipment:
+                _planetTradeRunState.EquSellFailures++;
+                break;
+        }
+    }
+
+    private static int GetCherokeePlanetFinalOfferMultiplier(ProductType productType) => productType switch
+    {
+        ProductType.FuelOre => 30,
+        ProductType.Organics => 27,
+        _ => 25,
+    };
+
     private long ComputeBid(SessionState session, long offer, string firstBidMode)
     {
+        if (UsesCherokeePlanetBaseline(session))
+            return ComputeCherokeePlanetBid(session, offer);
+
         string mode = NativeHaggleModes.Normalize(firstBidMode);
         if (_extensionModes.TryGetValue(mode, out NativeHaggleModeExtension? extension))
             return extension.ComputeBid(this, session, offer);
@@ -1669,10 +2157,10 @@ public sealed class NativeHaggleEngine
         return (chosenThreshold, PascalRoundInt(chosenThreshold, 0));
     }
 
-    private static string BuildRouteKey(int sector, string productKey, string buySell) =>
+    private static string BuildRouteKey(int sector, string productKey, string buySell, bool isPlanetTrade) =>
         string.Create(
             CultureInfo.InvariantCulture,
-            $"{sector}:{productKey}:{buySell}");
+            $"{sector}:{productKey}:{buySell}:{(isPlanetTrade ? "PLANET" : "PORT")}");
 
     internal static bool TryGetTargetExactRange(SessionState session, out double minExact, out double maxExact, out string source)
     {
@@ -2213,13 +2701,22 @@ public sealed class NativeHaggleEngine
         {
             bool attemptedTrade = _session.BidNumber > 0 || _session.LastCounter > 0 || _session.PendingBid > 0;
             if (attemptedTrade && !_session.OutcomeRecorded)
-                RecordOutcome(success: false, $"reset:{reason}");
+            {
+                bool acceptedPlanetTrade =
+                    _session.IsPlanetTrade &&
+                    string.Equals(reason, "command-prompt", StringComparison.OrdinalIgnoreCase) &&
+                    _session.PlanetAcceptanceSeen;
+                RecordOutcome(
+                    success: acceptedPlanetTrade,
+                    acceptedPlanetTrade ? $"reset:{reason}:planet-accepted" : $"reset:{reason}");
+            }
 
             GlobalModules.DebugLog($"[NativeHaggle] Reset reason='{reason}' sector={_session.Sector} product={_session.ProductKey}\n");
         }
         _session = null;
         _pendingProductKey = null;
         _pendingBuySell = null;
+        _pendingIsPlanetTrade = false;
     }
 
     private void RecordOutcome(bool success, string reason)
@@ -2232,7 +2729,9 @@ public sealed class NativeHaggleEngine
         if (success)
             _successfulHaggles++;
 
-        GetActiveModeExtension(_session.ActiveMode)?.OnOutcome(this, _session, success, reason);
+        ApplyPlanetTradeOutcome(_session, success);
+        if (!UsesCherokeePlanetBaseline(_session))
+            GetActiveModeExtension(_session.ActiveMode)?.OnOutcome(this, _session, success, reason);
 
         string probe = (_session.LastCounter > 0)
             ? DescribePredictedProbe(_session, _session.LastCounter)
@@ -2256,6 +2755,13 @@ public sealed class NativeHaggleEngine
 
     private string DescribeModeState(SessionState session)
     {
+        if (UsesCherokeePlanetBaseline(session))
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"modeState=planetCherokee(ptrade={session.PlanetTradeSettingPercent} portMaxInit={session.PlanetPortMaxInit} mcic={session.PlanetQualityMcic} multiple={session.PlanetQualityMultiple} midHaggles={session.PlanetMidHaggles} forceFail={session.PlanetForceFailApplied} failCounts={_planetTradeRunState.OreSellFailures}/{_planetTradeRunState.OrgSellFailures}/{_planetTradeRunState.EquSellFailures} visitFails={_planetTradeRunState.ThisOreFailed}/{_planetTradeRunState.ThisOrgFailed}/{_planetTradeRunState.ThisEquFailed})");
+        }
+
         NativeHaggleModeExtension? extension = GetActiveModeExtension(session.ActiveMode);
         return extension?.DescribeState(this, session) ?? "modeState=n/a";
     }
@@ -2283,6 +2789,39 @@ public sealed class NativeHaggleEngine
 
     private static int ParseInt(string value) =>
         int.Parse(value.Replace(",", string.Empty), NumberStyles.Integer, CultureInfo.InvariantCulture);
+
+    private static PlanetTradeQualityEntry[] ParsePlanetQualityTable(string table)
+    {
+        string[] lines = table.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var entries = new List<PlanetTradeQualityEntry>(lines.Length);
+
+        foreach (string rawLine in lines)
+        {
+            string[] parts = rawLine.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 3)
+                continue;
+
+            entries.Add(new PlanetTradeQualityEntry(
+                ParseInt(parts[0]),
+                ParseInt(parts[1]),
+                ParseInt(parts[2])));
+        }
+
+        return entries.ToArray();
+    }
+
+    private static int ResolvePlanetTradeSettingPercent()
+    {
+        string value = ScriptRef.GetCurrentGameVar(
+            "$GAME~ptradesetting",
+            ScriptRef.GetCurrentGameVar("$ptradesetting", "100"));
+
+        value = value.Trim().TrimEnd('%');
+        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
+            parsed = 100;
+
+        return Math.Clamp(parsed, 1, 100);
+    }
 
     private static int ReadInt(ModDatabase? db, int sector, string key)
     {
