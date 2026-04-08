@@ -193,15 +193,34 @@ namespace TWXProxy.Core
             if (_debugWriter != null && !resetFile)
                 return;
 
+            bool fileExists = File.Exists(DebugLogPath);
+            long existingLength = 0;
+            if (fileExists)
+            {
+                try
+                {
+                    existingLength = new FileInfo(DebugLogPath).Length;
+                }
+                catch
+                {
+                    existingLength = 0;
+                }
+            }
+
             _debugWriter?.Dispose();
-            _debugWriter = new StreamWriter(DebugLogPath, append: !resetFile, System.Text.Encoding.UTF8, bufferSize: 4096)
+            _debugWriter = new StreamWriter(DebugLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
             {
                 AutoFlush = true
             };
 
-            if (resetFile)
+            if (resetFile || !fileExists || existingLength == 0)
             {
                 _debugWriter.WriteLine($"=== TWX Proxy Debug Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+                _debugWriter.Flush();
+            }
+            else
+            {
+                _debugWriter.WriteLine($"=== TWX Proxy Debug Log Continued {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
                 _debugWriter.Flush();
             }
         }
@@ -258,8 +277,18 @@ namespace TWXProxy.Core
         {
             lock (_debugLock)
             {
-                if (!string.IsNullOrWhiteSpace(debugLogPath))
-                    DebugLogPath = debugLogPath;
+                string resolvedPath = string.IsNullOrWhiteSpace(debugLogPath)
+                    ? DebugLogPath
+                    : debugLogPath;
+                bool pathChanged = !string.Equals(DebugLogPath, resolvedPath, StringComparison.Ordinal);
+                bool enabledChanged = DebugMode != enabled;
+                bool verboseChanged = VerboseDebugMode != verboseEnabled;
+                bool writerStateMatches = (_debugWriter != null) == (enabled || EnableVmMetrics);
+
+                if (!pathChanged && !enabledChanged && !verboseChanged && writerStateMatches)
+                    return;
+
+                DebugLogPath = resolvedPath;
 
                 DebugMode = enabled;
                 VerboseDebugMode = verboseEnabled;
@@ -272,7 +301,7 @@ namespace TWXProxy.Core
 
                 try
                 {
-                    EnsureLogWriter(resetFile: true);
+                    EnsureLogWriter(resetFile: false);
                 }
                 catch (Exception ex)
                 {

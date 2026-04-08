@@ -204,6 +204,8 @@ namespace TWXProxy.Core
         private readonly Dictionary<string, MenuItem> _menus = new Dictionary<string, MenuItem>(StringComparer.OrdinalIgnoreCase);
         private Stack<MenuItem> _menuStack = new Stack<MenuItem>();
         private List<MenuItem>? _suspendedMenuStack;
+        private readonly HashSet<int> _autoDeafClientIndices = new();
+        private bool _scriptMenuAutoDeafActive;
         private Script? _inputScript;
         private CmdParam? _inputVarParam;
         private bool _inputSingleKey;
@@ -262,6 +264,7 @@ namespace TWXProxy.Core
 
             _suspendedMenuStack = null;
             _menuStack.Push(menu);
+            EnsureScriptMenuDeafening(menu);
 
             // Display the menu to the user
             DisplayScriptMenu(menu);
@@ -279,6 +282,7 @@ namespace TWXProxy.Core
                 _suspendedMenuStack = null;
                 Console.WriteLine($"[Menu] Closed menu stack (depth={clearedDepth})");
                 ClearMenuDisplay();
+                RestoreScriptMenuDeafeningIfNeeded();
                 return;
             }
 
@@ -290,6 +294,7 @@ namespace TWXProxy.Core
                 if (_menuStack.Count == 0)
                 {
                     ClearMenuDisplay();
+                    RestoreScriptMenuDeafeningIfNeeded();
                 }
             }
         }
@@ -362,11 +367,15 @@ namespace TWXProxy.Core
                 if (_menuStack.Count > 0)
                     DisplayScriptMenu(_menuStack.Peek());
                 else
+                {
                     ClearMenuDisplay();
+                    RestoreScriptMenuDeafeningIfNeeded();
+                }
             }
             else if (suspendedChanged && _menuStack.Count == 0 && _suspendedMenuStack == null)
             {
                 ClearMenuDisplay();
+                RestoreScriptMenuDeafeningIfNeeded();
             }
         }
 
@@ -450,6 +459,7 @@ namespace TWXProxy.Core
 
             GlobalModules.DebugLog($"[Menu] Cleared suspended menu stack (depth={_suspendedMenuStack.Count})\n");
             _suspendedMenuStack = null;
+            RestoreScriptMenuDeafeningIfNeeded();
         }
 
         public void RedisplayCurrentMenu()
@@ -459,6 +469,11 @@ namespace TWXProxy.Core
                 var currentMenu = _menuStack.Peek();
                 DisplayScriptMenu(currentMenu);
             }
+        }
+
+        private static void SendMenuMessage(string message)
+        {
+            GlobalModules.TWXServer?.Broadcast(message, broadcastDeaf: true);
         }
 
         private static void ClearMenuDisplay(bool restoreCurrentLine = true)
@@ -471,7 +486,7 @@ namespace TWXProxy.Core
                     exitText += currentAnsiLine;
             }
 
-            GlobalModules.TWXServer?.ClientMessage(exitText);
+            SendMenuMessage(exitText);
         }
 
         private void CompleteInput(string inputText)
@@ -486,15 +501,13 @@ namespace TWXProxy.Core
         
         private void DisplayScriptMenu(MenuItem menu)
         {
-            var server = GlobalModules.TWXServer;
-            
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
             
             // Match Pascal menu behavior more closely: redraw the current line
             // before showing the menu header instead of forcing a leading blank line.
             string title = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
-            server?.ClientMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + "\r\n");
+            SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + "\r\n");
             
             // Get all menu items that have this menu as their parent
             // Note: Parent '0' means display in all menus (like root-level items)
@@ -525,25 +538,25 @@ namespace TWXProxy.Core
                 {
                     // Replace carriage returns with * for display (TWX script convention)
                     string displayValue = item.Value.Replace("\r", "*");
-                    server?.ClientMessage($"{item.Hotkey} - {item.Description,-25} {displayValue}\r\n");
+                    SendMenuMessage($"{item.Hotkey} - {item.Description,-25} {displayValue}\r\n");
                 }
                 else
                 {
-                    server?.ClientMessage($"{item.Hotkey} - {item.Description}\r\n");
+                    SendMenuMessage($"{item.Hotkey} - {item.Description}\r\n");
                 }
             }
             
             // Display standard menu options
             if (menu.OptionQ)
-                server?.ClientMessage("Q - Terminate script\r\n");
+                SendMenuMessage("Q - Terminate script\r\n");
             if (menu.OptionHelp)
-                server?.ClientMessage("? - Command list\r\n");
+                SendMenuMessage("? - Command list\r\n");
             if (menu.OptionPlus)
-                server?.ClientMessage("+ - Help on command\r\n");
+                SendMenuMessage("+ - Help on command\r\n");
             
             // Use prompt if available, otherwise use name
             string prompt = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
-            server?.ClientMessage($"\r\n{prompt}> ");
+            SendMenuMessage($"\r\n{prompt}> ");
         }
         
         public bool HandleMenuInput(char keyChar)
@@ -562,7 +575,7 @@ namespace TWXProxy.Core
 
             static void EchoMenuKey(char key)
             {
-                GlobalModules.TWXServer?.ClientMessage(char.ToUpperInvariant(key).ToString());
+                GlobalModules.TWXServer?.Broadcast(char.ToUpperInvariant(key).ToString(), broadcastDeaf: true);
             }
             
             // Handle standard options
@@ -744,7 +757,7 @@ namespace TWXProxy.Core
                     }
                     catch (Exception ex)
                     {
-                        GlobalModules.TWXServer?.ClientMessage($"\r\nMenu error: {ex.Message}\r\n");
+                        SendMenuMessage($"\r\nMenu error: {ex.Message}\r\n");
                         
                         // Re-display the menu after error
                         DisplayScriptMenu(currentMenu);
@@ -754,6 +767,47 @@ namespace TWXProxy.Core
             }
             
             return false;
+        }
+
+        private void EnsureScriptMenuDeafening(MenuItem menu)
+        {
+            if (_scriptMenuAutoDeafActive || menu.Script is null || GlobalModules.TWXServer == null)
+                return;
+
+            int clientCount = GlobalModules.TWXServer.ClientCount;
+            for (int i = 0; i < clientCount; i++)
+            {
+                if (GlobalModules.TWXServer.GetClientType(i) == ClientType.Standard)
+                {
+                    GlobalModules.TWXServer.SetClientType(i, ClientType.Deaf);
+                    _autoDeafClientIndices.Add(i);
+                }
+            }
+
+            _scriptMenuAutoDeafActive = true;
+            GlobalModules.DebugLog($"[Menu] Auto-deafened {_autoDeafClientIndices.Count} client(s) for script menu '{menu.Name}'\n");
+        }
+
+        private void RestoreScriptMenuDeafeningIfNeeded()
+        {
+            if (!_scriptMenuAutoDeafActive)
+                return;
+
+            if (_menuStack.Count > 0 || _suspendedMenuStack is { Count: > 0 })
+                return;
+
+            if (GlobalModules.TWXServer != null)
+            {
+                foreach (int index in _autoDeafClientIndices)
+                {
+                    if (GlobalModules.TWXServer.GetClientType(index) == ClientType.Deaf)
+                        GlobalModules.TWXServer.SetClientType(index, ClientType.Standard);
+                }
+            }
+
+            GlobalModules.DebugLog($"[Menu] Restored {_autoDeafClientIndices.Count} auto-deafened client(s)\n");
+            _autoDeafClientIndices.Clear();
+            _scriptMenuAutoDeafActive = false;
         }
     }
 }
