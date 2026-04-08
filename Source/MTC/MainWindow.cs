@@ -3598,7 +3598,7 @@ public class MainWindow : Window
         {
             new MenuItem
             {
-                Header = hasGame ? $"Current Game: {gameName}" : "No game selected",
+                Header = hasGame ? EscapeMenuHeaderText($"Current Game: {gameName}") : "No game selected",
                 IsEnabled = false,
             },
             new Separator(),
@@ -3667,7 +3667,7 @@ public class MainWindow : Window
             int scriptId = script.Id;
             var item = new MenuItem
             {
-                Header = script.IsSystemScript ? $"{script.Name} (system)" : script.Name
+                Header = EscapeMenuHeaderText(script.IsSystemScript ? $"{script.Name} (system)" : script.Name)
             };
             item.Click += (_, _) => _ = OnProxyStopScriptAsync(scriptId);
             items.Add(item);
@@ -3801,12 +3801,12 @@ public class MainWindow : Window
 
         foreach (var group in groups)
         {
-            var groupMenu = new MenuItem { Header = group.Name };
+            var groupMenu = new MenuItem { Header = EscapeMenuHeaderText(group.Name) };
             var groupItems = new List<object>();
             foreach (var entry in group.Entries)
             {
                 string relativePath = entry.RelativePath;
-                var item = new MenuItem { Header = entry.DisplayName };
+                var item = new MenuItem { Header = EscapeMenuHeaderText(entry.DisplayName) };
                 item.Click += (_, _) => _ = LoadQuickScriptAsync(relativePath);
                 groupItems.Add(item);
             }
@@ -3846,7 +3846,7 @@ public class MainWindow : Window
             string moduleId = binding.Info.Id;
             var item = new MenuItem
             {
-                Header = binding.Info.DisplayName,
+                Header = EscapeMenuHeaderText(binding.Info.DisplayName),
             };
             item.Click += (_, _) => _ = OpenAiAssistantAsync(moduleId);
             items.Add(item);
@@ -5513,14 +5513,14 @@ public class MainWindow : Window
                 var subItems = new List<object>();
                 BuildMenuItems(subItems, node.Children);
                 if (subItems.Count == 0) continue;
-                var sub = new MenuItem { Header = node.Name };
+                var sub = new MenuItem { Header = EscapeMenuHeaderText(node.Name) };
                 sub.ItemsSource = subItems;
                 target.Add(sub);
             }
             else
             {
                 var relPath = node.RelPath;  // capture
-                var item    = new MenuItem { Header = node.Name };
+                var item    = new MenuItem { Header = EscapeMenuHeaderText(node.Name) };
                 ToolTip.SetTip(item, relPath);
                 item.Click += (_, _) =>
                 {
@@ -5574,7 +5574,7 @@ public class MainWindow : Window
         {
             var p    = path;  // capture
             var name = Path.GetFileName(p);
-            var item = new MenuItem { Header = name };
+            var item = new MenuItem { Header = EscapeMenuHeaderText(name) };
             ToolTip.SetTip(item, p);
             item.Click += (_, _) => _ = OpenRecentAsync(p);
             items.Add(item);
@@ -5707,7 +5707,31 @@ public class MainWindow : Window
         if (string.IsNullOrWhiteSpace(header))
             return string.Empty;
 
-        return header.Replace("_", string.Empty);
+        var sb = new System.Text.StringBuilder(header.Length);
+        for (int i = 0; i < header.Length; i++)
+        {
+            if (header[i] != '_')
+            {
+                sb.Append(header[i]);
+                continue;
+            }
+
+            if (i + 1 < header.Length && header[i + 1] == '_')
+            {
+                sb.Append('_');
+                i++;
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string EscapeMenuHeaderText(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        return text.Replace("_", "__");
     }
 
     /// <summary>Opens a recently used game config or database directly (no file picker, no connect).</summary>
