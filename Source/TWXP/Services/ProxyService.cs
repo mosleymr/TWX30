@@ -154,7 +154,6 @@ public class ProxyService : IProxyService
                         $"[ProxyService] Migrated legacy database '{legacyDbPath}' -> '{dbPath}'\n");
                 }
 
-                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] AppDataDir={AppPaths.AppDataDir}\n");
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] DatabaseDir={AppPaths.DatabaseDir}\n");
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] dbPath={dbPath}\n");
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] dbPath exists={File.Exists(dbPath)}\n");
@@ -498,8 +497,7 @@ public class ProxyService : IProxyService
                 ModuleDirectories = new[]
                 {
                     AppPaths.ModulesDir,
-                    AppPaths.SharedModulesDir,
-                    Path.Combine(programDir, "modules"),
+                    TWXProxy.Core.SharedPaths.LegacyModulesDir,
                 },
                 GameInstance = gameInstance,
                 Interpreter = interpreter,

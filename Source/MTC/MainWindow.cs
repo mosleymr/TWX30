@@ -2102,8 +2102,7 @@ public class MainWindow : Window
         return Core.NativeHaggleModeDiscovery.DiscoverFromDirectories(new[]
         {
             AppPaths.ModulesDir,
-            AppPaths.SharedModulesDir,
-            Path.Combine(programDir, "modules"),
+            Core.SharedPaths.LegacyModulesDir,
         })
         .Where(info => info.SupportsTradeKind(tradeKind))
         .ToList();
@@ -3246,8 +3245,7 @@ public class MainWindow : Window
             ModuleDirectories = new[]
             {
                 AppPaths.ModulesDir,
-                AppPaths.SharedModulesDir,
-                Path.Combine(programDir, "modules"),
+                Core.SharedPaths.LegacyModulesDir,
             },
             GameInstance = gi,
             Interpreter = interpreter,

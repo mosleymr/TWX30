@@ -168,41 +168,6 @@ public static class ProxyMenuCatalog
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static List<(string SectionName, Dictionary<string, string> Values)> ReadIniSections(string path)
-    {
-        var sections = new List<(string SectionName, Dictionary<string, string> Values)>();
-        string? currentSection = null;
-        Dictionary<string, string>? currentValues = null;
-
-        foreach (string rawLine in File.ReadLines(path))
-        {
-            string line = rawLine.Trim();
-            if (line.Length == 0 || line.StartsWith(";", StringComparison.Ordinal) || line.StartsWith("#", StringComparison.Ordinal))
-                continue;
-
-            if (line.StartsWith("[", StringComparison.Ordinal) && line.EndsWith("]", StringComparison.Ordinal))
-            {
-                currentSection = line[1..^1].Trim();
-                currentValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                sections.Add((currentSection, currentValues));
-                continue;
-            }
-
-            if (currentValues == null)
-                continue;
-
-            int equalsIndex = line.IndexOf('=');
-            if (equalsIndex <= 0)
-                continue;
-
-            string key = line[..equalsIndex].Trim();
-            string value = line[(equalsIndex + 1)..].Trim();
-            currentValues[key] = value;
-        }
-
-        return sections;
-    }
-
     private static string ResolveScriptsRoot(string? programDir, string? scriptDirectory)
     {
         if (!string.IsNullOrWhiteSpace(scriptDirectory))
@@ -212,24 +177,6 @@ public static class ProxyMenuCatalog
             ? GetDefaultProgramDir()
             : programDir;
         return Path.GetFullPath(Path.Combine(root, "scripts"));
-    }
-
-    private static string ResolveConfigPath(string? programDir)
-    {
-        string sharedConfigPath = SharedPaths.GetConfigFilePath(programDir);
-        if (File.Exists(sharedConfigPath))
-            return sharedConfigPath;
-
-        foreach (string legacyPath in SharedPaths.GetLegacyTwxpConfigCandidates(programDir))
-        {
-            if (File.Exists(legacyPath))
-                return legacyPath;
-        }
-
-        string root = string.IsNullOrWhiteSpace(programDir)
-            ? GetDefaultProgramDir()
-            : programDir;
-        return Path.Combine(root, "twxp.cfg");
     }
 
     private static string GetDefaultProgramDir()
