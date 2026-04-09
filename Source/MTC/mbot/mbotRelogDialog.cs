@@ -66,7 +66,7 @@ internal sealed class mbotRelogDialog : Window
 
     public mbotRelogDialog(mbotRelogDialogResult defaults)
     {
-        Title = "mbot Relog";
+        Title = "Mombot Relog";
         Width = 560;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -126,7 +126,7 @@ internal sealed class mbotRelogDialog : Window
             {
                 new TextBlock
                 {
-                    Text = "Shown because the embedded proxy is not currently connected. Fill in relog details, then mbot will arm relog and start.",
+                    Text = "Shown because the embedded proxy is not currently connected. Fill in relog details, then Mombot will arm relog and start.",
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = FgNormal,
                     Margin = new Thickness(0, 0, 0, 8),

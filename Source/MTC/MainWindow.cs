@@ -27,6 +27,8 @@ namespace MTC;
 /// </summary>
 public class MainWindow : Window
 {
+    private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
+
     // ── Core components ────────────────────────────────────────────────────
     private readonly GameState       _state;
     private readonly TerminalBuffer  _buffer;
@@ -51,10 +53,11 @@ public class MainWindow : Window
         WriteIndented             = true,
         PropertyNameCaseInsensitive = true,
     };
+    private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
-    private MenuItem        _botMenu       = new() { Header = "_mbot" };
+    private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
@@ -95,6 +98,25 @@ public class MainWindow : Window
     private string _mbotPromptBuffer = string.Empty;
     private string _mbotPromptDraft = string.Empty;
     private int _mbotPromptHistoryIndex;
+    private sealed record StoredBotSection(
+        string SectionName,
+        string Alias,
+        string DisplayName,
+        bool IsNative,
+        bool ScriptAvailable,
+        Core.BotConfig Config,
+        Dictionary<string, string> Values);
+    private sealed record BotRuntimeState(bool NativeRunning, string ExternalBotName)
+    {
+        public bool IsRunning => NativeRunning || !string.IsNullOrWhiteSpace(ExternalBotName);
+
+        public string DisplayName =>
+            NativeRunning
+                ? NativeMombotMenuLabel
+                : string.IsNullOrWhiteSpace(ExternalBotName)
+                    ? "Off"
+                    : ExternalBotName;
+    }
     // ── Sidebar value TextBlocks (updated when GameState fires Changed) ────
     private TextBlock _valName     = new();
     private TextBlock _valSector    = new();
@@ -189,7 +211,7 @@ public class MainWindow : Window
     // ── Constructor ────────────────────────────────────────────────────────
     public MainWindow()
     {
-        Title          = "Mayhem Tradewars Client v1.0";
+        Title          = BaseWindowTitle;
         Icon           = new WindowIcon(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
         Width          = 1100;
         Height         = 650;
@@ -211,6 +233,8 @@ public class MainWindow : Window
         // Ship status: feed every server line through the parser
         _telnet.TextLineReceived += _shipParser.FeedLine;
         _shipParser.Updated      += OnShipStatusUpdated;
+
+        UpdateWindowTitle();
 
         // Database recording: feed server lines through the AutoRecorder
         _telnet.TextLineReceived += line =>
@@ -1884,14 +1908,14 @@ public class MainWindow : Window
         string haggleText = showHagglePct
             ? $"  Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : string.Empty;
-        bool showMbot = _embeddedGameConfig?.Mtc?.mbot != null || _mbot.IsAttached;
-        MTC.mbot.mbotStatusSnapshot mbotSnapshot = _mbot.GetStatusSnapshot();
-        string mbotText = showMbot
-            ? $"  mbot: {(mbotSnapshot.Enabled ? "on" : "off")}"
+        bool showBot = _embeddedGameConfig?.Mtc?.mbot != null || _mbot.IsAttached || _gameInstance != null;
+        BotRuntimeState botRuntime = GetBotRuntimeState();
+        string botText = showBot
+            ? $"  Bot: {botRuntime.DisplayName}"
             : string.Empty;
 
         _statusText.Text =
-            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{mbotText}  {conn}";
+            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{botText}  {conn}";
 
         _hudHeaderConnection.Text = _state.Connected
             ? $"{_state.Host}:{_state.Port}"
@@ -2033,6 +2057,12 @@ public class MainWindow : Window
         RefreshStatusBar();
         RebuildProxyMenu();
         _ = SaveCurrentGameConfigAsync();
+    }
+
+    private BotRuntimeState GetBotRuntimeState()
+    {
+        string externalBotName = _gameInstance?.ActiveBotName ?? string.Empty;
+        return new BotRuntimeState(_mbot.Enabled, externalBotName);
     }
 
     private void RefreshMbotUi()
@@ -2852,9 +2882,32 @@ public class MainWindow : Window
         _state.ScannerD       = p.ScannerD;
         _state.ScannerH       = p.ScannerH;
         _state.ScannerP       = p.ScannerP;
+        SyncMombotRuntimeConfigFromTwxpCfg();
         _mbot.ApplyConfig(_embeddedGameConfig?.Mtc?.mbot);
+        UpdateWindowTitle();
         RefreshStatusBar();
         _state.NotifyChanged();
+    }
+
+    private void UpdateWindowTitle()
+    {
+        string? gameName = null;
+        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
+        {
+            gameName = _embeddedGameName;
+        }
+        else if (!string.IsNullOrWhiteSpace(_state.GameName))
+        {
+            gameName = NormalizeGameName(_state.GameName);
+        }
+        else if (!string.IsNullOrWhiteSpace(_currentProfilePath))
+        {
+            gameName = Path.GetFileNameWithoutExtension(_currentProfilePath);
+        }
+
+        Title = string.IsNullOrWhiteSpace(gameName)
+            ? BaseWindowTitle
+            : $"{BaseWindowTitle} [{gameName}]";
     }
 
     private static bool HasExplicitEmbeddedLoginSettings(ConnectionProfile profile)
@@ -2954,6 +3007,7 @@ public class MainWindow : Window
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         _embeddedGameConfig = gameConfig;
         _embeddedGameName = gameName;
+        SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         ApplySessionLogSettings(gameConfig);
 
         // Open / create the session database using sectors from the game config.
@@ -3248,8 +3302,7 @@ public class MainWindow : Window
         };
 
         _gameInstance = gi;
-        gameConfig.Mtc.mbot.Enabled = false;
-        gameConfig.Mtc.mbot.AutoStart = false;
+        SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mbot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mbot);
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
@@ -3879,9 +3932,6 @@ public class MainWindow : Window
         stopMenu.SubmenuOpened += (_, _) => stopMenu.ItemsSource = BuildStopMenuItems();
         items.Add(stopMenu);
 
-        var mbotMenu = new MenuItem { Header = "_mbot", IsEnabled = _embeddedGameConfig?.Mtc?.mbot != null || _gameInstance != null };
-        mbotMenu.ItemsSource = BuildMbotMenuItems();
-        items.Add(mbotMenu);
         items.Add(new Separator());
 
         var exportMenu = new MenuItem { Header = "_Export", IsEnabled = hasDatabase };
@@ -3942,63 +3992,6 @@ public class MainWindow : Window
             item.Click += (_, _) => _ = OnProxyStopScriptAsync(scriptId);
             items.Add(item);
         }
-
-        return items;
-    }
-
-    private List<object> BuildMbotMenuItems()
-    {
-        var items = new List<object>();
-        MTC.mbot.mbotConfig? config = _embeddedGameConfig?.Mtc?.mbot;
-        bool proxyActive = _gameInstance != null;
-        MTC.mbot.mbotStatusSnapshot snapshot = _mbot.GetStatusSnapshot();
-
-        if (config == null && !proxyActive)
-        {
-            items.Add(new MenuItem { Header = "No embedded game loaded", IsEnabled = false });
-            return items;
-        }
-
-        config ??= snapshot.IsAttached ? _mbot.Config : new MTC.mbot.mbotConfig();
-
-        items.Add(new MenuItem
-        {
-            Header = $"Status: {(snapshot.Enabled ? "Running" : "Stopped")} / mode {snapshot.Mode}",
-            IsEnabled = false,
-        });
-
-        var start = new MenuItem { Header = "_Start", IsEnabled = proxyActive && !snapshot.Enabled };
-        start.Click += (_, _) => _ = StartInternalMbotAsync();
-        items.Add(start);
-
-        var stop = new MenuItem { Header = "S_top", IsEnabled = proxyActive && snapshot.Enabled };
-        stop.Click += (_, _) => _ = StopInternalMbotAsync();
-        items.Add(stop);
-        items.Add(new Separator());
-
-        var runCommand = new MenuItem { Header = "Open _Prompt", IsEnabled = proxyActive && snapshot.Enabled };
-        runCommand.Click += (_, _) => _ = ShowMbotCommandPromptAsync();
-        items.Add(runCommand);
-
-        var showStatus = new MenuItem { Header = "Show _Status", IsEnabled = proxyActive };
-        showStatus.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("bot");
-        items.Add(showStatus);
-
-        var refresh = new MenuItem { Header = "_Refresh Context", IsEnabled = proxyActive && snapshot.Enabled };
-        refresh.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("refresh");
-        items.Add(refresh);
-
-        var listAll = new MenuItem { Header = "_List Active Scripts", IsEnabled = proxyActive && snapshot.Enabled };
-        listAll.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("listall");
-        items.Add(listAll);
-
-        var stopCurrent = new MenuItem { Header = "S_top Current Module", IsEnabled = proxyActive && snapshot.Enabled };
-        stopCurrent.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("stop");
-        items.Add(stopCurrent);
-
-        var stopAll = new MenuItem { Header = "Stop _All Bot Scripts", IsEnabled = proxyActive && snapshot.Enabled };
-        stopAll.Click += (_, _) => _ = ExecuteMbotUiCommandAsync("stopall");
-        items.Add(stopAll);
 
         return items;
     }
@@ -4169,43 +4162,594 @@ public class MainWindow : Window
 
     private List<object> BuildTopLevelBotMenuItems(bool enabled)
     {
-        return BuildMbotMenuItems();
+        var items = new List<object>();
+        BotRuntimeState runtime = GetBotRuntimeState();
+
+        var startMenu = new MenuItem { Header = "_Start", IsEnabled = enabled };
+        startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
+        startMenu.SubmenuOpened += (_, _) =>
+            startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
+        items.Add(startMenu);
+
+        var stopItem = new MenuItem { Header = "S_top", IsEnabled = runtime.IsRunning };
+        stopItem.Click += (_, _) => _ = StopActiveBotAsync();
+        items.Add(stopItem);
+
+        var configureMenu = new MenuItem { Header = "_Configure" };
+        configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
+        configureMenu.SubmenuOpened += (_, _) =>
+            configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
+        items.Add(configureMenu);
+
+        var addBot = new MenuItem { Header = "_Add Bot…" };
+        addBot.Click += (_, _) => _ = AddBotAsync();
+        items.Add(addBot);
+
+        return items;
     }
 
-    private List<object> BuildBotMenuItems(bool enabled, bool includeStatusMessage = true)
+    private List<object> BuildBotStartMenuItems(bool proxyReady, IReadOnlyList<StoredBotSection> bots)
     {
         var items = new List<object>();
-        if (!enabled || _gameInstance == null)
+        if (!proxyReady || _gameInstance == null || CurrentInterpreter == null)
         {
-            if (includeStatusMessage)
-                items.Add(new MenuItem { Header = "Proxy is not running", IsEnabled = false });
+            items.Add(new MenuItem { Header = "Embedded proxy is not running", IsEnabled = false });
             return items;
         }
 
-        var bots = _gameInstance.GetBotList();
-        if (bots.Count == 0)
+        BotRuntimeState runtime = GetBotRuntimeState();
+        StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
+        var nativeItem = new MenuItem
         {
-            if (includeStatusMessage)
-                items.Add(new MenuItem { Header = "No bots configured", IsEnabled = false });
+            Header = runtime.NativeRunning ? $"{NativeMombotMenuLabel} (running)" : NativeMombotMenuLabel,
+        };
+        nativeItem.Click += (_, _) => _ = StartConfiguredBotAsync(nativeBot);
+        items.Add(nativeItem);
+
+        List<StoredBotSection> externalBots = bots
+            .Where(bot => !bot.IsNative)
+            .OrderBy(bot => bot.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (externalBots.Count == 0)
+        {
+            items.Add(new Separator());
+            items.Add(new MenuItem { Header = "No external bots configured", IsEnabled = false });
             return items;
         }
 
-        foreach (string botName in bots)
+        items.Add(new Separator());
+        foreach (StoredBotSection bot in externalBots)
         {
-            Core.BotConfig? botConfig = _gameInstance.GetBotConfig(botName);
-            string caption = botName;
-            if (_gameInstance.ActiveBotName.Equals(botName, StringComparison.OrdinalIgnoreCase))
-                caption += " (active)";
+            string header = bot.DisplayName;
+            if (string.Equals(runtime.ExternalBotName, bot.Config.Name, StringComparison.OrdinalIgnoreCase))
+                header += " (running)";
+            else if (!bot.ScriptAvailable)
+                header += " (script missing)";
 
             var item = new MenuItem
             {
-                Header = caption,
+                Header = EscapeMenuHeaderText(header),
+                IsEnabled = bot.ScriptAvailable,
             };
-            item.Click += (_, _) => _ = SwitchBotAsync(botName);
+            item.Click += (_, _) => _ = StartConfiguredBotAsync(bot);
             items.Add(item);
         }
 
         return items;
+    }
+
+    private List<object> BuildBotConfigureMenuItems(IReadOnlyList<StoredBotSection> bots)
+    {
+        var items = new List<object>();
+
+        StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
+        var nativeItem = new MenuItem { Header = NativeMombotMenuLabel };
+        nativeItem.Click += (_, _) => _ = ConfigureBotAsync(nativeBot);
+        items.Add(nativeItem);
+
+        List<StoredBotSection> externalBots = bots
+            .Where(bot => !bot.IsNative)
+            .OrderBy(bot => bot.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (externalBots.Count == 0)
+        {
+            items.Add(new Separator());
+            items.Add(new MenuItem { Header = "No external bots configured", IsEnabled = false });
+            return items;
+        }
+
+        items.Add(new Separator());
+        foreach (StoredBotSection bot in externalBots)
+        {
+            var item = new MenuItem
+            {
+                Header = EscapeMenuHeaderText(bot.DisplayName),
+            };
+            item.Click += (_, _) => _ = ConfigureBotAsync(bot);
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    private IReadOnlyList<StoredBotSection> LoadConfiguredBotSections()
+    {
+        string scriptDirectory = GetEffectiveProxyScriptDirectory();
+        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+        IReadOnlyList<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir);
+        var storedBots = new List<StoredBotSection>();
+        bool foundNative = false;
+
+        foreach (Core.TwxpConfigSection section in sections)
+        {
+            if (!section.Name.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            StoredBotSection bot = CreateStoredBotSection(section, programDir, scriptDirectory);
+            if (bot.IsNative)
+            {
+                if (foundNative)
+                    continue;
+
+                foundNative = true;
+            }
+
+            storedBots.Add(bot);
+        }
+
+        if (!foundNative)
+        {
+            storedBots.Insert(0, CreateStoredBotSection(
+                new Core.TwxpConfigSection(
+                    Core.ProxyMenuCatalog.NativeMombotSectionName,
+                    BuildDefaultNativeBotValues()),
+                programDir,
+                scriptDirectory));
+        }
+
+        return storedBots;
+    }
+
+    private StoredBotSection CreateStoredBotSection(Core.TwxpConfigSection section, string programDir, string scriptDirectory)
+    {
+        bool isNative = Core.ProxyMenuCatalog.IsNativeBotSection(section);
+        var values = isNative
+            ? MergeBotValues(section.Values, BuildDefaultNativeBotValues())
+            : new Dictionary<string, string>(section.Values, StringComparer.OrdinalIgnoreCase);
+
+        string alias = isNative
+            ? Core.ProxyMenuCatalog.GetBotAlias(Core.ProxyMenuCatalog.NativeMombotSectionName)
+            : Core.ProxyMenuCatalog.GetBotAlias(section.Name);
+        string displayName = values.TryGetValue("Name", out string? configuredName) && !string.IsNullOrWhiteSpace(configuredName)
+            ? configuredName.Trim()
+            : alias;
+        string scriptList = values.TryGetValue("Script", out string? configuredScripts)
+            ? NormalizeBotScriptList(configuredScripts)
+            : string.Empty;
+        List<string> scripts = scriptList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(script => script.Replace('\\', '/'))
+            .Where(script => !string.IsNullOrWhiteSpace(script))
+            .ToList();
+
+        var config = new Core.BotConfig
+        {
+            Alias = alias,
+            Name = displayName,
+            ScriptFile = scripts.FirstOrDefault() ?? string.Empty,
+            ScriptFiles = scripts,
+            Description = values.TryGetValue("Description", out string? description) ? description : string.Empty,
+            AutoStart = ParseTwxpBool(values.TryGetValue("AutoStart", out string? autoStart) ? autoStart : null, fallback: !isNative),
+            NameVar = values.TryGetValue("NameVar", out string? nameVar) ? nameVar : string.Empty,
+            CommsVar = values.TryGetValue("CommsVar", out string? commsVar) ? commsVar : string.Empty,
+            LoginScript = values.TryGetValue("LoginScript", out string? loginScript) ? loginScript : string.Empty,
+            Theme = values.TryGetValue("Theme", out string? theme) ? theme : string.Empty,
+            Properties = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase),
+        };
+
+        return new StoredBotSection(
+            section.Name,
+            alias,
+            isNative ? NativeMombotMenuLabel : displayName,
+            isNative,
+            isNative || BotScriptsExist(config, programDir, scriptDirectory),
+            config,
+            values);
+    }
+
+    private async Task StartConfiguredBotAsync(StoredBotSection bot)
+    {
+        await Task.Yield();
+
+        if (_gameInstance == null || CurrentInterpreter == null)
+        {
+            await ShowMessageAsync("Bot", "Bots can be started only while the embedded proxy is running.");
+            return;
+        }
+
+        if (bot.IsNative)
+        {
+            StopActiveExternalBot();
+            SyncMombotRuntimeConfigFromTwxpCfg();
+            await StartInternalMbotAsync();
+        }
+        else
+        {
+            if (!bot.ScriptAvailable)
+            {
+                await ShowMessageAsync("Bot", $"The script configured for {bot.DisplayName} could not be found.");
+                return;
+            }
+
+            if (_mbot.Enabled)
+                await StopInternalMbotAsync();
+
+            ReloadRegisteredBotConfigs();
+
+            try
+            {
+                CurrentInterpreter.SwitchBot(string.Empty, bot.Config.Name, stopBotScripts: true);
+                _parser.Feed($"\x1b[1;36m[Started bot: {bot.Config.Name}]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+            }
+            catch (Exception ex)
+            {
+                await ShowMessageAsync("Start Bot Failed", ex.Message);
+            }
+        }
+
+        RefreshStatusBar();
+        RebuildProxyMenu();
+        _termCtrl.Focus();
+    }
+
+    private async Task StopActiveBotAsync()
+    {
+        await Task.Yield();
+
+        bool stoppedAny = false;
+        if (_mbot.Enabled)
+        {
+            await StopInternalMbotAsync();
+            stoppedAny = true;
+        }
+
+        if (StopActiveExternalBot())
+        {
+            stoppedAny = true;
+            _parser.Feed("\x1b[1;36m[Stopped active external bot]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+
+        if (stoppedAny)
+        {
+            RefreshStatusBar();
+            RebuildProxyMenu();
+            _termCtrl.Focus();
+        }
+    }
+
+    private bool StopActiveExternalBot()
+    {
+        string activeBotName = _gameInstance?.ActiveBotName ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(activeBotName))
+            return false;
+
+        CurrentInterpreter?.StopBot(activeBotName);
+        if (_gameInstance != null)
+            _gameInstance.ActiveBotName = string.Empty;
+
+        return true;
+    }
+
+    private async Task ConfigureBotAsync(StoredBotSection bot)
+    {
+        BotConfigDialogResult defaults = BuildBotDialogDefaults(bot);
+        var dialog = new BotConfigDialog(
+            bot.IsNative ? "Configure MomBot (native)" : $"Configure {bot.DisplayName}",
+            defaults,
+            bot.IsNative);
+        if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+        {
+            _termCtrl.Focus();
+            return;
+        }
+
+        if (!TryValidateBotDialogResult(dialog.Result, bot.IsNative, bot.SectionName, out string error, out BotConfigDialogResult normalized))
+        {
+            await ShowMessageAsync("Bot", error);
+            return;
+        }
+
+        SaveBotSection(bot, normalized);
+        ReloadRegisteredBotConfigs();
+        SyncMombotRuntimeConfigFromTwxpCfg();
+        if (_mbot.IsAttached)
+            _mbot.ApplyConfig(_embeddedGameConfig?.Mtc?.mbot);
+
+        RefreshStatusBar();
+        RebuildProxyMenu();
+        _termCtrl.Focus();
+    }
+
+    private async Task AddBotAsync()
+    {
+        var dialog = new BotConfigDialog(
+            "Add Bot",
+            new BotConfigDialogResult(
+                Alias: "newbot",
+                Name: "New Bot",
+                Script: "mombot/mombot.cts",
+                Description: string.Empty,
+                AutoStart: false,
+                NameVar: "BotName",
+                CommsVar: "BotComms",
+                LoginScript: "0_Login.cts",
+                Theme: "5|[BOT]|~D|~G"),
+            isNative: false);
+        if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+        {
+            _termCtrl.Focus();
+            return;
+        }
+
+        if (!TryValidateBotDialogResult(dialog.Result, isNative: false, currentSectionName: null, out string error, out BotConfigDialogResult normalized))
+        {
+            await ShowMessageAsync("Bot", error);
+            return;
+        }
+
+        SaveBotSection(existing: null, normalized);
+        ReloadRegisteredBotConfigs();
+        RebuildProxyMenu();
+        _termCtrl.Focus();
+    }
+
+    private BotConfigDialogResult BuildBotDialogDefaults(StoredBotSection bot)
+    {
+        return new BotConfigDialogResult(
+            Alias: bot.Alias,
+            Name: bot.Config.Name,
+            Script: bot.Config.ScriptFiles.Count > 0
+                ? string.Join(", ", bot.Config.ScriptFiles)
+                : bot.Config.ScriptFile,
+            Description: bot.Config.Description,
+            AutoStart: bot.Config.AutoStart,
+            NameVar: bot.Config.NameVar,
+            CommsVar: bot.Config.CommsVar,
+            LoginScript: bot.Config.LoginScript,
+            Theme: bot.Config.Theme);
+    }
+
+    private bool TryValidateBotDialogResult(
+        BotConfigDialogResult result,
+        bool isNative,
+        string? currentSectionName,
+        out string error,
+        out BotConfigDialogResult normalized)
+    {
+        error = string.Empty;
+        string alias = isNative ? Core.ProxyMenuCatalog.GetBotAlias(Core.ProxyMenuCatalog.NativeMombotSectionName) : SanitizeBotSectionAlias(result.Alias);
+        if (!isNative && string.IsNullOrWhiteSpace(alias))
+        {
+            normalized = result;
+            error = "Bot alias is required.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(result.Name))
+        {
+            normalized = result;
+            error = "Bot name is required.";
+            return false;
+        }
+
+        string scriptList = NormalizeBotScriptList(result.Script);
+        if (string.IsNullOrWhiteSpace(scriptList))
+        {
+            normalized = result;
+            error = "At least one script path is required.";
+            return false;
+        }
+
+        if (!isNative)
+        {
+            string sectionName = "bot:" + alias;
+            string programDir = GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
+            bool duplicateAlias = Core.TwxpConfigStore.LoadSections(programDir).Any(section =>
+                section.Name.StartsWith("bot:", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(section.Name, currentSectionName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(section.Name, sectionName, StringComparison.OrdinalIgnoreCase));
+            if (duplicateAlias)
+            {
+                normalized = result;
+                error = $"A bot named '{alias}' already exists in TwxpCfg.";
+                return false;
+            }
+        }
+
+        normalized = result with
+        {
+            Alias = alias,
+            Script = scriptList,
+        };
+        return true;
+    }
+
+    private void SaveBotSection(StoredBotSection? existing, BotConfigDialogResult result)
+    {
+        string scriptDirectory = GetEffectiveProxyScriptDirectory();
+        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+        List<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir).ToList();
+        string sectionName = existing?.IsNative == true
+            ? Core.ProxyMenuCatalog.NativeMombotSectionName
+            : "bot:" + result.Alias;
+
+        sections.RemoveAll(section =>
+            string.Equals(section.Name, sectionName, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(existing?.SectionName) &&
+             string.Equals(section.Name, existing.SectionName, StringComparison.OrdinalIgnoreCase)));
+
+        var values = existing != null
+            ? new Dictionary<string, string>(existing.Values, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        values["Name"] = result.Name.Trim();
+        values["Script"] = NormalizeBotScriptList(result.Script);
+        values["Description"] = result.Description.Trim();
+        values["AutoStart"] = result.AutoStart ? "1" : "0";
+        values["NameVar"] = result.NameVar.Trim();
+        values["CommsVar"] = result.CommsVar.Trim();
+        values["LoginScript"] = result.LoginScript.Trim();
+        values["Theme"] = result.Theme.Trim();
+
+        if (existing?.IsNative == true)
+            values["Native"] = "1";
+        else
+            values.Remove("Native");
+
+        sections.Add(new Core.TwxpConfigSection(sectionName, values));
+        Core.TwxpConfigStore.SaveSections(programDir, sections);
+    }
+
+    private void ReloadRegisteredBotConfigs()
+    {
+        if (_gameInstance == null)
+            return;
+
+        string scriptDirectory = GetEffectiveProxyScriptDirectory();
+        string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+        _gameInstance.ReloadBotConfigs(programDir, scriptDirectory);
+    }
+
+    private void SyncMombotRuntimeConfigFromTwxpCfg(EmbeddedGameConfig? gameConfig = null)
+    {
+        EmbeddedGameConfig? targetConfig = gameConfig ?? _embeddedGameConfig;
+        if (targetConfig == null)
+            return;
+
+        StoredBotSection nativeBot = LoadConfiguredBotSections().First(bot => bot.IsNative);
+        targetConfig.Mtc ??= new EmbeddedMtcConfig();
+        targetConfig.Mtc.mbot ??= new MTC.mbot.mbotConfig();
+
+        MTC.mbot.mbotConfig runtimeConfig = targetConfig.Mtc.mbot;
+        runtimeConfig.AutoStart = nativeBot.Config.AutoStart;
+        runtimeConfig.ScriptRoot = GetNativeMombotScriptRoot(nativeBot.Config);
+        runtimeConfig.WatcherEnabled = runtimeConfig.Enabled;
+    }
+
+    private static Dictionary<string, string> MergeBotValues(
+        IDictionary<string, string> source,
+        IDictionary<string, string> defaults)
+    {
+        var merged = new Dictionary<string, string>(defaults, StringComparer.OrdinalIgnoreCase);
+        foreach (KeyValuePair<string, string> entry in source)
+            merged[entry.Key] = entry.Value;
+        return merged;
+    }
+
+    private static Dictionary<string, string> BuildDefaultNativeBotValues()
+    {
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Native"] = "1",
+            ["Name"] = "MomBot",
+            ["Script"] = "mombot/mombot.cts",
+            ["Description"] = "Built-in native Mombot runtime",
+            ["AutoStart"] = "0",
+            ["NameVar"] = "BotName",
+            ["CommsVar"] = "BotComms",
+            ["LoginScript"] = "0_Login.cts",
+            ["Theme"] = "5|[MOMBOT]|~D|~G",
+        };
+    }
+
+    private static bool BotScriptsExist(Core.BotConfig config, string programDir, string scriptDirectory)
+    {
+        string scriptsRoot = Path.GetFullPath(scriptDirectory);
+        IReadOnlyList<string> scripts = config.ScriptFiles.Count > 0
+            ? config.ScriptFiles
+            : string.IsNullOrWhiteSpace(config.ScriptFile)
+                ? Array.Empty<string>()
+                : new[] { config.ScriptFile };
+        if (scripts.Count == 0)
+            return false;
+
+        foreach (string script in scripts)
+        {
+            string normalized = script.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+            string fullPath = Path.IsPathRooted(normalized)
+                ? Path.GetFullPath(normalized)
+                : Path.Combine(scriptsRoot, normalized);
+            if (!File.Exists(fullPath))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static string NormalizeBotScriptList(string scriptList)
+    {
+        return string.Join(",",
+            scriptList
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(script => script.Replace('\\', '/').Trim().TrimStart('/'))
+                .Where(script => !string.IsNullOrWhiteSpace(script)));
+    }
+
+    private static string SanitizeBotSectionAlias(string alias)
+    {
+        string trimmed = alias.Trim();
+        if (trimmed.Length == 0)
+            return string.Empty;
+
+        var buffer = new System.Text.StringBuilder(trimmed.Length);
+        foreach (char ch in trimmed)
+        {
+            if (char.IsLetterOrDigit(ch))
+                buffer.Append(char.ToLowerInvariant(ch));
+            else if (ch == '_' || ch == '-')
+                buffer.Append(ch);
+        }
+
+        return buffer.ToString().Trim('_', '-');
+    }
+
+    private static bool ParseTwxpBool(string? value, bool fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return fallback;
+
+        if (bool.TryParse(value, out bool parsed))
+            return parsed;
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetNativeMombotScriptRoot(Core.BotConfig config)
+    {
+        string script = config.ScriptFiles.Count > 0
+            ? config.ScriptFiles[0]
+            : config.ScriptFile;
+        string normalized = script.Replace('\\', '/').Trim().Trim('/');
+        if (string.IsNullOrWhiteSpace(normalized))
+            return "scripts/mombot";
+
+        string directory = Path.GetDirectoryName(normalized.Replace('/', Path.DirectorySeparatorChar))?
+            .Replace('\\', '/')
+            .Trim('/') ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(directory))
+            return "scripts/mombot";
+        if (directory.Equals("scripts", StringComparison.OrdinalIgnoreCase) ||
+            directory.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase))
+        {
+            return directory;
+        }
+
+        return Path.Combine("scripts", directory).Replace('\\', '/');
     }
 
     private async Task StartInternalMbotAsync()
@@ -4214,7 +4758,7 @@ public class MainWindow : Window
 
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
             return;
         }
 
@@ -4251,7 +4795,7 @@ public class MainWindow : Window
 
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
             return;
         }
 
@@ -4286,7 +4830,7 @@ public class MainWindow : Window
         Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
-        PublishMbotLocalMessage("mbot stopped.");
+        PublishMbotLocalMessage("Mombot stopped.");
         ApplyMbotExecutionRefresh();
     }
 
@@ -4298,7 +4842,7 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             _mbot.Settings.BotName,
-            "mbot");
+            "mombot");
         string serverName = FirstMeaningfulMbotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
@@ -4402,7 +4946,7 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             _mbot.Settings.BotName,
-            "mbot");
+            "mombot");
         string serverName = FirstMeaningfulMbotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
@@ -4439,7 +4983,7 @@ public class MainWindow : Window
         {
             _mbot.StopScriptByName(startupScript);
             if (!_mbot.TryLoadScript(startupScript, out string? error))
-                PublishMbotLocalMessage($"mbot: failed to load startup '{startupScript}': {error}");
+                PublishMbotLocalMessage($"mombot: failed to load startup '{startupScript}': {error}");
         }
     }
 
@@ -4450,13 +4994,13 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             _mbot.Settings.BotName,
-            "mbot");
+            "mombot");
         string stateLabel = connected ? "online" : "relog armed";
         string banner =
             "\r\n" +
-            "\u001b[1;36m=== mbot 1.0 ===\u001b[0m\r\n" +
+            "\u001b[1;36m=== Mombot 1.0 ===\u001b[0m\r\n" +
             $"\u001b[1;33m{botName}\u001b[0m \u001b[1;32m{stateLabel}\u001b[0m\r\n" +
-            "\u001b[38;5;245mUse > to open the mbot prompt.\u001b[0m\r\n";
+            "\u001b[38;5;245mUse > to open the mombot prompt.\u001b[0m\r\n";
 
         if (_gameInstance != null)
             _gameInstance.ClientMessage(banner);
@@ -4476,7 +5020,7 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             _mbot.Settings.BotName,
-            "mbot");
+            "mombot");
         string loginName = FirstMeaningfulMbotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
@@ -4892,13 +5436,13 @@ public class MainWindow : Window
     {
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("mbot commands are only available while the embedded proxy is running.");
+            PublishMbotLocalMessage("Mombot commands are only available while the embedded proxy is running.");
             return;
         }
 
         if (!_mbot.Enabled)
         {
-            PublishMbotLocalMessage("Enable mbot first.");
+            PublishMbotLocalMessage("Enable Mombot first.");
             return;
         }
 
@@ -4921,7 +5465,7 @@ public class MainWindow : Window
 
         if (_gameInstance == null || !_gameInstance.IsConnected)
         {
-            PublishMbotLocalMessage("mbot macros need an active game connection.");
+            PublishMbotLocalMessage("Mombot macros need an active game connection.");
             return;
         }
 
@@ -4929,7 +5473,7 @@ public class MainWindow : Window
         if (context.Surface != MbotPromptSurface.Command &&
             context.Surface != MbotPromptSurface.Citadel)
         {
-            PublishMbotLocalMessage("mbot macros are available from command or citadel prompts.");
+            PublishMbotLocalMessage("Mombot macros are available from command or citadel prompts.");
             return;
         }
 
@@ -5027,7 +5571,7 @@ public class MainWindow : Window
     {
         MTC.mbot.mbotStatusSnapshot snapshot = _mbot.GetStatusSnapshot();
         string mode = string.IsNullOrWhiteSpace(snapshot.Mode) ? "General" : snapshot.Mode;
-        string botName = string.IsNullOrWhiteSpace(snapshot.BotName) ? "mbot" : snapshot.BotName;
+        string botName = string.IsNullOrWhiteSpace(snapshot.BotName) ? "mombot" : snapshot.BotName;
         return $"\x1b[1;34m{{{mode}}}\x1b[0;37m {botName}\x1b[1;32m>\x1b[0m ";
     }
 
@@ -5042,15 +5586,15 @@ public class MainWindow : Window
             options += " " + sectorKeys;
         }
 
-        return $"\x1b[1;33m{{{options}}}\x1b[0;37m mbot\x1b[1;32m>\x1b[0m ";
+        return $"\x1b[1;33m{{{options}}}\x1b[0;37m mombot\x1b[1;32m>\x1b[0m ";
     }
 
     private string BuildMbotMacroHelpLine()
     {
         if (_mbotMacroContext is not { } context)
-            return "mbot macros: Tab=reset H=holo D=density S=surround X=xenter Esc=cancel";
+            return "mombot macros: Tab=reset H=holo D=density S=surround X=xenter Esc=cancel";
 
-        string line = "mbot macros: Tab=reset H=holo D=density S=surround X=xenter";
+        string line = "mombot macros: Tab=reset H=holo D=density S=surround X=xenter";
         if (context.AdjacentSectors.Count > 0)
         {
             string sectorKeys = string.Join(" ", context.AdjacentSectors
@@ -5291,7 +5835,7 @@ public class MainWindow : Window
     {
         if (_gameInstance == null || !_gameInstance.IsConnected)
         {
-            PublishMbotLocalMessage("This mbot action requires an active game connection.");
+            PublishMbotLocalMessage("This Mombot action requires an active game connection.");
             return;
         }
 
@@ -5308,13 +5852,13 @@ public class MainWindow : Window
 
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("mbot controls are only available while the embedded proxy is running.");
+            PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
             return;
         }
 
         if (!_mbot.Enabled && !string.Equals(input, "bot", StringComparison.OrdinalIgnoreCase))
         {
-            PublishMbotLocalMessage("Enable mbot first.");
+            PublishMbotLocalMessage("Enable Mombot first.");
             return;
         }
 
@@ -5332,26 +5876,26 @@ public class MainWindow : Window
     {
         if (_gameInstance == null)
         {
-            await ShowMessageAsync("mbot", "mbot commands are only available while the embedded proxy is running.");
+            await ShowMessageAsync("Mombot", "Mombot commands are only available while the embedded proxy is running.");
             return;
         }
 
         if (!_mbot.Enabled)
         {
-            await ShowMessageAsync("mbot", "Enable mbot first.");
+            await ShowMessageAsync("Mombot", "Enable Mombot first.");
             return;
         }
 
         MbotGridContext context = BuildMbotGridContext();
         if (!context.Connected)
         {
-            await ShowMessageAsync("mbot", "The grid menu needs an active game connection.");
+            await ShowMessageAsync("Mombot", "The grid menu needs an active game connection.");
             return;
         }
 
         if (context.Surface != MbotPromptSurface.Command && context.Surface != MbotPromptSurface.Citadel)
         {
-            await ShowMessageAsync("mbot", "The grid menu is only available from command or citadel prompts.");
+            await ShowMessageAsync("Mombot", "The grid menu is only available from command or citadel prompts.");
             return;
         }
 
@@ -5402,7 +5946,7 @@ public class MainWindow : Window
         var closeBtn = new Button { Content = "Close", MinWidth = 96 };
         var dlg = new Window
         {
-            Title = photonMode ? "mbot Photon Menu" : "mbot Grid Menu",
+            Title = photonMode ? "Mombot Photon Menu" : "Mombot Grid Menu",
             Width = 620,
             Height = 280,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,

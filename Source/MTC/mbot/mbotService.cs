@@ -198,7 +198,7 @@ internal sealed class mbotService
             if (context.CommandLine.Length == 0)
             {
                 mbotSettings settings = Settings;
-                PublishMessage($"mbot: you are logged into this bot. Use {settings.BotName} help for commands.");
+                PublishMessage($"mombot: you are logged into this bot. Use {settings.BotName} help for commands.");
                 return true;
             }
 
@@ -230,7 +230,7 @@ internal sealed class mbotService
         if (context.CommandLine.Length == 0)
         {
             mbotSettings settings = Settings;
-            PublishMessage($"mbot: you are logged into this bot. Use {settings.BotName} help for commands.");
+            PublishMessage($"mombot: you are logged into this bot. Use {settings.BotName} help for commands.");
             return true;
         }
 
@@ -269,12 +269,12 @@ internal sealed class mbotService
         string userName)
     {
         if (string.IsNullOrWhiteSpace(input))
-            return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, "Empty mbot command.");
+            return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, "Empty mombot command.");
 
         List<string> words = GetWords(input);
         if (words.Count == 0)
         {
-            string message = "mbot: Empty mbot command.";
+            string message = "mombot: Empty mombot command.";
             PublishMessage(message);
             return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, message);
         }
@@ -303,12 +303,12 @@ internal sealed class mbotService
 
             if (!TryLoadScript(scriptReference, out string? error))
             {
-                string message = $"mbot: failed to load '{scriptReference}': {error}";
+                string message = $"mombot: failed to load '{scriptReference}': {error}";
                 PublishMessage(message);
                 return new mbotDispatchResult(false, mbotDispatchKind.Script, canonical, message, scriptReference);
             }
 
-            string loadedMessage = $"mbot: loaded {canonical} ({scriptReference}).";
+            string loadedMessage = $"mombot: loaded {canonical} ({scriptReference}).";
             PublishMessage(loadedMessage);
             return new mbotDispatchResult(true, mbotDispatchKind.Script, canonical, loadedMessage, scriptReference);
         }
@@ -323,7 +323,7 @@ internal sealed class mbotService
             return ExecuteNative(internalCommand, context);
         }
 
-        string messageInvalid = $"mbot: '{canonical}' is not a valid command.";
+        string messageInvalid = $"mombot: '{canonical}' is not a valid command.";
         PublishMessage(messageInvalid);
         return new mbotDispatchResult(false, mbotDispatchKind.Invalid, canonical, messageInvalid);
     }
@@ -338,7 +338,7 @@ internal sealed class mbotService
                 StopAllNonSystemScripts();
                 Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
                 Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
-                return PublishNativeResult(canonical, "mbot stopped all non-system scripts.");
+                return PublishNativeResult(canonical, "mombot stopped all non-system scripts.");
 
             case "stop":
                 return ExecuteStop(context);
@@ -351,16 +351,16 @@ internal sealed class mbotService
 
             case "refresh":
                 Compat.ApplyToSession(_interpreter, _database, _config, Settings, context);
-                return PublishNativeResult(canonical, "mbot refreshed its command context from current savevar/loadvar state.");
+                return PublishNativeResult(canonical, "mombot refreshed its command context from current savevar/loadvar state.");
 
             case "bot":
                 return ExecuteBotStatus(canonical);
 
             case "logoff":
-                return PublishUnsupported(canonical, "mbot leaves logoff/logout script-backed for now because it is a server-interactive flow.");
+                return PublishUnsupported(canonical, "mombot leaves logoff/logout script-backed for now because it is a server-interactive flow.");
 
             default:
-                return PublishUnsupported(canonical, $"mbot does not have a native handler for '{canonical}' yet.");
+                return PublishUnsupported(canonical, $"mombot does not have a native handler for '{canonical}' yet.");
         }
     }
 
@@ -373,10 +373,10 @@ internal sealed class mbotService
             if (!string.IsNullOrWhiteSpace(lastLoaded) && StopScriptByName(lastLoaded))
             {
                 Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-                return PublishNativeResult(context.CommandName, $"mbot stopped {lastLoaded}.");
+                return PublishNativeResult(context.CommandName, $"mombot stopped {lastLoaded}.");
             }
 
-            return PublishUnsupported(context.CommandName, "mbot stop needs a script name or an active last-loaded module.");
+            return PublishUnsupported(context.CommandName, "mombot stop needs a script name or an active last-loaded module.");
         }
 
         IReadOnlyList<Core.RunningScriptInfo> running = GetRunningScripts();
@@ -399,9 +399,9 @@ internal sealed class mbotService
         }
 
         if (stopped == 0)
-            return PublishUnsupported(context.CommandName, $"mbot could not find a non-system script starting with '{selector}'.");
+            return PublishUnsupported(context.CommandName, $"mombot could not find a non-system script starting with '{selector}'.");
 
-        return PublishNativeResult(context.CommandName, $"mbot stopped {stopped} script(s) matching '{selector}'.");
+        return PublishNativeResult(context.CommandName, $"mombot stopped {stopped} script(s) matching '{selector}'.");
     }
 
     private mbotDispatchResult ExecuteStopModules(string canonical)
@@ -413,18 +413,18 @@ internal sealed class mbotService
         Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
         if (stopped)
-            return PublishNativeResult(canonical, $"mbot reset to General mode and stopped {lastLoaded}.");
+            return PublishNativeResult(canonical, $"mombot reset to General mode and stopped {lastLoaded}.");
 
-        return PublishNativeResult(canonical, "mbot reset to General mode.");
+        return PublishNativeResult(canonical, "mombot reset to General mode.");
     }
 
     private mbotDispatchResult ExecuteListAll(string canonical)
     {
         IReadOnlyList<Core.RunningScriptInfo> running = GetRunningScripts();
         if (running.Count == 0)
-            return PublishNativeResult(canonical, "mbot sees no running scripts.");
+            return PublishNativeResult(canonical, "mombot sees no running scripts.");
 
-        PublishMessage("mbot active scripts:");
+        PublishMessage("mombot active scripts:");
         foreach (Core.RunningScriptInfo script in running)
         {
             string kind = script.IsSystemScript ? "system" : "user";
@@ -432,17 +432,17 @@ internal sealed class mbotService
             PublishMessage($"  [{kind}] {script.Name}{paused}");
         }
 
-        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, $"mbot listed {running.Count} active script(s).");
+        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, $"mombot listed {running.Count} active script(s).");
     }
 
     private mbotDispatchResult ExecuteBotStatus(string canonical)
     {
         mbotStatusSnapshot snapshot = GetStatusSnapshot();
-        PublishMessage($"mbot: enabled={snapshot.Enabled} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
-        PublishMessage($"mbot: botname={snapshot.BotName} team={snapshot.TeamName} subspace={snapshot.SubspaceChannel} mode={snapshot.Mode}");
-        PublishMessage($"mbot: self={snapshot.AcceptSelfCommands} subspaceCmds={snapshot.AcceptSubspaceCommands} private={snapshot.AcceptPrivateCommands} authUsers={snapshot.AuthorizedUsers.Count}");
-        PublishMessage($"mbot: scriptRoot={snapshot.ScriptRoot}");
-        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, "mbot displayed bot status.");
+        PublishMessage($"mombot: enabled={snapshot.Enabled} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
+        PublishMessage($"mombot: botname={snapshot.BotName} team={snapshot.TeamName} subspace={snapshot.SubspaceChannel} mode={snapshot.Mode}");
+        PublishMessage($"mombot: self={snapshot.AcceptSelfCommands} subspaceCmds={snapshot.AcceptSubspaceCommands} private={snapshot.AcceptPrivateCommands} authUsers={snapshot.AuthorizedUsers.Count}");
+        PublishMessage($"mombot: scriptRoot={snapshot.ScriptRoot}");
+        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, "mombot displayed bot status.");
     }
 
     private mbotDispatchResult PublishNativeResult(string canonical, string message)
@@ -465,7 +465,7 @@ internal sealed class mbotService
     private void NormalizeConfig()
     {
         if (string.IsNullOrWhiteSpace(_config.ScriptRoot))
-            _config.ScriptRoot = "scripts/mbot";
+            _config.ScriptRoot = "scripts/mombot";
 
         _config.WatcherEnabled = _config.Enabled;
     }
@@ -486,7 +486,7 @@ internal sealed class mbotService
 
         Core.ScriptRef.SetCurrentGameVar("$doRelog", "1");
         Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "1");
-        Core.GlobalModules.DebugLog("[mbot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
+        Core.GlobalModules.DebugLog("[mombot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
     }
 
     private string? TryResolveScriptReference(string canonical, mbotCommandSpec? command, out bool isModeScript)
@@ -656,7 +656,7 @@ internal sealed class mbotService
         if (!string.IsNullOrWhiteSpace(userName))
             _authorizedUsers.Add(userName);
 
-        PublishMessage($"mbot: user verified - {userName}");
+        PublishMessage($"mombot: user verified - {userName}");
         return true;
     }
 

@@ -1546,6 +1546,22 @@ namespace TWXProxy.Core
             _botOrder.Add(config);
         }
 
+        public void ReloadBotConfigs(string? programDir, string? scriptDirectory)
+        {
+            _botConfigs.Clear();
+            _botOrder.Clear();
+
+            foreach (BotConfig bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
+                RegisterBotConfig(bot);
+
+            if (!string.IsNullOrWhiteSpace(ActiveBotName) &&
+                !_botConfigs.ContainsKey(ActiveBotName) &&
+                !_botOrder.Any(bot => string.Equals(bot.Name, ActiveBotName, StringComparison.OrdinalIgnoreCase)))
+            {
+                ActiveBotName = string.Empty;
+            }
+        }
+
         public bool ToggleNativeHaggle()
         {
             return _nativeHaggle.Toggle();

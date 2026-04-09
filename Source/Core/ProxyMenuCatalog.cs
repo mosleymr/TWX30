@@ -11,6 +11,8 @@ public sealed record QuickLoadGroup(string Name, IReadOnlyList<QuickLoadEntry> E
 
 public static class ProxyMenuCatalog
 {
+    public const string NativeMombotSectionName = "bot:mombot_native";
+
     private static readonly HashSet<string> ExcludedQuickDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
         ".",
@@ -69,54 +71,97 @@ public static class ProxyMenuCatalog
         var sections = TwxpConfigStore.LoadSections(programDir);
         if (sections.Count == 0)
             return Array.Empty<BotConfig>();
-        var bots = new List<BotConfig>();
+        return sections
+            .Select(section => ParseBotConfigSection(section, scriptsRoot, requireScriptFile: true, includeNative: false))
+            .Where(bot => bot != null)
+            .Cast<BotConfig>()
+            .ToArray();
+    }
 
-        foreach (TwxpConfigSection section in sections)
+    public static BotConfig? ParseBotConfigSection(
+        TwxpConfigSection section,
+        string? programDir,
+        string? scriptDirectory,
+        bool requireScriptFile,
+        bool includeNative = false)
+    {
+        string scriptsRoot = ResolveScriptsRoot(programDir, scriptDirectory);
+        return ParseBotConfigSection(section, scriptsRoot, requireScriptFile, includeNative);
+    }
+
+    public static bool IsNativeBotSection(TwxpConfigSection section)
+    {
+        if (section == null)
+            return false;
+
+        if (string.Equals(section.Name, NativeMombotSectionName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return section.Values.TryGetValue("Native", out string? nativeValue) && ParseBool(nativeValue, false);
+    }
+
+    public static string GetBotAlias(string sectionName)
+    {
+        if (string.IsNullOrWhiteSpace(sectionName))
+            return string.Empty;
+
+        return sectionName.StartsWith("bot:", StringComparison.OrdinalIgnoreCase)
+            ? sectionName["bot:".Length..].Trim()
+            : sectionName.Trim();
+    }
+
+    private static BotConfig? ParseBotConfigSection(
+        TwxpConfigSection section,
+        string scriptsRoot,
+        bool requireScriptFile,
+        bool includeNative)
+    {
+        if (section == null || !section.Name.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (!includeNative && IsNativeBotSection(section))
+            return null;
+
+        string alias = GetBotAlias(section.Name);
+        Dictionary<string, string> values = section.Values;
+        if (!values.TryGetValue("Name", out string? botName) || string.IsNullOrWhiteSpace(botName))
+            return null;
+
+        if (!values.TryGetValue("Script", out string? scriptList) || string.IsNullOrWhiteSpace(scriptList))
+            return null;
+
+        List<string> normalizedScripts = scriptList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(script => script.Replace('\\', '/'))
+            .Where(script => !string.IsNullOrWhiteSpace(script))
+            .ToList();
+
+        string? firstScript = normalizedScripts.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(firstScript))
+            return null;
+
+        if (requireScriptFile)
         {
-            string sectionName = section.Name;
-            if (!sectionName.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            string alias = sectionName["bot:".Length..].Trim();
-            Dictionary<string, string> values = section.Values;
-            if (!values.TryGetValue("Name", out string? botName) || string.IsNullOrWhiteSpace(botName))
-                continue;
-
-            if (!values.TryGetValue("Script", out string? scriptList) || string.IsNullOrWhiteSpace(scriptList))
-                continue;
-
-            List<string> normalizedScripts = scriptList
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(script => script.Replace('\\', '/'))
-                .Where(script => !string.IsNullOrWhiteSpace(script))
-                .ToList();
-
-            string? firstScript = normalizedScripts.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(firstScript))
-                continue;
-
             string candidatePath = Path.Combine(scriptsRoot, firstScript.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(candidatePath))
-                continue;
-
-            var properties = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
-            bots.Add(new BotConfig
-            {
-                Alias = alias,
-                Name = botName.Trim(),
-                ScriptFile = firstScript,
-                ScriptFiles = normalizedScripts,
-                Description = values.TryGetValue("Description", out string? description) ? description : string.Empty,
-                AutoStart = !values.TryGetValue("AutoStart", out string? autoStart) || ParseBool(autoStart, true),
-                NameVar = values.TryGetValue("NameVar", out string? nameVar) ? nameVar : string.Empty,
-                CommsVar = values.TryGetValue("CommsVar", out string? commsVar) ? commsVar : string.Empty,
-                LoginScript = values.TryGetValue("LoginScript", out string? loginScript) ? loginScript : string.Empty,
-                Theme = values.TryGetValue("Theme", out string? theme) ? theme : string.Empty,
-                Properties = properties,
-            });
+                return null;
         }
 
-        return bots.ToArray();
+        var properties = new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase);
+        return new BotConfig
+        {
+            Alias = alias,
+            Name = botName.Trim(),
+            ScriptFile = firstScript,
+            ScriptFiles = normalizedScripts,
+            Description = values.TryGetValue("Description", out string? description) ? description : string.Empty,
+            AutoStart = !values.TryGetValue("AutoStart", out string? autoStart) || ParseBool(autoStart, true),
+            NameVar = values.TryGetValue("NameVar", out string? nameVar) ? nameVar : string.Empty,
+            CommsVar = values.TryGetValue("CommsVar", out string? commsVar) ? commsVar : string.Empty,
+            LoginScript = values.TryGetValue("LoginScript", out string? loginScript) ? loginScript : string.Empty,
+            Theme = values.TryGetValue("Theme", out string? theme) ? theme : string.Empty,
+            Properties = properties,
+        };
     }
 
     private static void AddQuickEntry(

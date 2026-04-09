@@ -12,7 +12,7 @@ internal sealed record mbotSettings(
 {
     public static mbotSettings Load()
     {
-        string botName = Read("$BOT~BOT_NAME", "mbot");
+        string botName = Read("$BOT~BOT_NAME", "mombot");
         string teamName = Read("$BOT~BOT_TEAM_NAME", botName);
         string loginPassword = Read("$BOT~PASSWORD", string.Empty);
         string botPassword = Read("$BOT~BOT_PASSWORD", string.Empty);

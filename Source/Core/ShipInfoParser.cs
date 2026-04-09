@@ -45,6 +45,8 @@ public class ShipInfoParser
         if (string.IsNullOrEmpty(line)) return;
 
         string trimmed = line.Trim();
+        if (ShouldIgnoreStatusCommLine(trimmed))
+            return;
 
         // ── "I" block delimiters ──────────────────────────────────────────
         if (trimmed.Equals("<Info>", StringComparison.OrdinalIgnoreCase))
@@ -53,7 +55,7 @@ public class ShipInfoParser
             return;
         }
 
-        if (_inInfoBlock && trimmed.StartsWith("Command [TL="))
+        if (_inInfoBlock && IsInfoBlockTerminator(trimmed))
         {
             _inInfoBlock = false;
             Updated?.Invoke(_s);
@@ -62,7 +64,20 @@ public class ShipInfoParser
 
         if (_inInfoBlock)
         {
-            ParseInfoLine(trimmed);
+            if (TryParseIncrementalInfoLine(trimmed))
+            {
+                Updated?.Invoke(_s);
+                return;
+            }
+
+            // Do not let an interrupted or malformed info display trap the parser
+            // in info mode forever. Abort if the line no longer resembles info data.
+            _inInfoBlock = false;
+        }
+
+        if (TryParseIncrementalInfoLine(trimmed))
+        {
+            Updated?.Invoke(_s);
             return;
         }
 
@@ -189,19 +204,37 @@ public class ShipInfoParser
         RegexOptions.Compiled);
 
     private static readonly Regex _rxTotalHolds = new(
-        @"(\d[\d,]*)\s*-\s*Fuel Ore=([\d,]+)\s+Empty=([\d,]+)",
+        @"(\d[\d,]*)\s*-\s*(.*)$",
         RegexOptions.Compiled);
+
+    private static readonly Regex _rxHoldComponent = new(
+        @"(Fuel Ore|Organics|Equipment|Colonists|Empty)\s*=\s*([\d,]+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxTwoFieldLine = new(
         // Matches two "Label: value" pairs on the same line separated by spaces
         @"^(.+?)\s*:\s*(\S+)\s{3,}(.+?)\s*:\s*(\S+)\s*$",
         RegexOptions.Compiled);
 
+    private bool TryParseIncrementalInfoLine(string line)
+    {
+        if (!LooksLikeInfoLine(line))
+            return false;
+
+        ParseInfoLine(line);
+        return true;
+    }
+
     private void ParseInfoLine(string line)
     {
         // Key: value lines — split on the first ':'
         int colon = line.IndexOf(':');
-        if (colon <= 0) { CheckTransWarpHeader(line); return; }
+        if (colon <= 0)
+        {
+            CheckTransWarpHeader(line);
+            ParseCorpLine(line);
+            return;
+        }
 
         string key = line[..colon].Trim();
         string val = line[(colon + 1)..].Trim();
@@ -266,8 +299,13 @@ public class ShipInfoParser
                 if (m.Success)
                 {
                     _s.TotalHolds = ParseInt(m.Groups[1].Value);
-                    _s.FuelOre    = ParseInt(m.Groups[2].Value);
-                    _s.HoldsEmpty = ParseInt(m.Groups[3].Value);
+                    ParseHoldComponents(m.Groups[2].Value);
+
+                    if (_s.HoldsEmpty <= 0)
+                    {
+                        int empty = _s.TotalHolds - _s.FuelOre - _s.Organics - _s.Equipment - _s.Colonists;
+                        _s.HoldsEmpty = empty < 0 ? 0 : empty;
+                    }
                 }
                 else
                 {
@@ -298,6 +336,10 @@ public class ShipInfoParser
             case var k when k.StartsWith("Atomic Detn"):
                 _s.AtomicDet  = ParseFirstNum(val);
                 _s.Corbomite  = ParseSecondField(line, "Corbomite Level");
+                break;
+
+            case "Ether Probes":
+                _s.EtherProbes = ParseInt(val);
                 break;
 
             case var k when k.StartsWith("Cloaking Device"):
@@ -340,18 +382,112 @@ public class ShipInfoParser
                 break;
         }
 
-        // "Corp           # 2," — note the '#' separator instead of ':'
-        if (line.Contains("Corp") && line.Contains('#'))
-        {
-            int hash = line.IndexOf('#');
-            string corpVal = line[(hash + 1)..].Trim().TrimEnd(',');
-            if (int.TryParse(corpVal, out int cn)) _s.Corp = cn;
-        }
+        ParseCorpLine(line);
     }
 
     private void CheckTransWarpHeader(string line)
     {
         _ = line; // may be used in future for additional header detection
+    }
+
+    private static bool IsInfoBlockTerminator(string line)
+    {
+        return line.StartsWith("Command [TL=", StringComparison.Ordinal) ||
+               line.StartsWith("Computer command [TL=", StringComparison.Ordinal);
+    }
+
+    private static bool ShouldIgnoreStatusCommLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return false;
+
+        return line.StartsWith("R ", StringComparison.Ordinal) ||
+               line.StartsWith("F ", StringComparison.Ordinal) ||
+               line.StartsWith("P ", StringComparison.Ordinal) ||
+               line.StartsWith("'", StringComparison.Ordinal) ||
+               line.StartsWith("`", StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeInfoLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        return line.StartsWith("Trader Name", StringComparison.Ordinal) ||
+               line.StartsWith("Rank and Exp", StringComparison.Ordinal) ||
+               line.StartsWith("Times Blown Up", StringComparison.Ordinal) ||
+               line.StartsWith("Corp", StringComparison.Ordinal) ||
+               line.StartsWith("Ship Name", StringComparison.Ordinal) ||
+               line.StartsWith("Ship Info", StringComparison.Ordinal) ||
+               line.StartsWith("Date Built", StringComparison.Ordinal) ||
+               line.StartsWith("Turns to Warp", StringComparison.Ordinal) ||
+               line.StartsWith("Current Sector", StringComparison.Ordinal) ||
+               line.StartsWith("Turns left", StringComparison.Ordinal) ||
+               line.StartsWith("Total Holds", StringComparison.Ordinal) ||
+               line.StartsWith("Fighters", StringComparison.Ordinal) ||
+               line.StartsWith("Shield points", StringComparison.Ordinal) ||
+               line.StartsWith("Armid Mines", StringComparison.Ordinal) ||
+               line.StartsWith("Photon Missiles", StringComparison.Ordinal) ||
+               line.StartsWith("Atomic Detn", StringComparison.Ordinal) ||
+               line.StartsWith("Ether Probes", StringComparison.Ordinal) ||
+               line.StartsWith("Cloaking Device", StringComparison.Ordinal) ||
+               line.StartsWith("Mine Disruptors", StringComparison.Ordinal) ||
+               line.StartsWith("Navigation Beacons", StringComparison.Ordinal) ||
+               line.StartsWith("Beacons", StringComparison.Ordinal) ||
+               line.StartsWith("Planet Scanner", StringComparison.Ordinal) ||
+               line.StartsWith("LongRange Scan", StringComparison.Ordinal) ||
+               line.StartsWith("TransWarp Power", StringComparison.Ordinal) ||
+               line.Contains("Type 1 Jump", StringComparison.Ordinal) ||
+               line.Contains("Type 2 Jump", StringComparison.Ordinal) ||
+               line.StartsWith("Interdictor", StringComparison.Ordinal) ||
+               line.StartsWith("Credits", StringComparison.Ordinal);
+    }
+
+    private void ParseHoldComponents(string value)
+    {
+        foreach (Match match in _rxHoldComponent.Matches(value))
+        {
+            if (!match.Success)
+                continue;
+
+            int amount = ParseInt(match.Groups[2].Value);
+            switch (match.Groups[1].Value.Trim().ToUpperInvariant())
+            {
+                case "FUEL ORE":
+                    _s.FuelOre = amount;
+                    break;
+                case "ORGANICS":
+                    _s.Organics = amount;
+                    break;
+                case "EQUIPMENT":
+                    _s.Equipment = amount;
+                    break;
+                case "COLONISTS":
+                    _s.Colonists = amount;
+                    break;
+                case "EMPTY":
+                    _s.HoldsEmpty = amount;
+                    break;
+            }
+        }
+    }
+
+    private void ParseCorpLine(string line)
+    {
+        if (!line.Contains("Corp", StringComparison.Ordinal) || !line.Contains('#', StringComparison.Ordinal))
+            return;
+
+        int hash = line.IndexOf('#');
+        if (hash < 0 || hash >= line.Length - 1)
+            return;
+
+        string corpVal = line[(hash + 1)..].Trim();
+        int comma = corpVal.IndexOf(',');
+        if (comma >= 0)
+            corpVal = corpVal[..comma];
+
+        if (int.TryParse(corpVal.Trim(), out int corpNumber))
+            _s.Corp = corpNumber;
     }
 
     /// <summary>
