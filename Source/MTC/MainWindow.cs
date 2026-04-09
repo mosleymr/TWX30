@@ -34,7 +34,8 @@ public class MainWindow : Window
     private readonly TerminalBuffer  _buffer;
     private readonly AnsiParser      _parser;
     private readonly TelnetClient    _telnet;
-    private readonly TerminalControl _termCtrl;
+    private TerminalControl _termCtrl = null!;
+    private TerminalControl _deckTermCtrl = null!;
     private readonly DispatcherTimer _refreshTimer;    private readonly Core.ShipInfoParser _shipParser = new();
     // ── Current saved profile path (null = not yet saved) ──────────────────
     private string?         _currentProfilePath;
@@ -81,24 +82,10 @@ public class MainWindow : Window
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
     private bool _nativeDockMenuAttached;
-    private readonly ToggleSwitch _haggleToggle = new()
-    {
-        OffContent = "Off",
-        OnContent = "On",
-        IsEnabled = false,
-        IsChecked = false,
-        Margin = new Thickness(8, 0, 0, 0),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
-    private readonly ToggleSwitch _deckHaggleToggle = new()
-    {
-        OffContent = "Off",
-        OnContent = "On",
-        IsEnabled = false,
-        IsChecked = false,
-        Margin = new Thickness(8, 0, 0, 0),
-        VerticalAlignment = VerticalAlignment.Center,
-    };
+    private ToggleSwitch _haggleToggle = null!;
+    private ToggleSwitch _deckHaggleToggle = null!;
+    private Action<byte[]>? _terminalInputHandler;
+    private string? _terminalFontFamilyName;
     private bool _updatingHaggleToggle;
     private bool _mbotPromptOpen;
     private bool _mbotMacroPromptOpen;
@@ -191,14 +178,14 @@ public class MainWindow : Window
 
     // ── Status bar text ───────────────────────────────────────────────────
     private TextBlock _statusText = new();
-    private TextBlock _hudHeaderSector = new();
-    private TextBlock _hudHeaderConnection = new();
-    private TextBlock _hudShipName = new();
-    private TextBlock _hudShipSubtitle = new();
-    private TextBlock _hudStarDock = new();
-    private TextBlock _hudRylos = new();
-    private TextBlock _hudAlpha = new();
-    private TextBlock _hudUniverse = new();
+    private TextBlock _deckHudHeaderSector = new();
+    private TextBlock _deckHudHeaderConnection = new();
+    private TextBlock _deckHudShipName = new();
+    private TextBlock _deckHudShipSubtitle = new();
+    private TextBlock _deckHudStarDock = new();
+    private TextBlock _deckHudRylos = new();
+    private TextBlock _deckHudAlpha = new();
+    private TextBlock _deckHudUniverse = new();
 
     // ── Colors ────────────────────────────────────────────────────────────
     // BgChrome is the medium-gray frame that encases the whole window
@@ -240,8 +227,8 @@ public class MainWindow : Window
         public required string PanelId { get; init; }
         public required double Left { get; set; }
         public required double Top { get; set; }
-        public required double Width { get; init; }
-        public required double BodyHeight { get; init; }
+        public required double Width { get; set; }
+        public required double BodyHeight { get; set; }
         public required int ZIndex { get; set; }
         public bool Closed { get; set; }
         public bool Minimized { get; set; }
@@ -262,7 +249,8 @@ public class MainWindow : Window
         _state    = new GameState();
         _buffer   = new TerminalBuffer(80, 24);
         _parser   = new AnsiParser(_buffer);
-        _termCtrl = new TerminalControl(_buffer);
+        RecreateClassicShellControls();
+        RecreateDeckShellControls();
         _telnet   = new TelnetClient(_buffer, _parser);
 
         _telnet.Connected    += OnTelnetConnected;
@@ -308,19 +296,23 @@ public class MainWindow : Window
         _state.Changed += () => Dispatcher.UIThread.Post(RefreshInfoPanels);
 
         // Wire keyboard → telnet
-        _termCtrl.SendInput = bytes =>
-        {
-            RouteTerminalInput(bytes, SendToTelnet);
-        };
+        SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));
 
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
+        bool resetCommandDeckLayout =
+            _appPrefs.CommandDeckLayoutVersion < AppPreferences.CurrentCommandDeckLayoutVersion ||
+            _appPrefs.CommandDeckPanels.Values.Any(layout => layout.Width <= 0 || layout.BodyHeight <= 0);
+        if (resetCommandDeckLayout)
+        {
+            _appPrefs.CommandDeckPanels.Clear();
+            _appPrefs.CommandDeckLayoutVersion = AppPreferences.CurrentCommandDeckLayoutVersion;
+            _appPrefs.Save();
+        }
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
 
-        _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
-        _deckHaggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
         Content = BuildLayout();
 
         ApplyDebugLoggingPreferences();
@@ -335,7 +327,11 @@ public class MainWindow : Window
 
         // 50 ms refresh – pushes buffer changes to UI
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
-        _refreshTimer.Tick += (_, _) => _termCtrl.RequestRedraw();
+        _refreshTimer.Tick += (_, _) =>
+        {
+            _termCtrl.RequestRedraw();
+            _deckTermCtrl.RequestRedraw();
+        };
         _refreshTimer.Start();
 
         Opened += (_, _) =>
@@ -347,7 +343,7 @@ public class MainWindow : Window
             RefreshNativeDockMenu();
             _ = EnsureSharedPathsConfiguredAsync();
         };
-        Activated += (_, _) => _termCtrl.Focus();
+        Activated += (_, _) => FocusActiveTerminal();
         Closed    += (_, _) =>
         {
             _appPrefs.Save();
@@ -365,6 +361,125 @@ public class MainWindow : Window
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
         };
+    }
+
+    private TerminalControl CreateTerminalControl()
+    {
+        var control = new TerminalControl(_buffer);
+        if (_terminalInputHandler != null)
+            control.SendInput = _terminalInputHandler;
+        control.IsConnected = _state.Connected;
+        if (!string.IsNullOrWhiteSpace(_terminalFontFamilyName))
+            control.SetFont(_terminalFontFamilyName);
+        return control;
+    }
+
+    private static ToggleSwitch CreateHaggleToggle()
+    {
+        return new ToggleSwitch
+        {
+            OffContent = "Off",
+            OnContent = "On",
+            IsEnabled = false,
+            IsChecked = false,
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    private void ApplyCurrentHaggleState(ToggleSwitch toggle)
+    {
+        bool proxyActive = _gameInstance != null;
+        _updatingHaggleToggle = true;
+        toggle.IsEnabled = proxyActive;
+        toggle.IsChecked = proxyActive && _gameInstance?.NativeHaggleEnabled == true;
+        _updatingHaggleToggle = false;
+    }
+
+    private void RecreateClassicShellControls()
+    {
+        _termCtrl = CreateTerminalControl();
+        _haggleToggle = CreateHaggleToggle();
+        ApplyCurrentHaggleState(_haggleToggle);
+        _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
+
+        _valName = new();
+        _valSector = new();
+        _valTurns = new();
+        _valExper = new();
+        _valAlignm = new();
+        _valCred = new();
+        _valHTotal = new();
+        _valFuelOre = new();
+        _valOrganics = new();
+        _valEquipment = new();
+        _valColonists = new();
+        _valEmpty = new();
+        _valFighters = new();
+        _valShields = new();
+        _valTrnWarp = new();
+        _valEther = new();
+        _valBeacon = new();
+        _valDisruptor = new();
+        _valPhoton = new();
+        _valArmid = new();
+        _valLimpet = new();
+        _valGenesis = new();
+        _valAtomic = new();
+        _valCorbo = new();
+        _valCloak = new();
+        _valTW1 = new();
+        _valTW2 = new();
+        _scanIndD = new();
+        _scanIndH = new();
+        _scanIndP = new();
+    }
+
+    private void RecreateDeckShellControls()
+    {
+        _deckTermCtrl = CreateTerminalControl();
+        _deckHaggleToggle = CreateHaggleToggle();
+        ApplyCurrentHaggleState(_deckHaggleToggle);
+        _deckHaggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
+
+        _deckValName = new();
+        _deckValSector = new();
+        _deckValTurns = new();
+        _deckValExper = new();
+        _deckValAlignm = new();
+        _deckValCred = new();
+        _deckValHTotal = new();
+        _deckValFuelOre = new();
+        _deckValOrganics = new();
+        _deckValEquipment = new();
+        _deckValColonists = new();
+        _deckValEmpty = new();
+        _deckValFighters = new();
+        _deckValShields = new();
+        _deckValTrnWarp = new();
+        _deckValEther = new();
+        _deckValBeacon = new();
+        _deckValDisruptor = new();
+        _deckValPhoton = new();
+        _deckValArmid = new();
+        _deckValLimpet = new();
+        _deckValGenesis = new();
+        _deckValAtomic = new();
+        _deckValCorbo = new();
+        _deckValCloak = new();
+        _deckValTW1 = new();
+        _deckValTW2 = new();
+        _deckScanIndD = new();
+        _deckScanIndH = new();
+        _deckScanIndP = new();
+        _deckHudHeaderSector = new();
+        _deckHudHeaderConnection = new();
+        _deckHudShipName = new();
+        _deckHudShipSubtitle = new();
+        _deckHudStarDock = new();
+        _deckHudRylos = new();
+        _deckHudAlpha = new();
+        _deckHudUniverse = new();
     }
 
     // ── Layout ─────────────────────────────────────────────────────────────
@@ -403,6 +518,7 @@ public class MainWindow : Window
 
     private Control BuildClassicShell()
     {
+        RecreateClassicShellControls();
         _tacticalMap = null;
 
         // Margin lets the gray BgChrome peek in on all four sides as a frame.
@@ -424,6 +540,7 @@ public class MainWindow : Window
 
     private Control BuildCommandDeckShell()
     {
+        RecreateDeckShellControls();
         _deckPanels.Clear();
         _tacticalMap = new TacticalMapControl(
             () => _state.Sector,
@@ -524,6 +641,10 @@ public class MainWindow : Window
         {
             state.Left = savedLayout.Left;
             state.Top = savedLayout.Top;
+            if (savedLayout.Width > 0)
+                state.Width = savedLayout.Width;
+            if (savedLayout.BodyHeight > 0)
+                state.BodyHeight = savedLayout.BodyHeight;
             state.ZIndex = savedLayout.ZIndex > 0 ? savedLayout.ZIndex : state.ZIndex;
             state.Closed = savedLayout.Closed;
             state.Minimized = savedLayout.Minimized;
@@ -537,53 +658,63 @@ public class MainWindow : Window
     {
         double surfaceWidth = Math.Max(860, (Bounds.Width > 100 ? Bounds.Width : Width) - 64);
         double surfaceHeight = Math.Max(460, (Bounds.Height > 100 ? Bounds.Height : Height) - 170);
+        double horizontalMargin = 18;
+        double panelGap = 18;
+        double availableWidth = Math.Max(680, surfaceWidth - (horizontalMargin * 2) - panelGap);
+        double fullBodyHeight = Math.Max(300, surfaceHeight - 94);
+        double mapWidth = Math.Clamp(availableWidth * 0.38, 300, 560);
+        double consoleLeft = horizontalMargin + mapWidth + panelGap;
+        double consoleWidth = Math.Max(420, surfaceWidth - consoleLeft - horizontalMargin);
 
         return panelId switch
         {
             "map" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = 18,
+                Left = horizontalMargin,
                 Top = 18,
-                Width = Math.Min(460, Math.Max(380, surfaceWidth * 0.40)),
-                BodyHeight = Math.Min(290, Math.Max(230, surfaceHeight * 0.48)),
+                Width = mapWidth,
+                BodyHeight = fullBodyHeight,
                 ZIndex = 110,
             },
             "console" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = Math.Max(260, surfaceWidth * 0.36),
+                Left = consoleLeft,
                 Top = 18,
-                Width = Math.Min(660, Math.Max(520, surfaceWidth * 0.58)),
-                BodyHeight = Math.Min(330, Math.Max(250, surfaceHeight * 0.56)),
+                Width = consoleWidth,
+                BodyHeight = fullBodyHeight,
                 ZIndex = 120,
             },
             "ship" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = 26,
-                Top = Math.Max(170, surfaceHeight * 0.44),
+                Left = 24,
+                Top = 120,
                 Width = 340,
                 BodyHeight = Math.Min(290, Math.Max(230, surfaceHeight * 0.42)),
                 ZIndex = 130,
+                Closed = true,
             },
             "intel" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = Math.Max(260, surfaceWidth * 0.33),
-                Top = Math.Max(210, surfaceHeight * 0.50),
+                Left = Math.Max(260, surfaceWidth * 0.30),
+                Top = Math.Max(120, surfaceHeight * 0.18),
                 Width = Math.Min(450, Math.Max(380, surfaceWidth * 0.40)),
                 BodyHeight = Math.Min(250, Math.Max(210, surfaceHeight * 0.34)),
                 ZIndex = 140,
+                Closed = true,
             },
             "logo" => new DeckPanelState
             {
                 PanelId = panelId,
                 Left = Math.Max(620, surfaceWidth - 314),
-                Top = Math.Max(220, surfaceHeight * 0.54),
+                Top = Math.Max(120, surfaceHeight * 0.22),
                 Width = 280,
                 BodyHeight = Math.Min(220, Math.Max(180, surfaceHeight * 0.28)),
                 ZIndex = 150,
+                Closed = true,
             },
             _ => new DeckPanelState
             {
@@ -610,10 +741,12 @@ public class MainWindow : Window
             return;
 
         (state.Left, state.Top) = panel.GetPosition();
+        state.Width = panel.PanelWidth;
+        state.BodyHeight = panel.BodyHeight;
         state.Minimized = panel.IsMinimized;
         state.Closed = panel.IsClosed;
         state.ZIndex = panel.ZIndex;
-        _appPrefs.SetDeckPanelLayout(panel.PanelId, state.Left, state.Top, state.ZIndex, state.Closed, state.Minimized);
+        _appPrefs.SetDeckPanelLayout(panel.PanelId, state.Left, state.Top, state.Width, state.BodyHeight, state.ZIndex, state.Closed, state.Minimized);
     }
 
     private void ShowDeckPanel(string panelId)
@@ -658,11 +791,11 @@ public class MainWindow : Window
 
     private Control BuildDeckBanner()
     {
-        _hudHeaderSector.FontFamily = HudTitleFont;
-        _hudHeaderSector.FontSize = 22;
-        _hudHeaderSector.FontWeight = FontWeight.SemiBold;
-        _hudHeaderSector.Foreground = HudAccentHot;
-        _hudHeaderSector.Text = "SECTOR ---";
+        _deckHudHeaderSector.FontFamily = HudTitleFont;
+        _deckHudHeaderSector.FontSize = 22;
+        _deckHudHeaderSector.FontWeight = FontWeight.SemiBold;
+        _deckHudHeaderSector.Foreground = HudAccentHot;
+        _deckHudHeaderSector.Text = "SECTOR ---";
 
         var bannerGrid = new Grid();
         bannerGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -700,8 +833,8 @@ public class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                BuildDeckInfoChip("Sector", _hudHeaderSector, HudAccentHot),
-                BuildDeckInfoChip("Link", _hudHeaderConnection, HudAccent),
+                BuildDeckInfoChip("Sector", _deckHudHeaderSector, HudAccentHot),
+                BuildDeckInfoChip("Link", _deckHudHeaderConnection, HudAccent),
             },
         };
         Grid.SetColumn(chips, 1);
@@ -735,22 +868,69 @@ public class MainWindow : Window
 
     private Control BuildDeckMapBody()
     {
+        var zoomText = new TextBlock();
+        void UpdateZoomText()
+        {
+            zoomText.Text = _tacticalMap != null ? $"{_tacticalMap.ZoomPercent}%" : "--";
+        }
+
+        UpdateZoomText();
+        if (_tacticalMap != null)
+        {
+            _tacticalMap.ZoomChanged += _ =>
+                Dispatcher.UIThread.Post(UpdateZoomText, DispatcherPriority.Background);
+        }
+
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        grid.Children.Add(BuildDeckInfoChip("Mode", new TextBlock { Text = "Live overlay" }, HudAccentHot));
+        var topBar = new Grid();
+        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        topBar.Children.Add(BuildDeckInfoChip("Mode", new TextBlock { Text = "Live overlay" }, HudAccentHot));
+
+        var zoomBar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                BuildDeckToolButton("-", () =>
+                {
+                    _tacticalMap?.AdjustZoom(-0.12f);
+                    UpdateZoomText();
+                }, 34),
+                BuildDeckInfoChip("Zoom", zoomText, HudAccent),
+                BuildDeckToolButton("+", () =>
+                {
+                    _tacticalMap?.AdjustZoom(0.12f);
+                    UpdateZoomText();
+                }, 34),
+                BuildDeckToolButton("Reset", () =>
+                {
+                    _tacticalMap?.ResetZoom();
+                    UpdateZoomText();
+                }, 62),
+            },
+        };
+        Grid.SetColumn(zoomBar, 1);
+        topBar.Children.Add(zoomBar);
+
+        grid.Children.Add(topBar);
 
         var mapBorder = new Border
         {
-            Margin = new Thickness(0, 12, 0, 0),
             BorderBrush = HudInnerEdge,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(14),
             ClipToBounds = true,
             Child = _tacticalMap!,
         };
-        Grid.SetRow(mapBorder, 1);
+        Grid.SetRow(mapBorder, 2);
         grid.Children.Add(mapBorder);
 
         return grid;
@@ -778,7 +958,7 @@ public class MainWindow : Window
                 BorderBrush = new SolidColorBrush(Color.FromRgb(24, 54, 66)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Child = _termCtrl,
+                Child = _deckTermCtrl,
             },
         };
         Grid.SetRow(terminalBorder, 1);
@@ -789,15 +969,15 @@ public class MainWindow : Window
 
     private Control BuildDeckShipPanel()
     {
-        _hudShipName.FontFamily = HudTitleFont;
-        _hudShipName.FontSize = 22;
-        _hudShipName.FontWeight = FontWeight.Bold;
-        _hudShipName.Foreground = HudAccentOk;
-        _hudShipName.Text = "-";
+        _deckHudShipName.FontFamily = HudTitleFont;
+        _deckHudShipName.FontSize = 22;
+        _deckHudShipName.FontWeight = FontWeight.Bold;
+        _deckHudShipName.Foreground = HudAccentOk;
+        _deckHudShipName.Text = "-";
 
-        _hudShipSubtitle.Foreground = HudMuted;
-        _hudShipSubtitle.FontSize = 12;
-        _hudShipSubtitle.Text = "Independent captain";
+        _deckHudShipSubtitle.Foreground = HudMuted;
+        _deckHudShipSubtitle.FontSize = 12;
+        _deckHudShipSubtitle.Text = "Independent captain";
 
         var badgeGrid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
         badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -864,7 +1044,7 @@ public class MainWindow : Window
         {
             VerticalAlignment = VerticalAlignment.Center,
             Spacing = 2,
-            Children = { _hudShipName, _hudShipSubtitle },
+            Children = { _deckHudShipName, _deckHudShipSubtitle },
         };
         Grid.SetColumn(shipIdentity, 1);
         hero.Children.Add(shipIdentity);
@@ -939,10 +1119,10 @@ public class MainWindow : Window
 
         var routes = BuildDeckMetricCard(
             "Route Markers",
-            ("StarDock", _hudStarDock),
-            ("Rylos", _hudRylos),
-            ("Alpha", _hudAlpha),
-            ("Universe", _hudUniverse));
+            ("StarDock", _deckHudStarDock),
+            ("Rylos", _deckHudRylos),
+            ("Alpha", _deckHudAlpha),
+            ("Universe", _deckHudUniverse));
         Grid.SetRow(routes, 2);
         Grid.SetColumn(routes, 0);
         grid.Children.Add(routes);
@@ -1135,6 +1315,26 @@ public class MainWindow : Window
         return button;
     }
 
+    private Control BuildDeckToolButton(string text, Action onClick, double width)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Width = width,
+            Height = 34,
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            Foreground = HudText,
+            Padding = new Thickness(10, 4),
+            FontSize = 12,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
     private Control BuildDeckStatBadge(string label, TextBlock value, IBrush accent)
     {
         value.Foreground = accent;
@@ -1299,6 +1499,7 @@ public class MainWindow : Window
 
         RefreshSkinMenuState();
         RefreshInfoPanels();
+        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private void ApplySelectedSkinSafe()
@@ -1345,6 +1546,31 @@ public class MainWindow : Window
         _appPrefs.CommandDeckSkinEnabled = useCommandDeckSkin;
         _appPrefs.Save();
         ApplySelectedSkinSafe();
+    }
+
+    private void SetTerminalInputHandler(Action<byte[]> handler)
+    {
+        _terminalInputHandler = handler;
+        _termCtrl.SendInput = handler;
+        _deckTermCtrl.SendInput = handler;
+    }
+
+    private void SetTerminalConnected(bool connected)
+    {
+        _termCtrl.IsConnected = connected;
+        _deckTermCtrl.IsConnected = connected;
+    }
+
+    private void SetTerminalFont(string familyName)
+    {
+        _terminalFontFamilyName = familyName;
+        _termCtrl.SetFont(familyName);
+        _deckTermCtrl.SetFont(familyName);
+    }
+
+    private void FocusActiveTerminal()
+    {
+        (_useCommandDeckSkin ? _deckTermCtrl : _termCtrl).Focus();
     }
 
     private void RefreshSkinMenuState()
@@ -1417,7 +1643,7 @@ public class MainWindow : Window
             {
                 var fname = name; // capture
                 var item  = new MenuItem { Header = fname };
-                item.Click += (_, _) => _termCtrl.SetFont(fname);
+                item.Click += (_, _) => SetTerminalFont(fname);
                 fontSubItems.Add(item);
             }
         }
@@ -2040,16 +2266,16 @@ public class MainWindow : Window
         UpdateDeckScanInd(_deckScanIndH, _state.ScannerH);
         UpdateDeckScanInd(_deckScanIndP, _state.ScannerP);
 
-        _hudHeaderSector.Text = _state.Sector > 0 ? _state.Sector.ToString("N0") : "---";
-        _hudShipName.Text = string.IsNullOrWhiteSpace(_state.ShipName) || _state.ShipName == "-"
+        _deckHudHeaderSector.Text = _state.Sector > 0 ? _state.Sector.ToString("N0") : "---";
+        _deckHudShipName.Text = string.IsNullOrWhiteSpace(_state.ShipName) || _state.ShipName == "-"
             ? "Unassigned Hull"
             : _state.ShipName;
         string captainText = traderName == "-" ? "Independent captain" : $"Capt. {traderName}";
         string corpText = _state.Corp > 0 ? $"Corp {_state.Corp}" : "Free trader";
         if (!string.IsNullOrWhiteSpace(_state.GameName))
-            _hudShipSubtitle.Text = $"{captainText}  //  {corpText}  //  {_state.GameName}";
+            _deckHudShipSubtitle.Text = $"{captainText}  //  {corpText}  //  {_state.GameName}";
         else
-            _hudShipSubtitle.Text = $"{captainText}  //  {corpText}";
+            _deckHudShipSubtitle.Text = $"{captainText}  //  {corpText}";
 
         RefreshStatusBar();
         _tacticalMap?.InvalidateVisual();
@@ -2101,17 +2327,17 @@ public class MainWindow : Window
         _statusText.Text =
             $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{botText}  {conn}";
 
-        _hudHeaderConnection.Text = _state.Connected
+        _deckHudHeaderConnection.Text = _state.Connected
             ? $"{_state.Host}:{_state.Port}"
             : "OFFLINE";
-        _hudHeaderConnection.Foreground = _state.Connected ? HudAccentOk : HudAccentWarn;
-        _hudStarDock.Text = starDock;
-        _hudRylos.Text = rylos;
-        _hudAlpha.Text = alpha;
+        _deckHudHeaderConnection.Foreground = _state.Connected ? HudAccentOk : HudAccentWarn;
+        _deckHudStarDock.Text = starDock;
+        _deckHudRylos.Text = rylos;
+        _deckHudAlpha.Text = alpha;
         int universeCount = _sessionDb?.DBHeader.Sectors > 0
             ? _sessionDb.DBHeader.Sectors
             : _state.Sectors;
-        _hudUniverse.Text = universeCount > 0 ? universeCount.ToString("N0") : "-";
+        _deckHudUniverse.Text = universeCount > 0 ? universeCount.ToString("N0") : "-";
     }
 
     // ── Telnet events ──────────────────────────────────────────────────────
@@ -2124,7 +2350,7 @@ public class MainWindow : Window
         OpenSessionDatabase(useSharedProxyDatabase: false);
         Dispatcher.UIThread.Post(() =>
         {
-            _termCtrl.IsConnected = true;
+            SetTerminalConnected(true);
             OnGameConnected();
             _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
             RefreshStatusBar();
@@ -2142,7 +2368,7 @@ public class MainWindow : Window
         Core.ScriptRef.SetActiveDatabase(null);
         Dispatcher.UIThread.Post(() =>
         {
-            _termCtrl.IsConnected = false;
+            SetTerminalConnected(false);
             OnGameDisconnected();
             _parser.Feed("\x1b[1;31m[Disconnected]\x1b[0m\r\n");
             RefreshStatusBar();
@@ -2214,7 +2440,7 @@ public class MainWindow : Window
         }
 
         _termCtrl.SendInput?.Invoke(System.Text.Encoding.ASCII.GetBytes("$h"));
-        Dispatcher.UIThread.Post(() => _termCtrl.Focus(), DispatcherPriority.Input);
+        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private void UpdateHaggleToggleState()
@@ -3280,14 +3506,14 @@ public class MainWindow : Window
 
         // Replace the keyboard → telnet wiring with keyboard → pipe.
         var termWriter = termToServer.Writer.AsStream();
-        _termCtrl.SendInput = bytes =>
+        SetTerminalInputHandler(bytes =>
         {
             RouteTerminalInput(bytes, data =>
             {
                 try { termWriter.Write(data, 0, data.Length); termWriter.Flush(); }
                 catch { }
             });
-        };
+        });
 
         // Background task: pipe-reader → AnsiParser.
         _proxyCts = new CancellationTokenSource();
@@ -3517,7 +3743,7 @@ public class MainWindow : Window
         // The proxy is now running. Scripts can execute and communicate with the user
         // before any server connection is made. The server connection is triggered by
         // the $c command (typed by the user or called from a script via the connect command).
-        _termCtrl.IsConnected = true;
+        SetTerminalConnected(true);
         OnGameDisconnected();   // proxy is live, but the game server is not connected yet
         _parser.Feed($"\x1b[1;32m[Embedded proxy ready — type \x1b[1;33m$c\x1b[1;32m to connect to {_state.Host}:{_state.Port}, or start a script]\x1b[0m\r\n");
         _buffer.Dirty = true;
@@ -3556,13 +3782,10 @@ public class MainWindow : Window
         Core.ScriptRef.SetActiveDatabase(null);
 
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
-        _termCtrl.SendInput = bytes =>
-        {
-            RouteTerminalInput(bytes, SendToTelnet);
-        };
+        SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));
 
         _state.Connected      = false;
-        _termCtrl.IsConnected = false;
+        SetTerminalConnected(false);
         OnGameDisconnected();
         _parser.Feed("\x1b[1;31m[Embedded proxy stopped]\x1b[0m\r\n");
         RefreshStatusBar();
@@ -4589,7 +4812,7 @@ public class MainWindow : Window
 
         RefreshStatusBar();
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task StopActiveBotAsync()
@@ -4614,7 +4837,7 @@ public class MainWindow : Window
         {
             RefreshStatusBar();
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -4640,7 +4863,7 @@ public class MainWindow : Window
             bot.IsNative);
         if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
         {
-            _termCtrl.Focus();
+            FocusActiveTerminal();
             return;
         }
 
@@ -4658,7 +4881,7 @@ public class MainWindow : Window
 
         RefreshStatusBar();
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task AddBotAsync()
@@ -4678,7 +4901,7 @@ public class MainWindow : Window
             isNative: false);
         if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
         {
-            _termCtrl.Focus();
+            FocusActiveTerminal();
             return;
         }
 
@@ -4691,7 +4914,7 @@ public class MainWindow : Window
         SaveBotSection(existing: null, normalized);
         ReloadRegisteredBotConfigs();
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private BotConfigDialogResult BuildBotDialogDefaults(StoredBotSection bot)
@@ -4963,7 +5186,7 @@ public class MainWindow : Window
             var dialog = new MTC.mbot.mbotRelogDialog(BuildMbotRelogDefaults());
             if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
             {
-                _termCtrl.Focus();
+                FocusActiveTerminal();
                 return;
             }
 
@@ -4973,7 +5196,7 @@ public class MainWindow : Window
             await ExecuteMbotUiCommandAsync("relog");
         }
 
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task StopInternalMbotAsync()
@@ -5418,7 +5641,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task LoadQuickScriptAsync(string relativePath)
@@ -5443,7 +5666,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task SwitchBotAsync(string botName)
@@ -5464,7 +5687,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private enum MbotPromptSurface
@@ -5700,7 +5923,7 @@ public class MainWindow : Window
         ResetMbotPromptState();
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private void SubmitMbotPrompt()
@@ -5717,7 +5940,7 @@ public class MainWindow : Window
         {
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
-            _termCtrl.Focus();
+            FocusActiveTerminal();
             return;
         }
 
@@ -5751,7 +5974,7 @@ public class MainWindow : Window
         if (!_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
             _parser.Feed(_mbotPromptBuffer);
         _buffer.Dirty = true;
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private string GetMbotPromptPrefix()
@@ -5869,7 +6092,7 @@ public class MainWindow : Window
         if (_mbotPromptOpen)
             RedrawMbotPrompt();
         else
-            _termCtrl.Focus();
+            FocusActiveTerminal();
 
         _buffer.Dirty = true;
     }
@@ -6015,7 +6238,7 @@ public class MainWindow : Window
         RefreshStatusBar();
         RebuildProxyMenu();
         _buffer.Dirty = true;
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task SendMbotServerMacroAsync(string macro)
@@ -6030,7 +6253,7 @@ public class MainWindow : Window
             return;
 
         await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(macro));
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task ExecuteMbotUiCommandAsync(string input)
@@ -6182,7 +6405,7 @@ public class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(action))
         {
-            _termCtrl.Focus();
+            FocusActiveTerminal();
             return;
         }
 
@@ -6241,7 +6464,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task OnProxyStopScriptAsync(int scriptId)
@@ -6259,7 +6482,7 @@ public class MainWindow : Window
         }
 
         RebuildProxyMenu();
-        _termCtrl.Focus();
+        FocusActiveTerminal();
     }
 
     private async Task ExportWarpsAsync()
@@ -6285,7 +6508,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -6313,7 +6536,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -6340,7 +6563,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -6368,7 +6591,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -6395,7 +6618,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 
@@ -6437,7 +6660,7 @@ public class MainWindow : Window
         finally
         {
             RebuildProxyMenu();
-            _termCtrl.Focus();
+            FocusActiveTerminal();
         }
     }
 

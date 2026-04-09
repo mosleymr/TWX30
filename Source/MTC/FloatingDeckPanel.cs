@@ -9,25 +9,49 @@ namespace MTC;
 
 /// <summary>
 /// Floating in-console window used by the command-deck skin.
-/// Supports dragging, minimizing, and optional closing.
+/// Supports dragging, resizing, minimizing, and optional closing.
 /// </summary>
 public sealed class FloatingDeckPanel : Border
 {
+    [Flags]
+    private enum ResizeEdge
+    {
+        None = 0,
+        Left = 1,
+        Top = 2,
+        Right = 4,
+        Bottom = 8,
+    }
+
+    private const double ResizeHandleThickness = 8;
+    private const double HeaderChromeHeight = 56;
+    private const double MinimizedPanelHeight = 52;
     private readonly Border _bodyHost;
     private readonly Button _minButton;
     private readonly Button? _closeButton;
-    private readonly double _bodyHeight;
+    private double _bodyHeight;
+    private readonly double _minBodyHeight;
+    private readonly double _minPanelWidth;
     private bool _isDragging;
+    private bool _isResizing;
     private bool _isClosed;
     private bool _isMinimized;
     private Point _dragStartPointer;
     private double _dragStartLeft;
     private double _dragStartTop;
+    private ResizeEdge _resizeEdge;
+    private Point _resizeStartPointer;
+    private double _resizeStartLeft;
+    private double _resizeStartTop;
+    private double _resizeStartWidth;
+    private double _resizeStartBodyHeight;
 
     public string PanelId { get; }
     public bool CanClose { get; }
     public bool IsMinimized => _isMinimized;
     public bool IsClosed => _isClosed;
+    public double PanelWidth => Width;
+    public double BodyHeight => _bodyHeight;
 
     public event Action<FloatingDeckPanel>? Activated;
     public event Action<FloatingDeckPanel>? StateChanged;
@@ -53,8 +77,11 @@ public sealed class FloatingDeckPanel : Border
         PanelId = panelId;
         CanClose = canClose;
         _bodyHeight = bodyHeight;
+        _minPanelWidth = Math.Min(width, Math.Max(220, width * 0.55));
+        _minBodyHeight = Math.Min(bodyHeight, Math.Max(120, bodyHeight * 0.5));
 
         Width = width;
+        MinWidth = _minPanelWidth;
         Background = frameBrush;
         BorderBrush = edgeBrush;
         BorderThickness = new Thickness(1.4);
@@ -65,6 +92,7 @@ public sealed class FloatingDeckPanel : Border
         {
             Padding = new Thickness(14),
             Height = bodyHeight,
+            MinHeight = _minBodyHeight,
             Child = body,
         };
 
@@ -160,7 +188,7 @@ public sealed class FloatingDeckPanel : Border
         Grid.SetRow(_bodyHost, 1);
         contentGrid.Children.Add(_bodyHost);
 
-        Child = new Border
+        var panelChrome = new Border
         {
             Background = frameAltBrush,
             BorderBrush = innerEdgeBrush,
@@ -168,14 +196,37 @@ public sealed class FloatingDeckPanel : Border
             CornerRadius = new CornerRadius(16),
             Child = contentGrid,
         };
+
+        var resizeGrid = new Grid();
+        resizeGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ResizeHandleThickness) });
+        resizeGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        resizeGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ResizeHandleThickness) });
+        resizeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ResizeHandleThickness) });
+        resizeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        resizeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ResizeHandleThickness) });
+
+        Grid.SetRow(panelChrome, 1);
+        Grid.SetColumn(panelChrome, 1);
+        resizeGrid.Children.Add(panelChrome);
+
+        AddResizeHandle(resizeGrid, ResizeEdge.Top, 0, 1);
+        AddResizeHandle(resizeGrid, ResizeEdge.Bottom, 2, 1);
+        AddResizeHandle(resizeGrid, ResizeEdge.Left, 1, 0);
+        AddResizeHandle(resizeGrid, ResizeEdge.Right, 1, 2);
+        AddResizeHandle(resizeGrid, ResizeEdge.Top | ResizeEdge.Left, 0, 0);
+        AddResizeHandle(resizeGrid, ResizeEdge.Top | ResizeEdge.Right, 0, 2);
+        AddResizeHandle(resizeGrid, ResizeEdge.Bottom | ResizeEdge.Left, 2, 0);
+        AddResizeHandle(resizeGrid, ResizeEdge.Bottom | ResizeEdge.Right, 2, 2);
+
+        Child = resizeGrid;
     }
 
     public void MoveTo(double left, double top)
     {
         if (Parent is Control host)
         {
-            double panelWidth = Bounds.Width > 1 ? Bounds.Width : Width;
-            double panelHeight = Bounds.Height > 1 ? Bounds.Height : (_isMinimized ? 52 : _bodyHeight + 56);
+            double panelWidth = GetCurrentPanelWidth();
+            double panelHeight = GetCurrentPanelHeight();
             double maxLeft = Math.Max(0, host.Bounds.Width - panelWidth);
             double maxTop = Math.Max(0, host.Bounds.Height - panelHeight);
             left = Math.Clamp(left, 0, maxLeft);
@@ -243,9 +294,23 @@ public sealed class FloatingDeckPanel : Border
         };
     }
 
+    private void AddResizeHandle(Grid host, ResizeEdge edge, int row, int column)
+    {
+        var handle = new Border
+        {
+            Background = Brushes.Transparent,
+        };
+        handle.PointerPressed += (sender, e) => OnResizePointerPressed(sender, e, edge);
+        handle.PointerMoved += OnResizePointerMoved;
+        handle.PointerReleased += OnResizePointerReleased;
+        Grid.SetRow(handle, row);
+        Grid.SetColumn(handle, column);
+        host.Children.Add(handle);
+    }
+
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (e.Source is Button || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed || Parent is not Control host)
+        if (_isResizing || e.Source is Button || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed || Parent is not Control host)
             return;
 
         Activated?.Invoke(this);
@@ -258,7 +323,7 @@ public sealed class FloatingDeckPanel : Border
 
     private void OnTitleBarPointerMoved(object? sender, PointerEventArgs e)
     {
-        if (!_isDragging || Parent is not Control host)
+        if (_isResizing || !_isDragging || Parent is not Control host)
             return;
 
         Point current = e.GetPosition(host);
@@ -278,4 +343,101 @@ public sealed class FloatingDeckPanel : Border
         StateChanged?.Invoke(this);
         e.Handled = true;
     }
+
+    private void OnResizePointerPressed(object? sender, PointerPressedEventArgs e, ResizeEdge edge)
+    {
+        if (_isMinimized || _isDragging || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed || Parent is not Control host)
+            return;
+
+        Activated?.Invoke(this);
+        _isResizing = true;
+        _resizeEdge = edge;
+        _resizeStartPointer = e.GetPosition(host);
+        (_resizeStartLeft, _resizeStartTop) = GetPosition();
+        _resizeStartWidth = GetCurrentPanelWidth();
+        _resizeStartBodyHeight = _bodyHeight;
+        e.Pointer.Capture((IInputElement?)sender);
+        e.Handled = true;
+    }
+
+    private void OnResizePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (!_isResizing || Parent is not Control host)
+            return;
+
+        Point current = e.GetPosition(host);
+        double deltaX = current.X - _resizeStartPointer.X;
+        double deltaY = current.Y - _resizeStartPointer.Y;
+
+        double newLeft = _resizeStartLeft;
+        double newTop = _resizeStartTop;
+        double newWidth = _resizeStartWidth;
+        double newBodyHeight = _resizeStartBodyHeight;
+
+        if ((_resizeEdge & ResizeEdge.Right) != 0)
+            newWidth = _resizeStartWidth + deltaX;
+        if ((_resizeEdge & ResizeEdge.Left) != 0)
+        {
+            newWidth = _resizeStartWidth - deltaX;
+            newLeft = _resizeStartLeft + deltaX;
+        }
+        if ((_resizeEdge & ResizeEdge.Bottom) != 0)
+            newBodyHeight = _resizeStartBodyHeight + deltaY;
+        if ((_resizeEdge & ResizeEdge.Top) != 0)
+        {
+            newBodyHeight = _resizeStartBodyHeight - deltaY;
+            newTop = _resizeStartTop + deltaY;
+        }
+
+        if ((_resizeEdge & ResizeEdge.Left) != 0 && newWidth < _minPanelWidth)
+            newLeft = _resizeStartLeft + (_resizeStartWidth - _minPanelWidth);
+        if ((_resizeEdge & ResizeEdge.Top) != 0 && newBodyHeight < _minBodyHeight)
+            newTop = _resizeStartTop + (_resizeStartBodyHeight - _minBodyHeight);
+
+        newWidth = Math.Max(_minPanelWidth, newWidth);
+        newBodyHeight = Math.Max(_minBodyHeight, newBodyHeight);
+
+        if (newLeft < 0)
+        {
+            newWidth += newLeft;
+            newLeft = 0;
+        }
+        if (newTop < 0)
+        {
+            newBodyHeight += newTop;
+            newTop = 0;
+        }
+
+        newWidth = Math.Max(_minPanelWidth, newWidth);
+        newBodyHeight = Math.Max(_minBodyHeight, newBodyHeight);
+
+        double maxWidth = Math.Max(_minPanelWidth, host.Bounds.Width - newLeft);
+        double maxBodyHeight = Math.Max(_minBodyHeight, host.Bounds.Height - newTop - HeaderChromeHeight);
+        newWidth = Math.Min(newWidth, maxWidth);
+        newBodyHeight = Math.Min(newBodyHeight, maxBodyHeight);
+
+        Width = newWidth;
+        _bodyHeight = newBodyHeight;
+        _bodyHost.Height = newBodyHeight;
+        MoveTo(newLeft, newTop);
+        e.Handled = true;
+    }
+
+    private void OnResizePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_isResizing)
+            return;
+
+        _isResizing = false;
+        _resizeEdge = ResizeEdge.None;
+        e.Pointer.Capture(null);
+        StateChanged?.Invoke(this);
+        e.Handled = true;
+    }
+
+    private double GetCurrentPanelWidth()
+        => Bounds.Width > 1 ? Bounds.Width : Width;
+
+    private double GetCurrentPanelHeight()
+        => _isMinimized ? MinimizedPanelHeight : _bodyHeight + HeaderChromeHeight;
 }

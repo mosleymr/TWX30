@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Rendering.SceneGraph;
 using Avalonia.Skia;
@@ -18,20 +19,26 @@ namespace MTC;
 /// </summary>
 public class TacticalMapControl : Control
 {
-    private const int MaxDepth = 3;
+    private const int MaxDepth = 4;
     private const float GridX = 110f;
     private const float GridY = 84f;
     private const float NodeRadius = 20f;
+    private const float DefaultZoomFactor = 0.82f;
+    private const float MinZoomFactor = 0.45f;
+    private const float MaxZoomFactor = 1.75f;
+    private const float ZoomStep = 0.12f;
 
     private readonly Func<int> _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly (float X, float Y, float Size, byte Alpha)[] _stars;
+    private float _zoomFactor = DefaultZoomFactor;
 
     public TacticalMapControl(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
     {
         _getCurrentSector = getCurrentSector;
         _getDb = getDb;
         ClipToBounds = true;
+        PointerWheelChanged += OnPointerWheelChanged;
 
         var rng = new Random(1337);
         _stars = new (float, float, float, byte)[140];
@@ -44,6 +51,10 @@ public class TacticalMapControl : Control
                 (byte)(50 + rng.Next(130)));
         }
     }
+
+    public int ZoomPercent => (int)Math.Round(_zoomFactor * 100f);
+
+    public event Action<TacticalMapControl>? ZoomChanged;
 
     public override void Render(DrawingContext context)
     {
@@ -65,8 +76,9 @@ public class TacticalMapControl : Control
         (float minX, float minY, float maxX, float maxY) = MeasureBounds(snapshot.Positions.Values);
         float contentWidth = Math.Max(1f, maxX - minX);
         float contentHeight = Math.Max(1f, maxY - minY);
-        float scale = Math.Min((width - 90f) / contentWidth, (height - 90f) / contentHeight);
-        scale = Math.Clamp(scale, 0.52f, 1.24f);
+        float framePadding = snapshot.Positions.Count > 1 ? 128f : 92f;
+        float scale = Math.Min((width - framePadding) / contentWidth, (height - framePadding) / contentHeight);
+        scale = Math.Clamp(scale * _zoomFactor, 0.34f, 1.12f);
 
         canvas.Save();
         canvas.Translate(width / 2f, height / 2f);
@@ -78,6 +90,39 @@ public class TacticalMapControl : Control
 
         canvas.Restore();
         DrawOverlayLegend(canvas, width, height, snapshot);
+    }
+
+    public void AdjustZoom(float delta)
+    {
+        SetZoom(_zoomFactor + delta);
+    }
+
+    public void ResetZoom()
+    {
+        SetZoom(DefaultZoomFactor);
+    }
+
+    private void SetZoom(float zoomFactor)
+    {
+        float clamped = Math.Clamp(zoomFactor, MinZoomFactor, MaxZoomFactor);
+        if (Math.Abs(clamped - _zoomFactor) < 0.001f)
+            return;
+
+        _zoomFactor = clamped;
+        InvalidateVisual();
+        ZoomChanged?.Invoke(this);
+    }
+
+    private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        if (e.Delta.Y > 0)
+            AdjustZoom(ZoomStep);
+        else if (e.Delta.Y < 0)
+            AdjustZoom(-ZoomStep);
+        else
+            return;
+
+        e.Handled = true;
     }
 
     private void DrawBackdrop(SKCanvas canvas, float width, float height)

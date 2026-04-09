@@ -22,6 +22,28 @@ GlobalModules.ConfigureHaggleDebugLogging(
     MTC.AppPaths.GetPlanetHaggleDebugLogPath(),
     prefs.DebugPlanetHaggleEnabled);
 
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    try
+    {
+        GlobalModules.DebugLog($"[UnhandledException] {e.ExceptionObject}\n");
+    }
+    catch
+    {
+    }
+};
+
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    try
+    {
+        GlobalModules.DebugLog($"[UnobservedTaskException] {e.Exception}\n");
+    }
+    catch
+    {
+    }
+};
+
 AppBuilder.Configure<MTC.App>()
     .UsePlatformDetect()
     .WithInterFont()

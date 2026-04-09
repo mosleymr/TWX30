@@ -75,12 +75,6 @@ public class ShipInfoParser
             _inInfoBlock = false;
         }
 
-        if (TryParseIncrementalInfoLine(trimmed))
-        {
-            Updated?.Invoke(_s);
-            return;
-        }
-
         // ── "/" one-liner lines (contain the ³ separator) ─────────────────
         if (line.Contains(Sep))
         {

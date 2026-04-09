@@ -122,53 +122,69 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdProcessIn_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: processin <text> <force>
-            // Inject data into the incoming server data stream
-            // Optional force parameter to bypass processing filters
-            
-            if (_activeGameInstance == null)
+            // CMD: processin <processType> <text>
+            // TWX27 semantics:
+            //   processType=1 -> process globally for all scripts
+            //   processType=0 -> process locally for the current script only
+            // Older C# builds accidentally implemented the reversed shape
+            // `processin <text> <force>`, so accept that form too for safety.
+            string text;
+            bool globalProcess;
+
+            if (parameters.Length >= 2
+                && TryConvertBoolean(parameters[0], out bool processType)
+                && !TryConvertBoolean(parameters[1], out _))
             {
-                Console.WriteLine("[Script] PROCESSIN: No active game instance");
-                return CmdAction.None;
+                globalProcess = processType;
+                text = parameters[1].Value;
+            }
+            else
+            {
+                text = parameters[0].Value;
+                globalProcess = parameters.Length > 1 && TryConvertBoolean(parameters[1], out bool legacyForce)
+                    ? legacyForce
+                    : false;
             }
 
-            string text = parameters[0].Value;
-            bool force = false;
-            
-            if (parameters.Length > 1)
+            if (script is not Script currentScript)
             {
-                ConvertToBoolean(parameters[1], out force);
+                Console.WriteLine("[Script] PROCESSIN: Script instance unavailable");
+                return CmdAction.None;
             }
 
             try
             {
-                // Add CRLF if not present
-                if (!text.EndsWith("\r\n") && !text.EndsWith("\n"))
+                if (globalProcess)
                 {
-                    text += "\r\n";
+                    currentScript.Controller.TextEvent(text, true);
+                    currentScript.Controller.TextLineEvent(text, true);
                 }
-
-                // Send to local client as if it came from server
-                var data = Encoding.ASCII.GetBytes(text);
-                
-                Task.Run(async () =>
+                else
                 {
-                    try
-                    {
-                        await _activeGameInstance.SendToLocalAsync(data);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[Script] PROCESSIN failed: {ex.Message}");
-                    }
-                });
+                    currentScript.TextEvent(text, true);
+                    currentScript.TextLineEvent(text, true);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[Script] PROCESSIN error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
+        }
+
+        private static bool TryConvertBoolean(CmdParam parameter, out bool value)
+        {
+            try
+            {
+                ConvertToBoolean(parameter, out value);
+                return true;
+            }
+            catch
+            {
+                value = false;
+                return false;
+            }
         }
 
         private static CmdAction CmdProcessOut_Impl(object script, CmdParam[] parameters)

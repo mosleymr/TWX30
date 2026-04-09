@@ -12,12 +12,15 @@ namespace MTC;
 public class AppPreferences
 {
     public const int MaxRecentFiles = 5;
+    public const int CurrentCommandDeckLayoutVersion = 4;
 
     public sealed class DeckPanelLayout
     {
         public string PanelId { get; set; } = string.Empty;
         public double Left { get; set; }
         public double Top { get; set; }
+        public double Width { get; set; }
+        public double BodyHeight { get; set; }
         public int ZIndex { get; set; }
         public bool Closed { get; set; }
         public bool Minimized { get; set; }
@@ -40,6 +43,7 @@ public class AppPreferences
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }
+    public int CommandDeckLayoutVersion { get; set; }
 
     private static string LegacySharedPrefsPath()
         => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
@@ -63,13 +67,15 @@ public class AppPreferences
     public bool TryGetDeckPanelLayout(string panelId, out DeckPanelLayout layout)
         => CommandDeckPanels.TryGetValue(panelId, out layout!);
 
-    public void SetDeckPanelLayout(string panelId, double left, double top, int zIndex, bool closed, bool minimized)
+    public void SetDeckPanelLayout(string panelId, double left, double top, double width, double bodyHeight, int zIndex, bool closed, bool minimized)
     {
         CommandDeckPanels[panelId] = new DeckPanelLayout
         {
             PanelId = panelId,
             Left = left,
             Top = top,
+            Width = width,
+            BodyHeight = bodyHeight,
             ZIndex = zIndex,
             Closed = closed,
             Minimized = minimized,
@@ -80,6 +86,9 @@ public class AppPreferences
     {
         try
         {
+            if (CommandDeckLayoutVersion < CurrentCommandDeckLayoutVersion)
+                CommandDeckLayoutVersion = CurrentCommandDeckLayoutVersion;
+
             ProgramDirectory = NormalizeDirectoryValue(ProgramDirectory);
             if (string.IsNullOrWhiteSpace(ProgramDirectory))
                 ProgramDirectory = Core.SharedPaths.ResolveProgramDir(ScriptsDirectory);
@@ -103,6 +112,7 @@ public class AppPreferences
                 new XElement("PortHaggleMode", PortHaggleMode),
                 new XElement("PlanetHaggleMode", PlanetHaggleMode),
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
+                new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("CommandDeckPanels",
                     CommandDeckPanels.Values
@@ -111,6 +121,8 @@ public class AppPreferences
                             new XAttribute("Id", layout.PanelId),
                             new XAttribute("Left", layout.Left.ToString(CultureInfo.InvariantCulture)),
                             new XAttribute("Top", layout.Top.ToString(CultureInfo.InvariantCulture)),
+                            new XAttribute("Width", layout.Width.ToString(CultureInfo.InvariantCulture)),
+                            new XAttribute("BodyHeight", layout.BodyHeight.ToString(CultureInfo.InvariantCulture)),
                             new XAttribute("ZIndex", layout.ZIndex),
                             new XAttribute("Closed", layout.Closed),
                             new XAttribute("Minimized", layout.Minimized))))
@@ -166,6 +178,8 @@ public class AppPreferences
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
             if (bool.TryParse((string?)root.Element("CommandDeckSkinEnabled"), out bool commandDeckEnabled))
                 prefs.CommandDeckSkinEnabled = commandDeckEnabled;
+            if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
+                prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
@@ -196,6 +210,8 @@ public class AppPreferences
                     PanelId = panelId,
                     Left = ParseDouble(panel.Attribute("Left")),
                     Top = ParseDouble(panel.Attribute("Top")),
+                    Width = ParseDouble(panel.Attribute("Width")),
+                    BodyHeight = ParseDouble(panel.Attribute("BodyHeight")),
                     ZIndex = ParseInt(panel.Attribute("ZIndex")),
                     Closed = ParseBool(panel.Attribute("Closed")),
                     Minimized = ParseBool(panel.Attribute("Minimized")),

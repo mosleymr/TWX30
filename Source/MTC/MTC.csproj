@@ -32,6 +32,7 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
     <PackageReference Include="SkiaSharp" Version="2.88.*" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
 
   <ItemGroup>
