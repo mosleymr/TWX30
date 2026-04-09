@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Avalonia;
@@ -1265,7 +1266,7 @@ public class MainWindow : Window
         fileNew.Click += (_, _) => _ = OnNewConnectionAsync();
 
         var fileNewWin    = new MenuItem { Header = "New _Window" };
-        fileNewWin.Click += (_, _) => new MainWindow().Show();
+        fileNewWin.Click += (_, _) => OpenNewWindowInNewProcess();
 
         var fileEdit = _fileEdit;
         _fileEdit.Click += (_, _) => _ = OnEditConnectionAsync();
@@ -3800,6 +3801,38 @@ public class MainWindow : Window
     }
 
     private Core.ModInterpreter? CurrentInterpreter => Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+
+    private void OpenNewWindowInNewProcess()
+    {
+        try
+        {
+            string? processPath = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(processPath))
+                processPath = Process.GetCurrentProcess().MainModule?.FileName;
+
+            if (string.IsNullOrWhiteSpace(processPath))
+            {
+                _parser.Feed("\x1b[1;31m[Unable to open a new MTC window: current executable path is unavailable]\x1b[0m\r\n");
+                return;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = processPath,
+                WorkingDirectory = Environment.CurrentDirectory,
+                UseShellExecute = false,
+            };
+
+            foreach (string arg in Environment.GetCommandLineArgs().Skip(1))
+                startInfo.ArgumentList.Add(arg);
+
+            Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            _parser.Feed($"\x1b[1;31m[Unable to open a new MTC window: {ex.Message}]\x1b[0m\r\n");
+        }
+    }
 
     private void RebuildProxyMenu()
     {
