@@ -90,6 +90,15 @@ public class MainWindow : Window
         Margin = new Thickness(8, 0, 0, 0),
         VerticalAlignment = VerticalAlignment.Center,
     };
+    private readonly ToggleSwitch _deckHaggleToggle = new()
+    {
+        OffContent = "Off",
+        OnContent = "On",
+        IsEnabled = false,
+        IsChecked = false,
+        Margin = new Thickness(8, 0, 0, 0),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
     private bool _updatingHaggleToggle;
     private bool _mbotPromptOpen;
     private bool _mbotMacroPromptOpen;
@@ -149,6 +158,36 @@ public class MainWindow : Window
     private Border    _scanIndD     = new();
     private Border    _scanIndH     = new();
     private Border    _scanIndP     = new();
+    private TextBlock _deckValName     = new();
+    private TextBlock _deckValSector   = new();
+    private TextBlock _deckValTurns    = new();
+    private TextBlock _deckValExper    = new();
+    private TextBlock _deckValAlignm   = new();
+    private TextBlock _deckValCred     = new();
+    private TextBlock _deckValHTotal   = new();
+    private TextBlock _deckValFuelOre  = new();
+    private TextBlock _deckValOrganics = new();
+    private TextBlock _deckValEquipment = new();
+    private TextBlock _deckValColonists = new();
+    private TextBlock _deckValEmpty     = new();
+    private TextBlock _deckValFighters  = new();
+    private TextBlock _deckValShields   = new();
+    private TextBlock _deckValTrnWarp   = new();
+    private TextBlock _deckValEther     = new();
+    private TextBlock _deckValBeacon    = new();
+    private TextBlock _deckValDisruptor = new();
+    private TextBlock _deckValPhoton    = new();
+    private TextBlock _deckValArmid     = new();
+    private TextBlock _deckValLimpet    = new();
+    private TextBlock _deckValGenesis   = new();
+    private TextBlock _deckValAtomic    = new();
+    private TextBlock _deckValCorbo     = new();
+    private TextBlock _deckValCloak     = new();
+    private TextBlock _deckValTW1       = new();
+    private TextBlock _deckValTW2       = new();
+    private Border    _deckScanIndD     = new();
+    private Border    _deckScanIndH     = new();
+    private Border    _deckScanIndP     = new();
 
     // ── Status bar text ───────────────────────────────────────────────────
     private TextBlock _statusText = new();
@@ -281,6 +320,7 @@ public class MainWindow : Window
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
 
         _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
+        _deckHaggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
         Content = BuildLayout();
 
         ApplyDebugLoggingPreferences();
@@ -357,7 +397,7 @@ public class MainWindow : Window
         _shellHost.Padding = new Thickness(6, 4, 6, 4);
         dock.Children.Add(_shellHost);
 
-        ApplySelectedSkin();
+        ApplySelectedSkinSafe();
         return dock;
     }
 
@@ -766,15 +806,15 @@ public class MainWindow : Window
         badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
         badgeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var fightersBadge = BuildDeckStatBadge("FTR", _valFighters, HudAccentOk);
+        var fightersBadge = BuildDeckStatBadge("FTR", _deckValFighters, HudAccentOk);
         Grid.SetColumn(fightersBadge, 0);
         badgeGrid.Children.Add(fightersBadge);
 
-        var shieldsBadge = BuildDeckStatBadge("SHD", _valShields, HudAccent);
+        var shieldsBadge = BuildDeckStatBadge("SHD", _deckValShields, HudAccent);
         Grid.SetColumn(shieldsBadge, 2);
         badgeGrid.Children.Add(shieldsBadge);
 
-        var holdsBadge = BuildDeckStatBadge("HLD", _valHTotal, HudAccentHot);
+        var holdsBadge = BuildDeckStatBadge("HLD", _deckValHTotal, HudAccentHot);
         Grid.SetColumn(holdsBadge, 4);
         badgeGrid.Children.Add(holdsBadge);
 
@@ -785,16 +825,16 @@ public class MainWindow : Window
             ItemWidth = 88,
             Margin = new Thickness(0, 6, 0, 0),
         };
-        devices.Children.Add(BuildDeckDeviceChip("ETH", _valEther, HudAccent));
-        devices.Children.Add(BuildDeckDeviceChip("BEA", _valBeacon, HudAccent));
-        devices.Children.Add(BuildDeckDeviceChip("DIS", _valDisruptor, HudAccent));
-        devices.Children.Add(BuildDeckDeviceChip("PHO", _valPhoton, HudAccentHot));
-        devices.Children.Add(BuildDeckDeviceChip("ARM", _valArmid, HudAccentWarn));
-        devices.Children.Add(BuildDeckDeviceChip("LIM", _valLimpet, HudAccentWarn));
-        devices.Children.Add(BuildDeckDeviceChip("GEN", _valGenesis, HudAccentOk));
-        devices.Children.Add(BuildDeckDeviceChip("ATO", _valAtomic, HudAccentHot));
-        devices.Children.Add(BuildDeckDeviceChip("COR", _valCorbo, HudAccent));
-        devices.Children.Add(BuildDeckDeviceChip("CLK", _valCloak, HudAccentOk));
+        devices.Children.Add(BuildDeckDeviceChip("ETH", _deckValEther, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("BEA", _deckValBeacon, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("DIS", _deckValDisruptor, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("PHO", _deckValPhoton, HudAccentHot));
+        devices.Children.Add(BuildDeckDeviceChip("ARM", _deckValArmid, HudAccentWarn));
+        devices.Children.Add(BuildDeckDeviceChip("LIM", _deckValLimpet, HudAccentWarn));
+        devices.Children.Add(BuildDeckDeviceChip("GEN", _deckValGenesis, HudAccentOk));
+        devices.Children.Add(BuildDeckDeviceChip("ATO", _deckValAtomic, HudAccentHot));
+        devices.Children.Add(BuildDeckDeviceChip("COR", _deckValCorbo, HudAccent));
+        devices.Children.Add(BuildDeckDeviceChip("CLK", _deckValCloak, HudAccentOk));
 
         var hero = new Grid();
         hero.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });
@@ -841,11 +881,11 @@ public class MainWindow : Window
                     Spacing = 6,
                     Children =
                     {
-                        BuildDeckMetricRow("Fuel Ore", _valFuelOre),
-                        BuildDeckMetricRow("Organics", _valOrganics),
-                        BuildDeckMetricRow("Equipment", _valEquipment),
-                        BuildDeckMetricRow("Colonists", _valColonists),
-                        BuildDeckMetricRow("Empty", _valEmpty),
+                        BuildDeckMetricRow("Fuel Ore", _deckValFuelOre),
+                        BuildDeckMetricRow("Organics", _deckValOrganics),
+                        BuildDeckMetricRow("Equipment", _deckValEquipment),
+                        BuildDeckMetricRow("Colonists", _deckValColonists),
+                        BuildDeckMetricRow("Empty", _deckValEmpty),
                     },
                 }),
                 BuildDeckSection("Device Rack", devices),
@@ -854,8 +894,8 @@ public class MainWindow : Window
                     Spacing = 4,
                     Children =
                     {
-                        BuildScannerRow(),
-                        BuildHaggleRow(),
+                        BuildDeckScannerRow(),
+                        BuildDeckHaggleRow(),
                     },
                 }),
             },
@@ -881,18 +921,18 @@ public class MainWindow : Window
 
         var commander = BuildDeckMetricCard(
             "Commander Link",
-            ("Pilot", _valName),
-            ("Sector", _valSector),
-            ("Turns", _valTurns));
+            ("Pilot", _deckValName),
+            ("Sector", _deckValSector),
+            ("Turns", _deckValTurns));
         Grid.SetRow(commander, 0);
         Grid.SetColumn(commander, 0);
         grid.Children.Add(commander);
 
         var economy = BuildDeckMetricCard(
             "Economy",
-            ("Credits", _valCred),
-            ("Experience", _valExper),
-            ("Alignment", _valAlignm));
+            ("Credits", _deckValCred),
+            ("Experience", _deckValExper),
+            ("Alignment", _deckValAlignm));
         Grid.SetRow(economy, 0);
         Grid.SetColumn(economy, 2);
         grid.Children.Add(economy);
@@ -909,9 +949,9 @@ public class MainWindow : Window
 
         var drives = BuildDeckMetricCard(
             "Drive Core",
-            ("Turns/Warp", _valTrnWarp),
-            ("TW-I", _valTW1),
-            ("TW-II", _valTW2));
+            ("Turns/Warp", _deckValTrnWarp),
+            ("TW-I", _deckValTW1),
+            ("TW-II", _deckValTW2));
         Grid.SetRow(drives, 2);
         Grid.SetColumn(drives, 2);
         grid.Children.Add(drives);
@@ -1261,6 +1301,41 @@ public class MainWindow : Window
         RefreshInfoPanels();
     }
 
+    private void ApplySelectedSkinSafe()
+    {
+        try
+        {
+            ApplySelectedSkin();
+        }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog(
+                $"[Skin] Failed to apply {(_useCommandDeckSkin ? "command deck" : "classic")} skin: {ex}\n");
+
+            if (_useCommandDeckSkin)
+            {
+                _useCommandDeckSkin = false;
+                _appPrefs.CommandDeckSkinEnabled = false;
+
+                try
+                {
+                    ApplySelectedSkin();
+                }
+                catch (Exception fallbackEx)
+                {
+                    Core.GlobalModules.DebugLog($"[Skin] Failed to restore classic skin: {fallbackEx}\n");
+                    throw;
+                }
+
+                _parser.Feed($"\x1b[1;31m[Command Deck unavailable: {ex.Message}]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+                return;
+            }
+
+            throw;
+        }
+    }
+
     private void SetSkin(bool useCommandDeckSkin)
     {
         if (_useCommandDeckSkin == useCommandDeckSkin && _shellHost.Child != null)
@@ -1269,7 +1344,7 @@ public class MainWindow : Window
         _useCommandDeckSkin = useCommandDeckSkin;
         _appPrefs.CommandDeckSkinEnabled = useCommandDeckSkin;
         _appPrefs.Save();
-        ApplySelectedSkin();
+        ApplySelectedSkinSafe();
     }
 
     private void RefreshSkinMenuState()
@@ -1609,11 +1684,88 @@ public class MainWindow : Window
         return row;
     }
 
+    private Control BuildDeckScannerRow()
+    {
+        static Border MakeScanInd(string letter) => new Border
+        {
+            Width = 24,
+            Height = 20,
+            CornerRadius = new CornerRadius(6),
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(2, 0),
+            Child = new TextBlock
+            {
+                Text = letter,
+                FontSize = 11,
+                FontWeight = FontWeight.Bold,
+                Foreground = HudMuted,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+
+        _deckScanIndD = MakeScanInd("D");
+        _deckScanIndH = MakeScanInd("H");
+        _deckScanIndP = MakeScanInd("P");
+
+        var indicators = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _deckScanIndD, _deckScanIndH, _deckScanIndP },
+        };
+
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 3) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var label = new TextBlock
+        {
+            Text = "Scanners",
+            Foreground = HudMuted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 0);
+        Grid.SetColumn(indicators, 1);
+        row.Children.Add(label);
+        row.Children.Add(indicators);
+        return row;
+    }
+
+    private Control BuildDeckHaggleRow()
+    {
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 3) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var label = new TextBlock
+        {
+            Text = "Haggle",
+            Foreground = HudMuted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 0);
+        Grid.SetColumn(_deckHaggleToggle, 1);
+        row.Children.Add(label);
+        row.Children.Add(_deckHaggleToggle);
+        return row;
+    }
+
     private static void UpdateScanInd(Border b, bool active)
     {
         b.Background = active ? ScannerActive : ScannerInactive;
         if (b.Child is TextBlock tb)
             tb.Foreground = active ? Brushes.Black : ScannerFgInact;
+    }
+
+    private static void UpdateDeckScanInd(Border b, bool active)
+    {
+        b.Background = active ? HudAccentOk : HudHeaderAlt;
+        b.BorderBrush = active ? HudAccent : HudInnerEdge;
+        if (b.Child is TextBlock tb)
+            tb.Foreground = active ? Brushes.Black : HudMuted;
     }
 
     /// <summary>Builds a titled info panel containing key/value rows.</summary>
@@ -1820,41 +1972,73 @@ public class MainWindow : Window
     {
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
         _valName.Text      = traderName;
+        _deckValName.Text  = traderName;
         _valSector.Text    = _state.Sector.ToString();
+        _deckValSector.Text = _valSector.Text;
         _valTurns.Text     = _state.Turns.ToString();
+        _deckValTurns.Text = _valTurns.Text;
         _valExper.Text     = _state.Experience.ToString("N0");
+        _deckValExper.Text = _valExper.Text;
         int alignVal = int.TryParse(_state.Alignment, out int av) ? av : 0;
         _valAlignm.Text    = alignVal.ToString("N0");
-        _valAlignm.Foreground = alignVal >= 1000
+        _deckValAlignm.Text = _valAlignm.Text;
+        IBrush alignBrush = alignVal >= 1000
             ? new SolidColorBrush(Color.FromRgb(100, 180, 255))      // blue  (≥ 1,000)
             : alignVal < 0
                 ? new SolidColorBrush(Color.FromRgb(255, 80, 80))    // red   (negative)
                 : new SolidColorBrush(Color.FromRgb(255, 255, 255));  // white (0–999)
+        _valAlignm.Foreground = alignBrush;
+        _deckValAlignm.Foreground = alignBrush;
         _valCred.Text      = _state.Credits.ToString("N0");
+        _deckValCred.Text  = _valCred.Text;
         _valHTotal.Text    = _state.HoldsTotal.ToString();
+        _deckValHTotal.Text = _valHTotal.Text;
         _valFuelOre.Text   = _state.FuelOre.ToString();
+        _deckValFuelOre.Text = _valFuelOre.Text;
         _valOrganics.Text  = _state.Organics.ToString();
+        _deckValOrganics.Text = _valOrganics.Text;
         _valEquipment.Text = _state.Equipment.ToString();
+        _deckValEquipment.Text = _valEquipment.Text;
         _valColonists.Text = _state.Colonists.ToString();
+        _deckValColonists.Text = _valColonists.Text;
         _valEmpty.Text     = _state.HoldsEmpty.ToString();
+        _deckValEmpty.Text = _valEmpty.Text;
         _valFighters.Text  = _state.Fighters.ToString("N0");
+        _deckValFighters.Text = _valFighters.Text;
         _valShields.Text   = _state.Shields.ToString("N0");
+        _deckValShields.Text = _valShields.Text;
         _valTrnWarp.Text   = _state.TurnsPerWarp.ToString();
+        _deckValTrnWarp.Text = _valTrnWarp.Text;
         _valEther.Text     = _state.Etheral.ToString();
+        _deckValEther.Text = _valEther.Text;
         _valBeacon.Text    = _state.Beacon.ToString();
+        _deckValBeacon.Text = _valBeacon.Text;
         _valDisruptor.Text = _state.Disruptor.ToString();
+        _deckValDisruptor.Text = _valDisruptor.Text;
         _valPhoton.Text    = _state.Photon.ToString();
+        _deckValPhoton.Text = _valPhoton.Text;
         _valArmid.Text     = _state.Armor.ToString();
+        _deckValArmid.Text = _valArmid.Text;
         _valLimpet.Text    = _state.Limpet.ToString();
+        _deckValLimpet.Text = _valLimpet.Text;
         _valGenesis.Text   = _state.Genesis.ToString();
+        _deckValGenesis.Text = _valGenesis.Text;
         _valAtomic.Text    = _state.Atomic.ToString();
+        _deckValAtomic.Text = _valAtomic.Text;
         _valCorbo.Text     = _state.Corbomite.ToString();
+        _deckValCorbo.Text = _valCorbo.Text;
         _valCloak.Text     = _state.Cloak.ToString();
+        _deckValCloak.Text = _valCloak.Text;
         _valTW1.Text       = _state.TranswarpDrive1 > 0 ? _state.TranswarpDrive1.ToString() : "-";
+        _deckValTW1.Text   = _valTW1.Text;
         _valTW2.Text       = _state.TranswarpDrive2 > 0 ? _state.TranswarpDrive2.ToString() : "-";
+        _deckValTW2.Text   = _valTW2.Text;
         UpdateScanInd(_scanIndD, _state.ScannerD);
         UpdateScanInd(_scanIndH, _state.ScannerH);
         UpdateScanInd(_scanIndP, _state.ScannerP);
+        UpdateDeckScanInd(_deckScanIndD, _state.ScannerD);
+        UpdateDeckScanInd(_deckScanIndH, _state.ScannerH);
+        UpdateDeckScanInd(_deckScanIndP, _state.ScannerP);
 
         _hudHeaderSector.Text = _state.Sector > 0 ? _state.Sector.ToString("N0") : "---";
         _hudShipName.Text = string.IsNullOrWhiteSpace(_state.ShipName) || _state.ShipName == "-"
@@ -2037,10 +2221,12 @@ public class MainWindow : Window
     {
         bool proxyActive = _gameInstance != null;
         _haggleToggle.IsEnabled = proxyActive;
+        _deckHaggleToggle.IsEnabled = proxyActive;
         if (!proxyActive)
         {
             _updatingHaggleToggle = true;
             _haggleToggle.IsChecked = false;
+            _deckHaggleToggle.IsChecked = false;
             _updatingHaggleToggle = false;
         }
     }
@@ -2090,6 +2276,7 @@ public class MainWindow : Window
         {
             _updatingHaggleToggle = true;
             _haggleToggle.IsChecked = enabled;
+            _deckHaggleToggle.IsChecked = enabled;
             _updatingHaggleToggle = false;
             UpdateHaggleToggleState();
             RefreshMbotUi();
@@ -2410,7 +2597,7 @@ public class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_state.GameName) || !string.IsNullOrEmpty(_currentProfilePath))
             return DeriveGameName();
 
-        return "game";
+        return string.Empty;
     }
 
     private void RefreshSessionLogTarget(string? scriptDirectory = null)
