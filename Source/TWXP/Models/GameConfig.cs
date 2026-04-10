@@ -57,7 +57,8 @@ public class GameConfig
     /// Variables persisted via savevar/loadvar for this game.
     /// Stored in the game's GAMENAME.json data file alongside the config.
     /// </summary>
-    public Dictionary<string, string> Variables { get; set; } = new();
+    public Dictionary<string, string> Variables { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Runtime path to this game's GAMENAME.json data file.

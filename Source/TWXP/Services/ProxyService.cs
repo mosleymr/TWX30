@@ -214,7 +214,11 @@ public class ProxyService : IProxyService
             // Load previously saved variables, but exclude session-startup flags.
             // $gfile_chk controls auto-connect; $doRelog controls the relog machine.
             // Both should always start as '0' so the user must press Z each session.
-            var varsToLoad = new Dictionary<string, string>(config.Variables);
+            config.Variables = new Dictionary<string, string>(
+                config.Variables ?? new Dictionary<string, string>(),
+                StringComparer.OrdinalIgnoreCase);
+
+            var varsToLoad = new Dictionary<string, string>(config.Variables, StringComparer.OrdinalIgnoreCase);
             varsToLoad.Remove("$gfile_chk");
             varsToLoad.Remove("$doRelog");
             TWXProxy.Core.ScriptRef.LoadVarsForGame(varsToLoad);

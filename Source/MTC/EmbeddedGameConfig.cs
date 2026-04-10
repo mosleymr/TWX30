@@ -52,7 +52,8 @@ internal class EmbeddedGameConfig
     public string GameLetter { get; set; } = string.Empty;
 
     /// <summary>Variables persisted by <c>savevar</c> / retrieved by <c>loadvar</c>.</summary>
-    public Dictionary<string, string> Variables { get; set; } = new();
+    public Dictionary<string, string> Variables { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>MTC-specific settings/state stored alongside the shared game config.</summary>
     public EmbeddedMtcConfig Mtc { get; set; } = new();

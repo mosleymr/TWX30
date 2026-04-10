@@ -3689,7 +3689,11 @@ public class MainWindow : Window
         Core.GlobalModules.TWXMenu = new Core.MenuManager();
 
         // Load previously saved variables (excluding session-startup flags).
-        var varsToLoad = new System.Collections.Generic.Dictionary<string, string>(gameConfig.Variables);
+        gameConfig.Variables = new System.Collections.Generic.Dictionary<string, string>(
+            gameConfig.Variables ?? new System.Collections.Generic.Dictionary<string, string>(),
+            StringComparer.OrdinalIgnoreCase);
+
+        var varsToLoad = new System.Collections.Generic.Dictionary<string, string>(gameConfig.Variables, StringComparer.OrdinalIgnoreCase);
         varsToLoad.Remove("$gfile_chk");
         varsToLoad.Remove("$doRelog");
         Core.ScriptRef.LoadVarsForGame(varsToLoad);
@@ -4257,7 +4261,9 @@ public class MainWindow : Window
             }
 
             EmbeddedGameConfig importedConfig = BuildEmbeddedGameConfigFromProfile(importedProfile, importedDatabasePath, config);
-            importedConfig.Variables = config.Variables ?? new Dictionary<string, string>();
+            importedConfig.Variables = new Dictionary<string, string>(
+                config.Variables ?? new Dictionary<string, string>(),
+                StringComparer.OrdinalIgnoreCase);
             await SaveEmbeddedGameConfigAsync(gameName, importedConfig);
             await ApplyLoadedGameConfigAsync(importedConfig, AppPaths.TwxproxyGameConfigFileFor(gameName), addToRecent);
             return;
@@ -6285,9 +6291,9 @@ public class MainWindow : Window
         MirrorMbotCurrentVars("0", "$SETTINGS~OVERRIDE", "$settings~override");
         MirrorMbotCurrentVars("0", "$GAME~PORT_MAX", "$GAME~port_max", "$game~port_max");
         MirrorMbotCurrentVars("0", "$GAME~PHOTON_DURATION", "$game~photon_duration");
-        MirrorMbotCurrentVars("0", "$PLAYER~surroundFigs");
-        MirrorMbotCurrentVars("0", "$PLAYER~surroundLimp");
-        MirrorMbotCurrentVars("0", "$PLAYER~surroundMine");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE");
         MirrorMbotCurrentVars("0", "$PLAYER~surroundOverwrite");
         MirrorMbotCurrentVars("0", "$PLAYER~surroundPassive");
         MirrorMbotCurrentVars("0", "$PLAYER~surroundNormal");
@@ -6335,8 +6341,8 @@ public class MainWindow : Window
         if (surroundShieldedOnly == "0" && surroundAllPlanets == "0" && surroundDontAvoid == "0")
             SetMbotCurrentVars("1", "$PLAYER~surroundAvoidAllPlanets");
 
-        if (ReadCurrentMbotVar("0", "$PLAYER~surroundFigs") == "0")
-            SetMbotCurrentVars("1", "$PLAYER~surroundFigs");
+        if (ReadCurrentMbotVar("0", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS") == "0")
+            SetMbotCurrentVars("1", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS");
     }
 
     private static string GetMbotScriptRootRelative(string scriptRoot)

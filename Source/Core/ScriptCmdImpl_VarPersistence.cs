@@ -31,7 +31,8 @@ namespace TWXProxy.Core
 
         // Per-game variable storage: loaded from GameConfig.Variables at game start;
         // updated on every savevar call and flushed to disk via OnVariableSaved.
-        private static readonly Dictionary<string, string> _currentGameVars = new();
+        private static readonly Dictionary<string, string> _currentGameVars =
+            new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// Called whenever savevar persists a value. The delegate (set by
