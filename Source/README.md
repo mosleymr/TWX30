@@ -16,7 +16,7 @@ TWX30 is the modern C# rewrite of the classic TWXProxy codebase. The repository 
 - `TWXC`, which compiles TWX source scripts (`.ts`) to compiled bytecode (`.cts`)
 - `TWXD`, which decompiles `.cts` files back to `.ts`
 - `MTC`, an Avalonia desktop client that can connect to a proxy or run one natively
-- `TWXP`, a MAUI-based app shell that remains in the source tree
+- `TWXP`, a multi threaded proxy with management interface
 
 The current focus is compatibility with the original Pascal TWX 2.7 behavior, especially for script compile, decompile, and runtime execution.
 
