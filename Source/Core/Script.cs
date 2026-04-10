@@ -547,6 +547,13 @@ namespace TWXProxy.Core
                 Stop(index);
         }
 
+        private bool IsScriptStillAtIndex(int index, Script script)
+        {
+            return index >= 0 &&
+                   index < _scriptList.Count &&
+                   ReferenceEquals(_scriptList[index], script);
+        }
+
         public void StopAll(bool stopSysScripts)
         {
             // Terminate all scripts
@@ -921,10 +928,17 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (_scriptList[i].ProgramEvent(eventName, matchText, exclusive))
-                    Stop(i);
-                else
+                Script script = _scriptList[i];
+                bool completed = script.ProgramEvent(eventName, matchText, exclusive);
+
+                if (completed)
+                {
+                    StopByHandle(script);
+                }
+                else if (IsScriptStillAtIndex(i, script))
+                {
                     i++;
+                }
             }
         }
 
@@ -977,15 +991,17 @@ namespace TWXProxy.Core
             int i = 0;
             while (i < _scriptList.Count)
             {
-                if (_scriptList[i].WaitingForInput)
+                Script script = _scriptList[i];
+                if (script.WaitingForInput)
                 {
-                    bool completed = _scriptList[i].LocalInputEvent(inputText);
+                    bool completed = script.LocalInputEvent(inputText);
                     if (completed)
-                        Stop(i);
+                        StopByHandle(script);
                     consumed = true;
                     break; // only one script gets the input
                 }
-                i++;
+                if (IsScriptStillAtIndex(i, script))
+                    i++;
             }
             return consumed;
         }
@@ -1023,11 +1039,17 @@ namespace TWXProxy.Core
             // Loop through scripts and trigger off any text out triggers
             while (i < _scriptList.Count)
             {
+                Script script = _scriptList[i];
                 bool handled = false;
-                if (_scriptList[i].TextOutEvent(text, ref handled))
-                    Stop(i);
-                else
+                bool completed = script.TextOutEvent(text, ref handled);
+                if (completed)
+                {
+                    StopByHandle(script);
+                }
+                else if (IsScriptStillAtIndex(i, script))
+                {
                     i++;
+                }
 
                 if (handled)
                 {
@@ -1050,8 +1072,8 @@ namespace TWXProxy.Core
                 Script script = _scriptList[i];
                 bool completed = script.TextEvent(text, forceTrigger);
                 if (completed)
-                    Stop(i);
-                else
+                    StopByHandle(script);
+                else if (IsScriptStillAtIndex(i, script))
                     i++;
             }
         }
@@ -1068,8 +1090,8 @@ namespace TWXProxy.Core
                 Script script = _scriptList[i];
                 bool completed = script.TextLineEvent(text, forceTrigger);
                 if (completed)
-                    Stop(i);
-                else
+                    StopByHandle(script);
+                else if (IsScriptStillAtIndex(i, script))
                     i++;
             }
         }
@@ -1081,9 +1103,11 @@ namespace TWXProxy.Core
 
             while (i < _scriptList.Count)
             {
-                if (_scriptList[i].AutoTextEvent(text, forceTrigger))
-                    Stop(i);
-                else
+                Script script = _scriptList[i];
+                bool completed = script.AutoTextEvent(text, forceTrigger);
+                if (completed)
+                    StopByHandle(script);
+                else if (IsScriptStillAtIndex(i, script))
                     i++;
             }
         }

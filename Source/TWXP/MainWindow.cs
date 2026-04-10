@@ -5,6 +5,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using TWXProxy.Core;
 using MenuItem = Avalonia.Controls.MenuItem;
@@ -13,26 +14,27 @@ namespace TWXP;
 
 public sealed class MainWindow : Window
 {
-    private static readonly IBrush StatusStoppedBrush = Brushes.Gray;
-    private static readonly IBrush StatusStartingBrush = Brushes.Orange;
-    private static readonly IBrush StatusRunningBrush = Brushes.LimeGreen;
-    private static readonly IBrush StatusPausedBrush = Brushes.Goldenrod;
-    private static readonly IBrush StatusErrorBrush = Brushes.IndianRed;
-    private static readonly IBrush SelectedRowBrush = new SolidColorBrush(Color.FromRgb(0x2b, 0x36, 0x46));
-    private static readonly IBrush RowBrush = new SolidColorBrush(Color.FromRgb(0x1f, 0x24, 0x2c));
+    private static readonly IBrush WindowBackgroundBrush = Brushes.Black;
+    private static readonly IBrush PrimaryTextBrush = Brushes.White;
+    private static readonly IBrush PrimaryBrush = new SolidColorBrush(Color.Parse("#512BD4"));
+    private static readonly IBrush PrimaryMutedBrush = new SolidColorBrush(Color.Parse("#6D4DFF"));
+    private static readonly IBrush CardBorderBrush = new SolidColorBrush(Color.Parse("#2F3440"));
+    private static readonly IBrush SubtleTextBrush = new SolidColorBrush(Color.Parse("#B5BBC5"));
+    private static readonly IBrush StatusStoppedBrush = new SolidColorBrush(Color.Parse("#6E6E6E"));
+    private static readonly IBrush StatusStartingBrush = new SolidColorBrush(Color.Parse("#F0AD4E"));
+    private static readonly IBrush StatusRunningBrush = new SolidColorBrush(Color.Parse("#28A745"));
+    private static readonly IBrush StatusPausedBrush = new SolidColorBrush(Color.Parse("#FFC107"));
+    private static readonly IBrush StatusErrorBrush = new SolidColorBrush(Color.Parse("#DC3545"));
+    private static readonly IBrush SelectedRowBrush = new SolidColorBrush(Color.Parse("#171224"));
+    private static readonly IBrush RowBrush = new SolidColorBrush(Color.Parse("#101318"));
 
     private readonly IGameConfigService _configService;
     private readonly IProxyService _proxyService;
 
     private readonly TextBlock _programDirectoryText;
     private readonly TextBlock _scriptsDirectoryText;
-    private readonly TextBlock _selectedGameText;
     private readonly StackPanel _gamesPanel;
     private readonly MenuItem _proxyMenu;
-    private readonly Button _startButton;
-    private readonly Button _stopButton;
-    private readonly Button _editButton;
-    private readonly Button _removeButton;
 
     private List<GameConfig> _games = new();
     private GameConfig? _selectedGame;
@@ -45,10 +47,12 @@ public sealed class MainWindow : Window
         _proxyService.StatusChanged += OnProxyStatusChanged;
 
         Title = "TWX Proxy";
-        Width = 1180;
-        Height = 760;
-        MinWidth = 860;
-        MinHeight = 580;
+        Width = 1280;
+        Height = 860;
+        MinWidth = 960;
+        MinHeight = 620;
+        RequestedThemeVariant = ThemeVariant.Dark;
+        Background = WindowBackgroundBrush;
 
         var fileMenu = new MenuItem { Header = "_File" };
         fileMenu.ItemsSource = BuildFileMenuItems();
@@ -58,109 +62,92 @@ public sealed class MainWindow : Window
         var menuBar = new Menu
         {
             ItemsSource = new object[] { fileMenu, _proxyMenu },
+            Background = WindowBackgroundBrush,
+            Foreground = PrimaryTextBrush,
         };
         DockPanel.SetDock(menuBar, Dock.Top);
 
-        var programDirButton = new Button { Content = "Program Dir…" };
+        var titleText = new TextBlock
+        {
+            Text = "Active Games",
+            FontSize = 24,
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = PrimaryTextBrush,
+        };
+
+        var programDirButton = CreatePrimaryButton("Program Dir");
         programDirButton.Click += async (_, _) => await SelectProgramDirectoryAsync();
         _programDirectoryText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap,
+            TextWrapping = TextWrapping.WrapWithOverflow,
+            Foreground = SubtleTextBrush,
+            FontSize = 12,
         };
 
-        var scriptsDirButton = new Button { Content = "Scripts Dir…" };
+        var scriptsDirButton = CreatePrimaryButton("Scripts Dir");
         scriptsDirButton.Click += async (_, _) => await SelectScriptsDirectoryAsync();
         _scriptsDirectoryText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap,
+            TextWrapping = TextWrapping.WrapWithOverflow,
+            Foreground = SubtleTextBrush,
+            FontSize = 12,
         };
 
-        var addGameButton = new Button { Content = "Add Game…" };
-        addGameButton.Click += async (_, _) => await AddGameAsync();
-
-        var loadGameButton = new Button { Content = "Load Game…" };
+        var loadGameButton = CreatePrimaryButton("Load Game");
         loadGameButton.Click += async (_, _) => await LoadGameAsync();
 
-        var refreshButton = new Button { Content = "Refresh" };
+        var addGameButton = CreatePrimaryButton("Add Game");
+        addGameButton.Click += async (_, _) => await AddGameAsync();
+
+        var refreshButton = CreateSecondaryButton("Refresh");
         refreshButton.Click += async (_, _) => await LoadConfigsAsync();
 
-        _selectedGameText = new TextBlock
+        var topActions = new StackPanel
         {
-            FontWeight = FontWeight.Bold,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        _startButton = new Button { Content = "Start", MinWidth = 90 };
-        _startButton.Click += async (_, _) => await StartSelectedGameAsync();
-
-        _stopButton = new Button { Content = "Stop", MinWidth = 90 };
-        _stopButton.Click += async (_, _) => await StopSelectedGameAsync();
-
-        _editButton = new Button { Content = "Edit", MinWidth = 90 };
-        _editButton.Click += async (_, _) => await EditSelectedGameAsync();
-
-        _removeButton = new Button { Content = "Remove", MinWidth = 90 };
-        _removeButton.Click += async (_, _) => await RemoveSelectedGameAsync();
-
-        var toolbar = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
+            Orientation = Orientation.Horizontal,
             Spacing = 10,
-            Margin = new Thickness(12),
+            HorizontalAlignment = HorizontalAlignment.Right,
             Children =
             {
-                new WrapPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    ItemHeight = 32,
-                    ItemWidth = double.NaN,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Children =
-                    {
-                        programDirButton,
-                        _programDirectoryText,
-                    },
-                },
-                new WrapPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    ItemHeight = 32,
-                    ItemWidth = double.NaN,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Children =
-                    {
-                        scriptsDirButton,
-                        _scriptsDirectoryText,
-                    },
-                },
-                new WrapPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    ItemHeight = 32,
-                    ItemWidth = double.NaN,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    Children =
-                    {
-                        addGameButton,
-                        loadGameButton,
-                        refreshButton,
-                        _selectedGameText,
-                        _startButton,
-                        _stopButton,
-                        _editButton,
-                        _removeButton,
-                    },
-                },
+                programDirButton,
+                scriptsDirButton,
+                loadGameButton,
+                addGameButton,
+                refreshButton,
             },
         };
-        DockPanel.SetDock(toolbar, Dock.Top);
+
+        var headerGrid = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            RowSpacing = 8,
+            Margin = new Thickness(20, 20, 20, 20),
+            Children =
+            {
+                titleText,
+                topActions,
+            }
+        };
+        Grid.SetRow(topActions, 0);
+        Grid.SetColumn(topActions, 1);
+
+        Grid.SetRow(_programDirectoryText, 1);
+        Grid.SetColumnSpan(_programDirectoryText, 2);
+        headerGrid.Children.Add(_programDirectoryText);
+
+        Grid.SetRow(_scriptsDirectoryText, 2);
+        Grid.SetColumnSpan(_scriptsDirectoryText, 2);
+        headerGrid.Children.Add(_scriptsDirectoryText);
+        DockPanel.SetDock(headerGrid, Dock.Top);
 
         _gamesPanel = new StackPanel
         {
             Spacing = 10,
-            Margin = new Thickness(12),
+            Margin = new Thickness(20, 0, 20, 20),
         };
 
         var scroll = new ScrollViewer
@@ -168,15 +155,17 @@ public sealed class MainWindow : Window
             Content = _gamesPanel,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Background = WindowBackgroundBrush,
         };
 
         Content = new DockPanel
         {
             LastChildFill = true,
+            Background = WindowBackgroundBrush,
             Children =
             {
                 menuBar,
-                toolbar,
+                headerGrid,
                 scroll,
             },
         };
@@ -248,11 +237,28 @@ public sealed class MainWindow : Window
         _gamesPanel.Children.Clear();
         if (_games.Count == 0)
         {
-            _gamesPanel.Children.Add(new TextBlock
+            _gamesPanel.Children.Add(new StackPanel
             {
-                Text = "No games configured. Use Add Game or Load Game to get started.",
-                TextWrapping = TextWrapping.Wrap,
-                Opacity = 0.8,
+                Spacing = 8,
+                Margin = new Thickness(0, 80, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "No games configured",
+                        FontSize = 18,
+                        Foreground = PrimaryTextBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Click 'Add Game' to create your first game configuration",
+                        FontSize = 14,
+                        Foreground = SubtleTextBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                    },
+                },
             });
             return;
         }
@@ -264,60 +270,82 @@ public sealed class MainWindow : Window
                 Text = game.Name,
                 FontSize = 18,
                 FontWeight = FontWeight.Bold,
-            };
-            var statusText = new TextBlock
-            {
-                Text = GetStatusText(game.Status),
-                Foreground = GetStatusBrush(game.Status),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(10, 0, 0, 0),
+                Foreground = PrimaryTextBrush,
             };
 
-            var titleRow = new StackPanel
+            var statusPill = new Border
+            {
+                Background = GetStatusBrush(game.Status),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 4),
+                Margin = new Thickness(10, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = GetStatusText(game.Status),
+                    Foreground = Brushes.White,
+                    FontSize = 12,
+                    FontWeight = FontWeight.Bold,
+                },
+            };
+
+            var titleGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+                Children = { nameText, statusPill },
+            };
+            Grid.SetColumn(statusPill, 1);
+
+            var connectionRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Children = { nameText, statusText },
+                Spacing = 6,
+                Margin = new Thickness(0, 8, 0, 0),
+                Children =
+                {
+                    new TextBlock { Text = "Connection:", FontSize = 12, Foreground = SubtleTextBrush },
+                    new TextBlock { Text = game.Host, FontSize = 12, Foreground = PrimaryTextBrush },
+                    new TextBlock { Text = ":", FontSize = 12, Foreground = PrimaryTextBrush },
+                    new TextBlock { Text = game.Port.ToString(), FontSize = 12, Foreground = PrimaryTextBrush },
+                    new TextBlock { Text = "|", FontSize = 12, Margin = new Thickness(8, 0), Foreground = SubtleTextBrush },
+                    CreateReadOnlyIndicator(game.AutoConnect, "Auto-connect"),
+                    new TextBlock { Text = "|", FontSize = 12, Margin = new Thickness(8, 0), Foreground = SubtleTextBrush },
+                    CreateReadOnlyIndicator(game.NativeHaggleEnabled, "Native haggle"),
+                },
             };
 
             var detailText = new TextBlock
             {
-                Text = $"{game.Host}:{game.Port}  listen {game.ListenPort}  sectors {game.Sectors}  scripts {GetScriptDirectory(game)}",
+                Text = $"Listen {game.ListenPort} | Sectors {game.Sectors} | Scripts {GetScriptDirectory(game)}",
                 TextWrapping = TextWrapping.Wrap,
-                Opacity = 0.8,
+                Foreground = SubtleTextBrush,
+                FontSize = 12,
             };
 
-            var startButton = new Button
-            {
-                Content = "Start",
-                IsEnabled = game.Status is GameStatus.Stopped or GameStatus.Error,
-                MinWidth = 80,
-            };
+            var startButton = CreatePrimaryButton("Start", 80);
+            startButton.IsEnabled = game.Status is GameStatus.Stopped or GameStatus.Error;
             startButton.Click += async (_, _) =>
             {
                 SelectGame(game);
                 await StartSelectedGameAsync();
             };
 
-            var stopButton = new Button
-            {
-                Content = "Stop",
-                IsEnabled = game.Status is GameStatus.Running or GameStatus.Starting,
-                MinWidth = 80,
-            };
+            var stopButton = CreatePrimaryButton("Stop", 80);
+            stopButton.IsEnabled = game.Status is GameStatus.Running or GameStatus.Starting;
             stopButton.Click += async (_, _) =>
             {
                 SelectGame(game);
                 await StopSelectedGameAsync();
             };
 
-            var editButton = new Button { Content = "Edit", MinWidth = 80 };
+            var editButton = CreateSecondaryButton("Edit", 80);
             editButton.Click += async (_, _) =>
             {
                 SelectGame(game);
                 await EditSelectedGameAsync();
             };
 
-            var removeButton = new Button { Content = "Remove", MinWidth = 80 };
+            var removeButton = CreateSecondaryButton("Remove", 80);
             removeButton.Click += async (_, _) =>
             {
                 SelectGame(game);
@@ -328,20 +356,36 @@ public sealed class MainWindow : Window
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 8,
-                Margin = new Thickness(0, 10, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
                 Children = { startButton, stopButton, editButton, removeButton },
             };
+
+            var cardGrid = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
+                RowSpacing = 6,
+            };
+            cardGrid.Children.Add(titleGrid);
+            Grid.SetRow(connectionRow, 1);
+            Grid.SetColumn(connectionRow, 0);
+            cardGrid.Children.Add(connectionRow);
+            Grid.SetRow(detailText, 2);
+            Grid.SetColumn(detailText, 0);
+            cardGrid.Children.Add(detailText);
+            Grid.SetColumn(buttonRow, 1);
+            Grid.SetRowSpan(buttonRow, 3);
+            cardGrid.Children.Add(buttonRow);
 
             var border = new Border
             {
                 Background = ReferenceEquals(game, _selectedGame) ? SelectedRowBrush : RowBrush,
                 CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(14),
-                Child = new StackPanel
-                {
-                    Spacing = 6,
-                    Children = { titleRow, detailText, buttonRow },
-                },
+                BorderBrush = CardBorderBrush,
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(15),
+                Child = cardGrid,
             };
             border.PointerPressed += (_, _) => SelectGame(game);
 
@@ -353,27 +397,65 @@ public sealed class MainWindow : Window
     {
         _selectedGame = game;
         RefreshGamesPanel();
-        RefreshSelectedGameUi();
         RebuildProxyMenu();
     }
 
     private void RefreshSelectedGameUi()
     {
-        if (_selectedGame == null)
-        {
-            _selectedGameText.Text = "No game selected";
-            _startButton.IsEnabled = false;
-            _stopButton.IsEnabled = false;
-            _editButton.IsEnabled = false;
-            _removeButton.IsEnabled = false;
-            return;
-        }
+        RebuildProxyMenu();
+    }
 
-        _selectedGameText.Text = $"Selected: {_selectedGame.Name}";
-        _startButton.IsEnabled = _selectedGame.Status is GameStatus.Stopped or GameStatus.Error;
-        _stopButton.IsEnabled = _selectedGame.Status is GameStatus.Running or GameStatus.Starting;
-        _editButton.IsEnabled = true;
-        _removeButton.IsEnabled = true;
+    private Button CreatePrimaryButton(string text, double? minWidth = null)
+    {
+        return new Button
+        {
+            Content = text,
+            MinWidth = minWidth ?? 0,
+            Background = PrimaryBrush,
+            Foreground = Brushes.White,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 10),
+            FontWeight = FontWeight.Bold,
+        };
+    }
+
+    private Button CreateSecondaryButton(string text, double? minWidth = null)
+    {
+        return new Button
+        {
+            Content = text,
+            MinWidth = minWidth ?? 0,
+            Background = PrimaryMutedBrush,
+            Foreground = Brushes.White,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 10),
+            FontWeight = FontWeight.Bold,
+        };
+    }
+
+    private Control CreateReadOnlyIndicator(bool isChecked, string label)
+    {
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Children =
+            {
+                new CheckBox
+                {
+                    IsChecked = isChecked,
+                    IsEnabled = false,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                new TextBlock
+                {
+                    Text = label,
+                    FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = PrimaryTextBrush,
+                },
+            },
+        };
     }
 
     private void RebuildProxyMenu()

@@ -173,6 +173,7 @@ internal static class mombotCatalog
     private static readonly ReadOnlyCollection<mombotAliasSpec> _initialAliases =
         Array.AsReadOnly(new[]
         {
+            new mombotAliasSpec("?", "help", "Compatibility alias for help."),
             new mombotAliasSpec("qss", "status", "USER_INTERFACE normalizes qss to status."),
             new mombotAliasSpec("sec", "sector", "Short-form sector alias."),
             new mombotAliasSpec("sect", "sector", "Short-form sector alias."),

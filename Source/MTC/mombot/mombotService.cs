@@ -496,6 +496,12 @@ internal sealed class mombotService
     {
         isModeScript = false;
 
+        if (TryResolveNativeCompatScriptReference(canonical, out string? compatReference, out string? compatFullPath))
+        {
+            isModeScript = IsModeScriptPath(compatFullPath);
+            return compatReference;
+        }
+
         if (command?.Kind == mombotCommandKind.Module &&
             TryResolveExplicitScriptReference(command.Source, out string? explicitReference, out string? explicitFullPath))
         {
@@ -510,6 +516,118 @@ internal sealed class mombotService
         }
 
         return null;
+    }
+
+    private bool TryResolveNativeCompatScriptReference(string canonical, out string? scriptReference, out string? fullPath)
+    {
+        scriptReference = null;
+        fullPath = null;
+
+        string? compatPath = canonical.ToLowerInvariant() switch
+        {
+            "refresh" => EnsureRefreshCompatScript(),
+            "storeship" => EnsureStoreshipCompatScript(),
+            _ => null,
+        };
+
+        if (string.IsNullOrWhiteSpace(compatPath) || !File.Exists(compatPath))
+            return false;
+
+        fullPath = Path.GetFullPath(compatPath);
+        scriptReference = BuildLoadReference(fullPath);
+        return true;
+    }
+
+    private string? EnsureStoreshipCompatScript()
+    {
+        string scriptsDirectory = GetScriptsDirectory();
+        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
+        if (!Directory.Exists(sourceRoot))
+            return null;
+
+        string compatPath = Path.Combine(sourceRoot, "commands", "data", "twx3_native_storeship.ts");
+        string content =
+            "# Native TWX3 compatibility wrapper for storeship.\n" +
+            ":storeship\n" +
+            ":shipstore\n" +
+            "\n" +
+            "gosub :BOT~loadVars\n" +
+            "\n" +
+            "\tgosub :player~currentPrompt\n" +
+            "\tsetVar $PLAYER~startingLocation $PLAYER~CURRENT_PROMPT\n" +
+            "\tsetVar $BOT~validPrompts \"Command Citadel\"\n" +
+            "\tgosub :BOT~checkStartingPrompt\n" +
+            "\tgosub :ship~savetheship\n" +
+            "\n" +
+            "halt\n" +
+            "\n" +
+            "#INCLUDES:\n" +
+            "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
+            "include \"source\\module_includes\\bot\\helpfile\\bot\"\n" +
+            "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
+            "include \"source\\bot_includes\\player\\currentprompt\\player\"\n" +
+            "include \"source\\bot_includes\\ship\"\n" +
+            "include \"source\\bot_includes\\switchboard\"\n";
+
+        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
+        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
+            File.WriteAllText(compatPath, content);
+
+        return compatPath;
+    }
+
+    private string? EnsureRefreshCompatScript()
+    {
+        string scriptsDirectory = GetScriptsDirectory();
+        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
+        if (!Directory.Exists(sourceRoot))
+            return null;
+
+        string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_refresh.ts");
+        string content =
+            "# Native TWX3 compatibility wrapper for refresh/bootstrap data gathering.\n" +
+            ":refresh\n" +
+            ":twx3_native_refresh\n" +
+            "\n" +
+            "gosub :BOT~loadVars\n" +
+            "gosub :PLAYER~quikstats\n" +
+            "setVar $BOT~validPrompts \"Citadel Command\"\n" +
+            "gosub :BOT~checkStartingPrompt\n" +
+            "if ($PLAYER~CURRENT_PROMPT = \"Citadel\")\n" +
+            "\tsend \"q\"\n" +
+            "\tgosub :PLANET~getPlanetInfo\n" +
+            "\tsend \"q\"\n" +
+            "end\n" +
+            "\n" +
+            "gosub :PLAYER~getInfo\n" +
+            "gosub :GAME~gamestats\n" +
+            "gosub :SHIP~getShipStats\n" +
+            "gosub :PLAYER~quikstats\n" +
+            "gosub :SHIP~getShipCapStats\n" +
+            "gosub :SHIP~loadShipInfo\n" +
+            "gosub :PLANET~getPlanetStats\n" +
+            "gosub :PLANET~loadPlanetInfo\n" +
+            "\n" +
+            "if ($PLAYER~CURRENT_PROMPT = \"Citadel\")\n" +
+            "\tgosub :PLANET~landingSub\n" +
+            "end\n" +
+            "\n" +
+            "halt\n" +
+            "\n" +
+            "#INCLUDES:\n" +
+            "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
+            "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
+            "include \"source\\bot_includes\\player\"\n" +
+            "include \"source\\bot_includes\\game\"\n" +
+            "include \"source\\bot_includes\\ship\"\n" +
+            "include \"source\\bot_includes\\planet\"\n" +
+            "include \"source\\bot_includes\\switchboard\"\n";
+
+        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
+        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
+            File.WriteAllText(compatPath, content);
+
+        return compatPath;
     }
 
     private bool TryResolveExplicitScriptReference(string source, out string? scriptReference, out string? fullPath)
@@ -608,6 +726,14 @@ internal sealed class mombotService
             return _interpreter.ProgramDir;
 
         return Directory.GetCurrentDirectory();
+    }
+
+    private string GetScriptsDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_interpreter?.ScriptDirectory))
+            return Path.GetFullPath(_interpreter.ScriptDirectory);
+
+        return Path.GetFullPath(Path.Combine(GetProgramDirectory(), "scripts"));
     }
 
     private bool IsModeScriptPath(string? fullPath)

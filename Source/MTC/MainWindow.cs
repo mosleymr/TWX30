@@ -171,6 +171,7 @@ public class MainWindow : Window
     private MombotPreferencesPage _mombotPreferencesPage;
     private string _mombotLastKeepaliveLine = string.Empty;
     private bool _mombotKeepaliveTickRunning;
+    private bool _mombotStartupDataGatherPending;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -4163,6 +4164,13 @@ public class MainWindow : Window
             }
         }
 
+        if (_gameInstance == null &&
+            !_telnet.IsConnected &&
+            _embeddedGameConfig != null)
+        {
+            LoadOfflineCurrentGameVars(_embeddedGameConfig);
+        }
+
         // Connection
         _state.GameName       = NormalizeGameName(p.Name);
         _state.Host           = p.Server;
@@ -4222,6 +4230,18 @@ public class MainWindow : Window
         UpdateWindowTitle();
         RefreshStatusBar();
         _state.NotifyChanged();
+    }
+
+    private static void LoadOfflineCurrentGameVars(EmbeddedGameConfig config)
+    {
+        config.Variables = NormalizeEmbeddedVariables(config.Variables);
+
+        var varsToLoad = new Dictionary<string, string>(config.Variables, StringComparer.OrdinalIgnoreCase);
+        varsToLoad.Remove("$gfile_chk");
+        varsToLoad.Remove("$doRelog");
+
+        Core.ScriptRef.ClearCurrentGameVars();
+        Core.ScriptRef.LoadVarsForGame(varsToLoad);
     }
 
     private void UpdateWindowTitle()
@@ -6026,6 +6046,88 @@ public class MainWindow : Window
         _mombotLastKeepaliveLine = string.Empty;
     }
 
+    private void ArmNativeMombotStartupDataGather()
+    {
+        _mombotStartupDataGatherPending = true;
+    }
+
+    private void ClearNativeMombotStartupDataGather()
+    {
+        _mombotStartupDataGatherPending = false;
+    }
+
+    private static bool IsMissingMombotStatsValue(string value)
+    {
+        string trimmed = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return true;
+
+        trimmed = trimmed.TrimEnd('%').Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ||
+               string.Equals(trimmed, "0", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool HasMombotCatalogFileData(string currentVarName)
+    {
+        string filePath = ResolveMombotCurrentFilePath(currentVarName);
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return false;
+
+        try
+        {
+            return File.ReadLines(filePath).Any(line => !string.IsNullOrWhiteSpace(line));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task TryRunNativeMombotStartupDataGatherAsync()
+    {
+        await Task.Yield();
+
+        if (!_mombotStartupDataGatherPending ||
+            !_mombot.Enabled ||
+            _gameInstance == null ||
+            !_gameInstance.IsConnected)
+        {
+            return;
+        }
+
+        MombotPromptSurface surface = GetMombotPromptSurface();
+        if (surface == MombotPromptSurface.Unknown && _gameInstance.IsConnected)
+        {
+            int currentSector = Core.ScriptRef.GetCurrentSector();
+            if (currentSector <= 0)
+                currentSector = _state.Sector;
+
+            if (currentSector > 0 && !_gameInstance.IsProxyMenuActive)
+            {
+                surface = MombotPromptSurface.Command;
+                SetMombotCurrentVars("Command", "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+            }
+        }
+
+        if (surface != MombotPromptSurface.Command && surface != MombotPromptSurface.Citadel)
+            return;
+
+        bool missingGameStats = IsMissingMombotStatsValue(
+            ReadCurrentMombotVar("0", "$GAME~ptradesetting", "$ptradesetting"));
+        bool missingShipCatalog = !HasMombotCatalogFileData("$SHIP~cap_file");
+        bool missingPlanetCatalog = !HasMombotCatalogFileData("$PLANET~planet_file");
+
+        if (!missingGameStats && !missingShipCatalog && !missingPlanetCatalog)
+        {
+            _mombotStartupDataGatherPending = false;
+            return;
+        }
+
+        _mombotStartupDataGatherPending = false;
+        PublishMombotLocalMessage("Mombot: gathering initial game, ship, and planet data.");
+        await ExecuteMombotUiCommandAsync("refresh");
+    }
+
     private bool ShouldStopNativeMombotAfterDisconnect()
     {
         if (!_mombot.Enabled)
@@ -6611,13 +6713,15 @@ public class MainWindow : Window
         PrimeMombotBootstrapState(botConfig);
         CurrentInterpreter?.ActivateBotContext(botConfig, requestedBotName);
         SyncMombotRuntimeConfigFromTwxpCfg();
+        ArmNativeMombotStartupDataGather();
 
         if (_gameInstance.IsConnected)
         {
             SeedMombotRelogVarsFromCurrentState();
             ApplyMombotConfigChange(config => config.Enabled = true);
-            LoadMombotStartupScripts();
             ShowMombotStartupBanner(connected: true);
+            await TryRunNativeMombotStartupDataGatherAsync();
+            LoadMombotStartupScripts();
             await SendMombotStartupAnnouncementsAsync();
             ApplyMombotExecutionRefresh();
         }
@@ -6688,6 +6792,7 @@ public class MainWindow : Window
 
         TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}'");
         ClearMombotRelogState();
+        ClearNativeMombotStartupDataGather();
         string nativeBotName = LoadConfiguredBotSections().First(bot => bot.IsNative).Config.Name;
         CurrentInterpreter?.ClearActiveBotContext(nativeBotName);
 
@@ -7331,6 +7436,8 @@ public class MainWindow : Window
         {
             await SendNativeMombotEscapeAsync();
         }
+
+        await TryRunNativeMombotStartupDataGatherAsync();
     }
 
     private async Task SendNativeMombotEscapeAsync()
@@ -10411,6 +10518,9 @@ public class MainWindow : Window
             PublishMombotLocalMessage("Enable Mombot first.");
             return;
         }
+
+        if (string.Equals(input.Trim(), "refresh", StringComparison.OrdinalIgnoreCase))
+            _mombotStartupDataGatherPending = false;
 
         _mombot.TryExecuteLocalInput(input, out _);
         ApplyMombotExecutionRefresh();
