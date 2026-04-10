@@ -7,6 +7,7 @@ namespace TWXProxy.Core;
 public sealed record RunningScriptInfo(
     int Id,
     string Name,
+    string Reference,
     bool IsSystemScript,
     bool IsBot,
     bool Paused);
@@ -39,6 +40,7 @@ public static class ProxyGameOperations
             scripts.Add(new RunningScriptInfo(
                 i,
                 script.ScriptName,
+                script.Compiler?.ScriptFile ?? script.LoadEventName ?? script.ScriptName,
                 script.System,
                 script.IsBot,
                 script.Paused));
@@ -81,7 +83,10 @@ public static class ProxyGameOperations
             if (script == null)
                 continue;
 
-            if (string.Equals(script.ScriptName, scriptName, StringComparison.OrdinalIgnoreCase))
+            string runningReference = script.Compiler?.ScriptFile ?? script.LoadEventName ?? script.ScriptName;
+            bool matchesProgramDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ProgramDir);
+            bool matchesScriptDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ScriptDirectory);
+            if (matchesProgramDir || matchesScriptDir)
             {
                 interpreter.StopByHandle(script);
                 return true;

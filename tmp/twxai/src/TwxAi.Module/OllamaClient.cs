@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TwxAi.Module;
 
@@ -38,7 +39,7 @@ internal sealed class OllamaClient : IDisposable
 
         using HttpResponseMessage response =
             await _httpClient.PostAsJsonAsync("api/chat", payload, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessAsync(response, cancellationToken);
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using JsonDocument document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
@@ -52,9 +53,53 @@ internal sealed class OllamaClient : IDisposable
         return string.Empty;
     }
 
+    public async Task<IReadOnlyList<string>> GetInstalledModelsAsync(CancellationToken cancellationToken)
+    {
+        using HttpResponseMessage response = await _httpClient.GetAsync("api/tags", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+
+        await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        TagsResponse? tags = await JsonSerializer.DeserializeAsync<TagsResponse>(stream, cancellationToken: cancellationToken);
+        return (tags?.Models ?? [])
+            .Select(model => model.Name?.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Cast<string>()
+            .ToArray();
+    }
+
     public void Dispose()
     {
         _httpClient.Dispose();
+    }
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        string body = await response.Content.ReadAsStringAsync(cancellationToken);
+        string message = TryExtractErrorMessage(body);
+        if (string.IsNullOrWhiteSpace(message))
+            message = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase})";
+        throw new HttpRequestException(message, null, response.StatusCode);
+    }
+
+    private static string TryExtractErrorMessage(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return string.Empty;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+            if (document.RootElement.TryGetProperty("error", out JsonElement errorElement))
+                return errorElement.GetString()?.Trim() ?? string.Empty;
+        }
+        catch
+        {
+        }
+
+        return body.Trim();
     }
 
     private static string NormalizeRole(string? role)
@@ -64,5 +109,17 @@ internal sealed class OllamaClient : IDisposable
         if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
             return "system";
         return "user";
+    }
+
+    private sealed class TagsResponse
+    {
+        [JsonPropertyName("models")]
+        public List<TagModel>? Models { get; set; }
+    }
+
+    private sealed class TagModel
+    {
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
     }
 }

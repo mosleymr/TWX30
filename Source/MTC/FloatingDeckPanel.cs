@@ -26,6 +26,8 @@ public sealed class FloatingDeckPanel : Border
     private const double ResizeHandleThickness = 8;
     private const double HeaderChromeHeight = 56;
     private const double MinimizedPanelHeight = 52;
+    private static readonly IBrush ResizeCueBrush = new SolidColorBrush(Color.FromArgb(58, 0, 212, 201));
+    private static readonly IBrush ResizeCornerCueBrush = new SolidColorBrush(Color.FromArgb(72, 255, 193, 74));
     private readonly Border _bodyHost;
     private readonly Button _minButton;
     private readonly Button? _closeButton;
@@ -51,7 +53,9 @@ public sealed class FloatingDeckPanel : Border
     public bool IsMinimized => _isMinimized;
     public bool IsClosed => _isClosed;
     public double PanelWidth => Width;
+    public double PanelHeight => GetCurrentPanelHeight();
     public double BodyHeight => _bodyHeight;
+    public Func<FloatingDeckPanel, double, double, (double Left, double Top)>? DragSnapHandler { get; set; }
 
     public event Action<FloatingDeckPanel>? Activated;
     public event Action<FloatingDeckPanel>? StateChanged;
@@ -155,6 +159,7 @@ public sealed class FloatingDeckPanel : Border
             Background = headerBrush,
             CornerRadius = new CornerRadius(14, 14, 0, 0),
             Padding = new Thickness(14, 10),
+            Cursor = new Cursor(StandardCursorType.DragMove),
             Child = new Grid
             {
                 ColumnDefinitions =
@@ -221,9 +226,9 @@ public sealed class FloatingDeckPanel : Border
         Child = resizeGrid;
     }
 
-    public void MoveTo(double left, double top)
+    public void MoveTo(double left, double top, bool clampToHost = true)
     {
-        if (Parent is Control host)
+        if (clampToHost && Parent is Control host)
         {
             double panelWidth = GetCurrentPanelWidth();
             double panelHeight = GetCurrentPanelHeight();
@@ -291,6 +296,7 @@ public sealed class FloatingDeckPanel : Border
             Foreground = foreground,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
+            Cursor = new Cursor(StandardCursorType.Hand),
         };
     }
 
@@ -299,13 +305,40 @@ public sealed class FloatingDeckPanel : Border
         var handle = new Border
         {
             Background = Brushes.Transparent,
+            Cursor = new Cursor(GetCursorType(edge)),
         };
         handle.PointerPressed += (sender, e) => OnResizePointerPressed(sender, e, edge);
         handle.PointerMoved += OnResizePointerMoved;
         handle.PointerReleased += OnResizePointerReleased;
+        handle.PointerEntered += (_, _) => handle.Background = IsCorner(edge) ? ResizeCornerCueBrush : ResizeCueBrush;
+        handle.PointerExited += (_, _) =>
+        {
+            if (!_isResizing || _resizeEdge != edge)
+                handle.Background = Brushes.Transparent;
+        };
         Grid.SetRow(handle, row);
         Grid.SetColumn(handle, column);
         host.Children.Add(handle);
+    }
+
+    private static bool IsCorner(ResizeEdge edge)
+        => edge == (ResizeEdge.Top | ResizeEdge.Left)
+            || edge == (ResizeEdge.Top | ResizeEdge.Right)
+            || edge == (ResizeEdge.Bottom | ResizeEdge.Left)
+            || edge == (ResizeEdge.Bottom | ResizeEdge.Right);
+
+    private static StandardCursorType GetCursorType(ResizeEdge edge)
+    {
+        return edge switch
+        {
+            ResizeEdge.Left or ResizeEdge.Right => StandardCursorType.SizeWestEast,
+            ResizeEdge.Top or ResizeEdge.Bottom => StandardCursorType.SizeNorthSouth,
+            ResizeEdge.Top | ResizeEdge.Left => StandardCursorType.TopLeftCorner,
+            ResizeEdge.Top | ResizeEdge.Right => StandardCursorType.TopRightCorner,
+            ResizeEdge.Bottom | ResizeEdge.Left => StandardCursorType.BottomLeftCorner,
+            ResizeEdge.Bottom | ResizeEdge.Right => StandardCursorType.BottomRightCorner,
+            _ => StandardCursorType.Arrow,
+        };
     }
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -327,9 +360,12 @@ public sealed class FloatingDeckPanel : Border
             return;
 
         Point current = e.GetPosition(host);
-        MoveTo(
-            _dragStartLeft + (current.X - _dragStartPointer.X),
-            _dragStartTop + (current.Y - _dragStartPointer.Y));
+        double left = _dragStartLeft + (current.X - _dragStartPointer.X);
+        double top = _dragStartTop + (current.Y - _dragStartPointer.Y);
+        if (DragSnapHandler != null)
+            (left, top) = DragSnapHandler(this, left, top);
+
+        MoveTo(left, top);
         e.Handled = true;
     }
 

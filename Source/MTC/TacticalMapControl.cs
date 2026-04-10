@@ -12,26 +12,44 @@ using Core = TWXProxy.Core;
 
 namespace MTC;
 
+public enum TacticalMapViewMode
+{
+    Bubble,
+    Hex,
+}
+
 /// <summary>
 /// Compact tactical map used by the optional "command deck" skin.
-/// It follows the current sector and renders the nearby bubble as a
-/// luminous node-link display rather than the larger standalone map window.
+/// It follows the current sector and renders the nearby bubble as either
+/// the original node-link bubble view or a warp-count-driven hex view.
 /// </summary>
 public class TacticalMapControl : Control
 {
     private const int MaxDepth = 4;
-    private const float GridX = 110f;
-    private const float GridY = 84f;
+    private const float BubbleGridX = 110f;
+    private const float BubbleGridY = 84f;
     private const float NodeRadius = 20f;
+    private const float HexRadius = 34f;
+    private const float HexGapFactor = 1.16f;
     private const float DefaultZoomFactor = 0.82f;
     private const float MinZoomFactor = 0.45f;
     private const float MaxZoomFactor = 1.75f;
     private const float ZoomStep = 0.12f;
+    private static readonly HexCell[] HexDirections =
+    [
+        new(1, 0),
+        new(1, -1),
+        new(0, -1),
+        new(-1, 0),
+        new(-1, 1),
+        new(0, 1),
+    ];
 
     private readonly Func<int> _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly (float X, float Y, float Size, byte Alpha)[] _stars;
     private float _zoomFactor = DefaultZoomFactor;
+    private TacticalMapViewMode _viewMode = TacticalMapViewMode.Bubble;
 
     public TacticalMapControl(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
     {
@@ -53,8 +71,10 @@ public class TacticalMapControl : Control
     }
 
     public int ZoomPercent => (int)Math.Round(_zoomFactor * 100f);
+    public TacticalMapViewMode ViewMode => _viewMode;
 
     public event Action<TacticalMapControl>? ZoomChanged;
+    public event Action<TacticalMapControl>? ViewModeChanged;
 
     public override void Render(DrawingContext context)
     {
@@ -73,23 +93,34 @@ public class TacticalMapControl : Control
             return;
         }
 
-        (float minX, float minY, float maxX, float maxY) = MeasureBounds(snapshot.Positions.Values);
+        float contentMargin = _viewMode == TacticalMapViewMode.Hex ? HexRadius + 18f : NodeRadius + 12f;
+        (float minX, float minY, float maxX, float maxY) = MeasureBounds(snapshot.Positions.Values, contentMargin);
         float contentWidth = Math.Max(1f, maxX - minX);
         float contentHeight = Math.Max(1f, maxY - minY);
-        float framePadding = snapshot.Positions.Count > 1 ? 128f : 92f;
+        float framePadding = snapshot.Positions.Count > 1
+            ? (_viewMode == TacticalMapViewMode.Hex ? 156f : 128f)
+            : (_viewMode == TacticalMapViewMode.Hex ? 112f : 92f);
         float scale = Math.Min((width - framePadding) / contentWidth, (height - framePadding) / contentHeight);
-        scale = Math.Clamp(scale * _zoomFactor, 0.34f, 1.12f);
+        scale = Math.Clamp(
+            scale * _zoomFactor,
+            _viewMode == TacticalMapViewMode.Hex ? 0.26f : 0.34f,
+            _viewMode == TacticalMapViewMode.Hex ? 1.08f : 1.12f);
 
         canvas.Save();
         canvas.Translate(width / 2f, height / 2f);
         canvas.Scale(scale);
         canvas.Translate(-(minX + maxX) / 2f, -(minY + maxY) / 2f);
 
-        DrawEdges(canvas, snapshot);
-        DrawNodes(canvas, snapshot);
+        if (_viewMode == TacticalMapViewMode.Hex)
+            DrawHexCells(canvas, snapshot);
+        else
+        {
+            DrawEdges(canvas, snapshot);
+            DrawNodes(canvas, snapshot);
+        }
 
         canvas.Restore();
-        DrawOverlayLegend(canvas, width, height, snapshot);
+        DrawOverlayLegend(canvas, width, height, snapshot, _viewMode);
     }
 
     public void AdjustZoom(float delta)
@@ -100,6 +131,16 @@ public class TacticalMapControl : Control
     public void ResetZoom()
     {
         SetZoom(DefaultZoomFactor);
+    }
+
+    public void SetViewMode(TacticalMapViewMode viewMode)
+    {
+        if (_viewMode == viewMode)
+            return;
+
+        _viewMode = viewMode;
+        InvalidateVisual();
+        ViewModeChanged?.Invoke(this);
     }
 
     private void SetZoom(float zoomFactor)
@@ -326,10 +367,59 @@ public class TacticalMapControl : Control
         }
     }
 
-    private static void DrawOverlayLegend(SKCanvas canvas, float width, float height, MapSnapshot snapshot)
+    private static void DrawHexCells(SKCanvas canvas, MapSnapshot snapshot)
+    {
+        using var fillPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var edgeGlow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 7f };
+        using var edgePaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2.4f };
+        using var sectorPaint = new SKPaint
+        {
+            IsAntialias = true,
+            TextSize = 13f,
+            TextAlign = SKTextAlign.Center,
+            Typeface = SKTypeface.Default,
+        };
+        using var portPaint = new SKPaint
+        {
+            IsAntialias = true,
+            TextSize = 10f,
+            TextAlign = SKTextAlign.Center,
+            Typeface = SKTypeface.Default,
+        };
+
+        foreach ((int sectorNumber, SKPoint position) in snapshot.Positions.OrderBy(kvp => snapshot.Depths.GetValueOrDefault(kvp.Key)))
+        {
+            snapshot.Sectors.TryGetValue(sectorNumber, out Core.SectorData? sector);
+            var palette = GetHexPalette(snapshot, sectorNumber, sector);
+            HashSet<int> sideDirections = GetHexSideDirections(snapshot, sectorNumber, sector);
+            using SKPath hexPath = CreateHexPath(position, HexRadius);
+
+            fillPaint.Color = palette.Fill;
+            canvas.DrawPath(hexPath, fillPaint);
+
+            edgeGlow.Color = palette.Edge.WithAlpha((byte)(sectorNumber == snapshot.CurrentSector ? 72 : 34));
+            edgePaint.Color = palette.Edge;
+            foreach (int directionIndex in sideDirections)
+            {
+                GetHexSide(position, HexRadius, directionIndex, out SKPoint sideStart, out SKPoint sideEnd);
+                canvas.DrawLine(sideStart, sideEnd, edgeGlow);
+                canvas.DrawLine(sideStart, sideEnd, edgePaint);
+            }
+
+            string portLabel = GetPortTypeLabel(sector);
+            sectorPaint.Color = palette.Text;
+            portPaint.Color = palette.PortText;
+            float sectorY = string.IsNullOrEmpty(portLabel) ? position.Y + 4f : position.Y - 4f;
+            canvas.DrawText(sectorNumber.ToString(), position.X, sectorY, sectorPaint);
+            if (!string.IsNullOrEmpty(portLabel))
+                canvas.DrawText(portLabel, position.X, position.Y + 14f, portPaint);
+        }
+    }
+
+    private static void DrawOverlayLegend(SKCanvas canvas, float width, float height, MapSnapshot snapshot, TacticalMapViewMode viewMode)
     {
         string text = snapshot.CurrentSector > 0
-            ? $"LIVE SECTOR {snapshot.CurrentSector}  |  {snapshot.Positions.Count} NODE VIEW"
+            ? $"LIVE SECTOR {snapshot.CurrentSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
             : "LIVE TACTICAL OVERLAY";
 
         using var overlayPaint = new SKPaint
@@ -346,7 +436,7 @@ public class TacticalMapControl : Control
             Typeface = SKTypeface.Default,
         };
 
-        canvas.DrawRoundRect(new SKRoundRect(new SKRect(16, height - 36, 240, height - 12), 8, 8), overlayPaint);
+        canvas.DrawRoundRect(new SKRoundRect(new SKRect(16, height - 36, 326, height - 12), 8, 8), overlayPaint);
         canvas.DrawText(text, 28, height - 18, textPaint);
     }
 
@@ -397,7 +487,10 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = visited;
-        snapshot.Positions = ComputePositions(db, currentSector, visited);
+        if (_viewMode == TacticalMapViewMode.Hex)
+            ApplyHexLayout(snapshot, db, currentSector, visited);
+        else
+            snapshot.Positions = ComputeBubblePositions(db, currentSector, visited);
 
         var header = db.DBHeader;
         AddLandmark(snapshot.Landmarks, header.StarDock);
@@ -407,38 +500,20 @@ public class TacticalMapControl : Control
         return snapshot;
     }
 
-    private static Dictionary<int, SKPoint> ComputePositions(Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
+    private static Dictionary<int, SKPoint> ComputeBubblePositions(Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
     {
         var cellOf = new Dictionary<int, (int Col, int Row)> { [centerSector] = (0, 0) };
         var usedCells = new HashSet<(int Col, int Row)> { (0, 0) };
-        var parentOf = new Dictionary<int, int>();
         var placed = new HashSet<int> { centerSector };
         var placeQueue = new Queue<int>();
         placeQueue.Enqueue(centerSector);
+        Dictionary<int, int> parentOf = BuildParentMap(db, centerSector, visited);
 
         (int Col, int Row)[] offsets =
         [
             ( 1,  0), ( 1,  1), ( 0,  1), (-1,  1),
             (-1,  0), (-1, -1), ( 0, -1), ( 1, -1),
         ];
-
-        var bfs = new Queue<int>();
-        var seen = new HashSet<int> { centerSector };
-        bfs.Enqueue(centerSector);
-        while (bfs.Count > 0)
-        {
-            int sectorNumber = bfs.Dequeue();
-            Core.SectorData? sector = db.GetSector(sectorNumber);
-            if (sector == null)
-                continue;
-
-            foreach (ushort warpTarget in sector.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !seen.Contains(w)))
-            {
-                seen.Add(warpTarget);
-                parentOf[warpTarget] = sectorNumber;
-                bfs.Enqueue(warpTarget);
-            }
-        }
 
         while (placeQueue.Count > 0)
         {
@@ -496,12 +571,107 @@ public class TacticalMapControl : Control
 
         var positions = new Dictionary<int, SKPoint>();
         foreach ((int sectorNumber, (int col, int row)) in cellOf)
-            positions[sectorNumber] = new SKPoint(col * GridX, row * GridY);
+            positions[sectorNumber] = new SKPoint(col * BubbleGridX, row * BubbleGridY);
 
         return positions;
     }
 
-    private static (float MinX, float MinY, float MaxX, float MaxY) MeasureBounds(IEnumerable<SKPoint> points)
+    private static void ApplyHexLayout(MapSnapshot snapshot, Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
+    {
+        var cellOf = new Dictionary<int, HexCell> { [centerSector] = new HexCell(0, 0) };
+        var sectorByCell = new Dictionary<HexCell, int> { [new HexCell(0, 0)] = centerSector };
+        var placed = new HashSet<int> { centerSector };
+        var usedCells = new HashSet<HexCell> { new(0, 0) };
+        var placeQueue = new Queue<int>();
+        placeQueue.Enqueue(centerSector);
+        Dictionary<int, int> parentOf = BuildParentMap(db, centerSector, visited);
+
+        while (placeQueue.Count > 0)
+        {
+            int sectorNumber = placeQueue.Dequeue();
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null)
+                continue;
+
+            HexCell origin = cellOf[sectorNumber];
+            List<int> orderedDirections = OrderHexDirections(origin, sectorNumber, cellOf, parentOf);
+
+            foreach (ushort warpTarget in sector.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !placed.Contains(w)))
+            {
+                if (!TryAssignHexCell(origin, orderedDirections, usedCells, out HexCell assignedCell))
+                    continue;
+
+                cellOf[warpTarget] = assignedCell;
+                sectorByCell[assignedCell] = warpTarget;
+                placed.Add(warpTarget);
+                placeQueue.Enqueue(warpTarget);
+            }
+        }
+
+        snapshot.HexCells = cellOf;
+        snapshot.SectorByHexCell = sectorByCell;
+        snapshot.Positions = cellOf.ToDictionary(kvp => kvp.Key, kvp => HexCellToPoint(kvp.Value));
+    }
+
+    private static Dictionary<int, int> BuildParentMap(Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
+    {
+        var parentOf = new Dictionary<int, int>();
+        var bfs = new Queue<int>();
+        var seen = new HashSet<int> { centerSector };
+        bfs.Enqueue(centerSector);
+
+        while (bfs.Count > 0)
+        {
+            int sectorNumber = bfs.Dequeue();
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null)
+                continue;
+
+            foreach (ushort warpTarget in sector.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !seen.Contains(w)))
+            {
+                seen.Add(warpTarget);
+                parentOf[warpTarget] = sectorNumber;
+                bfs.Enqueue(warpTarget);
+            }
+        }
+
+        return parentOf;
+    }
+
+    private static List<int> OrderHexDirections(HexCell origin, int sectorNumber, Dictionary<int, HexCell> cellOf, Dictionary<int, int> parentOf)
+    {
+        HexCell desiredDirection = new(1, 0);
+        if (parentOf.TryGetValue(sectorNumber, out int parentSector) && cellOf.TryGetValue(parentSector, out HexCell parentCell))
+            desiredDirection = new(origin.Q - parentCell.Q, origin.R - parentCell.R);
+
+        return Enumerable.Range(0, HexDirections.Length)
+            .OrderByDescending(index => HexDirections[index].Q * desiredDirection.Q + HexDirections[index].R * desiredDirection.R)
+            .ThenBy(index => index)
+            .ToList();
+    }
+
+    private static bool TryAssignHexCell(HexCell origin, IReadOnlyList<int> orderedDirections, HashSet<HexCell> usedCells, out HexCell assignedCell)
+    {
+        for (int ring = 1; ring <= 5; ring++)
+        {
+            foreach (int directionIndex in orderedDirections)
+            {
+                HexCell direction = HexDirections[directionIndex];
+                HexCell candidate = new(origin.Q + direction.Q * ring, origin.R + direction.R * ring);
+                if (usedCells.Contains(candidate))
+                    continue;
+
+                usedCells.Add(candidate);
+                assignedCell = candidate;
+                return true;
+            }
+        }
+
+        assignedCell = default;
+        return false;
+    }
+
+    private static (float MinX, float MinY, float MaxX, float MaxY) MeasureBounds(IEnumerable<SKPoint> points, float margin)
     {
         float minX = float.MaxValue;
         float minY = float.MaxValue;
@@ -516,7 +686,7 @@ public class TacticalMapControl : Control
             maxY = Math.Max(maxY, point.Y);
         }
 
-        return (minX - NodeRadius - 10f, minY - NodeRadius - 10f, maxX + NodeRadius + 10f, maxY + NodeRadius + 10f);
+        return (minX - margin, minY - margin, maxX + margin, maxY + margin);
     }
 
     private static void AddLandmark(HashSet<int> landmarks, int sectorNumber)
@@ -525,12 +695,209 @@ public class TacticalMapControl : Control
             landmarks.Add(sectorNumber);
     }
 
+    private static HashSet<int> GetHexSideDirections(MapSnapshot snapshot, int sectorNumber, Core.SectorData? sector)
+    {
+        var directions = new HashSet<int>();
+        if (sector == null)
+            return directions;
+
+        List<int> warps = sector.Warp.Where(w => w > 0).Select(w => (int)w).Distinct().ToList();
+        if (!snapshot.HexCells.TryGetValue(sectorNumber, out HexCell origin))
+            return directions;
+
+        foreach (int warpTarget in warps)
+        {
+            if (!snapshot.HexCells.TryGetValue(warpTarget, out HexCell target))
+                continue;
+
+            if (TryGetHexDirectionIndex(origin, target, out int directionIndex))
+                directions.Add(directionIndex);
+        }
+
+        int remaining = Math.Max(0, warps.Count - directions.Count);
+        foreach (int directionIndex in Enumerable.Range(0, HexDirections.Length))
+        {
+            if (remaining <= 0)
+                break;
+            if (directions.Contains(directionIndex))
+                continue;
+
+            directions.Add(directionIndex);
+            remaining--;
+        }
+
+        return directions;
+    }
+
+    private static bool TryGetHexDirectionIndex(HexCell origin, HexCell target, out int directionIndex)
+    {
+        int deltaQ = target.Q - origin.Q;
+        int deltaR = target.R - origin.R;
+        for (int index = 0; index < HexDirections.Length; index++)
+        {
+            if (HexDirections[index].Q == deltaQ && HexDirections[index].R == deltaR)
+            {
+                directionIndex = index;
+                return true;
+            }
+        }
+
+        directionIndex = -1;
+        return false;
+    }
+
+    private static SKPoint HexCellToPoint(HexCell cell)
+    {
+        float stepX = HexRadius * 1.7320508f * HexGapFactor;
+        float stepY = HexRadius * 1.5f * HexGapFactor;
+        return new SKPoint(
+            stepX * (cell.Q + cell.R * 0.5f),
+            stepY * cell.R);
+    }
+
+    private static SKPath CreateHexPath(SKPoint center, float radius)
+    {
+        SKPoint[] vertices = GetHexVertices(center, radius);
+        var path = new SKPath();
+        path.MoveTo(vertices[0]);
+        for (int index = 1; index < vertices.Length; index++)
+            path.LineTo(vertices[index]);
+        path.Close();
+        return path;
+    }
+
+    private static SKPoint[] GetHexVertices(SKPoint center, float radius)
+    {
+        var vertices = new SKPoint[6];
+        for (int index = 0; index < 6; index++)
+        {
+            float angleDegrees = -90f + (60f * index);
+            float angle = angleDegrees * MathF.PI / 180f;
+            vertices[index] = new SKPoint(
+                center.X + MathF.Cos(angle) * radius,
+                center.Y + MathF.Sin(angle) * radius);
+        }
+
+        return vertices;
+    }
+
+    private static void GetHexSide(SKPoint center, float radius, int directionIndex, out SKPoint start, out SKPoint end)
+    {
+        SKPoint[] vertices = GetHexVertices(center, radius);
+        switch (directionIndex)
+        {
+            case 0:
+                start = vertices[1];
+                end = vertices[2];
+                return;
+            case 1:
+                start = vertices[0];
+                end = vertices[1];
+                return;
+            case 2:
+                start = vertices[5];
+                end = vertices[0];
+                return;
+            case 3:
+                start = vertices[4];
+                end = vertices[5];
+                return;
+            case 4:
+                start = vertices[3];
+                end = vertices[4];
+                return;
+            default:
+                start = vertices[2];
+                end = vertices[3];
+                return;
+        }
+    }
+
+    private static (SKColor Fill, SKColor Edge, SKColor Text, SKColor PortText) GetHexPalette(MapSnapshot snapshot, int sectorNumber, Core.SectorData? sector)
+    {
+        bool isCurrent = sectorNumber == snapshot.CurrentSector;
+        bool isLandmark = snapshot.Landmarks.Contains(sectorNumber);
+        if (isCurrent)
+        {
+            return (
+                new SKColor(0x5b, 0x3c, 0x12, 210),
+                new SKColor(0xff, 0xc0, 0x54),
+                new SKColor(0xff, 0xf2, 0xc7),
+                new SKColor(0xff, 0xda, 0x7c));
+        }
+
+        if (isLandmark)
+        {
+            return (
+                new SKColor(0x14, 0x28, 0x34, 190),
+                new SKColor(0x58, 0xc1, 0xf7),
+                new SKColor(0xe8, 0xf7, 0xff),
+                new SKColor(0x9f, 0xdd, 0xff));
+        }
+
+        return sector?.Explored switch
+        {
+            Core.ExploreType.Yes => (
+                new SKColor(0x0e, 0x1c, 0x14, 190),
+                new SKColor(0x19, 0xcc, 0x3b),
+                new SKColor(0xdb, 0xff, 0xe2),
+                new SKColor(0x8a, 0xf6, 0xa1)),
+            Core.ExploreType.Density => (
+                new SKColor(0x12, 0x1d, 0x22, 190),
+                new SKColor(0x2c, 0xc7, 0xd9),
+                new SKColor(0xd9, 0xf9, 0xff),
+                new SKColor(0x8f, 0xeb, 0xff)),
+            _ => (
+                new SKColor(0x18, 0x0e, 0x20, 190),
+                new SKColor(0xb2, 0x29, 0xcf),
+                new SKColor(0xf4, 0xe8, 0xfa),
+                new SKColor(0xd7, 0x92, 0xe6)),
+        };
+    }
+
+    private static string GetPortTypeLabel(Core.SectorData? sector)
+    {
+        if (sector?.SectorPort == null || sector.SectorPort.Dead)
+            return string.Empty;
+
+        Core.Port port = sector.SectorPort;
+        if (port.ClassIndex == 9)
+            return "SD";
+
+        if (port.ClassIndex == 0 && !string.IsNullOrWhiteSpace(port.Name))
+        {
+            if (string.Equals(port.Name, "Rylos", StringComparison.OrdinalIgnoreCase))
+                return "RY";
+            if (string.Equals(port.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase))
+                return "AC";
+            if (string.Equals(port.Name, "Sol", StringComparison.OrdinalIgnoreCase))
+                return "SOL";
+        }
+
+        bool hasFuel = port.BuyProduct.TryGetValue(Core.ProductType.FuelOre, out bool buyFuel);
+        bool hasOrg = port.BuyProduct.TryGetValue(Core.ProductType.Organics, out bool buyOrg);
+        bool hasEquip = port.BuyProduct.TryGetValue(Core.ProductType.Equipment, out bool buyEquip);
+        if (hasFuel || hasOrg || hasEquip)
+        {
+            char fuel = hasFuel && buyFuel ? 'B' : 'S';
+            char org = hasOrg && buyOrg ? 'B' : 'S';
+            char equip = hasEquip && buyEquip ? 'B' : 'S';
+            return new string([fuel, org, equip]);
+        }
+
+        return port.ClassIndex > 0 ? $"C{port.ClassIndex}" : "PORT";
+    }
+
+    private readonly record struct HexCell(int Q, int R);
+
     private sealed class MapSnapshot
     {
         public int CurrentSector { get; set; }
         public Dictionary<int, SKPoint> Positions { get; set; } = new();
         public Dictionary<int, Core.SectorData?> Sectors { get; set; } = new();
         public Dictionary<int, int> Depths { get; set; } = new();
+        public Dictionary<int, HexCell> HexCells { get; set; } = new();
+        public Dictionary<HexCell, int> SectorByHexCell { get; set; } = new();
         public HashSet<int> Landmarks { get; } = [];
     }
 

@@ -3,7 +3,7 @@ using TWXProxy.Core;
 
 namespace TwxAi.Module;
 
-public sealed class TwxAiAssistantModule : IExpansionChatModule, IDisposable
+public sealed class TwxAiAssistantModule : IExpansionConfigurableChatModule, IDisposable
 {
     private readonly object _sync = new();
     private readonly List<string> _recentGameplay = new();
@@ -14,6 +14,7 @@ public sealed class TwxAiAssistantModule : IExpansionChatModule, IDisposable
     private OllamaClient? _ollama;
     private ScriptReferenceKnowledgeBase? _knowledgeBase;
     private string _transcriptPath = string.Empty;
+    private string _configPath = string.Empty;
 
     public string Id => "twxai-ollama";
     public string DisplayName => "TWX AI Assistant";
@@ -23,6 +24,7 @@ public sealed class TwxAiAssistantModule : IExpansionChatModule, IDisposable
         "Ask about TWX scripting, the current game state, or recent gameplay. I ground answers from script.html and the live session transcript.";
     public string ChatInputPlaceholder =>
         "Ask about script commands, gameplay, bot behavior, or what just happened...";
+    public string? CurrentModel => _config?.Model;
 
     public async Task InitializeAsync(ExpansionModuleContext context, CancellationToken cancellationToken)
     {
@@ -31,9 +33,8 @@ public sealed class TwxAiAssistantModule : IExpansionChatModule, IDisposable
         Directory.CreateDirectory(context.ModuleDataDirectory);
         Directory.CreateDirectory(Path.Combine(context.ModuleDataDirectory, "knowledge"));
 
-        _config = await TwxAiConfig.LoadOrCreateAsync(
-            Path.Combine(context.ModuleDataDirectory, "twxai.json"),
-            cancellationToken);
+        _configPath = Path.Combine(context.ModuleDataDirectory, "twxai.json");
+        _config = await TwxAiConfig.LoadOrCreateAsync(_configPath, cancellationToken);
         _knowledgeBase = await ScriptReferenceKnowledgeBase.LoadAsync(context, cancellationToken);
         _ollama = new OllamaClient(_config.Endpoint);
         _transcriptPath = Path.Combine(context.ModuleDataDirectory, "gameplay.log");
@@ -111,11 +112,31 @@ public sealed class TwxAiAssistantModule : IExpansionChatModule, IDisposable
             _context.Log($"Ask failed: {ex.Message}");
             return new ExpansionChatReply
             {
-                Content = $"I could not reach the local model. {ex.Message}",
+                Content = $"I could not use the local model. {ex.Message}",
                 IsError = true,
                 Status = $"Ollama error at {_config.Endpoint}",
             };
         }
+    }
+
+    public async Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken)
+    {
+        if (_ollama == null)
+            return Array.Empty<string>();
+
+        return await _ollama.GetInstalledModelsAsync(cancellationToken);
+    }
+
+    public async Task SetCurrentModelAsync(string model, CancellationToken cancellationToken)
+    {
+        if (_config == null)
+            throw new InvalidOperationException("AI module configuration is not loaded.");
+        if (string.IsNullOrWhiteSpace(model))
+            throw new InvalidOperationException("Model name cannot be empty.");
+
+        _config.Model = model.Trim();
+        await _config.SaveAsync(_configPath, cancellationToken);
+        _context?.Log($"AI assistant model changed to {_config.Model}");
     }
 
     public void Dispose()

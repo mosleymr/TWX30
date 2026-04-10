@@ -581,6 +581,10 @@ namespace TWXProxy.Core
         /// </summary>
         public static int GetCurrentSector()
         {
+            int extractorSector = GlobalModules.GlobalAutoRecorder.CurrentSector;
+            if (extractorSector > 0)
+                return extractorSector;
+
             return _currentSector;
         }
 

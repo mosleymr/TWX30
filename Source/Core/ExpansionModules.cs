@@ -56,6 +56,13 @@ public interface IExpansionChatModule : IExpansionModule
     Task<ExpansionChatReply> AskAsync(ExpansionChatRequest request, CancellationToken cancellationToken);
 }
 
+public interface IExpansionConfigurableChatModule : IExpansionChatModule
+{
+    string? CurrentModel { get; }
+    Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken);
+    Task SetCurrentModelAsync(string model, CancellationToken cancellationToken);
+}
+
 public sealed class ExpansionModuleContext
 {
     internal ExpansionModuleContext(

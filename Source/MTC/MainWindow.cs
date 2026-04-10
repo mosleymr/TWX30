@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using Avalonia;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
@@ -28,6 +29,9 @@ namespace MTC;
 public class MainWindow : Window
 {
     private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
+    private const double DeckPanelSnapThreshold = 18;
+    private const double DeckPanelSnapGap = 18;
+    private const double DeckPanelGridSize = 18;
 
     // ── Core components ────────────────────────────────────────────────────
     private readonly GameState       _state;
@@ -45,6 +49,8 @@ public class MainWindow : Window
     private Core.ExpansionModuleHost?      _moduleHost;
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
+    private readonly object                _embeddedStopSync = new();
+    private readonly SemaphoreSlim         _runtimeStopGate = new(1, 1);
     private readonly Core.ModLog           _sessionLog = new();
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
@@ -77,6 +83,8 @@ public class MainWindow : Window
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DeckPanelState> _deckPanelStates = new(StringComparer.OrdinalIgnoreCase);
     private int _deckNextZIndex = 100;
+    private bool _deckPanelsInitialized;
+    private bool _suppressDeckPanelStateSync;
     private TacticalMapControl? _tacticalMap;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
@@ -88,12 +96,22 @@ public class MainWindow : Window
     private string? _terminalFontFamilyName;
     private bool _updatingHaggleToggle;
     private bool _mbotPromptOpen;
+    private bool _mbotHotkeyPromptOpen;
+    private bool _mbotScriptPromptOpen;
+    private bool _mbotPreferencesOpen;
+    private bool _mbotPreferencesCaptureSingleKey;
+    private string _mbotPreferencesInputPrompt = string.Empty;
+    private string _mbotPreferencesInputBuffer = string.Empty;
+    private Action<string>? _mbotPreferencesInputHandler;
+    private int _mbotPreferencesHotkeySlot;
     private bool _mbotMacroPromptOpen;
     private MbotGridContext? _mbotMacroContext;
+    private IReadOnlyList<MbotHotkeyScriptEntry> _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
     private readonly List<string> _mbotCommandHistory = [];
     private string _mbotPromptBuffer = string.Empty;
     private string _mbotPromptDraft = string.Empty;
     private int _mbotPromptHistoryIndex;
+    private MbotPreferencesPage _mbotPreferencesPage;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -210,11 +228,35 @@ public class MainWindow : Window
     private static readonly IBrush HudFrameAlt  = new SolidColorBrush(Color.FromRgb(18,  43, 53));
     private static readonly IBrush HudHeader    = new SolidColorBrush(Color.FromRgb(16,  53, 67));
     private static readonly IBrush HudHeaderAlt = new SolidColorBrush(Color.FromRgb(20,  64, 74));
+
+    private static string NormalizeLegacyInterrogLineForScripts(string line)
+    {
+        if (string.IsNullOrEmpty(line) || line[0] != ':')
+            return line;
+
+        int index = 1;
+        while (index < line.Length && char.IsWhiteSpace(line[index]))
+            index++;
+
+        if (index >= line.Length)
+            return line;
+
+        ReadOnlySpan<char> tail = line.AsSpan(index);
+        if (tail.StartsWith("FM >", StringComparison.Ordinal) ||
+            tail.StartsWith("TO >", StringComparison.Ordinal) ||
+            tail.StartsWith("The shortest path (", StringComparison.Ordinal))
+        {
+            return line[index..];
+        }
+
+        return line;
+    }
     private static readonly IBrush HudText      = new SolidColorBrush(Color.FromRgb(222, 238, 242));
     private static readonly IBrush HudMuted     = new SolidColorBrush(Color.FromRgb(126, 170, 180));
     private static readonly IBrush HudEdge      = new SolidColorBrush(Color.FromRgb(57, 112, 128));
     private static readonly IBrush HudInnerEdge = new SolidColorBrush(Color.FromRgb(23,  81, 94));
     private static readonly IBrush HudAccent    = new SolidColorBrush(Color.FromRgb(0,   212, 201));
+    private static readonly IBrush HudAccentInk = new SolidColorBrush(Color.FromRgb(8,  26, 30));
     private static readonly IBrush HudAccentHot = new SolidColorBrush(Color.FromRgb(255, 193, 74));
     private static readonly IBrush HudAccentOk  = new SolidColorBrush(Color.FromRgb(118, 255, 141));
     private static readonly IBrush HudAccentWarn= new SolidColorBrush(Color.FromRgb(255, 112, 112));
@@ -276,6 +318,7 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 Core.ScriptRef.SetCurrentSector(sn);
+                SetMbotCurrentVars(sn.ToString(), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
                 if (_state.Sector != sn)
                 {
                     _state.Sector = sn;
@@ -542,6 +585,8 @@ public class MainWindow : Window
     {
         RecreateDeckShellControls();
         _deckPanels.Clear();
+        _deckPanelsInitialized = false;
+        _suppressDeckPanelStateSync = false;
         _tacticalMap = new TacticalMapControl(
             () => _state.Sector,
             () => _sessionDb)
@@ -561,7 +606,7 @@ public class MainWindow : Window
         {
             ClipToBounds = true,
         };
-        _deckSurface.SizeChanged += (_, _) => ClampDeckPanelsToSurface();
+        _deckSurface.SizeChanged += (_, _) => EnsureDeckPanelsInitialized();
 
         var surfaceRoot = new Grid { Margin = new Thickness(0, 14, 0, 0) };
         surfaceRoot.Children.Add(new Border
@@ -578,6 +623,7 @@ public class MainWindow : Window
         CreateDeckPanel("ship", "SHIP BAY", "SYSTEMS", BuildDeckShipPanel(), canClose: true);
         CreateDeckPanel("intel", "COMMAND MATRIX", "INTEL", BuildDeckCenterPanels(), canClose: true);
         CreateDeckPanel("logo", "AUXILIARY PANEL", "STANDBY", BuildLogoPanel(), canClose: true);
+        Dispatcher.UIThread.Post(EnsureDeckPanelsInitialized, DispatcherPriority.Loaded);
 
         Grid.SetRow(surfaceRoot, 1);
         rootGrid.Children.Add(surfaceRoot);
@@ -619,16 +665,11 @@ public class MainWindow : Window
 
         panel.Activated += BringDeckPanelToFront;
         panel.StateChanged += OnDeckPanelStateChanged;
+        panel.DragSnapHandler = GetSnappedDeckPanelPosition;
+        panel.IsVisible = false;
 
         _deckSurface.Children.Add(panel);
         _deckPanels[panelId] = panel;
-
-        panel.ZIndex = state.ZIndex;
-        panel.MoveTo(state.Left, state.Top);
-        if (state.Minimized)
-            panel.SetMinimized(true);
-        if (state.Closed)
-            panel.SetClosed(true);
     }
 
     private DeckPanelState GetOrCreateDeckPanelState(string panelId)
@@ -737,6 +778,9 @@ public class MainWindow : Window
 
     private void OnDeckPanelStateChanged(FloatingDeckPanel panel)
     {
+        if (_suppressDeckPanelStateSync)
+            return;
+
         if (!_deckPanelStates.TryGetValue(panel.PanelId, out DeckPanelState? state))
             return;
 
@@ -751,6 +795,7 @@ public class MainWindow : Window
 
     private void ShowDeckPanel(string panelId)
     {
+        EnsureDeckPanelsInitialized();
         if (!_useCommandDeckSkin)
         {
             SetSkin(true);
@@ -774,19 +819,127 @@ public class MainWindow : Window
             ApplySelectedSkin();
     }
 
-    private void ClampDeckPanelsToSurface()
+    private (double Left, double Top) GetSnappedDeckPanelPosition(FloatingDeckPanel panel, double proposedLeft, double proposedTop)
     {
-        if (_deckSurface == null)
+        double width = panel.PanelWidth;
+        double height = panel.PanelHeight;
+        double snappedLeft = GetBestDeckSnap(proposedLeft, GetDeckHorizontalSnapTargets(panel, proposedLeft, proposedTop, width, height));
+        double snappedTop = GetBestDeckSnap(proposedTop, GetDeckVerticalSnapTargets(panel, snappedLeft, proposedTop, width, height));
+        return (snappedLeft, snappedTop);
+    }
+
+    private void EnsureDeckPanelsInitialized()
+    {
+        if (_deckPanelsInitialized || _deckSurface == null || _deckSurface.Bounds.Width <= 0 || _deckSurface.Bounds.Height <= 0)
             return;
+
+        _suppressDeckPanelStateSync = true;
+        try
+        {
+            foreach ((string panelId, FloatingDeckPanel panel) in _deckPanels)
+            {
+                if (_deckPanelStates.TryGetValue(panelId, out DeckPanelState? state))
+                    ApplyDeckPanelState(panel, state);
+            }
+        }
+        finally
+        {
+            _suppressDeckPanelStateSync = false;
+        }
+
+        _deckPanelsInitialized = true;
+        foreach (FloatingDeckPanel panel in _deckPanels.Values)
+            OnDeckPanelStateChanged(panel);
+
+        _appPrefs.Save();
+    }
+
+    private static void ApplyDeckPanelState(FloatingDeckPanel panel, DeckPanelState state)
+    {
+        panel.ZIndex = state.ZIndex;
+        panel.SetClosed(false);
+        panel.SetMinimized(false);
+        panel.MoveTo(state.Left, state.Top, clampToHost: false);
+        if (state.Minimized)
+            panel.SetMinimized(true);
+        if (state.Closed)
+            panel.SetClosed(true);
+    }
+
+    private IEnumerable<double> GetDeckHorizontalSnapTargets(FloatingDeckPanel movingPanel, double proposedLeft, double proposedTop, double movingWidth, double movingHeight)
+    {
+        yield return 0;
+        if (_deckSurface != null)
+            yield return Math.Max(0, _deckSurface.Bounds.Width - movingWidth);
+        yield return SnapToDeckGrid(proposedLeft);
 
         foreach (FloatingDeckPanel panel in _deckPanels.Values)
         {
-            if (!panel.IsVisible)
+            if (panel == movingPanel || !panel.IsVisible)
                 continue;
 
             (double left, double top) = panel.GetPosition();
-            panel.MoveTo(left, top);
+            double right = left + panel.PanelWidth;
+            double bottom = top + panel.PanelHeight;
+            if (!RangesOverlapOrNear(proposedTop, proposedTop + movingHeight, top, bottom, DeckPanelSnapThreshold * 2))
+                continue;
+
+            yield return left;
+            yield return right - movingWidth;
+            yield return right + DeckPanelSnapGap;
+            yield return left - movingWidth - DeckPanelSnapGap;
         }
+    }
+
+    private IEnumerable<double> GetDeckVerticalSnapTargets(FloatingDeckPanel movingPanel, double proposedLeft, double proposedTop, double movingWidth, double movingHeight)
+    {
+        yield return 0;
+        if (_deckSurface != null)
+            yield return Math.Max(0, _deckSurface.Bounds.Height - movingHeight);
+        yield return SnapToDeckGrid(proposedTop);
+
+        foreach (FloatingDeckPanel panel in _deckPanels.Values)
+        {
+            if (panel == movingPanel || !panel.IsVisible)
+                continue;
+
+            (double left, double top) = panel.GetPosition();
+            double right = left + panel.PanelWidth;
+            double bottom = top + panel.PanelHeight;
+            if (!RangesOverlapOrNear(proposedLeft, proposedLeft + movingWidth, left, right, DeckPanelSnapThreshold * 2))
+                continue;
+
+            yield return top;
+            yield return bottom - movingHeight;
+            yield return bottom + DeckPanelSnapGap;
+            yield return top - movingHeight - DeckPanelSnapGap;
+        }
+    }
+
+    private static double GetBestDeckSnap(double proposed, IEnumerable<double> targets)
+    {
+        double snapped = proposed;
+        double bestDistance = DeckPanelSnapThreshold + 0.001;
+
+        foreach (double target in targets)
+        {
+            double distance = Math.Abs(target - proposed);
+            if (distance > DeckPanelSnapThreshold || distance >= bestDistance)
+                continue;
+
+            snapped = target;
+            bestDistance = distance;
+        }
+
+        return snapped;
+    }
+
+    private static bool RangesOverlapOrNear(double startA, double endA, double startB, double endB, double tolerance)
+        => endA >= startB - tolerance && endB >= startA - tolerance;
+
+    private static double SnapToDeckGrid(double proposed)
+    {
+        return Math.Round(proposed / DeckPanelGridSize) * DeckPanelGridSize;
     }
 
     private Control BuildDeckBanner()
@@ -869,9 +1022,28 @@ public class MainWindow : Window
     private Control BuildDeckMapBody()
     {
         var zoomText = new TextBlock();
+        Button bubbleButton = null!;
+        Button hexButton = null!;
+        bubbleButton = BuildDeckToggleToolButton("Bubble", () =>
+        {
+            _tacticalMap?.SetViewMode(TacticalMapViewMode.Bubble);
+            UpdateViewButtons();
+        }, 78);
+        hexButton = BuildDeckToggleToolButton("Hex", () =>
+        {
+            _tacticalMap?.SetViewMode(TacticalMapViewMode.Hex);
+            UpdateViewButtons();
+        }, 62);
+
         void UpdateZoomText()
         {
             zoomText.Text = _tacticalMap != null ? $"{_tacticalMap.ZoomPercent}%" : "--";
+        }
+
+        void UpdateViewButtons()
+        {
+            SetDeckToggleToolButtonState(bubbleButton, _tacticalMap?.ViewMode == TacticalMapViewMode.Bubble);
+            SetDeckToggleToolButtonState(hexButton, _tacticalMap?.ViewMode == TacticalMapViewMode.Hex);
         }
 
         UpdateZoomText();
@@ -879,7 +1051,10 @@ public class MainWindow : Window
         {
             _tacticalMap.ZoomChanged += _ =>
                 Dispatcher.UIThread.Post(UpdateZoomText, DispatcherPriority.Background);
+            _tacticalMap.ViewModeChanged += _ =>
+                Dispatcher.UIThread.Post(UpdateViewButtons, DispatcherPriority.Background);
         }
+        UpdateViewButtons();
 
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -889,7 +1064,41 @@ public class MainWindow : Window
         var topBar = new Grid();
         topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         topBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        topBar.Children.Add(BuildDeckInfoChip("Mode", new TextBlock { Text = "Live overlay" }, HudAccentHot));
+        topBar.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                BuildDeckInfoChip("Mode", new TextBlock { Text = "Live overlay" }, HudAccentHot),
+                new Border
+                {
+                    Background = HudHeaderAlt,
+                    BorderBrush = HudInnerEdge,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(11),
+                    Padding = new Thickness(10, 6),
+                    Child = new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = "VIEW",
+                                Foreground = HudMuted,
+                                FontSize = 11,
+                                FontWeight = FontWeight.SemiBold,
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                            bubbleButton,
+                            hexButton,
+                        },
+                    },
+                },
+            },
+        });
 
         var zoomBar = new StackPanel
         {
@@ -1333,6 +1542,35 @@ public class MainWindow : Window
         };
         button.Click += (_, _) => onClick();
         return button;
+    }
+
+    private Button BuildDeckToggleToolButton(string text, Action onClick, double minWidth)
+    {
+        var button = new Button
+        {
+            Content = text,
+            MinWidth = minWidth,
+            Height = 34,
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            Foreground = HudText,
+            Padding = new Thickness(12, 4),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private void SetDeckToggleToolButtonState(Button button, bool isActive)
+    {
+        button.Background = isActive ? HudAccent : HudHeaderAlt;
+        button.BorderBrush = isActive ? HudAccentHot : HudInnerEdge;
+        button.Foreground = isActive ? HudAccentInk : HudText;
+        button.FontWeight = isActive ? FontWeight.Bold : FontWeight.SemiBold;
     }
 
     private Control BuildDeckStatBadge(string label, TextBlock value, IBrush accent)
@@ -3492,6 +3730,33 @@ public class MainWindow : Window
         gi.NativeHaggleChanged += OnNativeHaggleChanged;
         gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
         gi.ShipStatusUpdated += OnShipStatusUpdated;
+        gi.NativeBotActivator = (botConfig, requestedBotName) =>
+        {
+            Dispatcher.UIThread.Post(() => _ = StartInternalMbotAsync(
+                botConfig,
+                requestedBotName,
+                interactiveOfflinePrompt: false,
+                publishMissingGameMessage: false));
+            return true;
+        };
+        gi.NativeBotStopper = _ =>
+        {
+            Dispatcher.UIThread.Post(async () =>
+            {
+                await _runtimeStopGate.WaitAsync();
+                try
+                {
+                    await StopInternalMbotCoreAsync(
+                        publishStopMessage: false,
+                        suppressMissingGameMessage: true);
+                }
+                finally
+                {
+                    _runtimeStopGate.Release();
+                }
+            });
+            return true;
+        };
 
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
@@ -3597,7 +3862,8 @@ public class MainWindow : Window
 
                 // Complete \r-terminated line.
                 string lineRaw = Core.AnsiCodes.PrepareScriptAnsiText(buffered[lastProcessedPos..crPos]);
-                string lineForScript = Core.AnsiCodes.PrepareScriptText(buffered[lastProcessedPos..crPos]);
+                string lineForScript = NormalizeLegacyInterrogLineForScripts(
+                    Core.AnsiCodes.PrepareScriptText(buffered[lastProcessedPos..crPos]));
                 string lineStripped = Core.AnsiCodes.NormalizeTerminalText(rxAnsi.Replace(lineRaw, string.Empty).TrimEnd('\r'));
 
                 if (!string.IsNullOrEmpty(lineStripped))
@@ -3622,6 +3888,9 @@ public class MainWindow : Window
                 }
 
                 gi.ProcessNativeHaggleLine(lineStripped);
+                if (!string.IsNullOrWhiteSpace(lineStripped))
+                    SyncMbotPromptStateFromLine(lineStripped);
+
                 if (!string.IsNullOrWhiteSpace(lineStripped) && _mbot.ObserveServerLine(lineStripped))
                 {
                     Dispatcher.UIThread.Post(() =>
@@ -3715,6 +3984,7 @@ public class MainWindow : Window
         };
 
         _gameInstance = gi;
+        ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mbot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mbot);
         RefreshStatusBar();
@@ -3751,15 +4021,49 @@ public class MainWindow : Window
 
     /// <summary>Stops the embedded <see cref="Core.GameInstance"/> and restores normal state.
     /// Must be awaited (not fire-and-forget) from DoConnectEmbeddedAsync to avoid races.</summary>
-    private async Task StopEmbeddedAsync()
+    private Task StopEmbeddedAsync()
     {
+        lock (_embeddedStopSync)
+        {
+            if (_pendingEmbeddedStop.IsCompleted)
+                _pendingEmbeddedStop = StopEmbeddedSerializedAsync();
+
+            return _pendingEmbeddedStop;
+        }
+    }
+
+    private async Task StopEmbeddedSerializedAsync()
+    {
+        await _runtimeStopGate.WaitAsync();
+        try
+        {
+            await StopEmbeddedCoreAsync();
+        }
+        finally
+        {
+            _runtimeStopGate.Release();
+        }
+    }
+
+    private async Task StopEmbeddedCoreAsync()
+    {
+        TraceRuntimeStop($"[MTC.StopEmbedded] begin game={_embeddedGameName ?? "-"} hasGame={(_gameInstance != null)} nativeMbot={_mbot.Enabled} externalBot={_gameInstance?.ActiveBotName ?? string.Empty}");
         _proxyCts?.Cancel();
         _proxyCts = null;
 
         var gi = _gameInstance;
-        _gameInstance = null;
-        _mbot.DetachSession();
         var moduleHost = _moduleHost;
+        bool hadActiveBot = _mbot.Enabled || !string.IsNullOrWhiteSpace(gi?.ActiveBotName);
+        if (hadActiveBot)
+        {
+            TraceRuntimeStop($"[MTC.StopEmbedded] draining active bots before proxy stop");
+            await StopActiveBotCoreAsync(
+                publishNativeStopMessage: false,
+                publishExternalStopMessage: false,
+                suppressMissingGameMessage: true);
+        }
+
+        _gameInstance = null;
         _moduleHost = null;
         if (gi != null)
             gi.NativeHaggleChanged -= OnNativeHaggleChanged;
@@ -3768,9 +4072,16 @@ public class MainWindow : Window
         if (gi != null)
             gi.ShipStatusUpdated -= OnShipStatusUpdated;
         if (gi != null)
+        {
+            TraceRuntimeStop($"[MTC.StopEmbedded] awaiting GameInstance.StopAsync");
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
+        }
         if (moduleHost != null)
+        {
+            TraceRuntimeStop($"[MTC.StopEmbedded] disposing module host");
             await moduleHost.DisposeAsync();
+        }
+        _mbot.DetachSession();
 
         Core.ScriptRef.SetActiveGameInstance(null);
         Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game
@@ -3791,6 +4102,7 @@ public class MainWindow : Window
         RefreshStatusBar();
         UpdateHaggleToggleState();
         _buffer.Dirty = true;
+        TraceRuntimeStop($"[MTC.StopEmbedded] complete game={_embeddedGameName ?? "-"}");
     }
 
     private async Task ConnectEmbeddedServerAsync()
@@ -4688,7 +5000,7 @@ public class MainWindow : Window
     {
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
-        IReadOnlyList<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir);
+        IReadOnlyList<Core.TwxpConfigSection> sections = EnsureNativeBotSectionInTwxpCfg(programDir);
         var storedBots = new List<StoredBotSection>();
         bool foundNative = false;
 
@@ -4720,6 +5032,35 @@ public class MainWindow : Window
         }
 
         return storedBots;
+    }
+
+    private IReadOnlyList<Core.TwxpConfigSection> EnsureNativeBotSectionInTwxpCfg(string programDir)
+    {
+        List<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir).ToList();
+        Dictionary<string, string> defaults = BuildDefaultNativeBotValues();
+        int nativeIndex = sections.FindIndex(Core.ProxyMenuCatalog.IsNativeBotSection);
+        bool changed = false;
+
+        if (nativeIndex < 0)
+        {
+            sections.Add(new Core.TwxpConfigSection(Core.ProxyMenuCatalog.NativeMombotSectionName, defaults));
+            changed = true;
+        }
+        else
+        {
+            Core.TwxpConfigSection existing = sections[nativeIndex];
+            Dictionary<string, string> merged = MergeBotValues(existing.Values, defaults);
+            if (!ConfigValuesEqual(existing.Values, merged))
+            {
+                sections[nativeIndex] = new Core.TwxpConfigSection(existing.Name, merged);
+                changed = true;
+            }
+        }
+
+        if (changed)
+            Core.TwxpConfigStore.SaveSections(programDir, sections);
+
+        return sections;
     }
 
     private StoredBotSection CreateStoredBotSection(Core.TwxpConfigSection section, string programDir, string scriptDirectory)
@@ -4782,8 +5123,7 @@ public class MainWindow : Window
         if (bot.IsNative)
         {
             StopActiveExternalBot();
-            SyncMombotRuntimeConfigFromTwxpCfg();
-            await StartInternalMbotAsync();
+            await StartInternalMbotAsync(bot.Config, requestedBotName: string.Empty, interactiveOfflinePrompt: true, publishMissingGameMessage: true);
         }
         else
         {
@@ -4819,18 +5159,18 @@ public class MainWindow : Window
     {
         await Task.Yield();
 
-        bool stoppedAny = false;
-        if (_mbot.Enabled)
+        await _runtimeStopGate.WaitAsync();
+        bool stoppedAny;
+        try
         {
-            await StopInternalMbotAsync();
-            stoppedAny = true;
+            stoppedAny = await StopActiveBotCoreAsync(
+                publishNativeStopMessage: true,
+                publishExternalStopMessage: true,
+                suppressMissingGameMessage: false);
         }
-
-        if (StopActiveExternalBot())
+        finally
         {
-            stoppedAny = true;
-            _parser.Feed("\x1b[1;36m[Stopped active external bot]\x1b[0m\r\n");
-            _buffer.Dirty = true;
+            _runtimeStopGate.Release();
         }
 
         if (stoppedAny)
@@ -4841,17 +5181,254 @@ public class MainWindow : Window
         }
     }
 
+    private async Task<bool> StopActiveBotCoreAsync(
+        bool publishNativeStopMessage,
+        bool publishExternalStopMessage,
+        bool suppressMissingGameMessage)
+    {
+        bool stoppedAny = false;
+        if (_mbot.Enabled)
+        {
+            await StopInternalMbotCoreAsync(
+                publishStopMessage: publishNativeStopMessage,
+                suppressMissingGameMessage: suppressMissingGameMessage);
+            stoppedAny = true;
+        }
+
+        if (StopActiveExternalBotCore(publishExternalStopMessage))
+            stoppedAny = true;
+
+        return stoppedAny;
+    }
+
     private bool StopActiveExternalBot()
+    {
+        return StopActiveExternalBotCore(publishStopMessage: true);
+    }
+
+    private bool StopActiveExternalBotCore(bool publishStopMessage)
     {
         string activeBotName = _gameInstance?.ActiveBotName ?? string.Empty;
         if (string.IsNullOrWhiteSpace(activeBotName))
             return false;
 
-        CurrentInterpreter?.StopBot(activeBotName);
-        if (_gameInstance != null)
-            _gameInstance.ActiveBotName = string.Empty;
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        Core.BotConfig? botConfig = _gameInstance?.GetBotConfig(activeBotName);
+        string scriptDirectory = interpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
+        string programDir = interpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
+        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
+        TraceRuntimeStop($"[BotStop] external begin bot='{activeBotName}' lastLoaded='{lastLoadedModule}'");
+        ClearMbotRelogState();
+        interpreter?.StopBot(activeBotName);
+
+        int drainedScripts = 0;
+        if (interpreter != null && botConfig != null)
+            drainedScripts = StopScriptsForBotTree($"external:{activeBotName}", botConfig, lastLoadedModule, scriptDirectory, programDir);
+
+        if (publishStopMessage)
+        {
+            string suffix = drainedScripts > 0 ? $" ({drainedScripts} module script{(drainedScripts == 1 ? string.Empty : "s")} drained)" : string.Empty;
+            _parser.Feed($"\x1b[1;36m[Stopped active external bot{suffix}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+
+        TraceRuntimeStop($"[BotStop] external complete bot='{activeBotName}' drained={drainedScripts}");
         return true;
+    }
+
+    private void TraceRuntimeStop(string message)
+    {
+        Core.GlobalModules.DebugLog(message + "\n");
+        Core.GlobalModules.FlushDebugLog();
+    }
+
+    private void ClearMbotRelogState()
+    {
+        Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
+        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
+        Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
+        Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
+        Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
+        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+    }
+
+    private int StopScriptsForBotTree(string origin, Core.BotConfig config, string lastLoadedModule, string scriptDirectory, string programDir)
+    {
+        IReadOnlyList<string> directScriptPaths = GetConfiguredBotScriptPaths(config, scriptDirectory);
+        string? scriptRootPath = GetConfiguredBotScriptRootPath(config, scriptDirectory);
+        return StopScriptsMatchingTree(origin, directScriptPaths, scriptRootPath, lastLoadedModule, scriptDirectory, programDir);
+    }
+
+    private int StopScriptsMatchingTree(
+        string origin,
+        IReadOnlyList<string> directScriptPaths,
+        string? scriptRootPath,
+        string lastLoadedModule,
+        string scriptDirectory,
+        string programDir)
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return 0;
+
+        var normalizedDirectScripts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string directScript in directScriptPaths)
+        {
+            string normalized = NormalizeScriptStopPath(directScript, scriptDirectory, programDir);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                normalizedDirectScripts.Add(normalized);
+        }
+
+        int totalStopped = 0;
+        for (int pass = 1; pass <= 3; pass++)
+        {
+            int stoppedThisPass = 0;
+            IReadOnlyList<Core.RunningScriptInfo> runningScripts = Core.ProxyGameOperations.GetRunningScripts(interpreter);
+            foreach (Core.RunningScriptInfo script in runningScripts)
+            {
+                string reference = string.IsNullOrWhiteSpace(script.Reference) ? script.Name : script.Reference;
+                if (!ShouldStopBotScript(reference, normalizedDirectScripts, scriptRootPath, lastLoadedModule, scriptDirectory, programDir))
+                    continue;
+
+                TraceRuntimeStop($"[BotStop] {origin} pass={pass} stopping ref='{reference}' display='{script.Name}'");
+                if (Core.ProxyGameOperations.StopScriptByName(interpreter, reference))
+                    stoppedThisPass++;
+            }
+
+            totalStopped += stoppedThisPass;
+            if (stoppedThisPass == 0)
+                break;
+        }
+
+        return totalStopped;
+    }
+
+    private static bool ShouldStopBotScript(
+        string reference,
+        HashSet<string> normalizedDirectScripts,
+        string? scriptRootPath,
+        string lastLoadedModule,
+        string scriptDirectory,
+        string programDir)
+    {
+        string normalizedReference = NormalizeScriptStopPath(reference, scriptDirectory, programDir);
+        if (normalizedDirectScripts.Contains(normalizedReference))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(scriptRootPath) && IsScriptUnderRoot(normalizedReference, scriptRootPath))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(lastLoadedModule) &&
+               (ScriptReferenceMatches(reference, lastLoadedModule, scriptDirectory, programDir) ||
+                string.Equals(
+                    normalizedReference,
+                    NormalizeScriptStopPath(lastLoadedModule, scriptDirectory, programDir),
+                    StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> GetConfiguredBotScriptPaths(Core.BotConfig config, string scriptDirectory)
+    {
+        IReadOnlyList<string> scripts = config.ScriptFiles.Count > 0
+            ? config.ScriptFiles
+            : string.IsNullOrWhiteSpace(config.ScriptFile)
+                ? Array.Empty<string>()
+                : new[] { config.ScriptFile };
+
+        return scripts
+            .Where(script => !string.IsNullOrWhiteSpace(script))
+            .Select(script => NormalizeScriptStopPath(script, scriptDirectory, scriptDirectory))
+            .Where(script => !string.IsNullOrWhiteSpace(script))
+            .ToArray();
+    }
+
+    private static string? GetConfiguredBotScriptRootPath(Core.BotConfig config, string scriptDirectory)
+    {
+        string script = config.ScriptFiles.Count > 0
+            ? config.ScriptFiles[0]
+            : config.ScriptFile;
+        if (string.IsNullOrWhiteSpace(script))
+            return null;
+
+        string normalized = script.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar).Trim();
+        string? directory = Path.GetDirectoryName(normalized);
+        if (string.IsNullOrWhiteSpace(directory))
+            return Path.GetFullPath(scriptDirectory);
+
+        return Path.GetFullPath(Path.IsPathRooted(directory)
+            ? directory
+            : Path.Combine(scriptDirectory, directory));
+    }
+
+    private static bool ScriptReferenceMatches(string left, string right, string scriptDirectory, string programDir)
+    {
+        string leftScriptDir = NormalizeScriptStopPath(left, scriptDirectory, programDir);
+        string rightScriptDir = NormalizeScriptStopPath(right, scriptDirectory, programDir);
+        if (leftScriptDir.Equals(rightScriptDir, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string leftProgramDir = NormalizeScriptStopPath(left, programDir, scriptDirectory);
+        string rightProgramDir = NormalizeScriptStopPath(right, programDir, scriptDirectory);
+        if (leftProgramDir.Equals(rightProgramDir, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string leftLeaf = Path.GetFileName(left.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar).Trim());
+        string rightLeaf = Path.GetFileName(right.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar).Trim());
+        return !string.IsNullOrWhiteSpace(leftLeaf) &&
+               leftLeaf.Equals(rightLeaf, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeScriptStopPath(string reference, string primaryBaseDir, string secondaryBaseDir)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+            return string.Empty;
+
+        string normalized = reference
+            .Trim()
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+
+        if (Path.IsPathRooted(normalized))
+        {
+            try
+            {
+                return Path.GetFullPath(normalized);
+            }
+            catch
+            {
+                return normalized;
+            }
+        }
+
+        foreach (string baseDir in new[] { primaryBaseDir, secondaryBaseDir })
+        {
+            if (string.IsNullOrWhiteSpace(baseDir))
+                continue;
+
+            try
+            {
+                return Path.GetFullPath(Path.Combine(baseDir, normalized));
+            }
+            catch
+            {
+            }
+        }
+
+        return normalized;
+    }
+
+    private static bool IsScriptUnderRoot(string scriptPath, string scriptRootPath)
+    {
+        if (string.IsNullOrWhiteSpace(scriptPath) || string.IsNullOrWhiteSpace(scriptRootPath))
+            return false;
+
+        string normalizedRoot = scriptRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(scriptPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string prefix = normalizedRoot + Path.DirectorySeparatorChar;
+        return scriptPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ConfigureBotAsync(StoredBotSection bot)
@@ -4878,6 +5455,7 @@ public class MainWindow : Window
         SyncMombotRuntimeConfigFromTwxpCfg();
         if (_mbot.IsAttached)
             _mbot.ApplyConfig(_embeddedGameConfig?.Mtc?.mbot);
+        RefreshActiveBotContextFromConfig(bot);
 
         RefreshStatusBar();
         RebuildProxyMenu();
@@ -4957,7 +5535,7 @@ public class MainWindow : Window
         }
 
         string scriptList = NormalizeBotScriptList(result.Script);
-        if (string.IsNullOrWhiteSpace(scriptList))
+        if (!isNative && string.IsNullOrWhiteSpace(scriptList))
         {
             normalized = result;
             error = "At least one script path is required.";
@@ -5030,7 +5608,23 @@ public class MainWindow : Window
 
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
-        _gameInstance.ReloadBotConfigs(programDir, scriptDirectory);
+        _gameInstance.ReloadBotConfigs(programDir, scriptDirectory, includeNative: true);
+    }
+
+    private void RefreshActiveBotContextFromConfig(StoredBotSection updatedBot)
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return;
+
+        bool refreshNative = updatedBot.IsNative && _mbot.Enabled;
+        bool refreshExternal = !updatedBot.IsNative &&
+                               string.Equals(_gameInstance?.ActiveBotName, updatedBot.Config.Name, StringComparison.OrdinalIgnoreCase);
+        if (!refreshNative && !refreshExternal)
+            return;
+
+        string requestedBotName = interpreter.ActiveBotName;
+        interpreter.ActivateBotContext(updatedBot.Config, requestedBotName);
     }
 
     private void SyncMombotRuntimeConfigFromTwxpCfg(EmbeddedGameConfig? gameConfig = null)
@@ -5071,8 +5665,27 @@ public class MainWindow : Window
             ["NameVar"] = "BotName",
             ["CommsVar"] = "BotComms",
             ["LoginScript"] = "0_Login.cts",
-            ["Theme"] = "5|[MOMBOT]|~D|~G",
+            ["Theme"] = "7|[MOMBOT]|~D|~G|~B|~C",
         };
+    }
+
+    private static bool ConfigValuesEqual(
+        IDictionary<string, string> left,
+        IDictionary<string, string> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        foreach ((string key, string value) in left)
+        {
+            if (!right.TryGetValue(key, out string? otherValue) ||
+                !string.Equals(value, otherValue, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool BotScriptsExist(Core.BotConfig config, string programDir, string scriptDirectory)
@@ -5162,36 +5775,58 @@ public class MainWindow : Window
         return Path.Combine("scripts", directory).Replace('\\', '/');
     }
 
-    private async Task StartInternalMbotAsync()
+    private async Task StartInternalMbotAsync(
+        Core.BotConfig? nativeBotConfig = null,
+        string requestedBotName = "",
+        bool interactiveOfflinePrompt = true,
+        bool publishMissingGameMessage = true)
     {
         await Task.Yield();
 
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
+            if (publishMissingGameMessage)
+                PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
             return;
         }
+
+        Core.BotConfig botConfig = nativeBotConfig ?? LoadConfiguredBotSections().First(bot => bot.IsNative).Config;
+        PrimeMbotBootstrapState(botConfig);
+        CurrentInterpreter?.ActivateBotContext(botConfig, requestedBotName);
+        SyncMombotRuntimeConfigFromTwxpCfg();
 
         if (_gameInstance.IsConnected)
         {
             SeedMbotRelogVarsFromCurrentState();
             ApplyMbotConfigChange(config => config.Enabled = true);
             LoadMbotStartupScripts();
+            LoadMbotEpHaggleScript(connected: true);
             ShowMbotStartupBanner(connected: true);
             await SendMbotStartupAnnouncementsAsync();
             ApplyMbotExecutionRefresh();
         }
         else
         {
-            var dialog = new MTC.mbot.mbotRelogDialog(BuildMbotRelogDefaults());
-            if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+            MTC.mbot.mbotRelogDialogResult relogSettings;
+            if (interactiveOfflinePrompt)
             {
-                FocusActiveTerminal();
-                return;
+                var dialog = new MTC.mbot.mbotRelogDialog(BuildMbotRelogDefaults());
+                if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
+                {
+                    FocusActiveTerminal();
+                    return;
+                }
+
+                relogSettings = dialog.Result;
+            }
+            else
+            {
+                relogSettings = BuildMbotRelogDefaults();
             }
 
-            ApplyMbotRelogDialogResult(dialog.Result);
+            ApplyMbotRelogDialogResult(relogSettings);
             ApplyMbotConfigChange(config => config.Enabled = true);
+            LoadMbotEpHaggleScript(connected: false);
             ShowMbotStartupBanner(connected: false);
             await ExecuteMbotUiCommandAsync("relog");
         }
@@ -5203,45 +5838,61 @@ public class MainWindow : Window
     {
         await Task.Yield();
 
+        await _runtimeStopGate.WaitAsync();
+        try
+        {
+            await StopInternalMbotCoreAsync(
+                publishStopMessage: true,
+                suppressMissingGameMessage: false);
+        }
+        finally
+        {
+            _runtimeStopGate.Release();
+        }
+    }
+
+    private async Task StopInternalMbotCoreAsync(bool publishStopMessage, bool suppressMissingGameMessage)
+    {
+        await Task.Yield();
+
         if (_gameInstance == null)
         {
-            PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
+            if (!suppressMissingGameMessage)
+                PublishMbotLocalMessage("Mombot controls are only available while the embedded proxy is running.");
             return;
         }
 
         CancelMbotPrompt();
+        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
+        string scriptDirectory = CurrentInterpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
+        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         string scriptRoot = (_mbot.Config.ScriptRoot ?? string.Empty)
             .Replace('\\', '/')
             .Trim()
             .Trim('/');
-        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-        foreach (var script in _mbot.GetRunningScripts())
-        {
-            if (script.IsSystemScript)
-                continue;
+        string scriptRootPath = string.IsNullOrWhiteSpace(scriptRoot)
+            ? string.Empty
+            : NormalizeScriptStopPath(scriptRoot, programDir, scriptDirectory);
 
-            string name = script.Name ?? string.Empty;
-            string normalizedName = name.Replace('\\', '/');
-            bool underMbotRoot = !string.IsNullOrWhiteSpace(scriptRoot) &&
-                                 (normalizedName.StartsWith(scriptRoot + "/", StringComparison.OrdinalIgnoreCase) ||
-                                  normalizedName.Contains("/" + scriptRoot + "/", StringComparison.OrdinalIgnoreCase));
-            bool isLastLoaded = !string.IsNullOrWhiteSpace(lastLoadedModule) &&
-                                string.Equals(name, lastLoadedModule, StringComparison.OrdinalIgnoreCase);
-
-            if (underMbotRoot || isLastLoaded)
-                _mbot.StopScriptByName(name);
-        }
+        TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}'");
+        ClearMbotRelogState();
+        string nativeBotName = LoadConfiguredBotSections().First(bot => bot.IsNative).Config.Name;
+        CurrentInterpreter?.ClearActiveBotContext(nativeBotName);
 
         ApplyMbotConfigChange(config => config.Enabled = false);
-        Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
-        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
-        Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
-        Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
-        Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
-        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
-        PublishMbotLocalMessage("Mombot stopped.");
+        _gameInstance.ActiveBotName = string.Empty;
+        int drainedScripts = StopScriptsMatchingTree(
+            origin: "native-mbot",
+            directScriptPaths: Array.Empty<string>(),
+            scriptRootPath: scriptRootPath,
+            lastLoadedModule: lastLoadedModule,
+            scriptDirectory: scriptDirectory,
+            programDir: programDir);
+
+        if (publishStopMessage)
+            PublishMbotLocalMessage("Mombot stopped.");
         ApplyMbotExecutionRefresh();
+        TraceRuntimeStop($"[BotStop] native complete drained={drainedScripts}");
     }
 
     private MTC.mbot.mbotRelogDialogResult BuildMbotRelogDefaults()
@@ -5391,10 +6042,40 @@ public class MainWindow : Window
     {
         foreach (string startupScript in _mbot.GetStartupScriptReferences())
         {
+            string startupName = Path.GetFileNameWithoutExtension(startupScript.Replace('\\', '/'));
+            SetMbotCurrentVars(startupName, "$BOT~COMMAND", "$bot~command", "$command");
             _mbot.StopScriptByName(startupScript);
             if (!_mbot.TryLoadScript(startupScript, out string? error))
                 PublishMbotLocalMessage($"mombot: failed to load startup '{startupScript}': {error}");
         }
+    }
+
+    private void LoadMbotEpHaggleScript(bool connected)
+    {
+        string scriptRoot = (_mbot.Config.ScriptRoot ?? string.Empty).Trim().TrimEnd('/', '\\');
+        if (string.IsNullOrWhiteSpace(scriptRoot))
+            return;
+
+        string ephaggle = Path.Combine(scriptRoot, "daemons", "ephaggle.cts").Replace('\\', '/');
+        string fullPath = Path.Combine(
+            CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory()),
+            ephaggle.Replace('/', Path.DirectorySeparatorChar));
+
+        if (!connected)
+        {
+            PublishMbotLocalMessage("mombot: no EP Haggle is running because the bot was started offline.");
+            return;
+        }
+
+        if (!File.Exists(fullPath))
+        {
+            PublishMbotLocalMessage($"mombot: no EP Haggle is running because {ephaggle} was not found.");
+            return;
+        }
+
+        _mbot.StopScriptByName(ephaggle);
+        if (!_mbot.TryLoadScript(ephaggle, out string? error))
+            PublishMbotLocalMessage($"mombot: failed to load ephaggle '{ephaggle}': {error}");
     }
 
     private void ShowMbotStartupBanner(bool connected)
@@ -5406,9 +6087,10 @@ public class MainWindow : Window
             _mbot.Settings.BotName,
             "mombot");
         string stateLabel = connected ? "online" : "relog armed";
+        string version = GetMbotVersionDisplay();
         string banner =
             "\r\n" +
-            "\u001b[1;36m=== Mombot 1.0 ===\u001b[0m\r\n" +
+            $"\u001b[1;36m=== Mombot {version} ===\u001b[0m\r\n" +
             $"\u001b[1;33m{botName}\u001b[0m \u001b[1;32m{stateLabel}\u001b[0m\r\n" +
             "\u001b[38;5;245mUse > to open the mombot prompt.\u001b[0m\r\n";
 
@@ -5441,9 +6123,10 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
             "0");
+        string version = GetMbotVersionDisplay();
 
         await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
-            $"'{{{botName}}} - is ACTIVE: Version - 1.0 - type \"{botName} help\" for command list*"));
+            $"'{{{botName}}} - is ACTIVE: Version - {version} - type \"{botName} help\" for command list*"));
         await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
             $"'{{{botName}}} - to login - send a corporate memo*"));
 
@@ -5456,10 +6139,407 @@ public class MainWindow : Window
         }
     }
 
+    private void PrimeMbotBootstrapState(Core.BotConfig botConfig)
+    {
+        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
+        string scriptRoot = GetNativeMombotScriptRoot(botConfig).Trim().Trim('/');
+        string scriptRootRelative = GetMbotScriptRootRelative(scriptRoot);
+        string majorVersion = "4";
+        string minorVersion = "7beta";
+
+        string gameName = _embeddedGameName ?? DeriveGameName();
+        string folderRelative = Path.Combine(scriptRoot, "games", gameName).Replace('\\', '/');
+        string folderFullPath = Path.Combine(programDir, folderRelative.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(folderFullPath);
+
+        string folderConfigRelative = Path.Combine("scripts", $"mombot{majorVersion}_{minorVersion}.cfg").Replace('\\', '/');
+        string folderConfigFullPath = Path.Combine(programDir, folderConfigRelative.Replace('/', Path.DirectorySeparatorChar));
+        string hotkeysRelative = Path.Combine(scriptRoot, "hotkeys.cfg").Replace('\\', '/');
+        string hotkeysFullPath = Path.Combine(programDir, hotkeysRelative.Replace('/', Path.DirectorySeparatorChar));
+        string customKeysRelative = Path.Combine(scriptRoot, "custom_keys.cfg").Replace('\\', '/');
+        string customKeysFullPath = Path.Combine(programDir, customKeysRelative.Replace('/', Path.DirectorySeparatorChar));
+        string customCommandsRelative = Path.Combine(scriptRoot, "custom_commands.cfg").Replace('\\', '/');
+        string customCommandsFullPath = Path.Combine(programDir, customCommandsRelative.Replace('/', Path.DirectorySeparatorChar));
+        string gconfigPath = Path.Combine(folderFullPath, "bot.cfg");
+        bool hadExistingBotConfig = File.Exists(gconfigPath);
+        string gconfigRelative = Path.Combine(folderRelative, "bot.cfg").Replace('\\', '/');
+        string botUsersRelative = Path.Combine(folderRelative, "bot_users.lst").Replace('\\', '/');
+        string ckFigRelative = Path.Combine(folderRelative, "_ck_" + gameName + ".figs").Replace('\\', '/');
+        string shipCapRelative = Path.Combine(folderRelative, "ships.cfg").Replace('\\', '/');
+        string planetFileRelative = Path.Combine(folderRelative, "planets.cfg").Replace('\\', '/');
+        string figFileRelative = Path.Combine(folderRelative, "fighters.cfg").Replace('\\', '/');
+        string figCountRelative = Path.Combine(folderRelative, "fighters.cnt").Replace('\\', '/');
+        string limpetFileRelative = Path.Combine(folderRelative, "limpets.cfg").Replace('\\', '/');
+        string limpetCountRelative = Path.Combine(folderRelative, "limpets.cnt").Replace('\\', '/');
+        string armidFileRelative = Path.Combine(folderRelative, "armids.cfg").Replace('\\', '/');
+        string armidCountRelative = Path.Combine(folderRelative, "armids.cnt").Replace('\\', '/');
+        string gameSettingsRelative = Path.Combine(folderRelative, "game_settings.cfg").Replace('\\', '/');
+        string scriptFileRelative = Path.Combine(scriptRoot, "hotkey_scripts.cfg").Replace('\\', '/');
+        string bustFileRelative = Path.Combine(folderRelative, "busts.cfg").Replace('\\', '/');
+        string timerFileRelative = Path.Combine(folderRelative, "timer.cfg").Replace('\\', '/');
+        string mcicFileRelative = Path.Combine(folderRelative, "planet.nego").Replace('\\', '/');
+
+        EnsureMbotFolderConfigFile(folderConfigFullPath, scriptRootRelative);
+        EnsureMbotIndexedConfigFile(hotkeysFullPath, BuildDefaultMbotHotkeyFileLines());
+        EnsureMbotIndexedConfigFile(customKeysFullPath, BuildDefaultMbotCustomKeyFileLines());
+        EnsureMbotIndexedConfigFile(customCommandsFullPath, BuildDefaultMbotCustomCommandFileLines());
+
+        string fileBotName = string.Empty;
+        try
+        {
+            if (hadExistingBotConfig)
+                fileBotName = File.ReadLines(gconfigPath).FirstOrDefault()?.Trim() ?? string.Empty;
+        }
+        catch
+        {
+        }
+
+        string botName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            fileBotName,
+            _mbot.Settings.BotName,
+            "mombot");
+        string teamName = FirstMeaningfulMbotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$BOT~bot_team_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~bot_team_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+            _mbot.Settings.TeamName,
+            botName);
+        string subspace = ReadCurrentMbotVar("0", "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
+        string botPassword = ReadCurrentMbotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
+        if (string.IsNullOrWhiteSpace(botPassword) && subspace != "0")
+            botPassword = subspace;
+        string currentSector = Core.ScriptRef.GetCurrentSector() > 0 ? Core.ScriptRef.GetCurrentSector().ToString() : FormatMbotSector((ushort)_state.Sector);
+        string currentPrompt = GetInitialMbotPromptName();
+
+        SetMbotCurrentVars(majorVersion, "$bot~major_version", "$major_version", "$BOT~MAJOR_VERSION");
+        SetMbotCurrentVars(minorVersion, "$bot~minor_version", "$minor_version", "$BOT~MINOR_VERSION");
+        SetMbotCurrentVars(scriptRootRelative, "$bot~default_bot_directory", "$default_bot_directory");
+        SetMbotCurrentVars(scriptRootRelative, "$bot~mombot_directory", "$mombot_directory", "$BOT~MOMBOT_DIRECTORY");
+        SetMbotCurrentVars(folderConfigRelative, "$mombot_folder_config");
+        SetMbotCurrentVars(hotkeysRelative, "$hotkeys_file");
+        SetMbotCurrentVars(customKeysRelative, "$custom_keys_file");
+        SetMbotCurrentVars(customCommandsRelative, "$custom_commands_file");
+        SetMbotCurrentVars(folderRelative, "$folder");
+        SetMbotCurrentVars(gconfigRelative, "$gconfig_file");
+        SetMbotCurrentVars(botUsersRelative, "$BOT_USER_FILE");
+        SetMbotCurrentVars(ckFigRelative, "$CK_FIG_FILE");
+        SetMbotCurrentVars(shipCapRelative, "$SHIP~cap_file", "$SHIP~CAP_FILE", "$ship~cap_file");
+        SetMbotCurrentVars(planetFileRelative, "$PLANET~planet_file", "$PLANET~PLANET_FILE", "$planet~planet_file");
+        SetMbotCurrentVars(figFileRelative, "$FIG_FILE");
+        SetMbotCurrentVars(figCountRelative, "$FIG_COUNT_FILE");
+        SetMbotCurrentVars(limpetFileRelative, "$LIMP_FILE");
+        SetMbotCurrentVars(limpetCountRelative, "$LIMP_COUNT_FILE");
+        SetMbotCurrentVars(armidFileRelative, "$ARMID_FILE");
+        SetMbotCurrentVars(armidCountRelative, "$ARMID_COUNT_FILE");
+        SetMbotCurrentVars(gameSettingsRelative, "$GAME~GAME_SETTINGS_FILE");
+        SetMbotCurrentVars(scriptFileRelative, "$SCRIPT_FILE");
+        SetMbotCurrentVars(bustFileRelative, "$BUST_FILE");
+        SetMbotCurrentVars(timerFileRelative, "$timer_file");
+        SetMbotCurrentVars(mcicFileRelative, "$MCIC_FILE");
+
+        SetMbotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
+        SetMbotCurrentVars(teamName, "$BOT~BOT_TEAM_NAME", "$BOT~bot_team_name", "$bot~bot_team_name", "$bot_team_name");
+        SetMbotCurrentVars(botPassword, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
+        SetMbotCurrentVars(_state.TraderName?.Trim() ?? string.Empty, "$PLAYER~TRADER_NAME");
+        SetMbotCurrentVars(currentSector, "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
+        SetMbotCurrentVars(currentPrompt, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+        SetMbotCurrentVars(string.Empty, "$BOT~COMMAND", "$bot~command", "$command");
+        SetMbotCurrentVars(string.Empty, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
+        MirrorMbotCurrentVars(string.Empty, "$BOT~PASSWORD", "$password");
+        MirrorMbotCurrentVars(string.Empty, "$BOT~USERNAME", "$username");
+        MirrorMbotCurrentVars(string.Empty, "$BOT~SERVERNAME", "$servername");
+        MirrorMbotCurrentVars(string.Empty, "$BOT~LETTER", "$letter", "$LETTER");
+        MirrorMbotCurrentVars(subspace, "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
+        MirrorMbotCurrentVars("General", "$BOT~MODE", "$bot~mode", "$mode");
+        MirrorMbotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
+        MirrorMbotCurrentVars("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+        MirrorMbotCurrentVars("0", "$BOT~SAFE_SHIP", "$bot~safe_ship", "$safe_ship");
+        MirrorMbotCurrentVars("0", "$BOT~SAFE_PLANET", "$bot~safe_planet", "$safe_planet");
+        MirrorMbotCurrentVars("0", "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        MirrorMbotCurrentVars("0", "$BOT~SILENT_RUNNING", "$bot~silent_running", "$silent_running");
+        MirrorMbotCurrentVars("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
+        MirrorMbotCurrentVars("0", "$PLAYER~dropOffensive", "$PLAYER~DROPOFFENSIVE");
+        MirrorMbotCurrentVars("0", "$PLAYER~dropToll", "$PLAYER~DROPTOLL");
+        MirrorMbotCurrentVars("0", "$do_not_resuscitate");
+        MirrorMbotCurrentVars("0", "$SETTINGS~OVERRIDE", "$settings~override");
+        MirrorMbotCurrentVars("0", "$GAME~PORT_MAX", "$GAME~port_max", "$game~port_max");
+        MirrorMbotCurrentVars("0", "$GAME~PHOTON_DURATION", "$game~photon_duration");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundFigs");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundLimp");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundMine");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundOverwrite");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundPassive");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundNormal");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundAvoidShieldedOnly");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundAvoidAllPlanets");
+        MirrorMbotCurrentVars("0", "$PLAYER~surroundDontAvoid");
+        MirrorMbotCurrentVars("0", "$PLAYER~surround_before_hkill");
+        MirrorMbotCurrentVars("0", "$surroundAutoCapture");
+        MirrorMbotCurrentVars("0", "$pgrid_bot");
+        MirrorMbotCurrentVars("0", "$autoattack");
+        MirrorMbotCurrentVars(string.Empty, "$historyString");
+        MirrorMbotCurrentVars(string.Empty, "$command_prompt_extras");
+        MirrorMbotCurrentVars("5760", "$echoInterval");
+        MirrorMbotCurrentVars(hadExistingBotConfig ? "1" : "0", "$BOT~DORELOG", "$doRelog");
+        MirrorMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+        MirrorMbotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+        MirrorMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+        MirrorMbotCurrentVars("0", "$relogging", "$connectivity~relogging");
+        MirrorMbotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
+        MirrorMbotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
+
+        string stardock = ReadCurrentMbotVar(FormatMbotSector(_sessionDb?.DBHeader.StarDock), "$MAP~STARDOCK", "$MAP~stardock", "$stardock");
+        string rylos = ReadCurrentMbotVar(FormatMbotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$rylos");
+        string alphaCentauri = ReadCurrentMbotVar(FormatMbotSector(_sessionDb?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$alpha_centauri");
+        MirrorMbotCurrentVars(stardock, "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+        MirrorMbotCurrentVars(rylos, "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
+        MirrorMbotCurrentVars(alphaCentauri, "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
+        MirrorMbotCurrentVars("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
+        MirrorMbotCurrentVars("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector");
+
+        if (!string.IsNullOrWhiteSpace(botName))
+        {
+            try
+            {
+                File.WriteAllText(gconfigPath, botName + Environment.NewLine);
+            }
+            catch
+            {
+            }
+        }
+
+        string surroundShieldedOnly = ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidShieldedOnly");
+        string surroundAllPlanets = ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidAllPlanets");
+        string surroundDontAvoid = ReadCurrentMbotVar("0", "$PLAYER~surroundDontAvoid");
+        if (surroundShieldedOnly == "0" && surroundAllPlanets == "0" && surroundDontAvoid == "0")
+            SetMbotCurrentVars("1", "$PLAYER~surroundAvoidAllPlanets");
+
+        if (ReadCurrentMbotVar("0", "$PLAYER~surroundFigs") == "0")
+            SetMbotCurrentVars("1", "$PLAYER~surroundFigs");
+    }
+
+    private static string GetMbotScriptRootRelative(string scriptRoot)
+    {
+        string normalized = (scriptRoot ?? string.Empty)
+            .Replace('\\', '/')
+            .Trim()
+            .Trim('/');
+        if (normalized.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized["scripts/".Length..];
+        else if (string.Equals(normalized, "scripts", StringComparison.OrdinalIgnoreCase))
+            normalized = string.Empty;
+
+        return string.IsNullOrWhiteSpace(normalized) ? "mombot" : normalized;
+    }
+
+    private static void EnsureMbotFolderConfigFile(string fullPath, string scriptRootRelative)
+    {
+        try
+        {
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            string currentValue = File.Exists(fullPath)
+                ? File.ReadLines(fullPath).FirstOrDefault()?.Trim() ?? string.Empty
+                : string.Empty;
+            if (!string.Equals(currentValue, scriptRootRelative, StringComparison.Ordinal))
+                File.WriteAllText(fullPath, scriptRootRelative + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void EnsureMbotIndexedConfigFile(string fullPath, IReadOnlyList<string> lines)
+    {
+        try
+        {
+            string? directory = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            bool rewrite = true;
+            if (File.Exists(fullPath))
+            {
+                string[] existingLines = File.ReadAllLines(fullPath);
+                rewrite = existingLines.Length != lines.Count;
+            }
+
+            if (rewrite)
+                File.WriteAllLines(fullPath, lines);
+        }
+        catch
+        {
+        }
+    }
+
+    private static IReadOnlyList<string> BuildDefaultMbotHotkeyFileLines()
+    {
+        string[] lines = Enumerable.Repeat("0", 255).ToArray();
+        SetMbotIndexedLine(lines, 76, "9");
+        SetMbotIndexedLine(lines, 108, "9");
+        SetMbotIndexedLine(lines, 102, "14");
+        SetMbotIndexedLine(lines, 70, "14");
+        SetMbotIndexedLine(lines, 109, "13");
+        SetMbotIndexedLine(lines, 77, "13");
+        SetMbotIndexedLine(lines, 104, "5");
+        SetMbotIndexedLine(lines, 72, "5");
+        SetMbotIndexedLine(lines, 107, "1");
+        SetMbotIndexedLine(lines, 75, "1");
+        SetMbotIndexedLine(lines, 99, "2");
+        SetMbotIndexedLine(lines, 67, "2");
+        SetMbotIndexedLine(lines, 98, "17");
+        SetMbotIndexedLine(lines, 66, "17");
+        SetMbotIndexedLine(lines, 112, "7");
+        SetMbotIndexedLine(lines, 80, "7");
+        SetMbotIndexedLine(lines, 100, "11");
+        SetMbotIndexedLine(lines, 68, "11");
+        SetMbotIndexedLine(lines, 116, "6");
+        SetMbotIndexedLine(lines, 84, "6");
+        SetMbotIndexedLine(lines, 114, "3");
+        SetMbotIndexedLine(lines, 82, "3");
+        SetMbotIndexedLine(lines, 115, "4");
+        SetMbotIndexedLine(lines, 83, "4");
+        SetMbotIndexedLine(lines, 120, "12");
+        SetMbotIndexedLine(lines, 88, "12");
+        SetMbotIndexedLine(lines, 122, "15");
+        SetMbotIndexedLine(lines, 90, "15");
+        SetMbotIndexedLine(lines, 126, "16");
+        SetMbotIndexedLine(lines, 113, "8");
+        SetMbotIndexedLine(lines, 81, "8");
+        SetMbotIndexedLine(lines, 9, "10");
+        return lines;
+    }
+
+    private static IReadOnlyList<string> BuildDefaultMbotCustomKeyFileLines()
+    {
+        string[] lines = Enumerable.Repeat("0", 33).ToArray();
+        string[] defaults =
+        {
+            "K", "C", "R", "S", "H", "T", "P", "Q", "L", "\t", "D", "X", "M", "F", "Z", "~", "B",
+        };
+
+        Array.Copy(defaults, lines, defaults.Length);
+        return lines;
+    }
+
+    private static IReadOnlyList<string> BuildDefaultMbotCustomCommandFileLines()
+    {
+        string[] lines = Enumerable.Repeat("0", 33).ToArray();
+        string[] defaults =
+        {
+            ":INTERNAL_COMMANDS~autokill",
+            ":INTERNAL_COMMANDS~autocap",
+            ":INTERNAL_COMMANDS~autorefurb",
+            ":INTERNAL_COMMANDS~surround",
+            ":INTERNAL_COMMANDS~htorp",
+            ":INTERNAL_COMMANDS~twarpswitch",
+            ":INTERNAL_COMMANDS~kit",
+            ":USER_INTERFACE~script_access",
+            ":INTERNAL_COMMANDS~hkill",
+            ":INTERNAL_COMMANDS~stopModules",
+            ":INTERNAL_COMMANDS~kit",
+            ":INTERNAL_COMMANDS~xenter",
+            ":INTERNAL_COMMANDS~mowswitch",
+            ":INTERNAL_COMMANDS~fotonswitch",
+            ":INTERNAL_COMMANDS~clear",
+            ":MENUS~preferencesMenu",
+            ":INTERNAL_COMMANDS~dock_shopper",
+        };
+
+        Array.Copy(defaults, lines, defaults.Length);
+        return lines;
+    }
+
+    private static void SetMbotIndexedLine(IList<string> lines, int oneBasedIndex, string value)
+    {
+        if (oneBasedIndex >= 1 && oneBasedIndex <= lines.Count)
+            lines[oneBasedIndex - 1] = value;
+    }
+
+    private void SyncMbotPromptStateFromLine(string line)
+    {
+        if (TryGetMbotPromptNameFromLine(line, out string promptName))
+            SetMbotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+    }
+
+    private string GetInitialMbotPromptName()
+    {
+        return GetMbotPromptSurface() switch
+        {
+            MbotPromptSurface.Command => "Command",
+            MbotPromptSurface.Citadel => "Citadel",
+            _ => "Undefined",
+        };
+    }
+
+    private static bool TryGetMbotPromptNameFromLine(string line, out string promptName)
+    {
+        promptName = string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        if (line.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase))
+        {
+            promptName = "Command";
+            return true;
+        }
+
+        if (line.StartsWith("Citadel command (", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("<Enter Citadel>", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Citadel treasury contains", StringComparison.OrdinalIgnoreCase))
+        {
+            promptName = "Citadel";
+            return true;
+        }
+
+        return false;
+    }
+
     private static void SetMbotCurrentVars(string value, params string[] names)
     {
         foreach (string name in names)
             Core.ScriptRef.SetCurrentGameVar(name, value);
+    }
+
+    private static void MirrorMbotCurrentVars(string fallback, params string[] names)
+    {
+        SetMbotCurrentVars(ReadCurrentMbotVar(fallback, names), names);
+    }
+
+    private static string ReadCurrentMbotVar(string fallback, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (!string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return fallback;
+    }
+
+    private static string GetMbotVersionDisplay()
+    {
+        string major = ReadCurrentMbotVar("4", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
+        string minor = ReadCurrentMbotVar("7beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
+        return string.IsNullOrWhiteSpace(minor) ? major : $"{major}.{minor}";
+    }
+
+    private static string FormatMbotSector(ushort? sector)
+    {
+        if (!sector.HasValue)
+            return "0";
+
+        ushort value = sector.Value;
+        return value == 0 || value == ushort.MaxValue ? "0" : value.ToString();
     }
 
     private static string FirstMeaningfulMbotValue(params string?[] candidates)
@@ -5706,6 +6786,11 @@ public class MainWindow : Window
         bool Connected,
         int PhotonCount);
 
+    private sealed record MbotHotkeyScriptEntry(
+        int Slot,
+        string LoadReference,
+        string DisplayName);
+
     private void SendToTelnet(byte[] bytes)
     {
         if (_telnet.IsConnected)
@@ -5719,6 +6804,9 @@ public class MainWindow : Window
         if (TryHandleMbotPromptInput(bytes))
             return;
 
+        if (TryInterceptMbotHotkeyAccess(bytes))
+            return;
+
         if (TryInterceptMbotCommandPrompt(bytes))
             return;
 
@@ -5727,11 +6815,20 @@ public class MainWindow : Window
 
     private bool TryHandleMbotPromptInput(byte[] bytes)
     {
-        if (!_mbotPromptOpen)
+        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen)
             return false;
+
+        if (_mbotScriptPromptOpen)
+            return TryHandleMbotScriptPromptInput(bytes);
+
+        if (_mbotHotkeyPromptOpen)
+            return TryHandleMbotHotkeyPromptInput(bytes);
 
         if (_mbotMacroPromptOpen)
             return TryHandleMbotMacroPromptInput(bytes);
+
+        if (!_mbotPromptOpen)
+            return false;
 
         if (bytes.Length == 0)
             return true;
@@ -5774,12 +6871,18 @@ public class MainWindow : Window
                     return true;
 
                 case 0x09:
-                    BeginMbotMacroPrompt();
+                    BeginMbotHotkeyPrompt();
                     return true;
 
                 default:
                     if (value >= 0x20)
                     {
+                        if (value == (byte)'>' && _mbotPromptBuffer.Length == 0)
+                        {
+                            BeginMbotMacroPrompt();
+                            return true;
+                        }
+
                         _mbotPromptBuffer += (char)value;
                         changed = true;
                     }
@@ -5816,7 +6919,8 @@ public class MainWindow : Window
                     return true;
 
                 case 0x09:
-                    _ = ExecuteMbotMacroActionAsync(_ => ExecuteMbotUiCommandAsync("stopmodules"));
+                    EndMbotMacroPrompt();
+                    BeginMbotHotkeyPrompt();
                     return true;
 
                 case (byte)'?':
@@ -5834,12 +6938,165 @@ public class MainWindow : Window
         return true;
     }
 
+    private bool TryHandleMbotHotkeyPromptInput(byte[] bytes)
+    {
+        if (!_mbotHotkeyPromptOpen)
+            return false;
+
+        if (bytes.Length == 0)
+            return true;
+
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x1B:
+                case 0x0D:
+                case 0x0A:
+                    EndMbotHotkeyPrompt();
+                    return true;
+
+                case (byte)'?':
+                    _ = ExecuteMbotHotkeyCommandAsync("help");
+                    return true;
+
+                default:
+                    if (value >= (byte)'0' && value <= (byte)'9')
+                    {
+                        _ = ExecuteMbotHotkeyScriptAsync(value == (byte)'0' ? 10 : value - (byte)'0');
+                        return true;
+                    }
+
+                    if (TryResolveMbotHotkeyCommand(value, out string? commandOrAction) &&
+                        !string.IsNullOrWhiteSpace(commandOrAction))
+                    {
+                        _ = ExecuteMbotHotkeySelectionAsync(commandOrAction);
+                        return true;
+                    }
+
+                    EndMbotHotkeyPrompt();
+                    return true;
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryHandleMbotScriptPromptInput(byte[] bytes)
+    {
+        if (!_mbotScriptPromptOpen)
+            return false;
+
+        if (bytes.Length == 0)
+            return true;
+
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x1B:
+                case 0x0D:
+                case 0x0A:
+                    EndMbotScriptPrompt();
+                    return true;
+
+                case (byte)'?':
+                    PublishMbotScriptPromptList(_mbotHotkeyScripts);
+                    RedrawMbotPrompt();
+                    return true;
+
+                default:
+                    if (value >= (byte)'0' && value <= (byte)'9')
+                    {
+                        _ = ExecuteMbotHotkeyScriptAsync(value == (byte)'0' ? 10 : value - (byte)'0');
+                        return true;
+                    }
+
+                    EndMbotScriptPrompt();
+                    return true;
+            }
+        }
+
+        return true;
+    }
+
     private static bool MatchesMbotPromptSequence(byte[] bytes, char finalChar)
     {
         return bytes.Length == 3 &&
             bytes[0] == 0x1B &&
             bytes[1] == (byte)'[' &&
             bytes[2] == (byte)finalChar;
+    }
+
+    private void BeginMbotHotkeyPrompt()
+    {
+        if (_gameInstance == null)
+        {
+            PublishMbotLocalMessage("Mombot hotkeys are only available while the embedded proxy is running.");
+            return;
+        }
+
+        if (!_mbot.Enabled)
+        {
+            PublishMbotLocalMessage("Enable Mombot first.");
+            return;
+        }
+
+        if (_mbotHotkeyPromptOpen)
+            return;
+
+        _mbotHotkeyPromptOpen = true;
+        _mbotScriptPromptOpen = false;
+        _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
+        RedrawMbotPrompt();
+    }
+
+    private void EndMbotHotkeyPrompt()
+    {
+        _mbotHotkeyPromptOpen = false;
+        _mbotScriptPromptOpen = false;
+        _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
+
+        if (_mbotPromptOpen)
+            RedrawMbotPrompt();
+        else
+        {
+            _parser.Feed("\r\x1b[K");
+            _buffer.Dirty = true;
+            FocusActiveTerminal();
+        }
+    }
+
+    private void BeginMbotScriptPrompt()
+    {
+        IReadOnlyList<MbotHotkeyScriptEntry> scripts = LoadMbotHotkeyScripts();
+        if (scripts.Count == 0)
+        {
+            PublishMbotLocalMessage("No Mombot hotkey scripts are configured.");
+            return;
+        }
+
+        _mbotHotkeyPromptOpen = false;
+        _mbotScriptPromptOpen = true;
+        _mbotHotkeyScripts = scripts;
+
+        PublishMbotScriptPromptList(scripts);
+        RedrawMbotPrompt();
+    }
+
+    private void EndMbotScriptPrompt()
+    {
+        _mbotScriptPromptOpen = false;
+        _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
+
+        if (_mbotPromptOpen)
+            RedrawMbotPrompt();
+        else
+        {
+            _parser.Feed("\r\x1b[K");
+            _buffer.Dirty = true;
+            FocusActiveTerminal();
+        }
     }
 
     private void BeginMbotPrompt(string initialValue = "")
@@ -5863,8 +7120,11 @@ public class MainWindow : Window
         _mbotPromptBuffer = initialValue;
         _mbotPromptDraft = initialValue;
         _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
+        _mbotHotkeyPromptOpen = false;
+        _mbotScriptPromptOpen = false;
         _mbotMacroPromptOpen = false;
         _mbotMacroContext = null;
+        _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
         RedrawMbotPrompt();
     }
 
@@ -5957,8 +7217,11 @@ public class MainWindow : Window
     private void ResetMbotPromptState()
     {
         _mbotPromptOpen = false;
+        _mbotHotkeyPromptOpen = false;
+        _mbotScriptPromptOpen = false;
         _mbotMacroPromptOpen = false;
         _mbotMacroContext = null;
+        _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
         _mbotPromptBuffer = string.Empty;
         _mbotPromptDraft = string.Empty;
         _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
@@ -5966,12 +7229,16 @@ public class MainWindow : Window
 
     private void RedrawMbotPrompt()
     {
-        if (!_mbotPromptOpen)
+        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen)
             return;
 
         _parser.Feed("\r\x1b[K");
-        _parser.Feed(_mbotMacroPromptOpen ? GetMbotMacroPromptPrefix() : GetMbotPromptPrefix());
-        if (!_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
+        _parser.Feed(
+            _mbotScriptPromptOpen ? GetMbotScriptPromptPrefix() :
+            _mbotHotkeyPromptOpen ? GetMbotHotkeyPromptPrefix() :
+            _mbotMacroPromptOpen ? GetMbotMacroPromptPrefix() :
+            GetMbotPromptPrefix());
+        if (!_mbotScriptPromptOpen && !_mbotHotkeyPromptOpen && !_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
             _parser.Feed(_mbotPromptBuffer);
         _buffer.Dirty = true;
         FocusActiveTerminal();
@@ -5987,7 +7254,7 @@ public class MainWindow : Window
 
     private string GetMbotMacroPromptPrefix()
     {
-        string options = "Tab=Reset H=Holo D=Dens S=Surround X=Xenter";
+        string options = "H=Holo D=Dens S=Surround X=Xenter";
         if (_mbotMacroContext is { AdjacentSectors.Count: > 0 } context)
         {
             string sectorKeys = string.Join(" ", context.AdjacentSectors
@@ -5999,12 +7266,22 @@ public class MainWindow : Window
         return $"\x1b[1;33m{{{options}}}\x1b[0;37m mombot\x1b[1;32m>\x1b[0m ";
     }
 
+    private static string GetMbotHotkeyPromptPrefix()
+    {
+        return "\x1b[1;37m**Hotkey\x1b[1;32m>\x1b[0m ";
+    }
+
+    private static string GetMbotScriptPromptPrefix()
+    {
+        return "\x1b[1;37m***Scripts\x1b[1;32m>\x1b[0m ";
+    }
+
     private string BuildMbotMacroHelpLine()
     {
         if (_mbotMacroContext is not { } context)
-            return "mombot macros: Tab=reset H=holo D=density S=surround X=xenter Esc=cancel";
+            return "mombot grid: H=holo D=density S=surround X=xenter Esc=cancel";
 
-        string line = "mombot macros: Tab=reset H=holo D=density S=surround X=xenter";
+        string line = "mombot grid: H=holo D=density S=surround X=xenter";
         if (context.AdjacentSectors.Count > 0)
         {
             string sectorKeys = string.Join(" ", context.AdjacentSectors
@@ -6089,7 +7366,7 @@ public class MainWindow : Window
         else
             _parser.Feed("\r\n" + message + "\r\n");
 
-        if (_mbotPromptOpen)
+        if (_mbotPromptOpen || _mbotHotkeyPromptOpen || _mbotScriptPromptOpen)
             RedrawMbotPrompt();
         else
             FocusActiveTerminal();
@@ -6102,6 +7379,8 @@ public class MainWindow : Window
         if (_gameInstance == null ||
             !_mbot.Enabled ||
             _mbotPromptOpen ||
+            _mbotHotkeyPromptOpen ||
+            _mbotScriptPromptOpen ||
             _gameInstance.IsProxyMenuActive)
         {
             return false;
@@ -6123,6 +7402,32 @@ public class MainWindow : Window
             return false;
 
         BeginMbotPrompt();
+        return true;
+    }
+
+    private bool TryInterceptMbotHotkeyAccess(byte[] bytes)
+    {
+        if (_gameInstance == null ||
+            !_mbot.Enabled ||
+            _mbotHotkeyPromptOpen ||
+            _mbotScriptPromptOpen ||
+            _gameInstance.IsProxyMenuActive)
+        {
+            return false;
+        }
+
+        if (bytes.Length != 1 || bytes[0] != 0x09)
+            return false;
+
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null ||
+            interpreter.HasKeypressInputWaiting ||
+            interpreter.IsAnyScriptWaitingForInput())
+        {
+            return false;
+        }
+
+        BeginMbotHotkeyPrompt();
         return true;
     }
 
@@ -6173,6 +7478,288 @@ public class MainWindow : Window
 
     private static int ParseGameVarInt(string value)
         => int.TryParse(value, out int parsed) ? parsed : 0;
+
+    private async Task ExecuteMbotHotkeySelectionAsync(string commandOrAction)
+    {
+        if (string.IsNullOrWhiteSpace(commandOrAction))
+        {
+            EndMbotHotkeyPrompt();
+            return;
+        }
+
+        if (commandOrAction.StartsWith(":", StringComparison.Ordinal))
+        {
+            await ExecuteMbotHotkeyActionAsync(commandOrAction);
+            return;
+        }
+
+        await ExecuteMbotHotkeyCommandAsync(commandOrAction);
+    }
+
+    private async Task ExecuteMbotHotkeyActionAsync(string actionRef)
+    {
+        string normalized = actionRef.Trim().ToLowerInvariant();
+        switch (normalized)
+        {
+            case ":user_interface~script_access":
+                BeginMbotScriptPrompt();
+                return;
+
+            case ":menus~preferencesmenu":
+                ResetMbotPromptState();
+                _parser.Feed("\r\x1b[K");
+                _buffer.Dirty = true;
+                PublishMbotLocalMessage("Native Mombot preferences are not inline yet. Use Bot -> Configure for now.");
+                return;
+
+            case ":internal_commands~twarpswitch":
+                ResetMbotPromptState();
+                _parser.Feed("\r\x1b[K");
+                _buffer.Dirty = true;
+                BeginMbotPrompt("twarp ");
+                return;
+
+            case ":internal_commands~mowswitch":
+                ResetMbotPromptState();
+                _parser.Feed("\r\x1b[K");
+                _buffer.Dirty = true;
+                BeginMbotPrompt("mow ");
+                return;
+
+            case ":internal_commands~fotonswitch":
+                await ExecuteMbotHotkeyCommandAsync(
+                    string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General"), "Foton", StringComparison.OrdinalIgnoreCase)
+                        ? "foton off"
+                        : "foton on p");
+                return;
+
+            case ":internal_commands~autokill":
+                await ExecuteMbotHotkeyCommandAsync("kill furb silent");
+                return;
+
+            case ":internal_commands~autocap":
+                await ExecuteMbotHotkeyCommandAsync("cap");
+                return;
+
+            case ":internal_commands~autorefurb":
+                await ExecuteMbotHotkeyCommandAsync("refurb");
+                return;
+
+            case ":internal_commands~kit":
+                await ExecuteMbotHotkeyCommandAsync("macro_kit");
+                return;
+        }
+
+        string command = actionRef[(actionRef.LastIndexOf('~') + 1)..];
+        if (string.Equals(command, "stopModules", StringComparison.OrdinalIgnoreCase))
+            command = "stopmodules";
+
+        await ExecuteMbotHotkeyCommandAsync(command);
+    }
+
+    private async Task ExecuteMbotHotkeyCommandAsync(string command)
+    {
+        ResetMbotPromptState();
+        _parser.Feed("\r\x1b[K");
+        _buffer.Dirty = true;
+        await ExecuteMbotUiCommandAsync(command);
+    }
+
+    private async Task ExecuteMbotHotkeyScriptAsync(int slot)
+    {
+        IReadOnlyList<MbotHotkeyScriptEntry> scripts = _mbotHotkeyScripts.Count > 0
+            ? _mbotHotkeyScripts
+            : LoadMbotHotkeyScripts();
+
+        MbotHotkeyScriptEntry? selected = scripts.FirstOrDefault(entry => entry.Slot == slot);
+        if (selected == null)
+        {
+            ResetMbotPromptState();
+            _parser.Feed("\r\x1b[K");
+            _buffer.Dirty = true;
+            PublishMbotLocalMessage($"No Mombot hotkey script is configured for slot {slot % 10}.");
+            return;
+        }
+
+        string scriptPath = selected.LoadReference;
+        string resolvedPath = ResolveMbotFilePath(scriptPath);
+
+        ResetMbotPromptState();
+        _parser.Feed("\r\x1b[K");
+        _buffer.Dirty = true;
+
+        if (!File.Exists(resolvedPath))
+        {
+            PublishMbotLocalMessage(
+                $"{scriptPath} does not exist in the configured Mombot script path. Check {ReadCurrentMbotVar("hotkey_scripts.cfg", "$SCRIPT_FILE")}.");
+            return;
+        }
+
+        if (!_mbot.TryLoadScript(scriptPath, out string? error))
+        {
+            PublishMbotLocalMessage($"Mombot could not load {scriptPath}: {error}");
+            return;
+        }
+
+        PublishMbotLocalMessage($"Mombot loaded script {selected.DisplayName} ({scriptPath}).");
+        ApplyMbotExecutionRefresh();
+        await Task.CompletedTask;
+    }
+
+    private bool TryResolveMbotHotkeyCommand(byte keyByte, out string? commandOrAction)
+    {
+        commandOrAction = null;
+
+        IReadOnlyList<string> hotkeys = LoadMbotIndexedConfig(
+            "$hotkeys_file",
+            BuildDefaultMbotHotkeyFileLines());
+        if (keyByte == 0 || keyByte > hotkeys.Count)
+            return false;
+
+        string slotValue = hotkeys[keyByte - 1].Trim();
+        if (!int.TryParse(slotValue, out int slot) || slot <= 0)
+            return false;
+
+        IReadOnlyList<string> commands = LoadMbotIndexedConfig(
+            "$custom_commands_file",
+            BuildDefaultMbotCustomCommandFileLines());
+        if (slot > commands.Count)
+            return false;
+
+        string entry = commands[slot - 1].Trim();
+        if (string.IsNullOrWhiteSpace(entry) || entry == "0")
+            return false;
+
+        commandOrAction = entry;
+        return true;
+    }
+
+    private IReadOnlyList<MbotHotkeyScriptEntry> LoadMbotHotkeyScripts()
+    {
+        string filePath = ResolveMbotCurrentFilePath("$SCRIPT_FILE");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return Array.Empty<MbotHotkeyScriptEntry>();
+
+        var scripts = new List<MbotHotkeyScriptEntry>();
+        try
+        {
+            int slot = 1;
+            foreach (string rawLine in File.ReadLines(filePath))
+            {
+                if (slot > 10)
+                    break;
+
+                string line = rawLine.Trim();
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                int quoteIndex = line.IndexOf('"');
+                if (quoteIndex <= 0)
+                    continue;
+
+                string loadReference = NormalizeMbotHotkeyScriptReference(line[..quoteIndex].Trim());
+                string displayName = line[quoteIndex..].Trim().Trim('"').Trim();
+                if (string.IsNullOrWhiteSpace(loadReference))
+                    continue;
+
+                scripts.Add(new MbotHotkeyScriptEntry(
+                    slot,
+                    loadReference,
+                    string.IsNullOrWhiteSpace(displayName) ? Path.GetFileNameWithoutExtension(loadReference) : displayName));
+                slot++;
+            }
+        }
+        catch
+        {
+            return Array.Empty<MbotHotkeyScriptEntry>();
+        }
+
+        return scripts;
+    }
+
+    private IReadOnlyList<string> LoadMbotIndexedConfig(string currentVarName, IReadOnlyList<string> defaultLines)
+    {
+        string[] merged = defaultLines.ToArray();
+        string filePath = ResolveMbotCurrentFilePath(currentVarName);
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return merged;
+
+        try
+        {
+            string[] existing = File.ReadAllLines(filePath);
+            int count = Math.Min(existing.Length, merged.Length);
+            for (int i = 0; i < count; i++)
+            {
+                string trimmed = existing[i].Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                    merged[i] = trimmed;
+            }
+        }
+        catch
+        {
+            return merged;
+        }
+
+        return merged;
+    }
+
+    private string NormalizeMbotHotkeyScriptReference(string loadReference)
+    {
+        if (string.IsNullOrWhiteSpace(loadReference))
+            return string.Empty;
+
+        string normalized = loadReference.Trim().Replace('\\', '/');
+        string directPath = ResolveMbotFilePath(normalized);
+        if (File.Exists(directPath))
+            return normalized;
+
+        if (!normalized.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase))
+        {
+            string prefixed = "scripts/" + normalized.TrimStart('/');
+            if (File.Exists(ResolveMbotFilePath(prefixed)))
+                return prefixed;
+        }
+
+        return normalized;
+    }
+
+    private string ResolveMbotCurrentFilePath(string currentVarName)
+    {
+        string relativePath = ReadCurrentMbotVar(string.Empty, currentVarName);
+        return string.IsNullOrWhiteSpace(relativePath)
+            ? string.Empty
+            : ResolveMbotFilePath(relativePath);
+    }
+
+    private string ResolveMbotFilePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return string.Empty;
+
+        string normalized = path.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(normalized))
+            return Path.GetFullPath(normalized);
+
+        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
+        return Path.GetFullPath(Path.Combine(programDir, normalized));
+    }
+
+    private void PublishMbotScriptPromptList(IReadOnlyList<MbotHotkeyScriptEntry> scripts)
+    {
+        if (scripts.Count == 0)
+            return;
+
+        _parser.Feed("\r\x1b[K");
+        foreach (MbotHotkeyScriptEntry script in scripts)
+        {
+            string slotLabel = script.Slot == 10 ? "0" : script.Slot.ToString();
+            _parser.Feed($"\r\n\x1b[1;33m{slotLabel})\x1b[0m {script.DisplayName}");
+        }
+
+        _parser.Feed("\r\n");
+        _buffer.Dirty = true;
+        FocusActiveTerminal();
+    }
 
     private string BuildMbotScanMacro(bool holo, MbotGridContext context)
     {

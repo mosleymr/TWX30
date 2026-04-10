@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Core = TWXProxy.Core;
@@ -279,17 +280,19 @@ internal sealed class mbotService
             return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, message);
         }
 
-        string canonical = mbotCatalog.NormalizeCommandName(words[0]);
+        string originalCommand = NormalizeRawCommandToken(words[0]);
+        List<string> originalParameters = words.Skip(1).Take(8).ToList();
+        mbotCommandContext context = NormalizeDispatchContext(originalCommand, originalParameters, selfCommand, route, userName);
+        string canonical = context.CommandName;
+        List<string> parameters = context.Parameters.ToList();
         mbotCatalog.TryGetCommandSpec(canonical, out mbotCommandSpec? command);
-        List<string> parameters = words.Skip(1).Take(8).ToList();
-        string normalizedLine = BuildNormalizedCommandLine(canonical, parameters);
-        var context = new mbotCommandContext(
-            normalizedLine,
-            canonical,
-            parameters,
-            selfCommand,
-            route,
-            userName);
+
+        string originalLine = BuildNormalizedCommandLine(originalCommand, originalParameters);
+        if (!string.Equals(originalLine, context.CommandLine, StringComparison.Ordinal))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[mombot] Normalized command '{originalLine}' -> '{context.CommandLine}' for route={route} user={userName}\n");
+        }
 
         string? scriptReference = TryResolveScriptReference(canonical, command, out bool isModeScript);
         Compat.ApplyToSession(_interpreter, _database, _config, Settings, context, scriptReference);
@@ -654,7 +657,10 @@ internal sealed class mbotService
             return false;
 
         if (!string.IsNullOrWhiteSpace(userName))
+        {
             _authorizedUsers.Add(userName);
+            PersistAuthorizedUsers();
+        }
 
         PublishMessage($"mombot: user verified - {userName}");
         return true;
@@ -844,6 +850,9 @@ internal sealed class mbotService
             if (!string.IsNullOrWhiteSpace(trimmed))
                 _authorizedUsers.Add(trimmed);
         }
+
+        foreach (string user in LoadAuthorizedUsersFromStorage())
+            _authorizedUsers.Add(user);
     }
 
     private static IEnumerable<string> SplitCommandSegments(string input)
@@ -863,7 +872,34 @@ internal sealed class mbotService
     {
         return input
             .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(ExpandNumericSuffix)
             .ToList();
+    }
+
+    private mbotCommandContext NormalizeDispatchContext(
+        string commandName,
+        IReadOnlyList<string> rawParameters,
+        bool selfCommand,
+        string route,
+        string userName)
+    {
+        string normalizedCommand = commandName;
+        var parameters = rawParameters.Take(8).ToList();
+
+        ApplyStockCommandRewrites(ref normalizedCommand, parameters);
+        ExpandStockParameterAliases(parameters);
+        normalizedCommand = NormalizeStockCommandAlias(normalizedCommand);
+        ApplyTravelCommandRewrites(ref normalizedCommand, parameters);
+        normalizedCommand = mbotCatalog.NormalizeCommandName(normalizedCommand);
+
+        string normalizedLine = BuildNormalizedCommandLine(normalizedCommand, parameters);
+        return new mbotCommandContext(
+            normalizedLine,
+            normalizedCommand,
+            parameters,
+            selfCommand,
+            route,
+            userName);
     }
 
     private static string BuildNormalizedCommandLine(string canonical, IReadOnlyList<string> parameters)
@@ -871,5 +907,296 @@ internal sealed class mbotService
         return parameters.Count == 0
             ? canonical
             : canonical + " " + string.Join(" ", parameters);
+    }
+
+    private void ApplyStockCommandRewrites(ref string commandName, List<string> parameters)
+    {
+        if (MatchesCommand(commandName, "create"))
+        {
+            string firstParameter = GetParameter(parameters, 0);
+            commandName = IsPortOrPlanetTarget(firstParameter) ? firstParameter : "port";
+            InsertParameterAtFront(parameters, "create");
+            return;
+        }
+
+        if (MatchesAnyCommand(commandName, "kill", "destroy", "blow"))
+        {
+            string firstParameter = GetParameter(parameters, 0);
+            if (IsPortOrPlanetTarget(firstParameter))
+            {
+                commandName = firstParameter;
+                if (parameters.Count == 0)
+                    parameters.Add("kill");
+                else
+                    parameters[0] = "kill";
+            }
+            else
+            {
+                commandName = "kill";
+            }
+
+            return;
+        }
+
+        if (MatchesAnyCommand(commandName, "upgrade", "max"))
+        {
+            string firstParameter = GetParameter(parameters, 0);
+            commandName = IsPortOrPlanetTarget(firstParameter) ? firstParameter : "port";
+            InsertParameterAtFront(parameters, "upgrade");
+            return;
+        }
+
+        if (MatchesAnyCommand(commandName, "f", "fde", "ufde", "nf", "uf", "de", "fp", "fup", "nfup"))
+        {
+            InsertParameterAtFront(parameters, commandName);
+            commandName = "find";
+        }
+    }
+
+    private void ExpandStockParameterAliases(List<string> parameters)
+    {
+        for (int index = 0; index < parameters.Count; index++)
+        {
+            string parameter = parameters[index];
+            if (string.IsNullOrWhiteSpace(parameter))
+                continue;
+
+            if (string.Equals(parameter, "s", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny(FormatSector(_database?.DBHeader.StarDock), "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+            else if (string.Equals(parameter, "r", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny(FormatSector(_database?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
+            else if (string.Equals(parameter, "a", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny(FormatSector(_database?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
+            else if (string.Equals(parameter, "h", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector");
+            else if (string.Equals(parameter, "b", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
+            else if (string.Equals(parameter, "x", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ReadCurrentAny("0", "$BOT~SAFE_SHIP", "$bot~safe_ship", "$safe_ship");
+            else if (string.Equals(parameter, "l", StringComparison.OrdinalIgnoreCase))
+                parameters[index] = ResolveSafePlanetSectorAlias();
+        }
+    }
+
+    private void ApplyTravelCommandRewrites(ref string commandName, List<string> parameters)
+    {
+        if (string.Equals(commandName, "m", StringComparison.OrdinalIgnoreCase))
+            commandName = "mow";
+        else if (string.Equals(commandName, "p", StringComparison.OrdinalIgnoreCase))
+            commandName = "pwarp";
+        else if (string.Equals(commandName, "t", StringComparison.OrdinalIgnoreCase))
+            commandName = "twarp";
+        else if (string.Equals(commandName, "b", StringComparison.OrdinalIgnoreCase))
+            commandName = "bwarp";
+
+        if (!MatchesAnyCommand(commandName, "mow", "twarp", "bwarp", "pwarp", "smow"))
+            return;
+
+        RewriteTravelPlanetTarget(parameters);
+    }
+
+    private static string NormalizeStockCommandAlias(string commandName)
+    {
+        if (string.IsNullOrWhiteSpace(commandName))
+            return string.Empty;
+
+        return commandName.ToLowerInvariant() switch
+        {
+            "l" => "land",
+            "x" => "xport",
+            "qss" => "status",
+            "d" => "dep",
+            "w" => "with",
+            "k" => "keep",
+            "exit" => "xenter",
+            "cn" => "cn9",
+            "emx" => "reset",
+            "pinfo" => "pscan",
+            "shipstore" => "storeship",
+            _ => commandName,
+        };
+    }
+
+    private void RewriteTravelPlanetTarget(List<string> parameters)
+    {
+        if (parameters.Count < 2)
+            return;
+
+        if (!string.Equals(parameters[0], "planet", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        string resolvedSector = ResolvePlanetSector(parameters[1]);
+        if (!string.IsNullOrWhiteSpace(resolvedSector))
+            parameters[0] = resolvedSector;
+    }
+
+    private string ResolveSafePlanetSectorAlias()
+    {
+        string safePlanet = ReadCurrentAny("0", "$BOT~SAFE_PLANET", "$bot~safe_planet", "$safe_planet");
+        if (string.IsNullOrWhiteSpace(safePlanet) || safePlanet == "0")
+            return "l";
+
+        string resolvedSector = ResolvePlanetSector(safePlanet);
+        return string.IsNullOrWhiteSpace(resolvedSector) ? string.Empty : resolvedSector;
+    }
+
+    private string ResolvePlanetSector(string planetIdToken)
+    {
+        if (_database == null || string.IsNullOrWhiteSpace(planetIdToken))
+            return string.Empty;
+
+        if (!int.TryParse(planetIdToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out int planetId) || planetId <= 0)
+            return string.Empty;
+
+        string sectorFromParameter = _database.GetSectorVar(planetId, "PSECTOR");
+        if (!string.IsNullOrWhiteSpace(sectorFromParameter))
+            return sectorFromParameter;
+
+        int lastSector = _database.GetPlanet(planetId)?.LastSector ?? 0;
+        return lastSector > 0
+            ? lastSector.ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+    }
+
+    private static bool IsPortOrPlanetTarget(string value)
+    {
+        return string.Equals(value, "port", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "planet", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetParameter(IReadOnlyList<string> parameters, int index)
+    {
+        return index >= 0 && index < parameters.Count ? parameters[index] : string.Empty;
+    }
+
+    private static void InsertParameterAtFront(List<string> parameters, string value)
+    {
+        parameters.Insert(0, value);
+        if (parameters.Count > 8)
+            parameters.RemoveAt(8);
+    }
+
+    private static bool MatchesCommand(string commandName, string expected)
+    {
+        return string.Equals(commandName, expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesAnyCommand(string commandName, params string[] expected)
+    {
+        return expected.Any(candidate => string.Equals(commandName, candidate, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string NormalizeRawCommandToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return string.Empty;
+
+        string normalized = token.Trim();
+        int splitIndex = normalized.IndexOf(' ');
+        if (splitIndex >= 0)
+            normalized = normalized[..splitIndex];
+
+        if (normalized.EndsWith(".cts", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^4];
+        else if (normalized.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[..^3];
+
+        return normalized;
+    }
+
+    private string ReadCurrentAny(string fallback, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (!string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return fallback;
+    }
+
+    private static string FormatSector(ushort? sector)
+    {
+        if (!sector.HasValue)
+            return "0";
+
+        ushort value = sector.Value;
+        return value == 0 || value == ushort.MaxValue ? "0" : value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private IReadOnlyList<string> LoadAuthorizedUsersFromStorage()
+    {
+        string? botUsersFile = GetBotUsersFilePath();
+        if (string.IsNullOrWhiteSpace(botUsersFile) || !File.Exists(botUsersFile))
+            return Array.Empty<string>();
+
+        return File.ReadLines(botUsersFile)
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private void PersistAuthorizedUsers()
+    {
+        string? botUsersFile = GetBotUsersFilePath();
+        if (string.IsNullOrWhiteSpace(botUsersFile))
+            return;
+
+        string? directory = Path.GetDirectoryName(botUsersFile);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        File.WriteAllLines(
+            botUsersFile,
+            _authorizedUsers
+                .OrderBy(user => user, StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+    }
+
+    private string? GetBotUsersFilePath()
+    {
+        string? storageDirectory = GetGameStorageDirectory();
+        if (string.IsNullOrWhiteSpace(storageDirectory))
+            return null;
+
+        return Path.Combine(storageDirectory, "bot_users.lst");
+    }
+
+    private string? GetGameStorageDirectory()
+    {
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (string.IsNullOrWhiteSpace(scriptRoot))
+            return null;
+
+        string gameName = Path.GetFileNameWithoutExtension(_database?.DatabasePath ?? _database?.DatabaseName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(gameName))
+            return null;
+
+        return Path.Combine(scriptRoot, "games", gameName);
+    }
+
+    private static string ExpandNumericSuffix(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length < 2)
+            return token;
+
+        char suffix = char.ToLowerInvariant(token[^1]);
+        long multiplier = suffix switch
+        {
+            'k' => 1_000L,
+            'm' => 1_000_000L,
+            'b' => 1_000_000_000L,
+            _ => 0L,
+        };
+        if (multiplier == 0L)
+            return token;
+
+        string numericPortion = token[..^1];
+        if (!long.TryParse(numericPortion, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
+            return token;
+
+        return (parsed * multiplier).ToString(CultureInfo.InvariantCulture);
     }
 }

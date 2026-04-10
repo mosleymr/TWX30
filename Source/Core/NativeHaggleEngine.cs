@@ -948,6 +948,20 @@ public sealed class NativeHaggleEngine
     {
         ScriptRef.SetVarOnActiveScripts("$HAGGLE~CREDITS", credits.ToString(CultureInfo.InvariantCulture));
         ScriptRef.SetVarOnActiveScripts("$HAGGLE~ABORT", abort ? "1" : "0");
+
+        if (_session != null &&
+            TryGetPersistableMcicRange(_session, out int minMcic, out int maxMcic, out int representativeMcic))
+        {
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC", representativeMcic.ToString(CultureInfo.InvariantCulture));
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC_MIN", minMcic.ToString(CultureInfo.InvariantCulture));
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC_MAX", maxMcic.ToString(CultureInfo.InvariantCulture));
+        }
+        else
+        {
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC", string.Empty);
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC_MIN", string.Empty);
+            ScriptRef.SetVarOnActiveScripts("$HAGGLE~MCIC_MAX", string.Empty);
+        }
     }
 
     private long ResolveStartingCredits()
@@ -2692,10 +2706,10 @@ public sealed class NativeHaggleEngine
 
         string? legacyAlias = GetLegacyMcicAlias(session.ProductKey);
         if (!string.IsNullOrEmpty(legacyAlias))
-            WriteInt(db, session.Sector, legacyAlias, Math.Abs(representativeMcic));
+            WriteInt(db, session.Sector, legacyAlias, representativeMcic);
 
         GlobalModules.DebugLog(
-            $"[NativeHaggle] Persisted MCIC sector={session.Sector} product={session.ProductKey} buysell={session.BuySell} legacyKey='{legacyAlias ?? "-"}' legacyValue={Math.Abs(representativeMcic)} range={minMcic}..{maxMcic}\n");
+            $"[NativeHaggle] Persisted MCIC sector={session.Sector} product={session.ProductKey} buysell={session.BuySell} legacyKey='{legacyAlias ?? "-"}' legacyValue={representativeMcic} range={minMcic}..{maxMcic}\n");
     }
 
     private static bool TryGetPersistableMcicRange(SessionState session, out int minMcic, out int maxMcic, out int representativeMcic)

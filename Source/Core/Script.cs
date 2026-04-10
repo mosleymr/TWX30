@@ -131,6 +131,7 @@ namespace TWXProxy.Core
         private string _activeCommsVar = string.Empty;
         private string _activeLoginScript = string.Empty;
         private string _activeBotTag = string.Empty;
+        private readonly HashSet<string> _activeBotThemeKeys = new(StringComparer.Ordinal);
 #pragma warning disable CS0649 // Field is never assigned to
         private int _activeBotTagLength;
 #pragma warning restore CS0649
@@ -592,6 +593,15 @@ namespace TWXProxy.Core
                 return;
             }
 
+            if (stopBotScripts &&
+                server is GameInstance stopGameInstance &&
+                !string.IsNullOrWhiteSpace(server.ActiveBotName))
+            {
+                BotConfig? activeConfig = server.GetBotConfig(server.ActiveBotName);
+                if (ProxyMenuCatalog.IsNativeBotConfig(activeConfig))
+                    stopGameInstance.NativeBotStopper?.Invoke(activeConfig?.Name ?? server.ActiveBotName);
+            }
+
             if (stopBotScripts)
             {
                 for (int index = _scriptList.Count - 1; index >= 0; index--)
@@ -601,13 +611,45 @@ namespace TWXProxy.Core
                 }
             }
 
+            ActivateBotContext(botConfig, requestedBotName, lastBotName);
+
+            if (ProxyMenuCatalog.IsNativeBotConfig(botConfig))
+            {
+                if (server is not GameInstance gameInstance || gameInstance.NativeBotActivator == null)
+                {
+                    ClearActiveBotContext(botConfig.Name);
+                    Console.WriteLine($"[SwitchBot] Native bot '{botConfig.Name}' is not available in this host");
+                    return;
+                }
+
+                if (!gameInstance.NativeBotActivator(botConfig, requestedBotName))
+                {
+                    ClearActiveBotContext(botConfig.Name);
+                    Console.WriteLine($"[SwitchBot] Failed to start native bot '{botConfig.Name}'");
+                }
+                else
+                {
+                    Console.WriteLine($"[SwitchBot] Switched to native bot '{botConfig.Name}'");
+                }
+
+                return;
+            }
+
+            foreach (string scriptFile in GetBotScripts(botConfig))
+                StartBot(botConfig.Name, scriptFile);
+
+            Console.WriteLine($"[SwitchBot] Switched to bot '{botConfig.Name}' with script '{_activeBotScript}'");
+        }
+
+        public void ActivateBotContext(BotConfig botConfig, string requestedBotName = "", string? lastBotName = null)
+        {
+            string previousBotName = lastBotName ?? GetActiveBotName();
+
             _activeBot = botConfig.Name;
             _activeBotScript = string.Join(",", GetBotScripts(botConfig));
             _activeBotNameVar = botConfig.NameVar ?? string.Empty;
             _activeCommsVar = botConfig.CommsVar ?? string.Empty;
             _activeLoginScript = botConfig.LoginScript ?? string.Empty;
-            _activeBotTag = string.Empty;
-            _activeBotTagLength = 0;
 
             ApplyBotTheme(botConfig);
 
@@ -615,22 +657,42 @@ namespace TWXProxy.Core
             {
                 string currentBotName = GetActiveBotName();
                 if ((string.IsNullOrWhiteSpace(currentBotName) || currentBotName == "0") &&
-                    !string.IsNullOrWhiteSpace(lastBotName) &&
-                    lastBotName != "0")
+                    !string.IsNullOrWhiteSpace(previousBotName) &&
+                    previousBotName != "0")
                 {
-                    requestedBotName = lastBotName;
+                    requestedBotName = previousBotName;
                 }
             }
 
             if (!string.IsNullOrWhiteSpace(requestedBotName))
                 PersistActiveBotName(requestedBotName);
 
-            server.ActiveBotName = botConfig.Name;
+            if (GlobalModules.TWXServer != null)
+                GlobalModules.TWXServer.ActiveBotName = botConfig.Name;
+        }
 
-            foreach (string scriptFile in GetBotScripts(botConfig))
-                StartBot(botConfig.Name, scriptFile);
+        public void ClearActiveBotContext(string? botName = null)
+        {
+            if (!string.IsNullOrWhiteSpace(botName) &&
+                !string.Equals(_activeBot, botName, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(GetActiveBotName(), botName, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
 
-            Console.WriteLine($"[SwitchBot] Switched to bot '{botConfig.Name}' with script '{_activeBotScript}'");
+            ClearBotTheme();
+            _activeBot = string.Empty;
+            _activeBotScript = string.Empty;
+            _activeBotNameVar = string.Empty;
+            _activeCommsVar = string.Empty;
+            _activeLoginScript = string.Empty;
+
+            if (GlobalModules.TWXServer != null &&
+                (string.IsNullOrWhiteSpace(botName) ||
+                 string.Equals(GlobalModules.TWXServer.ActiveBotName, botName, StringComparison.OrdinalIgnoreCase)))
+            {
+                GlobalModules.TWXServer.ActiveBotName = string.Empty;
+            }
         }
 
         public void StartBot(string botName, string scriptFile)
@@ -673,19 +735,33 @@ namespace TWXProxy.Core
 
         public void StopBot(string botName)
         {
+            ITWXServer? server = GlobalModules.TWXServer;
+            BotConfig? botConfig = server?.GetBotConfig(botName);
+            string resolvedBotName = botConfig?.Name ?? botName;
             bool stoppedAny = false;
+
+            if (ProxyMenuCatalog.IsNativeBotConfig(botConfig) &&
+                server is GameInstance gameInstance &&
+                gameInstance.NativeBotStopper != null)
+            {
+                stoppedAny = gameInstance.NativeBotStopper(resolvedBotName);
+            }
+
             for (int index = _scriptList.Count - 1; index >= 0; index--)
             {
                 if (_scriptList[index].IsBot &&
-                    _scriptList[index].BotName.Equals(botName, StringComparison.OrdinalIgnoreCase))
+                    _scriptList[index].BotName.Equals(resolvedBotName, StringComparison.OrdinalIgnoreCase))
                 {
                     Stop(index);
                     stoppedAny = true;
                 }
             }
 
+            if (stoppedAny)
+                ClearActiveBotContext(resolvedBotName);
+
             if (!stoppedAny)
-                Console.WriteLine($"[StopBot] Bot '{botName}' not found");
+                Console.WriteLine($"[StopBot] Bot '{resolvedBotName}' not found");
         }
 
         public Script? FindBot(string botName)
@@ -720,6 +796,13 @@ namespace TWXProxy.Core
                 BotConfig? botConfig = server.GetBotConfig(botName);
                 if (botConfig?.AutoStart != true)
                     continue;
+
+                if (ProxyMenuCatalog.IsNativeBotConfig(botConfig))
+                {
+                    if (server is GameInstance gameInstance && gameInstance.NativeBotActivator != null)
+                        gameInstance.NativeBotActivator(botConfig, string.Empty);
+                    continue;
+                }
 
                 foreach (string scriptFile in GetBotScripts(botConfig))
                     StartBot(botConfig.Name, scriptFile);
@@ -782,6 +865,8 @@ namespace TWXProxy.Core
 
         private void ApplyBotTheme(BotConfig config)
         {
+            ClearBotTheme();
+
             if (string.IsNullOrWhiteSpace(config.Theme) || GlobalModules.TWXServer == null)
                 return;
 
@@ -795,7 +880,25 @@ namespace TWXProxy.Core
             _activeBotTag = parts[1];
 
             for (int index = 2; index < parts.Length; index++)
-                GlobalModules.TWXServer.AddQuickText("~" + (index - 1).ToString(CultureInfo.InvariantCulture), parts[index]);
+            {
+                string key = "~" + (index - 1).ToString(CultureInfo.InvariantCulture);
+                GlobalModules.TWXServer.AddQuickText(key, parts[index]);
+                _activeBotThemeKeys.Add(key);
+            }
+        }
+
+        private void ClearBotTheme()
+        {
+            ITWXServer? server = GlobalModules.TWXServer;
+            if (server != null)
+            {
+                foreach (string key in _activeBotThemeKeys)
+                    server.ClearQuickText(key);
+            }
+
+            _activeBotThemeKeys.Clear();
+            _activeBotTag = string.Empty;
+            _activeBotTagLength = 0;
         }
 
         public List<Script> GetRunningBots()

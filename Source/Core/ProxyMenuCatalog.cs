@@ -65,14 +65,14 @@ public static class ProxyMenuCatalog
             .ToArray();
     }
 
-    public static IReadOnlyList<BotConfig> LoadBotConfigs(string? programDir, string? scriptDirectory)
+    public static IReadOnlyList<BotConfig> LoadBotConfigs(string? programDir, string? scriptDirectory, bool includeNative = false)
     {
         string scriptsRoot = ResolveScriptsRoot(programDir, scriptDirectory);
         var sections = TwxpConfigStore.LoadSections(programDir);
         if (sections.Count == 0)
             return Array.Empty<BotConfig>();
         return sections
-            .Select(section => ParseBotConfigSection(section, scriptsRoot, requireScriptFile: true, includeNative: false))
+            .Select(section => ParseBotConfigSection(section, scriptsRoot, requireScriptFile: true, includeNative: includeNative))
             .Where(bot => bot != null)
             .Cast<BotConfig>()
             .ToArray();
@@ -98,6 +98,17 @@ public static class ProxyMenuCatalog
             return true;
 
         return section.Values.TryGetValue("Native", out string? nativeValue) && ParseBool(nativeValue, false);
+    }
+
+    public static bool IsNativeBotConfig(BotConfig? config)
+    {
+        if (config == null)
+            return false;
+
+        if (config.Properties.TryGetValue("Native", out string? nativeValue) && ParseBool(nativeValue, false))
+            return true;
+
+        return string.Equals(config.Alias, GetBotAlias(NativeMombotSectionName), StringComparison.OrdinalIgnoreCase);
     }
 
     public static string GetBotAlias(string sectionName)

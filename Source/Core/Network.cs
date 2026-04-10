@@ -104,6 +104,8 @@ namespace TWXProxy.Core
             }
         }
         public string ActiveBotName { get; set; } = string.Empty;
+        public Func<BotConfig, string, bool>? NativeBotActivator { get; set; }
+        public Func<string, bool>? NativeBotStopper { get; set; }
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
@@ -1546,12 +1548,12 @@ namespace TWXProxy.Core
             _botOrder.Add(config);
         }
 
-        public void ReloadBotConfigs(string? programDir, string? scriptDirectory)
+        public void ReloadBotConfigs(string? programDir, string? scriptDirectory, bool includeNative = false)
         {
             _botConfigs.Clear();
             _botOrder.Clear();
 
-            foreach (BotConfig bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
+            foreach (BotConfig bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory, includeNative))
                 RegisterBotConfig(bot);
 
             if (!string.IsNullOrWhiteSpace(ActiveBotName) &&

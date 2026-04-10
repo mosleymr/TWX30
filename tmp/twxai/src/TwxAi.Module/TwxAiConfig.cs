@@ -42,4 +42,18 @@ internal sealed class TwxAiConfig
 
         return created;
     }
+
+    public async Task SaveAsync(string path, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? Directory.GetCurrentDirectory());
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true,
+        };
+
+        await using FileStream stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, this, options, cancellationToken);
+    }
 }

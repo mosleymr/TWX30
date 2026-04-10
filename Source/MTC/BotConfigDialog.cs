@@ -42,6 +42,7 @@ internal sealed class BotConfigDialog : Window
         txtAlias.IsEnabled = !isNative;
         var txtName = BuildTextBox(defaults.Name, "MomBot4");
         var txtScript = BuildTextBox(defaults.Script, "mombot/mombot.cts");
+        txtScript.IsEnabled = !isNative;
         var txtDescription = BuildTextBox(defaults.Description, "bot description");
         var chkAutoStart = new CheckBox
         {
@@ -87,6 +88,9 @@ internal sealed class BotConfigDialog : Window
         };
         btnCancel.Click += (_, _) => Close(false);
 
+        Control scriptRow = BuildRow("Script(s):", txtScript);
+        scriptRow.IsEnabled = !isNative;
+
         Content = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -106,7 +110,16 @@ internal sealed class BotConfigDialog : Window
                     },
                     BuildRow("Alias:", txtAlias),
                     BuildRow("Name:", txtName),
-                    BuildRow("Script(s):", txtScript),
+                    scriptRow,
+                    isNative
+                        ? new TextBlock
+                        {
+                            Text = "Script path is managed by the native runtime and does not need to be configured here.",
+                            Foreground = FgNormal,
+                            Margin = new Thickness(122, -6, 0, 0),
+                            TextWrapping = TextWrapping.Wrap,
+                        }
+                        : new Control { IsVisible = false },
                     BuildRow("Description:", txtDescription),
                     BuildRow("Startup:", chkAutoStart),
                     BuildRow("Name Var:", txtNameVar),
@@ -124,7 +137,8 @@ internal sealed class BotConfigDialog : Window
             },
         };
 
-        txtAlias.AttachedToVisualTree += (_, _) => txtAlias.Focus();
+        Control initialFocus = isNative ? txtName : txtAlias;
+        initialFocus.AttachedToVisualTree += (_, _) => initialFocus.Focus();
         KeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
