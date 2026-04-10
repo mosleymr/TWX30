@@ -1342,10 +1342,25 @@ namespace TWXProxy.Core
 
                 var output = new StringBuilder();
                 output.Append("\r\n\r\nID\tFile\r\n\r\n");
+                bool hasAny = false;
+
+                BotConfig? activeBotConfig = !string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName)
+                    ? _gameInstance.GetBotConfig(_gameInstance.ActiveBotName)
+                    : null;
+                if (ProxyMenuCatalog.IsNativeBotConfig(activeBotConfig))
+                {
+                    string nativeReference = Utility.NormalizePathSeparators(activeBotConfig?.ScriptFile ?? "mombot/mombot.cts");
+                    if (!nativeReference.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase))
+                        nativeReference = "scripts/" + nativeReference;
+
+                    output.Append($"N\t{nativeReference} (native)\r\n");
+                    hasAny = true;
+                }
 
                 if (_interpreter.Count == 0)
                 {
-                    output.Append("No scripts are active.\r\n");
+                    if (!hasAny)
+                        output.Append("No scripts are active.\r\n");
                 }
                 else
                 {
@@ -1357,6 +1372,7 @@ namespace TWXProxy.Core
 
                         string scriptFile = script.Compiler?.ScriptFile ?? script.ScriptName;
                         output.Append($"{i}\t{scriptFile}\r\n");
+                        hasAny = true;
                     }
                 }
 
@@ -1422,7 +1438,26 @@ namespace TWXProxy.Core
                     return;
                 }
 
-                if (!int.TryParse(input.Trim(), out int scriptId))
+                string trimmedInput = input.Trim();
+                BotConfig? activeBotConfig = !string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName)
+                    ? _gameInstance.GetBotConfig(_gameInstance.ActiveBotName)
+                    : null;
+                if (trimmedInput.Equals("N", StringComparison.OrdinalIgnoreCase) &&
+                    ProxyMenuCatalog.IsNativeBotConfig(activeBotConfig) &&
+                    _gameInstance.NativeBotStopper != null &&
+                    activeBotConfig != null)
+                {
+                    string nativeReference = Utility.NormalizePathSeparators(activeBotConfig.ScriptFile);
+                    if (!nativeReference.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase))
+                        nativeReference = "scripts/" + nativeReference;
+
+                    await _gameInstance.SendMessageAsync($"\r\nScript terminated: {nativeReference} (native)\r\n");
+                    _gameInstance.NativeBotStopper(activeBotConfig.Name);
+                    await ShowScriptMenuPromptAsync();
+                    return;
+                }
+
+                if (!int.TryParse(trimmedInput, out int scriptId))
                 {
                     await _gameInstance.SendMessageAsync($"\r\nInvalid script ID: '{input}'. Please enter a number.\r\n");
                     await ShowScriptMenuPromptAsync();

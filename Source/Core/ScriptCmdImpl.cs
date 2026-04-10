@@ -383,10 +383,11 @@ namespace TWXProxy.Core
         #region Comparison Commands
 
         // Pascal TWX: '=' and '<>' compare numerically when both sides are numeric-compatible.
-        // Empty string is treated as 0, matching Pascal StrToFloat('') = 0 semantics.
+        // Empty string is not numeric-compatible here; comparisons such as 0 <> ""
+        // must fall back to string semantics so Mombot can blank optional arguments.
         private static bool TryNumericValue(string s, out double val)
         {
-            if (s.Length == 0) { val = 0; return true; }
+            if (s.Length == 0) { val = 0; return false; }
             return double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out val);
         }
 

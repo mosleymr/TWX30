@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 
 namespace TWXProxy.Core
@@ -33,6 +34,76 @@ namespace TWXProxy.Core
             return ModInterpreter.ScriptReferencesMatch(loadedName, requestedName, interpreter.ProgramDir);
         }
 
+        private static BotConfig? FindNativeBotConfig(ITWXServer? server)
+        {
+            if (server == null)
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(server.ActiveBotName))
+            {
+                BotConfig? activeConfig = server.GetBotConfig(server.ActiveBotName);
+                if (ProxyMenuCatalog.IsNativeBotConfig(activeConfig))
+                    return activeConfig;
+            }
+
+            foreach (string botName in server.GetBotList())
+            {
+                BotConfig? config = server.GetBotConfig(botName);
+                if (ProxyMenuCatalog.IsNativeBotConfig(config))
+                    return config;
+            }
+
+            return null;
+        }
+
+        private static bool TryResolveNativeBotScriptReference(
+            ModInterpreter? interpreter,
+            string requestedName,
+            out GameInstance? gameInstance,
+            out BotConfig? nativeConfig,
+            out string nativeLeafName)
+        {
+            gameInstance = GlobalModules.TWXServer as GameInstance;
+            nativeConfig = null;
+            nativeLeafName = string.Empty;
+
+            if (interpreter == null || gameInstance == null || string.IsNullOrWhiteSpace(requestedName))
+                return false;
+
+            nativeConfig = FindNativeBotConfig(gameInstance);
+            if (nativeConfig == null || string.IsNullOrWhiteSpace(nativeConfig.ScriptFile))
+                return false;
+
+            string configuredReference = Utility.NormalizePathSeparators(nativeConfig.ScriptFile.Trim());
+            nativeLeafName = Path.GetFileName(configuredReference);
+            if (string.IsNullOrWhiteSpace(nativeLeafName))
+                nativeLeafName = "mombot.cts";
+
+            string prefixedReference = configuredReference.StartsWith("scripts/", StringComparison.OrdinalIgnoreCase)
+                ? configuredReference
+                : "scripts/" + configuredReference;
+
+            if (ModInterpreter.ScriptReferencesMatch(requestedName, configuredReference, interpreter.ProgramDir) ||
+                ModInterpreter.ScriptReferencesMatch(requestedName, prefixedReference, interpreter.ProgramDir))
+            {
+                return true;
+            }
+
+            string requestedLeaf = ModInterpreter.GetScriptReferenceLeaf(requestedName);
+            return !string.IsNullOrWhiteSpace(requestedLeaf) &&
+                   requestedLeaf.Equals(nativeLeafName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNativeBotRunning(GameInstance? gameInstance, BotConfig? nativeConfig)
+        {
+            if (gameInstance == null || nativeConfig == null || string.IsNullOrWhiteSpace(gameInstance.ActiveBotName))
+                return false;
+
+            BotConfig? activeConfig = gameInstance.GetBotConfig(gameInstance.ActiveBotName);
+            return ProxyMenuCatalog.IsNativeBotConfig(activeConfig) &&
+                   string.Equals(activeConfig?.Name, nativeConfig.Name, StringComparison.OrdinalIgnoreCase);
+        }
+
         #region Script Management Command Implementation
 
         private static CmdAction CmdLoadScript_Impl(object script, CmdParam[] parameters)
@@ -48,9 +119,24 @@ namespace TWXProxy.Core
 
             string filename = parameters[0].Value;
             GlobalModules.DebugLog($"[LOAD] Loading script '{filename}'\n");
-            
+
             try
             {
+                if (TryResolveNativeBotScriptReference(interpreter, filename, out GameInstance? gameInstance, out BotConfig? nativeConfig, out string nativeLeafName) &&
+                    gameInstance?.NativeBotActivator != null &&
+                    nativeConfig != null)
+                {
+                    if (IsNativeBotRunning(gameInstance, nativeConfig))
+                    {
+                        GlobalModules.DebugLog($"[LOAD] Native bot '{nativeConfig.Name}' already running for '{nativeLeafName}'\n");
+                        return CmdAction.None;
+                    }
+
+                    GlobalModules.DebugLog($"[LOAD] Redirecting '{filename}' to native bot '{nativeConfig.Name}'\n");
+                    gameInstance.NativeBotActivator(nativeConfig, string.Empty);
+                    return CmdAction.None;
+                }
+
                 interpreter.Load(filename, false);
             }
             catch (Exception ex)
@@ -74,9 +160,19 @@ namespace TWXProxy.Core
 
             string filename = parameters[0].Value;
             GlobalModules.DebugLog($"[STOP] Stopping script '{filename}'\n");
-            
+
             try
             {
+                if (TryResolveNativeBotScriptReference(interpreter, filename, out GameInstance? gameInstance, out BotConfig? nativeConfig, out string nativeLeafName) &&
+                    IsNativeBotRunning(gameInstance, nativeConfig) &&
+                    gameInstance?.NativeBotStopper != null &&
+                    nativeConfig != null)
+                {
+                    GlobalModules.DebugLog($"[STOP] Redirecting '{filename}' to native bot stop '{nativeConfig.Name}'\n");
+                    gameInstance.NativeBotStopper(nativeConfig.Name);
+                    return CmdAction.None;
+                }
+
                 // Find script by filename and stop it
                 for (int i = interpreter.Count - 1; i >= 0; i--)
                 {
@@ -121,6 +217,13 @@ namespace TWXProxy.Core
                         break;
                         }
                     }
+
+                if (!loaded &&
+                    TryResolveNativeBotScriptReference(interpreter, filename, out GameInstance? gameInstance, out BotConfig? nativeConfig, out _) &&
+                    IsNativeBotRunning(gameInstance, nativeConfig))
+                {
+                    loaded = true;
+                }
                 }
                 
                 varParam.Value = loaded ? "1" : "0";
@@ -224,6 +327,13 @@ namespace TWXProxy.Core
                         {
                             scriptNames.Add(scriptObj.ScriptName);
                         }
+                    }
+
+                    if (TryResolveNativeBotScriptReference(interpreter, "mombot.cts", out GameInstance? gameInstance, out BotConfig? nativeConfig, out string nativeLeafName) &&
+                        IsNativeBotRunning(gameInstance, nativeConfig) &&
+                        !scriptNames.Any(name => string.Equals(name, nativeLeafName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        scriptNames.Add(nativeLeafName);
                     }
                 }
                 

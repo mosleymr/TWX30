@@ -107,6 +107,7 @@ public class ProxyService : IProxyService
             gameInstance.Logger.LogEnabled = config.LogEnabled;
             gameInstance.Logger.LogData = config.LogEnabled;
             gameInstance.Logger.LogANSI = config.LogAnsi;
+            gameInstance.Logger.LogAnsiCompanion = config.LogAnsiCompanion;
             gameInstance.Logger.BinaryLogs = config.LogBinary;
             gameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
             gameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
@@ -242,7 +243,8 @@ public class ProxyService : IProxyService
                 Interpreter = interpreter,
                 Database = sessionDb,
                 Status = GameStatus.Running,
-                ServerLineBuffer = new System.Text.StringBuilder()
+                ServerLineBuffer = new System.Text.StringBuilder(),
+                ServerAnsiLineBuffer = new System.Text.StringBuilder()
             };
             
             // Hook up server data handler to set CURRENTLINE/CURRENTANSILINE
@@ -255,13 +257,23 @@ public class ProxyService : IProxyService
                 var hexDump = string.Join(" ", e.Data.Select(b => b.ToString("X2")));
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] RAW {e.Data.Length}B: {hexDump}\n");
                 
-                // Add to line buffer
-                proxyInstance.ServerLineBuffer.Append(text);
+                string ansiChunk = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(text);
+                bool scriptInAnsi = proxyInstance.ScriptInAnsi;
+                string plainChunk = TWXProxy.Core.AnsiCodes.StripANSIStateful(ansiChunk, ref scriptInAnsi);
+                proxyInstance.ScriptInAnsi = scriptInAnsi;
+
+                // Add to line buffers. This mirrors Pascal's extractor more closely:
+                // keep the ANSI and stripped streams in step across packet boundaries.
+                proxyInstance.ServerLineBuffer.Append(plainChunk);
+                proxyInstance.ServerAnsiLineBuffer.Append(ansiChunk);
                 
                 // Extract and process all complete lines
                 string buffered = proxyInstance.ServerLineBuffer.ToString();
+                string bufferedAnsi = proxyInstance.ServerAnsiLineBuffer.ToString();
                 int searchPos = 0;
+                int ansiSearchPos = 0;
                 int lastProcessedPos = 0;
+                int lastAnsiProcessedPos = 0;
                 
                 while (searchPos < buffered.Length)
                 {
@@ -277,17 +289,20 @@ public class ProxyService : IProxyService
                     {
                         // No complete \r-terminated line — keep remainder in buffer (prompt/partial)
                         string remainder = buffered.Substring(lastProcessedPos);
+                        string remainderAnsi = bufferedAnsi.Substring(lastAnsiProcessedPos);
                         proxyInstance.ServerLineBuffer.Clear();
                         proxyInstance.ServerLineBuffer.Append(remainder);
+                        proxyInstance.ServerAnsiLineBuffer.Clear();
+                        proxyInstance.ServerAnsiLineBuffer.Append(remainderAnsi);
                         
                         // Set the partial line as CURRENTLINE and fire triggers on it
                         if (!string.IsNullOrEmpty(remainder))
                         {
-                            string remainderForAnsi = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(remainder);
-                            string scriptRemainder = TWXProxy.Core.AnsiCodes.PrepareScriptText(remainder);
+                            string remainderForAnsi = remainderAnsi;
+                            string scriptRemainder = remainder;
                             string strippedRemainder = TWXProxy.Core.AnsiCodes.NormalizeTerminalText(
-                                TWXProxy.Core.AnsiCodes.StripANSI(remainderForAnsi).TrimEnd('\r'));
-                            TWXProxy.Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder);
+                                scriptRemainder.TrimEnd('\r'));
+                            TWXProxy.Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderForAnsi);
                             if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                                 TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                             TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
@@ -329,9 +344,13 @@ public class ProxyService : IProxyService
                     // line's "text\r ESC[0m \n" terminator — strip \n (LF) bytes to concatenate them.
                     int lineStart = lastProcessedPos;
                     int lineLength = crPos - lastProcessedPos;
+                    int ansiCrPos = bufferedAnsi.IndexOf('\r', ansiSearchPos);
+                    if (ansiCrPos == -1)
+                        break;
+
                     string rawLine = buffered.Substring(lineStart, lineLength);
-                    string line = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(rawLine);
-                    string scriptLine = TWXProxy.Core.AnsiCodes.PrepareScriptText(rawLine);
+                    string line = bufferedAnsi.Substring(lastAnsiProcessedPos, ansiCrPos - lastAnsiProcessedPos);
+                    string scriptLine = rawLine;
                     
                     // Pascal fires ProcessLine (and thus TextLineEvent) on every \r, including blank lines.
                     // A blank \r\n line must reach TextLineEvent("") — e.g. PlayerInfo's :line handler
@@ -351,7 +370,7 @@ public class ProxyService : IProxyService
                         // Update sector database from game text before firing script triggers (non-blank only)
                         if (!string.IsNullOrEmpty(strippedLine))
                         {
-                            TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine);
+                            TWXProxy.Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, line);
                             if (TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                                 TWXProxy.Core.ScriptRef.SetCurrentSector(TWXProxy.Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         }
@@ -388,12 +407,15 @@ public class ProxyService : IProxyService
                     // line's content and will be stripped by the .Replace("\n","") above)
                     searchPos = crPos + 1;
                     lastProcessedPos = searchPos;
+                    ansiSearchPos = ansiCrPos + 1;
+                    lastAnsiProcessedPos = ansiSearchPos;
                 }
                 
                 // If we processed all lines, clear the buffer
                 if (lastProcessedPos >= buffered.Length)
                 {
                     proxyInstance.ServerLineBuffer.Clear();
+                    proxyInstance.ServerAnsiLineBuffer.Clear();
                 }
             };
             
@@ -844,5 +866,7 @@ public class ProxyService : IProxyService
         public GameStatus Status { get; set; }
         public string InputBuffer { get; set; } = string.Empty;
         public required System.Text.StringBuilder ServerLineBuffer { get; init; }
+        public required System.Text.StringBuilder ServerAnsiLineBuffer { get; init; }
+        public bool ScriptInAnsi { get; set; }
     }
 }

@@ -1,110 +1,47 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-	<PropertyGroup>
-		<TargetFrameworks Condition="'$(IncludeWindowsTarget)' == 'true'">net10.0-maccatalyst;net10.0-windows10.0.19041.0</TargetFrameworks>
-		<TargetFrameworks Condition="'$(IncludeWindowsTarget)' != 'true'">net10.0-maccatalyst</TargetFrameworks>
-		<OutputType>Exe</OutputType>
-		<RootNamespace>TWXP</RootNamespace>
-		<UseMaui>true</UseMaui>
-		<SingleProject>true</SingleProject>
-		<ImplicitUsings>enable</ImplicitUsings>
-		<Nullable>enable</Nullable>
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>TWXP</RootNamespace>
+    <AssemblyName>twxp</AssemblyName>
+    <Version>3.0.1</Version>
+    <AssemblyVersion>3.0.1.0</AssemblyVersion>
+    <FileVersion>3.0.1.0</FileVersion>
+    <Authors>Matt Mosley (reaper)</Authors>
+    <Company>TWXProxy</Company>
+    <Product>TWX Proxy</Product>
+    <Description>Cross-platform Trade Wars 2002 proxy client</Description>
+    <ApplicationTitle>twxp</ApplicationTitle>
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
+  </PropertyGroup>
 
-		<!-- Display name -->
-	<ApplicationTitle>twxp</ApplicationTitle>
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('windows')) or '$(RuntimeIdentifier)' == 'win-x64' or '$(RuntimeIdentifier)' == 'win-arm64'">
+    <ApplicationIcon>..\Installer\Windows\Assets\TWXProxy_Icon.ico</ApplicationIcon>
+  </PropertyGroup>
 
-		<!-- App Identifier -->
-		<ApplicationId>com.twxp.ui</ApplicationId>
+  <ItemGroup>
+    <None Include="TWXProxy_Icon.ico" Visible="false" />
+    <None Include="..\Installer\Windows\Assets\TWXProxy_Icon.ico" Visible="false" />
+  </ItemGroup>
 
-		<!-- Versions -->
-		<ApplicationDisplayVersion>3.0.1</ApplicationDisplayVersion>
-		<ApplicationVersion>3</ApplicationVersion>
-		<Version>3.0.1</Version>
-		<AssemblyVersion>3.0.1.0</AssemblyVersion>
-		<FileVersion>3.0.1.0</FileVersion>
-		<AssemblyName>twxp</AssemblyName>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.*" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.*" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.*" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.*" />
+    <PackageReference Include="SkiaSharp" Version="2.88.*" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
+  </ItemGroup>
 
-		<!-- Windows specific -->
-		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
-		<TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+  <ItemGroup>
+    <ProjectReference Include="..\TWXProxy.csproj" />
+  </ItemGroup>
 
-		<!-- macOS specific -->
-		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
-
-		<!-- Suppress NU1510 warning for System.Text.Encoding.CodePages - it's needed for Database.cs Windows-1252 encoding -->
-		<NoWarn>$(NoWarn);NU1510</NoWarn>
-	</PropertyGroup>
-
-	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
-		<WindowsPackageType>None</WindowsPackageType>
-		<ApplicationIcon>..\Installer\Windows\Assets\TWXProxy_Icon.ico</ApplicationIcon>
-	</PropertyGroup>
-
-	<PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows' and '$(RuntimeIdentifierOverride)' != ''">
-		<RuntimeIdentifier>$(RuntimeIdentifierOverride)</RuntimeIdentifier>
-	</PropertyGroup>
-
-	<ItemGroup>
-		<!-- App Icon -->
-		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
-
-		<!-- Splash Screen -->
-		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
-
-		<!-- Images -->
-		<MauiImage Include="Resources\Images\*" />
-
-		<!-- Custom Fonts -->
-		<MauiFont Include="Resources\Fonts\*" />
-
-		<!-- Raw Assets (also remove the "Resources\Raw" prefix) -->
-		<MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<PackageReference Include="Microsoft.Maui.Controls" Version="8.0.90" />
-		<PackageReference Include="Microsoft.Maui.Controls.Compatibility" Version="8.0.90" />
-		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.0" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<ProjectReference Include="..\TWXProxy.csproj" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<!-- Preserve System.Text.Encoding.CodePages for trimming (used in Database.cs for Windows-1252 encoding) -->
-		<TrimmerRootAssembly Include="System.Text.Encoding.CodePages" />
-	</ItemGroup>
-
-	<!-- Remove any stray runtime data files (*.twx, *.xdb, *.cts) that end up in the
-	     bundle output directory. These are game databases/scripts — not distributable
-	     binary content — and will break codesign if present in the bundle root. -->
-	<Target Name="RemoveStrayDataFilesFromBundle"
-	        BeforeTargets="ResignNativeDylibs"
-	        Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
-		<ItemGroup>
-			<_StrayDataFile Include="$(OutputPath)$(AssemblyName).app/**/*.twx" />
-			<_StrayDataFile Include="$(OutputPath)$(AssemblyName).app/**/*.xdb" />
-			<_StrayDataFile Include="$(OutputPath)$(AssemblyName).app/**/*.cts" />
-		</ItemGroup>
-		<Message Text="[RemoveStrayDataFiles] Removing: @(_StrayDataFile)" Importance="high"
-		         Condition="'@(_StrayDataFile)' != ''" />
-		<Delete Files="@(_StrayDataFile)" />
-	</Target>
-
-	<!-- Re-sign native dylibs with ad-hoc before the bundle seal.
-	     libSystem.IO.Ports.Native.dylib ships pre-signed by Microsoft (hardened runtime,
-	     TeamID=UBF8T346G9) but macOS 26+ rejects the signature mismatch with an ad-hoc
-	     signed app.  Re-signing here ensures CodeResources sees the correct hash. -->
-	<Target Name="ResignNativeDylibs"
-	        BeforeTargets="_CodesignAppBundle"
-	        Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
-		<ItemGroup>
-			<_BundleDylib Include="$(OutputPath)$(AssemblyName).app/Contents/MonoBundle/*.dylib" />
-		</ItemGroup>
-		<Message Text="[ResignNativeDylibs] Re-signing with ad-hoc: @(_BundleDylib)" Importance="high" />
-		<Exec Command="codesign --force --sign - &quot;%(_BundleDylib.FullPath)&quot;"
-		      Condition="'@(_BundleDylib)' != ''" />
-	</Target>
+  <ItemGroup>
+    <TrimmerRootAssembly Include="System.Text.Encoding.CodePages" />
+  </ItemGroup>
 
 </Project>

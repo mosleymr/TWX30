@@ -98,6 +98,8 @@ public class TerminalBuffer
     private TerminalCell[,]? _resizeBackupCells;
     private int _resizeBackupColumns;
     private int _resizeBackupRows;
+    private int _resizeBackupCursorCol;
+    private int _resizeBackupCursorRow;
     private bool _suppressResizeBackupInvalidation;
 
     // ── Scrollback buffer ──────────────────────────────────────────────────
@@ -304,12 +306,16 @@ public class TerminalBuffer
         TerminalCell[,] sourceCells = _cells;
         int sourceColumns = Columns;
         int sourceRows = Rows;
+        int sourceCursorCol = CursorCol;
+        int sourceCursorRow = CursorRow;
         bool restoreFromBackup = growing && _resizeBackupCells != null;
         if (restoreFromBackup)
         {
             sourceCells = _resizeBackupCells!;
             sourceColumns = _resizeBackupColumns;
             sourceRows = _resizeBackupRows;
+            sourceCursorCol = _resizeBackupCursorCol;
+            sourceCursorRow = _resizeBackupCursorRow;
         }
 
         var newCells = new TerminalCell[rows, columns];
@@ -317,11 +323,18 @@ public class TerminalBuffer
             for (int c = 0; c < columns; c++)
                 newCells[r, c] = TerminalCell.Default;
 
-        int copyRows = Math.Min(rows, sourceRows);
+        int sourceRowStart = 0;
+        if (rows < sourceRows)
+        {
+            int maxStart = sourceRows - rows;
+            sourceRowStart = Math.Clamp(sourceCursorRow - rows + 1, 0, maxStart);
+        }
+
+        int copyRows = Math.Min(rows, sourceRows - sourceRowStart);
         int copyCols = Math.Min(columns, sourceColumns);
         for (int r = 0; r < copyRows; r++)
             for (int c = 0; c < copyCols; c++)
-                newCells[r, c] = sourceCells[r, c];
+                newCells[r, c] = sourceCells[sourceRowStart + r, c];
 
         _suppressResizeBackupInvalidation = true;
         _cells       = newCells;
@@ -329,8 +342,8 @@ public class TerminalBuffer
         Rows         = rows;
         ScrollTop    = 0;
         ScrollBottom = rows - 1;
-        CursorCol    = Math.Clamp(CursorCol, 0, columns - 1);
-        CursorRow    = Math.Clamp(CursorRow, 0, rows    - 1);
+        CursorCol    = Math.Clamp(sourceCursorCol, 0, columns - 1);
+        CursorRow    = Math.Clamp(sourceCursorRow - sourceRowStart, 0, rows - 1);
         _suppressResizeBackupInvalidation = false;
 
         if (_resizeBackupCells != null &&
@@ -367,6 +380,8 @@ public class TerminalBuffer
         _resizeBackupCells = CloneCells(_cells, Rows, Columns);
         _resizeBackupColumns = Columns;
         _resizeBackupRows = Rows;
+        _resizeBackupCursorCol = CursorCol;
+        _resizeBackupCursorRow = CursorRow;
     }
 
     private static TerminalCell[,] CloneCells(TerminalCell[,] cells, int rows, int columns)
@@ -383,6 +398,8 @@ public class TerminalBuffer
         _resizeBackupCells = null;
         _resizeBackupColumns = 0;
         _resizeBackupRows = 0;
+        _resizeBackupCursorCol = 0;
+        _resizeBackupCursorRow = 0;
     }
 
     private void InvalidateResizeBackup()

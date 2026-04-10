@@ -164,6 +164,7 @@ namespace TWXProxy.Core
         bool LogEnabled { get; set; }
         bool LogData { get; set; }
         bool LogANSI { get; set; }
+        bool LogAnsiCompanion { get; set; }
         bool BinaryLogs { get; set; }
         bool NotifyPlayCuts { get; set; }
         int MaxPlayDelay { get; set; }

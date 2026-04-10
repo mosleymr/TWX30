@@ -64,6 +64,12 @@ public sealed class TelnetClient : IDisposable
     public event Action<string>? TextLineReceived;
 
     /// <summary>
+    /// Fired for every raw ANSI line together with its ANSI-stripped form.
+    /// Includes partial prompt lines, matching <see cref="TextLineReceived"/>.
+    /// </summary>
+    public event Action<string, string>? TextLineAnsiReceived;
+
+    /// <summary>
     /// Fired once per receive chunk with the raw Latin-1 decoded application data
     /// (IAC-stripped but ANSI codes still present). Use for session logging.
     /// </summary>
@@ -163,7 +169,7 @@ public sealed class TelnetClient : IDisposable
     /// </summary>
     private void FeedTextLines(byte[] data, int length)
     {
-        if (TextLineReceived == null) return;
+        if (TextLineReceived == null && TextLineAnsiReceived == null) return;
         string text = Encoding.Latin1.GetString(data, 0, length);
         _lineBuf.Append(text);
 
@@ -180,7 +186,10 @@ public sealed class TelnetClient : IDisposable
             string raw = buf[start..lineEnd];
             string stripped = _rxAnsi.Replace(raw, string.Empty).TrimEnd('\r');
             if (stripped.Length > 0)
-                TextLineReceived.Invoke(stripped);
+            {
+                TextLineAnsiReceived?.Invoke(raw, stripped);
+                TextLineReceived?.Invoke(stripped);
+            }
             start = i + 1;
         }
 
@@ -192,7 +201,10 @@ public sealed class TelnetClient : IDisposable
             _lineBuf.Append(remainder);
             string stripped = _rxAnsi.Replace(remainder, string.Empty).TrimEnd('\r');
             if (stripped.Length > 0)
-                TextLineReceived.Invoke(stripped);
+            {
+                TextLineAnsiReceived?.Invoke(remainder, stripped);
+                TextLineReceived?.Invoke(stripped);
+            }
         }
     }
 

@@ -26,6 +26,7 @@ public class GameConfig
     public bool LocalEcho { get; set; } = true;
     public bool LogEnabled { get; set; } = true;
     public bool LogAnsi { get; set; }
+    public bool LogAnsiCompanion { get; set; }
     public bool LogBinary { get; set; }
     public bool NotifyPlayCuts { get; set; } = true;
     public int MaxPlayDelay { get; set; } = 10000;

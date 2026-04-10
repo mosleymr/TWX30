@@ -8,12 +8,16 @@ internal sealed class OllamaClient : IDisposable
 {
     private readonly HttpClient _httpClient;
 
-    public OllamaClient(string endpoint)
+    public OllamaClient(string endpoint, TimeSpan timeout)
     {
         string normalized = string.IsNullOrWhiteSpace(endpoint)
             ? "http://127.0.0.1:11434/"
             : endpoint.TrimEnd('/') + "/";
-        _httpClient = new HttpClient { BaseAddress = new Uri(normalized, UriKind.Absolute) };
+        _httpClient = new HttpClient
+        {
+            BaseAddress = new Uri(normalized, UriKind.Absolute),
+            Timeout = timeout <= TimeSpan.Zero ? Timeout.InfiniteTimeSpan : timeout,
+        };
     }
 
     public async Task<string> ChatAsync(

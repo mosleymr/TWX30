@@ -36,7 +36,9 @@ public sealed class TwxAiAssistantModule : IExpansionConfigurableChatModule, IDi
         _configPath = Path.Combine(context.ModuleDataDirectory, "twxai.json");
         _config = await TwxAiConfig.LoadOrCreateAsync(_configPath, cancellationToken);
         _knowledgeBase = await ScriptReferenceKnowledgeBase.LoadAsync(context, cancellationToken);
-        _ollama = new OllamaClient(_config.Endpoint);
+        _ollama = new OllamaClient(
+            _config.Endpoint,
+            TimeSpan.FromSeconds(Math.Max(30, _config.RequestTimeoutSeconds)));
         _transcriptPath = Path.Combine(context.ModuleDataDirectory, "gameplay.log");
 
         SeedRecentGameplay();
@@ -45,7 +47,8 @@ public sealed class TwxAiAssistantModule : IExpansionConfigurableChatModule, IDi
         context.GameInstance.Disconnected += OnDisconnected;
         context.GameInstance.ServerDataReceived += OnServerDataReceived;
 
-        context.Log($"AI assistant initialized. Model={_config.Model}, knowledgeChunks={_knowledgeBase.Count}");
+        context.Log(
+            $"AI assistant initialized. Model={_config.Model}, timeout={_config.RequestTimeoutSeconds}s, knowledgeChunks={_knowledgeBase.Count}");
     }
 
     public Task ShutdownAsync(CancellationToken cancellationToken)

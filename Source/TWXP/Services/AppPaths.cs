@@ -119,17 +119,10 @@ public static class AppPaths
 
     private static string BuildLegacyAppDataDir()
     {
-        if (OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst())
+        if (OperatingSystem.IsMacOS())
         {
-            try
-            {
-                return Path.Combine(Microsoft.Maui.Storage.FileSystem.AppDataDirectory, "twxproxy");
-            }
-            catch
-            {
-                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                return Path.Combine(home, "Library", "Application Support", "twxproxy");
-            }
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return Path.Combine(home, "Library", "Application Support", "twxproxy");
         }
 
         if (OperatingSystem.IsWindows())

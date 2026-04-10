@@ -27,12 +27,16 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     private string _logDirectory = GetDefaultLogDirectory(GlobalModules.ProgramDir);
     private string _logIdentity = "game";
     private string _logFilename = string.Empty;
+    private string _ansiLogFilename = string.Empty;
     private FileStream? _logStream;
+    private FileStream? _ansiLogStream;
     private StreamWriter? _textWriter;
+    private StreamWriter? _ansiTextWriter;
     private DateTime _lastLogDate = DateTime.MinValue;
     private bool _logEnabled = true;
     private bool _logData = true;
     private bool _logAnsi;
+    private bool _logAnsiCompanion;
     private bool _binaryLogs;
     private bool _notifyPlayCuts = true;
     private int _maxPlayDelay = 10000;
@@ -119,7 +123,33 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     public bool LogANSI
     {
         get => _logAnsi;
-        set => _logAnsi = value;
+        set
+        {
+            lock (_lock)
+            {
+                if (_logAnsi == value)
+                    return;
+
+                _logAnsi = value;
+                CloseLogLocked();
+            }
+        }
+    }
+
+    public bool LogAnsiCompanion
+    {
+        get => _logAnsiCompanion;
+        set
+        {
+            lock (_lock)
+            {
+                if (_logAnsiCompanion == value)
+                    return;
+
+                _logAnsiCompanion = value;
+                CloseLogLocked();
+            }
+        }
     }
 
     public bool BinaryLogs
@@ -214,6 +244,8 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
             else
             {
                 _textWriter!.Write(Encoding.Latin1.GetString(bytesToWrite));
+                if (_ansiTextWriter != null)
+                    _ansiTextWriter.Write(Encoding.Latin1.GetString(ansiData));
             }
         }
     }
@@ -287,8 +319,14 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     {
         DateTime today = DateTime.Today;
         string expectedPath = BuildLogPath(today);
+        string expectedAnsiPath = BuildAnsiCompanionPath(today);
+        bool useAnsiCompanion = !_binaryLogs && _logAnsiCompanion && !_logAnsi;
 
-        if (_logStream != null && _lastLogDate == today && string.Equals(_logFilename, expectedPath, StringComparison.Ordinal))
+        if (_logStream != null &&
+            _lastLogDate == today &&
+            string.Equals(_logFilename, expectedPath, StringComparison.Ordinal) &&
+            ((!useAnsiCompanion && _ansiLogStream == null) ||
+             (useAnsiCompanion && _ansiLogStream != null && string.Equals(_ansiLogFilename, expectedAnsiPath, StringComparison.Ordinal))))
             return;
 
         CloseLogLocked();
@@ -299,6 +337,14 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         _textWriter = _binaryLogs
             ? null
             : new StreamWriter(_logStream, Encoding.UTF8, 4096, leaveOpen: true) { AutoFlush = true };
+        if (useAnsiCompanion)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(expectedAnsiPath)!);
+            _ansiLogStream = new FileStream(expectedAnsiPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite);
+            _ansiLogStream.Seek(0, SeekOrigin.End);
+            _ansiTextWriter = new StreamWriter(_ansiLogStream, Encoding.UTF8, 4096, leaveOpen: true) { AutoFlush = true };
+            _ansiLogFilename = expectedAnsiPath;
+        }
         _lastLogDate = today;
         _logFilename = expectedPath;
     }
@@ -309,6 +355,8 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         {
             _textWriter?.Dispose();
             _logStream?.Dispose();
+            _ansiTextWriter?.Dispose();
+            _ansiLogStream?.Dispose();
         }
         catch
         {
@@ -317,8 +365,11 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
 
         _textWriter = null;
         _logStream = null;
+        _ansiTextWriter = null;
+        _ansiLogStream = null;
         _lastLogDate = DateTime.MinValue;
         _logFilename = string.Empty;
+        _ansiLogFilename = string.Empty;
         _ansiStripState = AnsiStripState.None;
     }
 
@@ -339,6 +390,12 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         string safeIdentity = SharedPaths.SanitizeFileComponent(_logIdentity);
         string extension = _binaryLogs ? ".cap" : ".log";
         return Path.Combine(_logDirectory, $"{day:yyyy-MM-dd} {safeIdentity}{extension}");
+    }
+
+    private string BuildAnsiCompanionPath(DateTime day)
+    {
+        string safeIdentity = SharedPaths.SanitizeFileComponent(_logIdentity);
+        return Path.Combine(_logDirectory, $"{day:yyyy-MM-dd} {safeIdentity}_ansi.log");
     }
 
     private byte[] StripAnsiBytes(byte[] ansiData)

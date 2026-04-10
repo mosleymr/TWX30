@@ -24,8 +24,20 @@ received this source in.
 
 // ANSI Code Constants
 
+using System.Linq;
+
 namespace TWXProxy.Core
 {
+    public enum CommMessageChannel
+    {
+        None = 0,
+        FedComm,
+        Subspace,
+        Private,
+    }
+
+    public readonly record struct CommMessageInfo(CommMessageChannel Channel, string Sender, string MessageText);
+
     public static class AnsiCodes
     {
         public const string ANSI_0 = "\x1B[0m\x1B[30m";
@@ -68,6 +80,34 @@ namespace TWXProxy.Core
             // and the old regex only stripped codes ending in 'm', leaving cursor/
             // clear codes intact and mangling text like "Long Range Scan".
             return System.Text.RegularExpressions.Regex.Replace(text, @"\x1B\[[0-9;]*[A-Za-z]", string.Empty);
+        }
+
+        public static string StripANSIStateful(string text, ref bool inAnsi)
+        {
+            if (string.IsNullOrEmpty(text))
+                return string.Empty;
+
+            var builder = new System.Text.StringBuilder(text.Length);
+
+            foreach (char ch in text)
+            {
+                if (ch == '\0' || ch == '\a')
+                    continue;
+
+                if (ch == '\x1B')
+                {
+                    inAnsi = true;
+                    continue;
+                }
+
+                if (!inAnsi)
+                    builder.Append(ch);
+
+                if (char.IsLetter(ch))
+                    inAnsi = false;
+            }
+
+            return builder.ToString();
         }
 
         public static string NormalizeTerminalText(string text)
@@ -174,6 +214,143 @@ namespace TWXProxy.Core
             // control bytes such as #145#8 remain available to Text/TextLine triggers.
             // Local typed input still goes through its own normalization path.
             return StripANSI(PrepareScriptAnsiText(text)).TrimEnd('\r');
+        }
+
+        public static bool TryParseCommMessageLine(string ansiText, out CommMessageInfo info)
+        {
+            info = default;
+            if (string.IsNullOrEmpty(ansiText))
+                return false;
+
+            string normalized = NormalizeAnsiTerminalText(PrepareScriptAnsiText(ansiText));
+            if (string.IsNullOrEmpty(normalized))
+                return false;
+
+            int clearLineIndex = normalized.LastIndexOf(ANSI_CLEARLINE, System.StringComparison.Ordinal);
+            string parseTarget = clearLineIndex >= 0
+                ? normalized[(clearLineIndex + ANSI_CLEARLINE.Length)..]
+                : normalized;
+
+            int start = SkipLeadingCommControls(parseTarget);
+            if (start >= parseTarget.Length)
+                return false;
+
+            string candidate = parseTarget[start..];
+            CommMessageChannel channel = candidate switch
+            {
+                _ when HasColoredCommPrefix(candidate, "33", 'F') => CommMessageChannel.FedComm,
+                _ when HasColoredCommPrefix(candidate, "36", 'R') => CommMessageChannel.Subspace,
+                _ when HasColoredCommPrefix(candidate, "32", 'P') => CommMessageChannel.Private,
+                _ => CommMessageChannel.None,
+            };
+
+            if (channel == CommMessageChannel.None)
+                return false;
+
+            string display = NormalizeTerminalText(StripANSI(candidate)).TrimEnd();
+            if (string.IsNullOrWhiteSpace(display))
+                return false;
+
+            string sender = ExtractCommSender(display);
+            string message = ExtractCommMessageText(display, sender);
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            info = new CommMessageInfo(channel, sender, message);
+            return true;
+        }
+
+        private static string ExtractCommSender(string display)
+        {
+            if (string.IsNullOrWhiteSpace(display) || display.Length < 3 || display[1] != ' ')
+                return string.Empty;
+
+            char marker = display[0];
+            if (marker != 'F' && marker != 'R' && marker != 'P')
+                return string.Empty;
+
+            string remainder = display[2..].TrimStart();
+            if (string.IsNullOrEmpty(remainder))
+                return string.Empty;
+
+            int firstWhitespace = remainder.IndexOfAny(new[] { ' ', '\t' });
+            return firstWhitespace >= 0 ? remainder[..firstWhitespace] : remainder;
+        }
+
+        private static string ExtractCommMessageText(string display, string sender)
+        {
+            if (string.IsNullOrWhiteSpace(display) || display.Length < 3 || display[1] != ' ')
+                return string.Empty;
+
+            string remainder = display[2..].TrimStart();
+            if (string.IsNullOrEmpty(remainder))
+                return string.Empty;
+
+            if (string.IsNullOrEmpty(sender))
+                return remainder;
+
+            if (!remainder.StartsWith(sender, System.StringComparison.Ordinal))
+                return remainder;
+
+            return remainder[sender.Length..].TrimStart();
+        }
+
+        private static int SkipLeadingCommControls(string text)
+        {
+            int index = 0;
+            while (index < text.Length)
+            {
+                char ch = text[index];
+                if (ch == '\r' || ch == '\n' || ch == '\0' || char.IsWhiteSpace(ch))
+                {
+                    index++;
+                    continue;
+                }
+
+                if (ch != '\x1B' || index + 1 >= text.Length || text[index + 1] != '[')
+                    break;
+
+                int seqEnd = index + 2;
+                while (seqEnd < text.Length && !char.IsLetter(text[seqEnd]))
+                    seqEnd++;
+
+                if (seqEnd >= text.Length)
+                    break;
+
+                char final = text[seqEnd];
+                string seq = text[index..(seqEnd + 1)];
+                if (final != 'm' || seq == ANSI_0 || seq == ANSI_CLEARLINE || seq == ANSI_MOVEUP)
+                {
+                    index = seqEnd + 1;
+                    continue;
+                }
+
+                break;
+            }
+
+            return index;
+        }
+
+        private static bool HasColoredCommPrefix(string text, string requiredColorCode, char marker)
+        {
+            if (!text.StartsWith("\x1B[", System.StringComparison.Ordinal))
+                return false;
+
+            int mPos = text.IndexOf('m');
+            if (mPos < 0)
+                return false;
+
+            string codes = text.Substring(2, mPos - 2);
+            bool hasColor = codes
+                .Split(';', System.StringSplitOptions.RemoveEmptyEntries)
+                .Any(part => part == requiredColorCode);
+            if (!hasColor)
+                return false;
+
+            int markerPos = mPos + 1;
+            return markerPos + 1 < text.Length &&
+                   text[markerPos] == marker &&
+                   text[markerPos + 1] == ' ';
         }
     }
 }

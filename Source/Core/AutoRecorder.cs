@@ -307,14 +307,14 @@ namespace TWXProxy.Core
         /// <summary>
         /// Feed one (stripped) line of game output into the recorder.
         /// </summary>
-        public void RecordLine(string line)
+        public void RecordLine(string line, string? ansiLine = null)
         {
             if (string.IsNullOrWhiteSpace(line)) return;
 
             string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
             string trimmedLine = rawLine.Trim();
 
-            if (ShouldIgnoreRecorderCommLine(rawLine))
+            if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine))
                 return;
 
             // Log any line that looks warp-related so we can trace what the game sends
@@ -871,13 +871,13 @@ namespace TWXProxy.Core
             }
         }
 
-        public void ProcessPrompt(string line)
+        public void ProcessPrompt(string line, string? ansiLine = null)
         {
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
             string rawLine = NormalizeRecorderLine(line.TrimEnd('\r', '\n'));
-            if (ShouldIgnoreRecorderCommLine(rawLine))
+            if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine))
                 return;
 
             string trimmedLine = rawLine.Trim();
@@ -1272,7 +1272,7 @@ namespace TWXProxy.Core
 
         private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
         {
-            if (ShouldIgnoreRecorderCommLine(rawLine))
+            if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine: null))
                 return false;
 
             if (trimmedLine.StartsWith("For getting caught your alignment went down by", StringComparison.OrdinalIgnoreCase))
@@ -1405,16 +1405,24 @@ namespace TWXProxy.Core
             return true;
         }
 
-        private static bool ShouldIgnoreRecorderCommLine(string line)
+        private static bool ShouldIgnoreRecorderCommLine(string line, string? ansiLine)
         {
             if (string.IsNullOrEmpty(line))
                 return false;
 
-            if (line.StartsWith("R ", StringComparison.Ordinal) ||
-                line.StartsWith("F ", StringComparison.Ordinal) ||
-                line.StartsWith("P ", StringComparison.Ordinal) ||
+            if (AnsiCodes.TryParseCommMessageLine(ansiLine ?? string.Empty, out _))
+                return true;
+
+            if (line.StartsWith("P ", StringComparison.Ordinal) ||
                 line.StartsWith("'", StringComparison.Ordinal) ||
                 line.StartsWith("`", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(ansiLine) &&
+                (line.StartsWith("R ", StringComparison.Ordinal) ||
+                 line.StartsWith("F ", StringComparison.Ordinal)))
             {
                 return true;
             }

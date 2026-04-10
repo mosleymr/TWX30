@@ -13,6 +13,7 @@ internal sealed class TwxAiConfig
     public int MaxReferenceSnippets { get; set; } = 6;
     public int MaxRecentGameplayLines { get; set; } = 60;
     public int MaxConversationMessages { get; set; } = 12;
+    public int RequestTimeoutSeconds { get; set; } = 600;
     public double Temperature { get; set; } = 0.2;
     public string SystemPrompt { get; set; } =
         "You are a Tradewars 2002 and TWX Proxy assistant. Answer using the supplied TWX scripting reference and live gameplay context when possible. If the answer is uncertain, say what you do and do not know. Prefer practical, concrete explanations.";

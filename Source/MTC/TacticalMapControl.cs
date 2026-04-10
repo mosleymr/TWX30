@@ -391,7 +391,6 @@ public class TacticalMapControl : Control
         {
             snapshot.Sectors.TryGetValue(sectorNumber, out Core.SectorData? sector);
             var palette = GetHexPalette(snapshot, sectorNumber, sector);
-            HashSet<int> sideDirections = GetHexSideDirections(snapshot, sectorNumber, sector);
             using SKPath hexPath = CreateHexPath(position, HexRadius);
 
             fillPaint.Color = palette.Fill;
@@ -399,12 +398,8 @@ public class TacticalMapControl : Control
 
             edgeGlow.Color = palette.Edge.WithAlpha((byte)(sectorNumber == snapshot.CurrentSector ? 72 : 34));
             edgePaint.Color = palette.Edge;
-            foreach (int directionIndex in sideDirections)
-            {
-                GetHexSide(position, HexRadius, directionIndex, out SKPoint sideStart, out SKPoint sideEnd);
-                canvas.DrawLine(sideStart, sideEnd, edgeGlow);
-                canvas.DrawLine(sideStart, sideEnd, edgePaint);
-            }
+            canvas.DrawPath(hexPath, edgeGlow);
+            canvas.DrawPath(hexPath, edgePaint);
 
             string portLabel = GetPortTypeLabel(sector);
             sectorPaint.Color = palette.Text;
@@ -695,57 +690,6 @@ public class TacticalMapControl : Control
             landmarks.Add(sectorNumber);
     }
 
-    private static HashSet<int> GetHexSideDirections(MapSnapshot snapshot, int sectorNumber, Core.SectorData? sector)
-    {
-        var directions = new HashSet<int>();
-        if (sector == null)
-            return directions;
-
-        List<int> warps = sector.Warp.Where(w => w > 0).Select(w => (int)w).Distinct().ToList();
-        if (!snapshot.HexCells.TryGetValue(sectorNumber, out HexCell origin))
-            return directions;
-
-        foreach (int warpTarget in warps)
-        {
-            if (!snapshot.HexCells.TryGetValue(warpTarget, out HexCell target))
-                continue;
-
-            if (TryGetHexDirectionIndex(origin, target, out int directionIndex))
-                directions.Add(directionIndex);
-        }
-
-        int remaining = Math.Max(0, warps.Count - directions.Count);
-        foreach (int directionIndex in Enumerable.Range(0, HexDirections.Length))
-        {
-            if (remaining <= 0)
-                break;
-            if (directions.Contains(directionIndex))
-                continue;
-
-            directions.Add(directionIndex);
-            remaining--;
-        }
-
-        return directions;
-    }
-
-    private static bool TryGetHexDirectionIndex(HexCell origin, HexCell target, out int directionIndex)
-    {
-        int deltaQ = target.Q - origin.Q;
-        int deltaR = target.R - origin.R;
-        for (int index = 0; index < HexDirections.Length; index++)
-        {
-            if (HexDirections[index].Q == deltaQ && HexDirections[index].R == deltaR)
-            {
-                directionIndex = index;
-                return true;
-            }
-        }
-
-        directionIndex = -1;
-        return false;
-    }
-
     private static SKPoint HexCellToPoint(HexCell cell)
     {
         float stepX = HexRadius * 1.7320508f * HexGapFactor;
@@ -779,38 +723,6 @@ public class TacticalMapControl : Control
         }
 
         return vertices;
-    }
-
-    private static void GetHexSide(SKPoint center, float radius, int directionIndex, out SKPoint start, out SKPoint end)
-    {
-        SKPoint[] vertices = GetHexVertices(center, radius);
-        switch (directionIndex)
-        {
-            case 0:
-                start = vertices[1];
-                end = vertices[2];
-                return;
-            case 1:
-                start = vertices[0];
-                end = vertices[1];
-                return;
-            case 2:
-                start = vertices[5];
-                end = vertices[0];
-                return;
-            case 3:
-                start = vertices[4];
-                end = vertices[5];
-                return;
-            case 4:
-                start = vertices[3];
-                end = vertices[4];
-                return;
-            default:
-                start = vertices[2];
-                end = vertices[3];
-                return;
-        }
     }
 
     private static (SKColor Fill, SKColor Edge, SKColor Text, SKColor PortText) GetHexPalette(MapSnapshot snapshot, int sectorNumber, Core.SectorData? sector)
