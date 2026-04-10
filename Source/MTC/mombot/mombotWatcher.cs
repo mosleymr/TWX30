@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using Core = TWXProxy.Core;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal sealed class mbotWatcher
+internal sealed class mombotWatcher
 {
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;

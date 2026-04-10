@@ -4,17 +4,17 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal enum mbotRelogLoginType
+internal enum mombotRelogLoginType
 {
     NormalRelog,
     ReturnAfterDestroyed,
     NewGameAccountCreation,
 }
 
-internal sealed record mbotRelogDialogResult(
-    mbotRelogLoginType LoginType,
+internal sealed record mombotRelogDialogResult(
+    mombotRelogLoginType LoginType,
     string BotName,
     string ServerName,
     string LoginName,
@@ -25,14 +25,14 @@ internal sealed record mbotRelogDialogResult(
     string BotCommand,
     string MacroAfterLogin);
 
-internal sealed class mbotRelogDialog : Window
+internal sealed class mombotRelogDialog : Window
 {
     private sealed class LoginTypeOption
     {
-        public mbotRelogLoginType Value { get; }
+        public mombotRelogLoginType Value { get; }
         public string Label { get; }
 
-        public LoginTypeOption(mbotRelogLoginType value, string label)
+        public LoginTypeOption(mombotRelogLoginType value, string label)
         {
             Value = value;
             Label = label;
@@ -62,9 +62,9 @@ internal sealed class mbotRelogDialog : Window
     private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(200, 200, 200));
     private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
 
-    public mbotRelogDialogResult? Result { get; private set; }
+    public mombotRelogDialogResult? Result { get; private set; }
 
-    public mbotRelogDialog(mbotRelogDialogResult defaults)
+    public mombotRelogDialog(mombotRelogDialogResult defaults)
     {
         Title = "Mombot Relog";
         Width = 560;
@@ -75,9 +75,9 @@ internal sealed class mbotRelogDialog : Window
 
         var loginTypeOptions = new[]
         {
-            new LoginTypeOption(mbotRelogLoginType.NormalRelog, "Normal Relog"),
-            new LoginTypeOption(mbotRelogLoginType.ReturnAfterDestroyed, "Return after being destroyed"),
-            new LoginTypeOption(mbotRelogLoginType.NewGameAccountCreation, "New Game Account Creation"),
+            new LoginTypeOption(mombotRelogLoginType.NormalRelog, "Normal Relog"),
+            new LoginTypeOption(mombotRelogLoginType.ReturnAfterDestroyed, "Return after being destroyed"),
+            new LoginTypeOption(mombotRelogLoginType.NewGameAccountCreation, "New Game Account Creation"),
         };
 
         var afterLoginOptions = new[]
@@ -191,8 +191,8 @@ internal sealed class mbotRelogDialog : Window
                 return;
             }
 
-            Result = new mbotRelogDialogResult(
-                (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mbotRelogLoginType.NormalRelog,
+            Result = new mombotRelogDialogResult(
+                (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mombotRelogLoginType.NormalRelog,
                 botName,
                 serverName,
                 loginName,

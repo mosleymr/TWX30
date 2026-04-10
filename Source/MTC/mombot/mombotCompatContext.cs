@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using Core = TWXProxy.Core;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal sealed record mbotCommandContext(
+internal sealed record mombotCommandContext(
     string CommandLine,
     string CommandName,
     IReadOnlyList<string> Parameters,
@@ -13,13 +13,13 @@ internal sealed record mbotCommandContext(
     string Route = "",
     string UserName = "");
 
-internal sealed class mbotCompatContext
+internal sealed class mombotCompatContext
 {
     public IReadOnlyDictionary<string, string> BuildVariableSnapshot(
         Core.ModDatabase? database,
-        mbotConfig config,
-        mbotSettings settings,
-        mbotCommandContext context,
+        mombotConfig config,
+        mombotSettings settings,
+        mombotCommandContext context,
         string? lastLoadedModule = null)
     {
         string scriptRootRelative = GetScriptRootRelative(config.ScriptRoot);
@@ -162,9 +162,9 @@ internal sealed class mbotCompatContext
     public void ApplyToSession(
         Core.ModInterpreter? interpreter,
         Core.ModDatabase? database,
-        mbotConfig config,
-        mbotSettings settings,
-        mbotCommandContext context,
+        mombotConfig config,
+        mombotSettings settings,
+        mombotCommandContext context,
         string? lastLoadedModule = null)
     {
         IReadOnlyDictionary<string, string> vars = BuildVariableSnapshot(database, config, settings, context, lastLoadedModule);

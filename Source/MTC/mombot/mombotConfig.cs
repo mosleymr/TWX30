@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal sealed class mbotConfig
+internal sealed class mombotConfig
 {
     public bool Enabled { get; set; }
     public bool AutoStart { get; set; }

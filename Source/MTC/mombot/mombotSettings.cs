@@ -1,16 +1,16 @@
 using System;
 using Core = TWXProxy.Core;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal sealed record mbotSettings(
+internal sealed record mombotSettings(
     string BotName,
     string TeamName,
     string LoginPassword,
     string BotPassword,
     int SubspaceChannel)
 {
-    public static mbotSettings Load()
+    public static mombotSettings Load()
     {
         string botName = Read("$BOT~BOT_NAME", "mombot");
         string teamName = Read("$BOT~BOT_TEAM_NAME", botName);
@@ -24,7 +24,7 @@ internal sealed record mbotSettings(
         if (string.IsNullOrWhiteSpace(botPassword) && subspace > 0)
             botPassword = subspace.ToString();
 
-        return new mbotSettings(botName, teamName, loginPassword, botPassword, subspace);
+        return new mombotSettings(botName, teamName, loginPassword, botPassword, subspace);
     }
 
     private static string Read(string name, string fallback)

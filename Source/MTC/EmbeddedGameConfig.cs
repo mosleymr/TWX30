@@ -70,7 +70,18 @@ internal class EmbeddedMtcConfig
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
     public int ScrollbackLines { get; set; } = 2000;
-    public MTC.mbot.mbotConfig mbot { get; set; } = new();
+    public MTC.mombot.mombotConfig mombot { get; set; } = new();
+    [JsonPropertyName("mbot")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MTC.mombot.mombotConfig? LegacyMbot
+    {
+        get => null;
+        set
+        {
+            if (value != null)
+                mombot = value;
+        }
+    }
     public EmbeddedMtcState State { get; set; } = new();
 }
 

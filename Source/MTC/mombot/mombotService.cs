@@ -5,9 +5,9 @@ using System.IO;
 using System.Linq;
 using Core = TWXProxy.Core;
 
-namespace MTC.mbot;
+namespace MTC.mombot;
 
-internal enum mbotDispatchKind
+internal enum mombotDispatchKind
 {
     Invalid,
     Native,
@@ -15,14 +15,14 @@ internal enum mbotDispatchKind
     Unsupported,
 }
 
-internal sealed record mbotDispatchResult(
+internal sealed record mombotDispatchResult(
     bool Success,
-    mbotDispatchKind Kind,
+    mombotDispatchKind Kind,
     string CanonicalCommand,
     string Message,
     string? ScriptReference = null);
 
-internal sealed record mbotStatusSnapshot(
+internal sealed record mombotStatusSnapshot(
     bool Enabled,
     bool AutoStart,
     bool IsAttached,
@@ -40,36 +40,36 @@ internal sealed record mbotStatusSnapshot(
     string LastLoadedModule,
     IReadOnlyList<string> AuthorizedUsers);
 
-internal sealed class mbotService
+internal sealed class mombotService
 {
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;
     private Core.ModInterpreter? _interpreter;
-    private mbotConfig _config = new();
+    private mombotConfig _config = new();
     private readonly HashSet<string> _authorizedUsers = new(StringComparer.OrdinalIgnoreCase);
 
-    public mbotConfig Config => _config;
-    public mbotWatcher Watcher { get; } = new();
-    public mbotCompatContext Compat { get; } = new();
+    public mombotConfig Config => _config;
+    public mombotWatcher Watcher { get; } = new();
+    public mombotCompatContext Compat { get; } = new();
     public bool IsAttached => _gameInstance != null;
     public bool Enabled => _config.Enabled;
-    public IReadOnlyList<mbotInternalCommandGroup> InternalCommandGroups => mbotCatalog.InternalCommandGroups;
-    public IReadOnlyList<mbotHotkeyBinding> DefaultHotkeys => mbotCatalog.DefaultHotkeys;
-    public IReadOnlyList<mbotMenuSurface> MenuSurfaces => mbotCatalog.MenuSurfaces;
-    public IReadOnlyList<mbotCommandSpec> InitialCommands => mbotCatalog.InitialCommands;
-    public IReadOnlyList<mbotAliasSpec> InitialAliases => mbotCatalog.InitialAliases;
-    public mbotSettings Settings => mbotSettings.Load();
+    public IReadOnlyList<mombotInternalCommandGroup> InternalCommandGroups => mombotCatalog.InternalCommandGroups;
+    public IReadOnlyList<mombotHotkeyBinding> DefaultHotkeys => mombotCatalog.DefaultHotkeys;
+    public IReadOnlyList<mombotMenuSurface> MenuSurfaces => mombotCatalog.MenuSurfaces;
+    public IReadOnlyList<mombotCommandSpec> InitialCommands => mombotCatalog.InitialCommands;
+    public IReadOnlyList<mombotAliasSpec> InitialAliases => mombotCatalog.InitialAliases;
+    public mombotSettings Settings => mombotSettings.Load();
 
     public void AttachSession(
         Core.GameInstance? gameInstance,
         Core.ModDatabase? database,
         Core.ModInterpreter? interpreter,
-        mbotConfig? config)
+        mombotConfig? config)
     {
         _gameInstance = gameInstance;
         _database = database;
         _interpreter = interpreter;
-        _config = config ?? new mbotConfig();
+        _config = config ?? new mombotConfig();
         _config.Enabled = false;
         NormalizeConfig();
         ResetAuthorizedUsers();
@@ -85,10 +85,10 @@ internal sealed class mbotService
         _interpreter = null;
     }
 
-    public void ApplyConfig(mbotConfig? config)
+    public void ApplyConfig(mombotConfig? config)
     {
         bool wasEnabled = _config.Enabled;
-        _config = config ?? new mbotConfig();
+        _config = config ?? new mombotConfig();
         NormalizeConfig();
         ResetAuthorizedUsers();
         SyncWatcherState();
@@ -155,18 +155,18 @@ internal sealed class mbotService
         Core.ProxyGameOperations.StopAllScripts(_interpreter, includeSystemScripts: false);
     }
 
-    public bool TryResolveInitialCommand(string input, out mbotCommandSpec? command, out string canonical)
+    public bool TryResolveInitialCommand(string input, out mombotCommandSpec? command, out string canonical)
     {
-        return mbotCatalog.TryResolveInitialCommand(input, out command, out canonical);
+        return mombotCatalog.TryResolveInitialCommand(input, out command, out canonical);
     }
 
-    public mbotStatusSnapshot GetStatusSnapshot()
+    public mombotStatusSnapshot GetStatusSnapshot()
     {
-        mbotSettings settings = Settings;
+        mombotSettings settings = Settings;
         string mode = Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General");
         string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
-        return new mbotStatusSnapshot(
+        return new mombotStatusSnapshot(
             Enabled: _config.Enabled,
             AutoStart: _config.AutoStart,
             IsAttached: IsAttached,
@@ -187,18 +187,18 @@ internal sealed class mbotService
                 .ToArray());
     }
 
-    public bool TryExecuteLocalInput(string input, out IReadOnlyList<mbotDispatchResult> results)
+    public bool TryExecuteLocalInput(string input, out IReadOnlyList<mombotDispatchResult> results)
     {
-        results = Array.Empty<mbotDispatchResult>();
+        results = Array.Empty<mombotDispatchResult>();
         if (string.IsNullOrWhiteSpace(input))
             return false;
 
         string trimmed = input.Trim();
-        if (TryParseLocalSelfCommand(trimmed, out mbotCommandContext? context) && context != null)
+        if (TryParseLocalSelfCommand(trimmed, out mombotCommandContext? context) && context != null)
         {
             if (context.CommandLine.Length == 0)
             {
-                mbotSettings settings = Settings;
+                mombotSettings settings = Settings;
                 PublishMessage($"mombot: you are logged into this bot. Use {settings.BotName} help for commands.");
                 return true;
             }
@@ -222,7 +222,7 @@ internal sealed class mbotService
         if (TryHandlePageLogin(line))
             return true;
 
-        if (!TryParseIncomingCommand(line, out mbotCommandContext? context))
+        if (!TryParseIncomingCommand(line, out mombotCommandContext? context))
             return false;
 
         if (context == null)
@@ -230,7 +230,7 @@ internal sealed class mbotService
 
         if (context.CommandLine.Length == 0)
         {
-            mbotSettings settings = Settings;
+            mombotSettings settings = Settings;
             PublishMessage($"mombot: you are logged into this bot. Use {settings.BotName} help for commands.");
             return true;
         }
@@ -250,42 +250,42 @@ internal sealed class mbotService
         return true;
     }
 
-    public IReadOnlyList<mbotDispatchResult> ExecuteCommandLine(
+    public IReadOnlyList<mombotDispatchResult> ExecuteCommandLine(
         string input,
         bool selfCommand = true,
         string route = "self",
         string userName = "self")
     {
-        var results = new List<mbotDispatchResult>();
+        var results = new List<mombotDispatchResult>();
         foreach (string segment in SplitCommandSegments(input))
             results.Add(ExecuteSingleCommand(segment, selfCommand, route, userName));
 
         return results;
     }
 
-    private mbotDispatchResult ExecuteSingleCommand(
+    private mombotDispatchResult ExecuteSingleCommand(
         string input,
         bool selfCommand,
         string route,
         string userName)
     {
         if (string.IsNullOrWhiteSpace(input))
-            return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, "Empty mombot command.");
+            return new mombotDispatchResult(false, mombotDispatchKind.Invalid, string.Empty, "Empty mombot command.");
 
         List<string> words = GetWords(input);
         if (words.Count == 0)
         {
             string message = "mombot: Empty mombot command.";
             PublishMessage(message);
-            return new mbotDispatchResult(false, mbotDispatchKind.Invalid, string.Empty, message);
+            return new mombotDispatchResult(false, mombotDispatchKind.Invalid, string.Empty, message);
         }
 
         string originalCommand = NormalizeRawCommandToken(words[0]);
         List<string> originalParameters = words.Skip(1).Take(8).ToList();
-        mbotCommandContext context = NormalizeDispatchContext(originalCommand, originalParameters, selfCommand, route, userName);
+        mombotCommandContext context = NormalizeDispatchContext(originalCommand, originalParameters, selfCommand, route, userName);
         string canonical = context.CommandName;
         List<string> parameters = context.Parameters.ToList();
-        mbotCatalog.TryGetCommandSpec(canonical, out mbotCommandSpec? command);
+        mombotCatalog.TryGetCommandSpec(canonical, out mombotCommandSpec? command);
 
         string originalLine = BuildNormalizedCommandLine(originalCommand, originalParameters);
         if (!string.Equals(originalLine, context.CommandLine, StringComparison.Ordinal))
@@ -308,19 +308,19 @@ internal sealed class mbotService
             {
                 string message = $"mombot: failed to load '{scriptReference}': {error}";
                 PublishMessage(message);
-                return new mbotDispatchResult(false, mbotDispatchKind.Script, canonical, message, scriptReference);
+                return new mombotDispatchResult(false, mombotDispatchKind.Script, canonical, message, scriptReference);
             }
 
             string loadedMessage = $"mombot: loaded {canonical} ({scriptReference}).";
             PublishMessage(loadedMessage);
-            return new mbotDispatchResult(true, mbotDispatchKind.Script, canonical, loadedMessage, scriptReference);
+            return new mombotDispatchResult(true, mombotDispatchKind.Script, canonical, loadedMessage, scriptReference);
         }
 
-        if (command?.Kind == mbotCommandKind.Internal || mbotCatalog.IsInternalCommand(canonical))
+        if (command?.Kind == mombotCommandKind.Internal || mombotCatalog.IsInternalCommand(canonical))
         {
-            mbotCommandSpec internalCommand = command ?? new mbotCommandSpec(
+            mombotCommandSpec internalCommand = command ?? new mombotCommandSpec(
                 canonical,
-                mbotCommandKind.Internal,
+                mombotCommandKind.Internal,
                 $":INTERNAL_COMMANDS~{canonical}",
                 "Internal mombot-compatible command.");
             return ExecuteNative(internalCommand, context);
@@ -328,10 +328,10 @@ internal sealed class mbotService
 
         string messageInvalid = $"mombot: '{canonical}' is not a valid command.";
         PublishMessage(messageInvalid);
-        return new mbotDispatchResult(false, mbotDispatchKind.Invalid, canonical, messageInvalid);
+        return new mombotDispatchResult(false, mombotDispatchKind.Invalid, canonical, messageInvalid);
     }
 
-    private mbotDispatchResult ExecuteNative(mbotCommandSpec command, mbotCommandContext context)
+    private mombotDispatchResult ExecuteNative(mombotCommandSpec command, mombotCommandContext context)
     {
         string canonical = context.CommandName;
 
@@ -367,7 +367,7 @@ internal sealed class mbotService
         }
     }
 
-    private mbotDispatchResult ExecuteStop(mbotCommandContext context)
+    private mombotDispatchResult ExecuteStop(mombotCommandContext context)
     {
         string selector = context.Parameters.FirstOrDefault() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(selector))
@@ -407,7 +407,7 @@ internal sealed class mbotService
         return PublishNativeResult(context.CommandName, $"mombot stopped {stopped} script(s) matching '{selector}'.");
     }
 
-    private mbotDispatchResult ExecuteStopModules(string canonical)
+    private mombotDispatchResult ExecuteStopModules(string canonical)
     {
         string lastLoaded = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         bool stopped = !string.IsNullOrWhiteSpace(lastLoaded) && StopScriptByName(lastLoaded);
@@ -421,7 +421,7 @@ internal sealed class mbotService
         return PublishNativeResult(canonical, "mombot reset to General mode.");
     }
 
-    private mbotDispatchResult ExecuteListAll(string canonical)
+    private mombotDispatchResult ExecuteListAll(string canonical)
     {
         IReadOnlyList<Core.RunningScriptInfo> running = GetRunningScripts();
         if (running.Count == 0)
@@ -435,29 +435,29 @@ internal sealed class mbotService
             PublishMessage($"  [{kind}] {script.Name}{paused}");
         }
 
-        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, $"mombot listed {running.Count} active script(s).");
+        return new mombotDispatchResult(true, mombotDispatchKind.Native, canonical, $"mombot listed {running.Count} active script(s).");
     }
 
-    private mbotDispatchResult ExecuteBotStatus(string canonical)
+    private mombotDispatchResult ExecuteBotStatus(string canonical)
     {
-        mbotStatusSnapshot snapshot = GetStatusSnapshot();
+        mombotStatusSnapshot snapshot = GetStatusSnapshot();
         PublishMessage($"mombot: enabled={snapshot.Enabled} attached={snapshot.IsAttached} watcher={snapshot.WatcherEnabled}/{snapshot.WatcherAttached} sector={snapshot.CurrentSector}");
         PublishMessage($"mombot: botname={snapshot.BotName} team={snapshot.TeamName} subspace={snapshot.SubspaceChannel} mode={snapshot.Mode}");
         PublishMessage($"mombot: self={snapshot.AcceptSelfCommands} subspaceCmds={snapshot.AcceptSubspaceCommands} private={snapshot.AcceptPrivateCommands} authUsers={snapshot.AuthorizedUsers.Count}");
         PublishMessage($"mombot: scriptRoot={snapshot.ScriptRoot}");
-        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, "mombot displayed bot status.");
+        return new mombotDispatchResult(true, mombotDispatchKind.Native, canonical, "mombot displayed bot status.");
     }
 
-    private mbotDispatchResult PublishNativeResult(string canonical, string message)
+    private mombotDispatchResult PublishNativeResult(string canonical, string message)
     {
         PublishMessage(message);
-        return new mbotDispatchResult(true, mbotDispatchKind.Native, canonical, message);
+        return new mombotDispatchResult(true, mombotDispatchKind.Native, canonical, message);
     }
 
-    private mbotDispatchResult PublishUnsupported(string canonical, string message)
+    private mombotDispatchResult PublishUnsupported(string canonical, string message)
     {
         PublishMessage(message);
-        return new mbotDispatchResult(false, mbotDispatchKind.Unsupported, canonical, message);
+        return new mombotDispatchResult(false, mombotDispatchKind.Unsupported, canonical, message);
     }
 
     private void PublishMessage(string message)
@@ -492,11 +492,11 @@ internal sealed class mbotService
         Core.GlobalModules.DebugLog("[mombot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
     }
 
-    private string? TryResolveScriptReference(string canonical, mbotCommandSpec? command, out bool isModeScript)
+    private string? TryResolveScriptReference(string canonical, mombotCommandSpec? command, out bool isModeScript)
     {
         isModeScript = false;
 
-        if (command?.Kind == mbotCommandKind.Module &&
+        if (command?.Kind == mombotCommandKind.Module &&
             TryResolveExplicitScriptReference(command.Source, out string? explicitReference, out string? explicitFullPath))
         {
             isModeScript = IsModeScriptPath(explicitFullPath);
@@ -648,7 +648,7 @@ internal sealed class mbotService
         if (!_config.AcceptPrivateCommands || !TryParseFixedWidthCommand(line, 'P', out string userName, out string payload))
             return false;
 
-        mbotSettings settings = Settings;
+        mombotSettings settings = Settings;
         if (string.IsNullOrWhiteSpace(settings.BotPassword) || settings.SubspaceChannel <= 0)
             return false;
 
@@ -666,10 +666,10 @@ internal sealed class mbotService
         return true;
     }
 
-    private bool TryParseIncomingCommand(string line, out mbotCommandContext? context)
+    private bool TryParseIncomingCommand(string line, out mombotCommandContext? context)
     {
         context = null;
-        mbotSettings settings = Settings;
+        mombotSettings settings = Settings;
         string botName = settings.BotName;
         string teamName = settings.TeamName;
 
@@ -733,13 +733,13 @@ internal sealed class mbotService
         return false;
     }
 
-    private bool TryParseLocalSelfCommand(string line, out mbotCommandContext? context)
+    private bool TryParseLocalSelfCommand(string line, out mombotCommandContext? context)
     {
         context = null;
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
-        mbotSettings settings = Settings;
+        mombotSettings settings = Settings;
         if (TryParseOwnCommand(line, settings.BotName, out context))
             return true;
 
@@ -752,7 +752,7 @@ internal sealed class mbotService
         return TryParseOwnCommand(line, "all", out context);
     }
 
-    private static bool TryParseOwnCommand(string line, string targetName, out mbotCommandContext? context)
+    private static bool TryParseOwnCommand(string line, string targetName, out mombotCommandContext? context)
     {
         context = null;
         if (string.IsNullOrWhiteSpace(targetName))
@@ -765,7 +765,7 @@ internal sealed class mbotService
         string remainder = line[prefix.Length..].TrimStart();
         if (string.IsNullOrWhiteSpace(remainder))
         {
-            context = new mbotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), true, "self", "self");
+            context = new mombotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), true, "self", "self");
             return true;
         }
 
@@ -775,7 +775,7 @@ internal sealed class mbotService
 
         string commandName = words[0];
         List<string> parameters = words.Skip(1).Take(8).ToList();
-        context = new mbotCommandContext(
+        context = new mombotCommandContext(
             BuildNormalizedCommandLine(commandName, parameters),
             commandName,
             parameters,
@@ -785,7 +785,7 @@ internal sealed class mbotService
         return true;
     }
 
-    private static bool TryParseRemoteCommand(string line, char routePrefix, string targetName, string route, out mbotCommandContext? context)
+    private static bool TryParseRemoteCommand(string line, char routePrefix, string targetName, string route, out mombotCommandContext? context)
     {
         context = null;
         if (!TryParseFixedWidthCommand(line, routePrefix, out string userName, out string payload))
@@ -801,7 +801,7 @@ internal sealed class mbotService
         string commandName = words[1];
         List<string> parameters = words.Skip(2).Take(8).ToList();
         string normalized = BuildNormalizedCommandLine(commandName, parameters);
-        context = new mbotCommandContext(normalized, commandName, parameters, false, route, userName);
+        context = new mombotCommandContext(normalized, commandName, parameters, false, route, userName);
         return true;
     }
 
@@ -821,7 +821,7 @@ internal sealed class mbotService
         return !string.IsNullOrWhiteSpace(payload);
     }
 
-    private bool IsAuthorized(mbotCommandContext context)
+    private bool IsAuthorized(mombotCommandContext context)
     {
         if (context.SelfCommand)
             return true;
@@ -832,7 +832,7 @@ internal sealed class mbotService
         return !string.IsNullOrWhiteSpace(context.UserName) && _authorizedUsers.Contains(context.UserName);
     }
 
-    private static bool IsBlockedRemoteControlCommand(mbotCommandContext context)
+    private static bool IsBlockedRemoteControlCommand(mombotCommandContext context)
     {
         if (context.SelfCommand)
             return false;
@@ -876,7 +876,7 @@ internal sealed class mbotService
             .ToList();
     }
 
-    private mbotCommandContext NormalizeDispatchContext(
+    private mombotCommandContext NormalizeDispatchContext(
         string commandName,
         IReadOnlyList<string> rawParameters,
         bool selfCommand,
@@ -890,10 +890,10 @@ internal sealed class mbotService
         ExpandStockParameterAliases(parameters);
         normalizedCommand = NormalizeStockCommandAlias(normalizedCommand);
         ApplyTravelCommandRewrites(ref normalizedCommand, parameters);
-        normalizedCommand = mbotCatalog.NormalizeCommandName(normalizedCommand);
+        normalizedCommand = mombotCatalog.NormalizeCommandName(normalizedCommand);
 
         string normalizedLine = BuildNormalizedCommandLine(normalizedCommand, parameters);
-        return new mbotCommandContext(
+        return new mombotCommandContext(
             normalizedLine,
             normalizedCommand,
             parameters,
