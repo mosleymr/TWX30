@@ -6056,41 +6056,15 @@ public class MainWindow : Window
         _mombotStartupDataGatherPending = false;
     }
 
-    private static bool IsMissingMombotStatsValue(string value)
-    {
-        string trimmed = (value ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-            return true;
-
-        trimmed = trimmed.TrimEnd('%').Trim();
-        return string.IsNullOrWhiteSpace(trimmed) ||
-               string.Equals(trimmed, "0", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool HasMombotCatalogFileData(string currentVarName)
-    {
-        string filePath = ResolveMombotCurrentFilePath(currentVarName);
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-            return false;
-
-        try
-        {
-            return File.ReadLines(filePath).Any(line => !string.IsNullOrWhiteSpace(line));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private async Task TryRunNativeMombotStartupDataGatherAsync()
+    private async Task TryRunNativeMombotInitialSettingsAsync()
     {
         await Task.Yield();
 
         if (!_mombotStartupDataGatherPending ||
             !_mombot.Enabled ||
             _gameInstance == null ||
-            !_gameInstance.IsConnected)
+            !_gameInstance.IsConnected ||
+            _gameInstance.IsProxyMenuActive)
         {
             return;
         }
@@ -6112,20 +6086,15 @@ public class MainWindow : Window
         if (surface != MombotPromptSurface.Command && surface != MombotPromptSurface.Citadel)
             return;
 
-        bool missingGameStats = IsMissingMombotStatsValue(
-            ReadCurrentMombotVar("0", "$GAME~ptradesetting", "$ptradesetting"));
-        bool missingShipCatalog = !HasMombotCatalogFileData("$SHIP~cap_file");
-        bool missingPlanetCatalog = !HasMombotCatalogFileData("$PLANET~planet_file");
-
-        if (!missingGameStats && !missingShipCatalog && !missingPlanetCatalog)
+        _mombotStartupDataGatherPending = false;
+        if (!_mombot.TryLoadCompatScript("initsettings", out string? scriptReference, out string? error))
         {
-            _mombotStartupDataGatherPending = false;
+            PublishMombotLocalMessage($"Mombot: failed to load initial settings bootstrap: {error}");
             return;
         }
 
-        _mombotStartupDataGatherPending = false;
-        PublishMombotLocalMessage("Mombot: gathering initial game, ship, and planet data.");
-        await ExecuteMombotUiCommandAsync("refresh");
+        PublishMombotLocalMessage($"mombot: loaded initial settings bootstrap ({scriptReference}).");
+        ApplyMombotExecutionRefresh();
     }
 
     private bool ShouldStopNativeMombotAfterDisconnect()
@@ -6720,7 +6689,7 @@ public class MainWindow : Window
             SeedMombotRelogVarsFromCurrentState();
             ApplyMombotConfigChange(config => config.Enabled = true);
             ShowMombotStartupBanner(connected: true);
-            await TryRunNativeMombotStartupDataGatherAsync();
+            await TryRunNativeMombotInitialSettingsAsync();
             LoadMombotStartupScripts();
             await SendMombotStartupAnnouncementsAsync();
             ApplyMombotExecutionRefresh();
@@ -7437,7 +7406,7 @@ public class MainWindow : Window
             await SendNativeMombotEscapeAsync();
         }
 
-        await TryRunNativeMombotStartupDataGatherAsync();
+        await TryRunNativeMombotInitialSettingsAsync();
     }
 
     private async Task SendNativeMombotEscapeAsync()

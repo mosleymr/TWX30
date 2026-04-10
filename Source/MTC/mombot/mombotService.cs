@@ -128,6 +128,21 @@ internal sealed class mombotService
         }
     }
 
+    public bool TryLoadCompatScript(string canonical, out string? scriptReference, out string? error)
+    {
+        scriptReference = null;
+        error = null;
+
+        if (!TryResolveNativeCompatScriptReference(canonical, out string? reference, out _))
+        {
+            error = $"No native compatibility script is registered for '{canonical}'.";
+            return false;
+        }
+
+        scriptReference = reference;
+        return TryLoadScript(reference!, out error);
+    }
+
     public bool StopScriptByName(string scriptName)
     {
         return Core.ProxyGameOperations.StopScriptByName(_interpreter, scriptName);
@@ -525,6 +540,7 @@ internal sealed class mombotService
 
         string? compatPath = canonical.ToLowerInvariant() switch
         {
+            "initsettings" => EnsureInitialSettingsCompatScript(),
             "refresh" => EnsureRefreshCompatScript(),
             "storeship" => EnsureStoreshipCompatScript(),
             _ => null,
@@ -617,6 +633,123 @@ internal sealed class mombotService
             "#INCLUDES:\n" +
             "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
             "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
+            "include \"source\\bot_includes\\player\"\n" +
+            "include \"source\\bot_includes\\game\"\n" +
+            "include \"source\\bot_includes\\ship\"\n" +
+            "include \"source\\bot_includes\\planet\"\n" +
+            "include \"source\\bot_includes\\switchboard\"\n";
+
+        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
+        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
+            File.WriteAllText(compatPath, content);
+
+        return compatPath;
+    }
+
+    private string? EnsureInitialSettingsCompatScript()
+    {
+        string scriptsDirectory = GetScriptsDirectory();
+        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
+        if (!Directory.Exists(sourceRoot))
+            return null;
+
+        string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_initial_settings.ts");
+        string content =
+            "# Native TWX3 compatibility wrapper for Mombot shell startup getInitial_Settings.\n" +
+            ":getInitial_Settings\n" +
+            ":twx3_native_initial_settings\n" +
+            "setvar $connectivity~relogging false\n" +
+            "savevar $connectivity~relogging\n" +
+            "loadVar $GAME~gamestats\n" +
+            "setVar $pgrid_type \"Normal\"\n" +
+            "setVar $pgrid_end_command \" scan \"\n" +
+            "getWord CURRENTLINE $PLAYER~startingLocation 1\n" +
+            "if (($PLAYER~startingLocation <> \"Command\") AND ($PLAYER~startingLocation <> \"Citadel\"))\n" +
+            "\tif (($PLAYER~CURRENT_PROMPT = \"Command\") OR ($PLAYER~CURRENT_PROMPT = \"Citadel\"))\n" +
+            "\t\tsetVar $PLAYER~startingLocation $PLAYER~CURRENT_PROMPT\n" +
+            "\tend\n" +
+            "end\n" +
+            "fileExists $SCRIPT_FILE_chk $SCRIPT_FILE\n" +
+            "if ($SCRIPT_FILE_chk)\n" +
+            "\tsetArray $HOTKEY_SCRIPTS 10 1\n" +
+            "\tsetVar $i 1\n" +
+            "\tsetVar $HOTKEY_SCRIPTS 0\n" +
+            "\tread $SCRIPT_FILE $line $i\n" +
+            "\twhile ($line <> \"EOF\")\n" +
+            "\t\tgetWord $line $fileLocation 1\n" +
+            "\t\tgetWordPos $line $pos #34\n" +
+            "\t\tif ($pos <= 0)\n" +
+            "\t\t\techo \"Error with script file. either remove \" & $SCRIPT_FILE & \", or fix it*\"\n" +
+            "\t\t\thalt\n" +
+            "\t\tend\n" +
+            "\t\tcutText $line $scriptName $pos 9999\n" +
+            "\t\tstripText $scriptName #34\n" +
+            "\t\tsetVar $HOTKEY_SCRIPTS[$i] $fileLocation\n" +
+            "\t\tsetVar $HOTKEY_SCRIPTS[$i][1] $scriptName\n" +
+            "\t\tadd $i 1\n" +
+            "\t\tadd $HOTKEY_SCRIPTS 1\n" +
+            "\t\tread $SCRIPT_FILE $line $i\n" +
+            "\tend\n" +
+            "else\n" +
+            "\tsetArray $HOTKEY_SCRIPTS 10 1\n" +
+            "end\n" +
+            "\n" +
+            "fileExists $gfile_chk $gconfig_file\n" +
+            "if ($gfile_chk)\n" +
+            "\tloadVar $GAME~mbbs\n" +
+            "\tloadVar $GAME~STEAL_FACTOR\n" +
+            "\tloadVar $GAME~rob_factor\n" +
+            "\tloadVar $GAME~ptradesetting\n" +
+            "\tloadVar $GAME~port_max\n" +
+            "\tloadVar $PLAYER~unlimitedGame\n" +
+            "\tsetVar $doRelog TRUE\n" +
+            "\tsaveVar $doRelog\n" +
+            "\tread $gconfig_file $bot_name 1\n" +
+            "\tsetvar $switchboard~bot_name $bot_name\n" +
+            "\tif (CONNECTED = TRUE)\n" +
+            "\t\tgosub :PLAYER~quikstats\n" +
+            "\tend\n" +
+            "\tif (CONNECTED = true)\n" +
+            "\t\tgosub :player~quikstats\n" +
+            "\t\tsetvar $player~startingLocation $player~current_prompt\n" +
+            "\tend\n" +
+            "\tif ((($PLAYER~startingLocation = \"Command\") OR ($PLAYER~startingLocation = \"Citadel\")) AND (CONNECTED = TRUE))\n" +
+            "\t\tif ($GAME~ptradesetting = 0)\n" +
+            "\t\t\tgosub :GAME~gamestats\n" +
+            "\t\tend\n" +
+            "\t\tgosub :player~quikstats\n" +
+            "\t\tgosub :PLAYER~getInfo\n" +
+            "\t\tgosub :SHIP~getShipStats\n" +
+            "\t\tgosub :player~quikstats\n" +
+            "\t\tfileExists $SHIP~cap_file_chk $SHIP~cap_file\n" +
+            "\t\tif ($SHIP~cap_file_chk)\n" +
+            "\t\t\tgosub :SHIP~loadShipInfo\n" +
+            "\t\telse\n" +
+            "\t\t\tgosub :SHIP~getShipCapStats\n" +
+            "\t\t\tgosub :SHIP~loadShipInfo\n" +
+            "\t\tend\n" +
+            "\t\tfileExists $PLANET~planet_file_chk $PLANET~planet_file\n" +
+            "\t\tif ($PLANET~planet_file_chk)\n" +
+            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
+            "\t\telse\n" +
+            "\t\t\tgosub :PLANET~getPlanetStats\n" +
+            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
+            "\t\tend\n" +
+            "\telse\n" +
+            "\t\tfileExists $SHIP~cap_file_chk $SHIP~cap_file\n" +
+            "\t\tif ($SHIP~cap_file_chk)\n" +
+            "\t\t\tgosub :SHIP~loadShipInfo\n" +
+            "\t\tend\n" +
+            "\t\tfileExists $PLANET~planet_file_chk $PLANET~planet_file\n" +
+            "\t\tif ($PLANET~planet_file_chk)\n" +
+            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
+            "\t\tend\n" +
+            "\tend\n" +
+            "end\n" +
+            "\n" +
+            "halt\n" +
+            "\n" +
+            "#INCLUDES:\n" +
             "include \"source\\bot_includes\\player\"\n" +
             "include \"source\\bot_includes\\game\"\n" +
             "include \"source\\bot_includes\\ship\"\n" +
