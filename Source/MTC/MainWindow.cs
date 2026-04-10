@@ -104,6 +104,14 @@ public class MainWindow : Window
     private string _mbotPreferencesInputBuffer = string.Empty;
     private Action<string>? _mbotPreferencesInputHandler;
     private int _mbotPreferencesHotkeySlot;
+    private int _mbotPreferencesShipPageStart = 1;
+    private int _mbotPreferencesPlanetTypePageStart = 1;
+    private int _mbotPreferencesPlanetListCursor = 2;
+    private int _mbotPreferencesPlanetListNextCursor = 2;
+    private bool _mbotPreferencesPlanetListHasMore;
+    private int _mbotPreferencesTraderListCursor = 2;
+    private int _mbotPreferencesTraderListNextCursor = 2;
+    private bool _mbotPreferencesTraderListHasMore;
     private bool _mbotMacroPromptOpen;
     private MbotGridContext? _mbotMacroContext;
     private IReadOnlyList<MbotHotkeyScriptEntry> _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
@@ -6778,6 +6786,17 @@ public class MainWindow : Window
         Computer,
     }
 
+    private enum MbotPreferencesPage
+    {
+        General,
+        GameStats,
+        Hotkeys,
+        ShipInfo,
+        PlanetTypes,
+        PlanetList,
+        TraderList,
+    }
+
     private sealed record MbotGridContext(
         MbotPromptSurface Surface,
         int CurrentSector,
@@ -6790,6 +6809,28 @@ public class MainWindow : Window
         int Slot,
         string LoadReference,
         string DisplayName);
+
+    private sealed record MbotShipCatalogEntry(
+        string Name,
+        string Shields,
+        string DefOdds,
+        string OffOdds,
+        string Cost,
+        string MaxHolds,
+        string MaxFighters,
+        string InitHolds,
+        string Tpw,
+        bool Defender);
+
+    private sealed record MbotPlanetCatalogEntry(
+        string Name,
+        string FuelMin,
+        string FuelMax,
+        string OrgMin,
+        string OrgMax,
+        string EquipMin,
+        string EquipMax,
+        bool Keeper);
 
     private void SendToTelnet(byte[] bytes)
     {
