@@ -1,6 +1,6 @@
 # TWX30
 
-TWX30 is the current C#/.NET rewrite of the classic TWX Proxy toolchain for Trade Wars 2002.
+TWX30 is the current C#/.NET rewrite of the classic TWX Proxy helper for Trade Wars 2002.
 
 Current source version: `3.0.1`
 
@@ -10,6 +10,6 @@ The active code lives under `Source/` and includes:
 - `TWXC`: command-line compiler for `.ts -> .cts`
 - `TWXD`: command-line decompiler for `.cts -> .ts`
 - `MTC`: Avalonia desktop client with an embedded proxy
-- `TWXP`: MAUI-based app shell still present in the tree
+- `TWXP`: Avalonia based multi threaded proxy
 
 For build details, project layout, and tooling notes, see [`Source/README.md`](Source/README.md).
