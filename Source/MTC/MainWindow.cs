@@ -5077,6 +5077,8 @@ public class MainWindow : Window
         var values = isNative
             ? MergeBotValues(section.Values, BuildDefaultNativeBotValues())
             : new Dictionary<string, string>(section.Values, StringComparer.OrdinalIgnoreCase);
+        if (isNative)
+            values["LoginScript"] = "disabled";
 
         string alias = isNative
             ? Core.ProxyMenuCatalog.GetBotAlias(Core.ProxyMenuCatalog.NativeMombotSectionName)
@@ -5597,7 +5599,7 @@ public class MainWindow : Window
         values["AutoStart"] = result.AutoStart ? "1" : "0";
         values["NameVar"] = result.NameVar.Trim();
         values["CommsVar"] = result.CommsVar.Trim();
-        values["LoginScript"] = result.LoginScript.Trim();
+        values["LoginScript"] = existing?.IsNative == true ? "disabled" : result.LoginScript.Trim();
         values["Theme"] = result.Theme.Trim();
 
         if (existing?.IsNative == true)
@@ -5672,7 +5674,7 @@ public class MainWindow : Window
             ["AutoStart"] = "0",
             ["NameVar"] = "BotName",
             ["CommsVar"] = "BotComms",
-            ["LoginScript"] = "0_Login.cts",
+            ["LoginScript"] = "disabled",
             ["Theme"] = "7|[MOMBOT]|~D|~G|~B|~C",
         };
     }
@@ -5815,10 +5817,10 @@ public class MainWindow : Window
         }
         else
         {
-            MTC.mbot.mbotRelogDialogResult relogSettings;
-            if (interactiveOfflinePrompt)
+            MTC.mbot.mbotRelogDialogResult relogSettings = BuildMbotRelogDefaults();
+            if (interactiveOfflinePrompt && ShouldPromptForMbotRelogSettings(relogSettings))
             {
-                var dialog = new MTC.mbot.mbotRelogDialog(BuildMbotRelogDefaults());
+                var dialog = new MTC.mbot.mbotRelogDialog(relogSettings);
                 if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
                 {
                     FocusActiveTerminal();
@@ -5826,10 +5828,6 @@ public class MainWindow : Window
                 }
 
                 relogSettings = dialog.Result;
-            }
-            else
-            {
-                relogSettings = BuildMbotRelogDefaults();
             }
 
             ApplyMbotRelogDialogResult(relogSettings);
@@ -5963,48 +5961,57 @@ public class MainWindow : Window
             startMacro);
     }
 
+    private static bool ShouldPromptForMbotRelogSettings(MTC.mbot.mbotRelogDialogResult defaults)
+    {
+        return string.IsNullOrWhiteSpace(defaults.BotName) ||
+            string.IsNullOrWhiteSpace(defaults.ServerName) ||
+            string.IsNullOrWhiteSpace(defaults.LoginName) ||
+            string.IsNullOrWhiteSpace(defaults.Password) ||
+            string.IsNullOrWhiteSpace(defaults.GameLetter);
+    }
+
     private void ApplyMbotRelogDialogResult(MTC.mbot.mbotRelogDialogResult result)
     {
-        SetMbotCurrentVars(result.BotName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
-        SetMbotCurrentVars(
+        PersistMbotVars(result.BotName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
+        PersistMbotVars(
             FirstMeaningfulMbotValue(
                 Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
                 Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
                 result.BotName),
             "$BOT~BOT_TEAM_NAME",
             "$bot_team_name");
-        SetMbotCurrentVars(result.ServerName, "$BOT~SERVERNAME", "$servername");
-        SetMbotCurrentVars(result.LoginName, "$BOT~USERNAME", "$username");
-        SetMbotCurrentVars(result.Password, "$BOT~PASSWORD", "$password");
-        SetMbotCurrentVars(NormalizeGameLetter(result.GameLetter), "$BOT~LETTER", "$letter");
-        SetMbotCurrentVars(result.DelayMinutes.ToString(), "$BOT~STARTGAMEDELAY", "$startGameDelay");
-        SetMbotCurrentVars(result.BotCommand, "$command_to_issue");
-        SetMbotCurrentVars(result.MacroAfterLogin, "$BOT~STARTMACRO", "$bot~startMacro", "$startMacro");
-        SetMbotCurrentVars("General", "$BOT~MODE", "$mode");
-        SetMbotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
-        SetMbotCurrentVars("1", "$BOT~DORELOG", "$doRelog");
+        PersistMbotVars(result.ServerName, "$BOT~SERVERNAME", "$servername");
+        PersistMbotVars(result.LoginName, "$BOT~USERNAME", "$username");
+        PersistMbotVars(result.Password, "$BOT~PASSWORD", "$password");
+        PersistMbotVars(NormalizeGameLetter(result.GameLetter), "$BOT~LETTER", "$letter");
+        PersistMbotVars(result.DelayMinutes.ToString(), "$BOT~STARTGAMEDELAY", "$startGameDelay");
+        PersistMbotVars(result.BotCommand, "$command_to_issue");
+        PersistMbotVars(result.MacroAfterLogin, "$BOT~STARTMACRO", "$bot~startMacro", "$startMacro");
+        PersistMbotVars("General", "$BOT~MODE", "$mode");
+        PersistMbotVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
+        PersistMbotVars("1", "$BOT~DORELOG", "$doRelog");
 
         switch (result.LoginType)
         {
             case MTC.mbot.mbotRelogLoginType.NewGameAccountCreation:
-                SetMbotCurrentVars("1", "$BOT~NEWGAMEDAY1", "$newGameDay1");
-                SetMbotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                SetMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+                PersistMbotVars("1", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                PersistMbotVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                PersistMbotVars("0", "$BOT~ISSHIPDESTROYED");
                 break;
             case MTC.mbot.mbotRelogLoginType.ReturnAfterDestroyed:
-                SetMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
-                SetMbotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                SetMbotCurrentVars("1", "$BOT~ISSHIPDESTROYED");
+                PersistMbotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                PersistMbotVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                PersistMbotVars("1", "$BOT~ISSHIPDESTROYED");
                 break;
             default:
-                SetMbotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
-                SetMbotCurrentVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                SetMbotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+                PersistMbotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+                PersistMbotVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+                PersistMbotVars("0", "$BOT~ISSHIPDESTROYED");
                 break;
         }
 
         string relogMessage = $"{result.BotName} connected and ready.*";
-        SetMbotCurrentVars(relogMessage, "$relog_message");
+        PersistMbotVars(relogMessage, "$relog_message");
     }
 
     private void SeedMbotRelogVarsFromCurrentState()
@@ -7341,6 +7348,1569 @@ public class MainWindow : Window
             : _mbotPreferencesInputPrompt;
         return $"\x1b[1;37m{label}\x1b[1;32m>\x1b[0m ";
     }
+
+    private void BeginMbotPreferencesMenu(MbotPreferencesPage page = MbotPreferencesPage.General)
+    {
+        if (_gameInstance == null)
+        {
+            PublishMbotLocalMessage("Mombot preferences are only available while the embedded proxy is running.");
+            return;
+        }
+
+        if (!_mbot.Enabled)
+        {
+            PublishMbotLocalMessage("Enable Mombot first.");
+            return;
+        }
+
+        ResetMbotPromptState();
+        _mbotPreferencesOpen = true;
+        _mbotPreferencesPage = page;
+        _mbotPreferencesShipPageStart = 1;
+        _mbotPreferencesPlanetTypePageStart = 1;
+        _mbotPreferencesPlanetListCursor = 2;
+        _mbotPreferencesPlanetListNextCursor = 2;
+        _mbotPreferencesPlanetListHasMore = false;
+        _mbotPreferencesTraderListCursor = 2;
+        _mbotPreferencesTraderListNextCursor = 2;
+        _mbotPreferencesTraderListHasMore = false;
+
+        string subspace = ReadCurrentMbotVar("0", "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
+        string botPassword = ReadCurrentMbotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
+        if (string.IsNullOrWhiteSpace(botPassword) && !string.Equals(subspace, "0", StringComparison.OrdinalIgnoreCase))
+            PersistMbotVars(subspace, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
+
+        PersistMbotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        RenderMbotPreferencesPage();
+    }
+
+    private void EndMbotPreferencesMenu()
+    {
+        if (!_mbotPreferencesOpen)
+            return;
+
+        PersistMbotBoolean(false, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        _mbotPreferencesOpen = false;
+        ClearMbotPreferencesInputState();
+        _parser.Feed("\r\x1b[K");
+        _buffer.Dirty = true;
+        ApplyMbotExecutionRefresh();
+    }
+
+    private void ClearMbotPreferencesInputState()
+    {
+        _mbotPreferencesCaptureSingleKey = false;
+        _mbotPreferencesInputPrompt = string.Empty;
+        _mbotPreferencesInputBuffer = string.Empty;
+        _mbotPreferencesInputHandler = null;
+        _mbotPreferencesHotkeySlot = 0;
+    }
+
+    private bool TryHandleMbotPreferencesInput(byte[] bytes)
+    {
+        if (!_mbotPreferencesOpen)
+            return false;
+
+        if (_mbotPreferencesInputHandler != null)
+            return TryHandleMbotPreferencesResponseInput(bytes);
+
+        if (bytes.Length == 0)
+            return true;
+
+        if (bytes.Length == 1 && bytes[0] == 0x1B)
+        {
+            EndMbotPreferencesMenu();
+            return true;
+        }
+
+        foreach (byte value in bytes)
+        {
+            if (value == 0x0D || value == 0x0A)
+            {
+                EndMbotPreferencesMenu();
+                return true;
+            }
+
+            if (value < 0x20 || value > 0x7E)
+                continue;
+
+            HandleMbotPreferencesSelection(char.ToUpperInvariant((char)value));
+            return true;
+        }
+
+        return true;
+    }
+
+    private bool TryHandleMbotPreferencesResponseInput(byte[] bytes)
+    {
+        if (!_mbotPreferencesOpen || _mbotPreferencesInputHandler == null)
+            return false;
+
+        if (bytes.Length == 0)
+            return true;
+
+        if (_mbotPreferencesCaptureSingleKey)
+        {
+            foreach (byte value in bytes)
+            {
+                if (value == 0x1B)
+                {
+                    CancelMbotPreferencesInput();
+                    return true;
+                }
+
+                string? input = value switch
+                {
+                    0x08 => "\b",
+                    0x09 => "\t",
+                    0x0D => "\r",
+                    0x0A => "\n",
+                    0x7F => "\b",
+                    >= 0x20 and <= 0x7E => ((char)value).ToString(),
+                    _ => null,
+                };
+
+                if (input != null)
+                {
+                    CompleteMbotPreferencesInput(input);
+                    return true;
+                }
+            }
+
+            return true;
+        }
+
+        bool changed = false;
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x08:
+                case 0x7F:
+                    if (_mbotPreferencesInputBuffer.Length > 0)
+                    {
+                        _mbotPreferencesInputBuffer = _mbotPreferencesInputBuffer[..^1];
+                        changed = true;
+                    }
+                    break;
+
+                case 0x1B:
+                    CancelMbotPreferencesInput();
+                    return true;
+
+                case 0x0D:
+                case 0x0A:
+                    CompleteMbotPreferencesInput(_mbotPreferencesInputBuffer);
+                    return true;
+
+                default:
+                    if (value >= 0x20)
+                    {
+                        _mbotPreferencesInputBuffer += (char)value;
+                        changed = true;
+                    }
+                    break;
+            }
+        }
+
+        if (changed)
+            RedrawMbotPrompt();
+
+        return true;
+    }
+
+    private void BeginMbotPreferencesInput(string prompt, Action<string> handler, string initialValue = "", bool captureSingleKey = false)
+    {
+        _mbotPreferencesCaptureSingleKey = captureSingleKey;
+        _mbotPreferencesInputPrompt = prompt;
+        _mbotPreferencesInputBuffer = captureSingleKey ? string.Empty : initialValue;
+        _mbotPreferencesInputHandler = handler;
+        RedrawMbotPrompt();
+    }
+
+    private void CompleteMbotPreferencesInput(string value)
+    {
+        Action<string>? handler = _mbotPreferencesInputHandler;
+        ClearMbotPreferencesInputState();
+        handler?.Invoke(value);
+
+        if (_mbotPreferencesOpen && _mbotPreferencesInputHandler == null)
+            RenderMbotPreferencesPage();
+    }
+
+    private void CancelMbotPreferencesInput()
+    {
+        ClearMbotPreferencesInputState();
+        if (_mbotPreferencesOpen)
+            RenderMbotPreferencesPage();
+    }
+
+    private void HandleMbotPreferencesSelection(char selection)
+    {
+        switch (_mbotPreferencesPage)
+        {
+            case MbotPreferencesPage.General:
+                HandleMbotGeneralPreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.GameStats:
+                HandleMbotGameStatsPreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.Hotkeys:
+                HandleMbotHotkeyPreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.ShipInfo:
+                HandleMbotShipPreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.PlanetTypes:
+                HandleMbotPlanetTypePreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.PlanetList:
+                HandleMbotPlanetListPreferencesSelection(selection);
+                break;
+
+            case MbotPreferencesPage.TraderList:
+                HandleMbotTraderListPreferencesSelection(selection);
+                break;
+        }
+    }
+
+    private void HandleMbotGeneralPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.GameStats;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.TraderList;
+                RenderMbotPreferencesPage();
+                return;
+
+            case 'N':
+                BeginMbotPreferencesInput(
+                    "Bot Name",
+                    value =>
+                    {
+                        string newBotName = (value ?? string.Empty).Replace("^", string.Empty).Replace(" ", string.Empty).Trim().ToLowerInvariant();
+                        if (string.IsNullOrWhiteSpace(newBotName))
+                            return;
+
+                        PersistMbotVars(
+                            newBotName,
+                            "$BOT~BOT_NAME",
+                            "$SWITCHBOARD~BOT_NAME",
+                            "$SWITCHBOARD~bot_name",
+                            "$bot~bot_name",
+                            "$bot_name",
+                            "$bot~name");
+
+                        try
+                        {
+                            string path = ResolveMbotCurrentFilePath("$gconfig_file");
+                            if (!string.IsNullOrWhiteSpace(path))
+                            {
+                                string? directory = Path.GetDirectoryName(path);
+                                if (!string.IsNullOrWhiteSpace(directory))
+                                    Directory.CreateDirectory(directory);
+                                File.WriteAllText(path, newBotName + Environment.NewLine);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    },
+                    ReadCurrentMbotVar("mombot", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name"));
+                return;
+
+            case 'P':
+                BeginMbotPreferencesInput(
+                    "Game Password",
+                    value => PersistMbotVars(value.Trim(), "$BOT~PASSWORD", "$bot~password", "$password"),
+                    ReadCurrentMbotVar(string.Empty, "$BOT~PASSWORD", "$bot~password", "$password"));
+                return;
+
+            case 'Z':
+                BeginMbotPreferencesInput(
+                    "Bot Password",
+                    value => PersistMbotVars(value.Trim(), "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password"),
+                    ReadCurrentMbotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password"));
+                return;
+
+            case 'G':
+                BeginMbotPreferencesInput(
+                    "Game Letter",
+                    value => PersistMbotVars(value.Trim().ToUpperInvariant(), "$BOT~LETTER", "$bot~letter", "$letter"),
+                    ReadCurrentMbotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter"));
+                return;
+
+            case 'C':
+                BeginMbotPreferencesInput(
+                    "Login Name",
+                    value => PersistMbotVars(value.Trim(), "$BOT~USERNAME", "$bot~username", "$username"),
+                    ReadCurrentMbotVar(string.Empty, "$BOT~USERNAME", "$bot~username", "$username"));
+                return;
+
+            case '1':
+                if (!IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame")))
+                {
+                    BeginMbotPreferencesInput(
+                        "Turn Limit",
+                        value =>
+                        {
+                            if (int.TryParse(value.Trim(), out int turnLimit) && turnLimit >= 0 && turnLimit <= 65000)
+                                PersistMbotVars(turnLimit.ToString(), "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+                        },
+                        ReadCurrentMbotVar("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit"));
+                }
+                return;
+
+            case '3':
+                PromptMbotCountPreference("Surround figs", 0, 50000, "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS");
+                return;
+
+            case '4':
+                PromptMbotCountPreference("Surround limpets", 0, 250, "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP");
+                return;
+
+            case '5':
+                PromptMbotCountPreference("Surround armids", 0, 250, "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE");
+                return;
+
+            case '8':
+            {
+                bool shieldedOnly = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidShieldedOnly"));
+                bool allPlanets = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidAllPlanets"));
+                if (shieldedOnly)
+                    PersistMbotSurroundPlanetAvoidance(allPlanets: true, shieldedOnly: false, none: false);
+                else if (allPlanets)
+                    PersistMbotSurroundPlanetAvoidance(allPlanets: false, shieldedOnly: false, none: true);
+                else
+                    PersistMbotSurroundPlanetAvoidance(allPlanets: false, shieldedOnly: true, none: false);
+                RenderMbotPreferencesPage();
+                return;
+            }
+
+            case '7':
+                ToggleMbotBooleanPreference("$bot~autoattack", "$BOT~autoattack", "$autoattack");
+                return;
+
+            case '2':
+            {
+                bool defender = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~defenderCapping"));
+                bool offense = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~offenseCapping", "$offenseCapping"));
+                if (defender)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~defenderCapping");
+                    PersistMbotBoolean(true, "$PLAYER~offenseCapping", "$offenseCapping");
+                    PersistMbotBoolean(true, "$PLAYER~cappingAliens", "$cappingAliens");
+                }
+                else if (offense)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~defenderCapping");
+                    PersistMbotBoolean(false, "$PLAYER~offenseCapping", "$offenseCapping");
+                    PersistMbotBoolean(false, "$PLAYER~cappingAliens", "$cappingAliens");
+                }
+                else
+                {
+                    PersistMbotBoolean(true, "$PLAYER~defenderCapping");
+                    PersistMbotBoolean(false, "$PLAYER~offenseCapping", "$offenseCapping");
+                    PersistMbotBoolean(true, "$PLAYER~cappingAliens", "$cappingAliens");
+                }
+
+                RenderMbotPreferencesPage();
+                return;
+            }
+
+            case '6':
+            {
+                bool offensive = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~dropOffensive"));
+                bool toll = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~dropToll"));
+                if (offensive)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~dropOffensive");
+                    PersistMbotBoolean(true, "$PLAYER~dropToll");
+                }
+                else if (toll)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~dropOffensive");
+                    PersistMbotBoolean(false, "$PLAYER~dropToll");
+                }
+                else
+                {
+                    PersistMbotBoolean(true, "$PLAYER~dropOffensive");
+                    PersistMbotBoolean(false, "$PLAYER~dropToll");
+                }
+
+                RenderMbotPreferencesPage();
+                return;
+            }
+
+            case '0':
+                ToggleMbotBooleanPreference("$BOT~command_prompt_extras", "$command_prompt_extras");
+                return;
+
+            case 'V':
+                ToggleMbotBooleanPreference("$BOT~silent_running", "$bot~silent_running", "$silent_running");
+                return;
+
+            case 'K':
+                ToggleMbotBooleanPreference("$PLAYER~surround_before_hkill");
+                return;
+
+            case 'S':
+                PromptMbotSectorPreference("Stardock", allowZeroReset: true, ResetMbotSpecialSector.Stardock, "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+                return;
+
+            case 'J':
+                BeginMbotPreferencesInput(
+                    "Alarm List",
+                    value => PersistMbotVars(value.Trim(), "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list"),
+                    ReadCurrentMbotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list"));
+                return;
+
+            case 'X':
+                PromptMbotCountPreference("Safe Ship", 0, int.MaxValue, "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship");
+                return;
+
+            case 'L':
+                PromptMbotCountPreference("Safe Planet", 0, int.MaxValue, "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet");
+                return;
+
+            case 'E':
+                BeginMbotPreferencesInput(
+                    "Banner Interval (minutes)",
+                    value =>
+                    {
+                        if (int.TryParse(value.Trim(), out int interval))
+                            PersistMbotVars((interval > 0 ? interval : 5760).ToString(), "$BOT~echoInterval", "$echoInterval");
+                    },
+                    ReadCurrentMbotVar("5760", "$BOT~echoInterval", "$echoInterval"));
+                return;
+
+            case 'R':
+                PromptMbotSectorPreference("Rylos", allowZeroReset: true, ResetMbotSpecialSector.Rylos, "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
+                return;
+
+            case 'A':
+                PromptMbotSectorPreference("Alpha Centauri", allowZeroReset: true, ResetMbotSpecialSector.Alpha, "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
+                return;
+
+            case 'B':
+                PromptMbotSectorPreference("Backdoor", allowZeroReset: false, ResetMbotSpecialSector.None, "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
+                return;
+
+            case 'H':
+                PromptMbotSectorPreference("Home Sector", allowZeroReset: false, ResetMbotSpecialSector.None, "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector");
+                return;
+
+            case '9':
+            {
+                bool overwrite = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundOverwrite"));
+                bool passive = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundPassive"));
+                if (overwrite)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~surroundOverwrite");
+                    PersistMbotBoolean(true, "$PLAYER~surroundPassive");
+                    PersistMbotBoolean(false, "$PLAYER~surroundNormal");
+                }
+                else if (passive)
+                {
+                    PersistMbotBoolean(false, "$PLAYER~surroundOverwrite");
+                    PersistMbotBoolean(false, "$PLAYER~surroundPassive");
+                    PersistMbotBoolean(true, "$PLAYER~surroundNormal");
+                }
+                else
+                {
+                    PersistMbotBoolean(true, "$PLAYER~surroundOverwrite");
+                    PersistMbotBoolean(false, "$PLAYER~surroundPassive");
+                    PersistMbotBoolean(false, "$PLAYER~surroundNormal");
+                }
+
+                RenderMbotPreferencesPage();
+                return;
+            }
+
+            default:
+                EndMbotPreferencesMenu();
+                return;
+        }
+    }
+
+    private void HandleMbotGameStatsPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.Hotkeys;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.General;
+                RenderMbotPreferencesPage();
+                return;
+
+            default:
+                EndMbotPreferencesMenu();
+                return;
+        }
+    }
+
+    private void HandleMbotHotkeyPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.ShipInfo;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.GameStats;
+                RenderMbotPreferencesPage();
+                return;
+        }
+
+        if (TryGetMbotHotkeySlotFromSelection(selection, out int slot))
+        {
+            PromptMbotHotkeySelection(slot);
+            return;
+        }
+
+        EndMbotPreferencesMenu();
+    }
+
+    private void HandleMbotShipPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.Hotkeys;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.PlanetTypes;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '+':
+            {
+                int count = LoadMbotShipCatalogEntries().Count;
+                _mbotPreferencesShipPageStart = count <= 10 || _mbotPreferencesShipPageStart + 10 >= count ? 1 : _mbotPreferencesShipPageStart + 10;
+                RenderMbotPreferencesPage();
+                return;
+            }
+        }
+
+        if (TryGetMbotPagedItemOffset(selection, out int offset))
+        {
+            ToggleMbotShipDefender(offset);
+            return;
+        }
+
+        EndMbotPreferencesMenu();
+    }
+
+    private void HandleMbotPlanetTypePreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.ShipInfo;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.PlanetList;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '+':
+            {
+                int count = LoadMbotPlanetCatalogEntries().Count;
+                _mbotPreferencesPlanetTypePageStart = count <= 10 || _mbotPreferencesPlanetTypePageStart + 10 > count ? 1 : _mbotPreferencesPlanetTypePageStart + 10;
+                RenderMbotPreferencesPage();
+                return;
+            }
+
+            case 'K':
+                BeginMbotPreferencesInput(
+                    "Keeper Planet Slot (0-9)",
+                    value =>
+                    {
+                        if (string.IsNullOrEmpty(value))
+                            return;
+                        char key = char.ToUpperInvariant(value[0]);
+                        if (TryGetMbotPagedItemOffset(key, out int toggleOffset))
+                            ToggleMbotPlanetKeeper(toggleOffset);
+                    },
+                    captureSingleKey: true);
+                return;
+        }
+
+        if (TryGetMbotPagedItemOffset(selection, out int offset))
+        {
+            PromptMbotPlanetTypeEdit(offset);
+            return;
+        }
+
+        EndMbotPreferencesMenu();
+    }
+
+    private void HandleMbotPlanetListPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.PlanetTypes;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.TraderList;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '+':
+                _mbotPreferencesPlanetListCursor = _mbotPreferencesPlanetListHasMore ? _mbotPreferencesPlanetListNextCursor : 2;
+                RenderMbotPreferencesPage();
+                return;
+
+            default:
+                EndMbotPreferencesMenu();
+                return;
+        }
+    }
+
+    private void HandleMbotTraderListPreferencesSelection(char selection)
+    {
+        switch (selection)
+        {
+            case '?':
+                RenderMbotPreferencesPage();
+                return;
+
+            case '<':
+                _mbotPreferencesPage = MbotPreferencesPage.PlanetList;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '>':
+                _mbotPreferencesPage = MbotPreferencesPage.General;
+                RenderMbotPreferencesPage();
+                return;
+
+            case '+':
+                _mbotPreferencesTraderListCursor = _mbotPreferencesTraderListHasMore ? _mbotPreferencesTraderListNextCursor : 2;
+                RenderMbotPreferencesPage();
+                return;
+
+            default:
+                EndMbotPreferencesMenu();
+                return;
+        }
+    }
+
+    private void RenderMbotPreferencesPage()
+    {
+        if (!_mbotPreferencesOpen)
+            return;
+
+        var body = new System.Text.StringBuilder();
+        body.Append("\x1b[2J\x1b[H");
+
+        switch (_mbotPreferencesPage)
+        {
+            case MbotPreferencesPage.General:
+                BuildMbotGeneralPreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.GameStats:
+                BuildMbotGameStatsPreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.Hotkeys:
+                BuildMbotHotkeyPreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.ShipInfo:
+                BuildMbotShipPreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.PlanetTypes:
+                BuildMbotPlanetTypePreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.PlanetList:
+                BuildMbotPlanetListPreferencesPage(body);
+                break;
+
+            case MbotPreferencesPage.TraderList:
+                BuildMbotTraderListPreferencesPage(body);
+                break;
+        }
+
+        _parser.Feed(body.ToString());
+        _buffer.Dirty = true;
+        RedrawMbotPrompt();
+    }
+
+    private void BuildMbotGeneralPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "General");
+
+        string botName = ReadCurrentMbotVar("mombot", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name");
+        string loginPassword = ReadCurrentMbotVar(string.Empty, "$BOT~PASSWORD", "$bot~password", "$password");
+        string botPassword = ReadCurrentMbotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
+        string loginName = ReadCurrentMbotVar(string.Empty, "$BOT~USERNAME", "$bot~username", "$username");
+        string turnLimit = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame"))
+            ? "Unlimited"
+            : ReadCurrentMbotVar("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+        string captureMode = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~defenderCapping"))
+            ? "Using defense"
+            : IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~offenseCapping", "$offenseCapping"))
+                ? "Using offense"
+                : "Don't attack";
+        string figType = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~dropOffensive"))
+            ? "Offensive"
+            : IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~dropToll"))
+                ? "Toll"
+                : "Defensive";
+        string avoidPlanets = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidShieldedOnly"))
+            ? "Shielded"
+            : IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundAvoidAllPlanets"))
+                ? "All"
+                : "None";
+        string surroundType = IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundOverwrite"))
+            ? "All Sectors"
+            : IsMbotTruthy(ReadCurrentMbotVar("0", "$PLAYER~surroundPassive"))
+                ? "Passive"
+                : "Normal";
+        string alarmList = ReadCurrentMbotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list");
+
+        AppendMbotPreferencesEntry(body, "C", "Login Name", loginName);
+        AppendMbotPreferencesEntry(body, "P", "Game Password", MaskMbotSecret(loginPassword));
+        AppendMbotPreferencesEntry(body, "N", "Bot Name", botName);
+        AppendMbotPreferencesEntry(body, "Z", "Bot Password", MaskMbotSecret(botPassword));
+        AppendMbotPreferencesEntry(body, "G", "Game Letter", ReadCurrentMbotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter"));
+        AppendMbotPreferencesEntry(body, "E", "Banner Interval", ReadCurrentMbotVar("5760", "$BOT~echoInterval", "$echoInterval") + " Minutes");
+        AppendMbotPreferencesEntry(body, "1", "Turn Limit", turnLimit);
+        AppendMbotPreferencesEntry(body, "0", "MSL / Busted Prompt", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$BOT~command_prompt_extras", "$command_prompt_extras")));
+        AppendMbotPreferencesEntry(body, "V", "Silent Mode", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$BOT~silent_running", "$bot~silent_running", "$silent_running")));
+        AppendMbotPreferencesEntry(body, "J", "Alarm List", string.IsNullOrWhiteSpace(alarmList) ? "None" : "Active");
+        AppendMbotPreferencesEntry(body, "3", "Figs to Drop", ReadCurrentMbotVar("0", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS"));
+        AppendMbotPreferencesEntry(body, "4", "Limpets to Drop", ReadCurrentMbotVar("0", "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP"));
+        AppendMbotPreferencesEntry(body, "5", "Armids to Drop", ReadCurrentMbotVar("0", "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE"));
+        AppendMbotPreferencesEntry(body, "6", "Fig Type", figType);
+        AppendMbotPreferencesEntry(body, "7", "Auto Kill Mode", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$bot~autoattack", "$BOT~autoattack", "$autoattack")));
+        AppendMbotPreferencesEntry(body, "8", "Avoid Planets", avoidPlanets);
+        AppendMbotPreferencesEntry(body, "9", "Surround Type", surroundType);
+        AppendMbotPreferencesEntry(body, "K", "Surround HKILL", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$PLAYER~surround_before_hkill")));
+        AppendMbotPreferencesEntry(body, "2", "Alien Ships", captureMode);
+        AppendMbotPreferencesEntry(body, "S", "Stardock", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock")));
+        AppendMbotPreferencesEntry(body, "R", "Rylos", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos")));
+        AppendMbotPreferencesEntry(body, "A", "Alpha", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri")));
+        AppendMbotPreferencesEntry(body, "H", "Home Sector", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector")));
+        AppendMbotPreferencesEntry(body, "B", "Backdoor", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor")));
+        AppendMbotPreferencesEntry(body, "X", "Safe Ship", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship")));
+        AppendMbotPreferencesEntry(body, "L", "Safe Planet", FormatMbotDefinedSectorDisplay(ReadCurrentMbotVar("0", "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet")));
+        body.Append("\r\n");
+        AppendMbotPreferencesEntry(body, "-", "Current Ship Offensive Odds", ReadCurrentMbotVar("0", "$SHIP~SHIP_OFFENSIVE_ODDS"));
+        AppendMbotPreferencesEntry(body, "-", "Current Ship Max Attack", ReadCurrentMbotVar("0", "$SHIP~SHIP_MAX_ATTACK"));
+        AppendMbotPreferencesEntry(body, "-", "Current Ship Max Fighters", ReadCurrentMbotVar("0", "$SHIP~SHIP_FIGHTERS_MAX"));
+        AppendMbotPreferencesFooter(body, "[>] Game Stats", "[<] Trader List", "Any other key exits");
+    }
+
+    private void BuildMbotGameStatsPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Game Stats");
+
+        (string Label, string Value)[] items =
+        {
+            ("Atomic Detonators", ReadCurrentMbotVar("0", "$GAME~ATOMIC_COST", "$ATOMIC_COST")),
+            ("Marker Beacons", ReadCurrentMbotVar("0", "$GAME~BEACON_COST", "$BEACON_COST")),
+            ("Corbomite Devices", ReadCurrentMbotVar("0", "$GAME~CORBO_COST", "$CORBO_COST")),
+            ("Cloaking Devices", ReadCurrentMbotVar("0", "$GAME~CLOAK_COST", "$CLOAK_COST")),
+            ("Subspace Ether Probes", ReadCurrentMbotVar("0", "$GAME~PROBE_COST", "$PROBE_COST")),
+            ("Planet Scanners", ReadCurrentMbotVar("0", "$GAME~PLANET_SCANNER_COST", "$PLANET_SCANNER_COST")),
+            ("Limpet Tracking Mines", ReadCurrentMbotVar("0", "$GAME~LIMPET_COST", "$LIMPET_REMOVAL_COST")),
+            ("Space Mines", ReadCurrentMbotVar("0", "$GAME~ARMID_COST", "$ARMID_COST")),
+            ("Photon Missiles", IsMbotTruthy(ReadCurrentMbotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? ReadCurrentMbotVar("0", "$GAME~PHOTON_COST", "$PHOTON_COST") : "Disabled"),
+            ("Holographic Scan", ReadCurrentMbotVar("0", "$GAME~HOLO_COST", "$HOLO_COST")),
+            ("Density Scan", ReadCurrentMbotVar("0", "$GAME~DENSITY_COST", "$DENSITY_COST")),
+            ("Mine Disruptors", ReadCurrentMbotVar("0", "$GAME~DISRUPTOR_COST", "$DISRUPTOR_COST")),
+            ("Genesis Torpedoes", ReadCurrentMbotVar("0", "$GAME~GENESIS_COST", "$GENESIS_COST")),
+            ("TransWarp I", ReadCurrentMbotVar("0", "$GAME~TWARPI_COST", "$TWARPI_COST")),
+            ("TransWarp II", ReadCurrentMbotVar("0", "$GAME~TWARPII_COST", "$TWARPII_COST")),
+            ("Psychic Probes", ReadCurrentMbotVar("0", "$GAME~PSYCHIC_COST", "$PSYCHIC_COST")),
+            ("Limpet Removal", ReadCurrentMbotVar("0", "$GAME~LIMPET_REMOVAL_COST", "$LIMPET_REMOVAL_COST")),
+            ("Server Max Commands", ReadCurrentMbotVar("0", "$GAME~MAX_COMMANDS", "$MAX_COMMANDS") is "0" ? "Unlimited" : ReadCurrentMbotVar("0", "$GAME~MAX_COMMANDS", "$MAX_COMMANDS")),
+            ("Gold Enabled", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$GAME~goldEnabled", "$goldEnabled"))),
+            ("MBBS Mode", FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$GAME~mbbs", "$mbbs"))),
+            ("Multiple Photons", IsMbotTruthy(ReadCurrentMbotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? FormatMbotBoolDisplay(ReadCurrentMbotVar("0", "$GAME~MULTIPLE_PHOTONS", "$MULTIPLE_PHOTONS")) : "Disabled"),
+            ("Colonists Per Day", ReadCurrentMbotVar("0", "$GAME~colonist_regen", "$colonist_regen")),
+            ("Planet Trade", ReadCurrentMbotVar("0", "$GAME~ptradesetting", "$ptradesetting") + "%"),
+            ("Steal Factor", ReadCurrentMbotVar("0", "$GAME~STEAL_FACTOR", "$steal_factor")),
+            ("Rob Factor", ReadCurrentMbotVar("0", "$GAME~rob_factor", "$rob_factor")),
+            ("Days To Bust Clear", ReadCurrentMbotVar("0", "$GAME~CLEAR_BUST_DAYS", "$CLEAR_BUST_DAYS")),
+            ("Port Maximum", ReadCurrentMbotVar("0", "$GAME~PORT_MAX", "$port_max")),
+            ("Port Production Rate", ReadCurrentMbotVar("0", "$GAME~PRODUCTION_RATE", "$PRODUCTION_RATE") + "%"),
+            ("Max Port Regen Per Day", ReadCurrentMbotVar("0", "$GAME~PRODUCTION_REGEN", "$PRODUCTION_REGEN") + "%"),
+            ("Nav Haz Loss Per Day", ReadCurrentMbotVar("0", "$GAME~DEBRIS_LOSS", "$DEBRIS_LOSS") + "%"),
+            ("Radiation Lifetime", ReadCurrentMbotVar("0", "$GAME~RADIATION_LIFETIME", "$RADIATION_LIFETIME")),
+        };
+
+        foreach (var item in items)
+            AppendMbotPreferencesEntry(body, "-", item.Label, item.Value);
+
+        AppendMbotPreferencesFooter(body, "[>] Hot Keys", "[<] Preferences", "Any other key exits");
+    }
+
+    private void BuildMbotHotkeyPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Hot Keys");
+
+        IReadOnlyList<string> customKeys = LoadMbotCustomKeyConfigLines();
+        IReadOnlyList<string> customCommands = LoadMbotIndexedConfig("$custom_commands_file", BuildDefaultMbotCustomCommandFileLines());
+        string[] slotLabels = "1234567890ABCDEFGHIJKLMNOPRSTUVWX".Select(c => c.ToString()).ToArray();
+
+        for (int slot = 1; slot <= 33; slot++)
+        {
+            string title = GetMbotHotkeySlotTitle(slot, customCommands[Math.Min(slot - 1, customCommands.Count - 1)]);
+            string keyValue = slot <= customKeys.Count ? customKeys[slot - 1] : "0";
+            AppendMbotPreferencesEntry(body, slotLabels[slot - 1], title, FormatMbotHotkeyDisplay(keyValue));
+        }
+
+        AppendMbotPreferencesFooter(body, "[>] Ship Info", "[<] Game Stats", "Choose a slot to rebind, any other key exits");
+    }
+
+    private void BuildMbotShipPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Known Ship Information");
+
+        List<MbotShipCatalogEntry> ships = LoadMbotShipCatalogEntries();
+        if (ships.Count == 0)
+        {
+            body.Append("No ship catalog file is available.\r\n");
+        }
+        else
+        {
+            int start = Math.Clamp(_mbotPreferencesShipPageStart, 1, ships.Count);
+            int count = Math.Min(10, ships.Count - start + 1);
+            for (int offset = 0; offset < count; offset++)
+            {
+                MbotShipCatalogEntry ship = ships[start + offset - 1];
+                string label = offset.ToString();
+                string value = $"Def {ship.DefOdds} Off {ship.OffOdds} TPW {ship.Tpw} Bonus {(ship.Defender ? "Yes" : "No")} Shields {ship.Shields} Figs {ship.MaxFighters}";
+                AppendMbotPreferencesEntry(body, label, ship.Name, value);
+            }
+        }
+
+        AppendMbotPreferencesFooter(body, "[>] Planet Types", "[<] Hot Keys", "[+] More Ships, 0-9 toggles defender, any other key exits");
+    }
+
+    private void BuildMbotPlanetTypePreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Planet Type Information");
+
+        List<MbotPlanetCatalogEntry> planets = LoadMbotPlanetCatalogEntries();
+        if (planets.Count == 0)
+        {
+            body.Append("No planet catalog file is available.\r\n");
+        }
+        else
+        {
+            int start = Math.Clamp(_mbotPreferencesPlanetTypePageStart, 1, planets.Count);
+            int count = Math.Min(10, planets.Count - start + 1);
+            for (int offset = 0; offset < count; offset++)
+            {
+                MbotPlanetCatalogEntry planet = planets[start + offset - 1];
+                string label = offset.ToString();
+                string value = $"Fuel {planet.FuelMin}-{planet.FuelMax} Org {planet.OrgMin}-{planet.OrgMax} Eq {planet.EquipMin}-{planet.EquipMax} Keeper {(planet.Keeper ? "Yes" : "No")}";
+                AppendMbotPreferencesEntry(body, label, planet.Name, value);
+            }
+        }
+
+        AppendMbotPreferencesFooter(body, "[>] Planet List", "[<] Ship Info", "[+] More Planets, [K] toggle keeper, 0-9 edits, any other key exits");
+    }
+
+    private void BuildMbotPlanetListPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Known Planet List");
+
+        List<string> lines = CollectMbotPlanetListPage(_mbotPreferencesPlanetListCursor, out int nextCursor, out bool hasMore);
+        _mbotPreferencesPlanetListNextCursor = nextCursor;
+        _mbotPreferencesPlanetListHasMore = hasMore;
+
+        if (lines.Count == 0)
+            body.Append("[End of List]\r\n");
+        else
+            foreach (string line in lines)
+                body.Append(line).Append("\r\n");
+
+        AppendMbotPreferencesFooter(body, "[>] Trader List", "[<] Planet Types", hasMore ? "[+] More Planets, any other key exits" : "Any other key exits");
+    }
+
+    private void BuildMbotTraderListPreferencesPage(System.Text.StringBuilder body)
+    {
+        AppendMbotPreferencesHeader(body, "Preferences", "Trader List");
+
+        List<string> lines = CollectMbotTraderListPage(_mbotPreferencesTraderListCursor, out int nextCursor, out bool hasMore);
+        _mbotPreferencesTraderListNextCursor = nextCursor;
+        _mbotPreferencesTraderListHasMore = hasMore;
+
+        if (lines.Count == 0)
+            body.Append("[End of List]\r\n");
+        else
+            foreach (string line in lines)
+                body.Append(line).Append("\r\n");
+
+        AppendMbotPreferencesFooter(body, "[>] Preferences", "[<] Planet List", hasMore ? "[+] More Traders, any other key exits" : "Any other key exits");
+    }
+
+    private void PromptMbotCountPreference(string prompt, int minValue, int maxValue, params string[] names)
+    {
+        BeginMbotPreferencesInput(
+            prompt,
+            value =>
+            {
+                if (!int.TryParse(value.Trim(), out int count))
+                    return;
+
+                if (count < minValue || count > maxValue)
+                    return;
+
+                PersistMbotVars(count.ToString(), names);
+            },
+            ReadCurrentMbotVar(minValue.ToString(), names));
+    }
+
+    private enum ResetMbotSpecialSector
+    {
+        None,
+        Stardock,
+        Rylos,
+        Alpha,
+    }
+
+    private void PromptMbotSectorPreference(string prompt, bool allowZeroReset, ResetMbotSpecialSector resetType, params string[] names)
+    {
+        BeginMbotPreferencesInput(
+            prompt,
+            value =>
+            {
+                if (!int.TryParse(value.Trim(), out int sector))
+                    return;
+
+                int maxSector = _sessionDb?.DBHeader.Sectors ?? Math.Max(1, _state.Sector);
+                if (sector == 0 && allowZeroReset)
+                {
+                    string resetValue = resetType switch
+                    {
+                        ResetMbotSpecialSector.Stardock => FormatMbotSector(_sessionDb?.DBHeader.StarDock),
+                        ResetMbotSpecialSector.Rylos => FormatMbotSector(_sessionDb?.DBHeader.Rylos),
+                        ResetMbotSpecialSector.Alpha => FormatMbotSector(_sessionDb?.DBHeader.AlphaCentauri),
+                        _ => "0",
+                    };
+                    PersistMbotVars(resetValue, names);
+                    return;
+                }
+
+                if (sector >= 1 && sector <= maxSector)
+                    PersistMbotVars(sector.ToString(), names);
+            },
+            ReadCurrentMbotVar("0", names));
+    }
+
+    private void PersistMbotSurroundPlanetAvoidance(bool allPlanets, bool shieldedOnly, bool none)
+    {
+        PersistMbotBoolean(shieldedOnly, "$PLAYER~surroundAvoidShieldedOnly");
+        PersistMbotBoolean(allPlanets, "$PLAYER~surroundAvoidAllPlanets");
+        PersistMbotBoolean(none, "$PLAYER~surroundDontAvoid");
+    }
+
+    private void ToggleMbotBooleanPreference(params string[] names)
+    {
+        bool current = IsMbotTruthy(ReadCurrentMbotVar("0", names));
+        PersistMbotBoolean(!current, names);
+        RenderMbotPreferencesPage();
+    }
+
+    private void PromptMbotHotkeySelection(int slot)
+    {
+        _mbotPreferencesHotkeySlot = slot;
+        string slotName = GetMbotHotkeySlotTitle(slot, LoadMbotIndexedConfig("$custom_commands_file", BuildDefaultMbotCustomCommandFileLines())[slot - 1]);
+        BeginMbotPreferencesInput(
+            $"New Hotkey For {slotName}",
+            value => CompleteMbotHotkeySelection(slot, value),
+            captureSingleKey: true);
+    }
+
+    private void CompleteMbotHotkeySelection(int slot, string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return;
+
+        char selectedKey = value[0];
+        int lower = char.ToLowerInvariant(selectedKey);
+        int upper = char.ToUpperInvariant(selectedKey);
+        if ((lower >= '0' && lower <= '9') || selectedKey == '?')
+        {
+            PublishMbotLocalMessage("Hotkeys cannot use digits or '?'.");
+            return;
+        }
+
+        string[] hotkeys = LoadMbotIndexedConfig("$hotkeys_file", BuildDefaultMbotHotkeyFileLines()).ToArray();
+        string[] customKeys = LoadMbotCustomKeyConfigLines().ToArray();
+        string[] customCommands = LoadMbotIndexedConfig("$custom_commands_file", BuildDefaultMbotCustomCommandFileLines()).ToArray();
+        string slotValue = slot.ToString();
+
+        if (!CanBindMbotHotkeyCode(hotkeys, lower, slotValue) || !CanBindMbotHotkeyCode(hotkeys, upper, slotValue))
+        {
+            PublishMbotLocalMessage("Hot key already bound to another function.");
+            return;
+        }
+
+        string existingKey = customKeys[slot - 1];
+        if (!string.IsNullOrEmpty(existingKey))
+        {
+            int existingLower = char.ToLowerInvariant(existingKey[0]);
+            int existingUpper = char.ToUpperInvariant(existingKey[0]);
+            ClearMbotHotkeyCode(hotkeys, existingLower, slotValue);
+            ClearMbotHotkeyCode(hotkeys, existingUpper, slotValue);
+        }
+
+        SetMbotHotkeyCode(hotkeys, lower, slotValue);
+        SetMbotHotkeyCode(hotkeys, upper, slotValue);
+        customKeys[slot - 1] = selectedKey.ToString();
+
+        if (slot > 17)
+        {
+            string currentCommand = customCommands[slot - 1] == "0" ? string.Empty : customCommands[slot - 1];
+            BeginMbotPreferencesInput(
+                $"Command For {GetMbotHotkeySlotLabel(slot)}",
+                command =>
+                {
+                    customCommands[slot - 1] = string.IsNullOrWhiteSpace(command) ? "0" : command.Trim();
+                    WriteMbotHotkeyConfigFiles(hotkeys, customKeys, customCommands);
+                },
+                currentCommand);
+            return;
+        }
+
+        WriteMbotHotkeyConfigFiles(hotkeys, customKeys, customCommands);
+    }
+
+    private void ToggleMbotShipDefender(int pageOffset)
+    {
+        List<MbotShipCatalogEntry> ships = LoadMbotShipCatalogEntries();
+        int index = _mbotPreferencesShipPageStart + pageOffset - 1;
+        if (index < 0 || index >= ships.Count)
+            return;
+
+        MbotShipCatalogEntry ship = ships[index];
+        ships[index] = ship with { Defender = !ship.Defender };
+        WriteMbotShipCatalogEntries(ships);
+        RenderMbotPreferencesPage();
+    }
+
+    private void ToggleMbotPlanetKeeper(int pageOffset)
+    {
+        List<MbotPlanetCatalogEntry> planets = LoadMbotPlanetCatalogEntries();
+        int index = _mbotPreferencesPlanetTypePageStart + pageOffset - 1;
+        if (index < 0 || index >= planets.Count)
+            return;
+
+        MbotPlanetCatalogEntry planet = planets[index];
+        planets[index] = planet with { Keeper = !planet.Keeper };
+        WriteMbotPlanetCatalogEntries(planets);
+        RenderMbotPreferencesPage();
+    }
+
+    private void PromptMbotPlanetTypeEdit(int pageOffset)
+    {
+        List<MbotPlanetCatalogEntry> planets = LoadMbotPlanetCatalogEntries();
+        int index = _mbotPreferencesPlanetTypePageStart + pageOffset - 1;
+        if (index < 0 || index >= planets.Count)
+            return;
+
+        MbotPlanetCatalogEntry original = planets[index];
+        string[] values =
+        {
+            original.FuelMin,
+            original.FuelMax,
+            original.OrgMin,
+            original.OrgMax,
+            original.EquipMin,
+            original.EquipMax,
+        };
+
+        string[] prompts =
+        {
+            $"Min Fuel For {original.Name}",
+            $"Max Fuel For {original.Name}",
+            $"Min Organics For {original.Name}",
+            $"Max Organics For {original.Name}",
+            $"Min Equipment For {original.Name}",
+            $"Max Equipment For {original.Name}",
+        };
+
+        void PromptField(int fieldIndex)
+        {
+            if (fieldIndex >= values.Length)
+            {
+                BeginMbotPreferencesInput(
+                    $"Keeper Planet {original.Name} (Y/N)",
+                    keeper =>
+                    {
+                        bool isKeeper = keeper.Length > 0 && char.ToUpperInvariant(keeper[0]) == 'Y';
+                        planets[index] = original with
+                        {
+                            FuelMin = values[0],
+                            FuelMax = values[1],
+                            OrgMin = values[2],
+                            OrgMax = values[3],
+                            EquipMin = values[4],
+                            EquipMax = values[5],
+                            Keeper = isKeeper,
+                        };
+                        WriteMbotPlanetCatalogEntries(planets);
+                    },
+                    captureSingleKey: true);
+                return;
+            }
+
+            BeginMbotPreferencesInput(
+                prompts[fieldIndex],
+                response =>
+                {
+                    if (!int.TryParse(response.Trim(), out _))
+                        return;
+                    values[fieldIndex] = response.Trim();
+                    PromptField(fieldIndex + 1);
+                },
+                values[fieldIndex]);
+        }
+
+        PromptField(0);
+    }
+
+    private List<string> CollectMbotPlanetListPage(int startSector, out int nextCursor, out bool hasMore)
+    {
+        var results = new List<string>();
+        int sectors = _sessionDb?.DBHeader.Sectors ?? 0;
+        if (_sessionDb == null || sectors <= 0)
+        {
+            nextCursor = 2;
+            hasMore = false;
+            return results;
+        }
+
+        int index = Math.Max(2, startSector);
+        for (; index <= sectors && results.Count < 3; index++)
+        {
+            Core.SectorData? sector = _sessionDb.GetSector(index);
+            if (sector == null || sector.PlanetNames.Count == 0 || IsMbotBubbleSector(sector))
+                continue;
+
+            results.Add($"Sector {sector.Number}: {string.Join(", ", sector.PlanetNames)}");
+        }
+
+        hasMore = false;
+        nextCursor = 2;
+        for (int probe = index; probe <= sectors; probe++)
+        {
+            Core.SectorData? sector = _sessionDb.GetSector(probe);
+            if (sector != null && sector.PlanetNames.Count > 0 && !IsMbotBubbleSector(sector))
+            {
+                hasMore = true;
+                nextCursor = probe;
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    private List<string> CollectMbotTraderListPage(int startSector, out int nextCursor, out bool hasMore)
+    {
+        var results = new List<string>();
+        int sectors = _sessionDb?.DBHeader.Sectors ?? 0;
+        if (_sessionDb == null || sectors <= 0)
+        {
+            nextCursor = 2;
+            hasMore = false;
+            return results;
+        }
+
+        int index = Math.Max(2, startSector);
+        for (; index <= sectors && results.Count < 3; index++)
+        {
+            Core.SectorData? sector = _sessionDb.GetSector(index);
+            if (sector == null || sector.Traders.Count == 0)
+                continue;
+
+            string traders = string.Join(", ", sector.Traders.Select(trader => trader.Name));
+            results.Add($"Sector {sector.Number}: {traders}");
+        }
+
+        hasMore = false;
+        nextCursor = 2;
+        for (int probe = index; probe <= sectors; probe++)
+        {
+            Core.SectorData? sector = _sessionDb.GetSector(probe);
+            if (sector != null && sector.Traders.Count > 0)
+            {
+                hasMore = true;
+                nextCursor = probe;
+                break;
+            }
+        }
+
+        return results;
+    }
+
+    private List<MbotShipCatalogEntry> LoadMbotShipCatalogEntries()
+    {
+        string filePath = ResolveMbotCurrentFilePath("$SHIP~cap_file");
+        var ships = new List<MbotShipCatalogEntry>();
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return ships;
+
+        foreach (string line in File.ReadLines(filePath))
+        {
+            if (TryParseMbotCatalogLine(line, 9, out string[] fields, out string name))
+            {
+                ships.Add(new MbotShipCatalogEntry(
+                    name,
+                    fields[0],
+                    fields[1],
+                    fields[2],
+                    fields[3],
+                    fields[4],
+                    fields[5],
+                    fields[6],
+                    fields[7],
+                    IsMbotTruthy(fields[8])));
+            }
+        }
+
+        return ships;
+    }
+
+    private void WriteMbotShipCatalogEntries(IReadOnlyList<MbotShipCatalogEntry> ships)
+    {
+        string capFile = ResolveMbotCurrentFilePath("$SHIP~cap_file");
+        if (string.IsNullOrWhiteSpace(capFile))
+            return;
+
+        string? directory = Path.GetDirectoryName(capFile);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        File.WriteAllLines(
+            capFile,
+            ships.Select(ship => $"{ship.Shields} {ship.DefOdds} {ship.OffOdds} {ship.Cost} {ship.MaxHolds} {ship.MaxFighters} {ship.InitHolds} {ship.Tpw} {(ship.Defender ? "1" : "0")} {ship.Name}"));
+
+        string bonusFile = Path.Combine(Path.GetDirectoryName(capFile) ?? string.Empty, "dbonus-ships.cfg");
+        File.WriteAllLines(bonusFile, ships.Where(ship => ship.Defender).Select(ship => ship.Name));
+    }
+
+    private List<MbotPlanetCatalogEntry> LoadMbotPlanetCatalogEntries()
+    {
+        string filePath = ResolveMbotCurrentFilePath("$PLANET~planet_file");
+        var planets = new List<MbotPlanetCatalogEntry>();
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return planets;
+
+        foreach (string line in File.ReadLines(filePath))
+        {
+            if (TryParseMbotCatalogLine(line, 7, out string[] fields, out string name))
+            {
+                planets.Add(new MbotPlanetCatalogEntry(
+                    name,
+                    fields[0],
+                    fields[1],
+                    fields[2],
+                    fields[3],
+                    fields[4],
+                    fields[5],
+                    IsMbotTruthy(fields[6])));
+            }
+        }
+
+        return planets;
+    }
+
+    private void WriteMbotPlanetCatalogEntries(IReadOnlyList<MbotPlanetCatalogEntry> planets)
+    {
+        string planetFile = ResolveMbotCurrentFilePath("$PLANET~planet_file");
+        if (string.IsNullOrWhiteSpace(planetFile))
+            return;
+
+        string? directory = Path.GetDirectoryName(planetFile);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        File.WriteAllLines(
+            planetFile,
+            planets.Select(planet => $"{planet.FuelMin} {planet.FuelMax} {planet.OrgMin} {planet.OrgMax} {planet.EquipMin} {planet.EquipMax} {(planet.Keeper ? "1" : "0")}  {planet.Name}"));
+    }
+
+    private IReadOnlyList<string> LoadMbotCustomKeyConfigLines()
+    {
+        string[] merged = BuildDefaultMbotCustomKeyFileLines().ToArray();
+        string filePath = ResolveMbotCurrentFilePath("$custom_keys_file");
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return merged;
+
+        try
+        {
+            string[] existing = File.ReadAllLines(filePath);
+            int count = Math.Min(existing.Length, merged.Length);
+            for (int i = 0; i < count; i++)
+                merged[i] = existing[i];
+        }
+        catch
+        {
+            return merged;
+        }
+
+        return merged;
+    }
+
+    private void WriteMbotHotkeyConfigFiles(IReadOnlyList<string> hotkeys, IReadOnlyList<string> customKeys, IReadOnlyList<string> customCommands)
+    {
+        string hotkeysFile = ResolveMbotCurrentFilePath("$hotkeys_file");
+        string customKeysFile = ResolveMbotCurrentFilePath("$custom_keys_file");
+        string customCommandsFile = ResolveMbotCurrentFilePath("$custom_commands_file");
+
+        foreach (string path in new[] { hotkeysFile, customKeysFile, customCommandsFile })
+        {
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllLines(hotkeysFile, hotkeys);
+        File.WriteAllLines(customKeysFile, customKeys);
+        File.WriteAllLines(customCommandsFile, customCommands);
+    }
+
+    private static bool TryParseMbotCatalogLine(string line, int fixedFieldCount, out string[] fields, out string trailingName)
+    {
+        fields = Array.Empty<string>();
+        trailingName = string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        string[] tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length < fixedFieldCount + 1)
+            return false;
+
+        fields = tokens.Take(fixedFieldCount).ToArray();
+        trailingName = string.Join(" ", tokens.Skip(fixedFieldCount));
+        return !string.IsNullOrWhiteSpace(trailingName);
+    }
+
+    private static bool TryGetMbotHotkeySlotFromSelection(char selection, out int slot)
+    {
+        const string options = "1234567890ABCDEFGHIJKLMNOPRSTUVWX";
+        int index = options.IndexOf(selection);
+        slot = index + 1;
+        return index >= 0;
+    }
+
+    private static bool TryGetMbotPagedItemOffset(char selection, out int offset)
+    {
+        if (selection >= '0' && selection <= '9')
+        {
+            offset = selection == '0' ? 0 : selection - '0';
+            return true;
+        }
+
+        offset = -1;
+        return false;
+    }
+
+    private static string GetMbotHotkeySlotLabel(int slot)
+    {
+        const string options = "1234567890ABCDEFGHIJKLMNOPRSTUVWX";
+        return slot >= 1 && slot <= options.Length ? options[slot - 1].ToString() : slot.ToString();
+    }
+
+    private static string GetMbotHotkeySlotTitle(int slot, string command)
+    {
+        string[] builtIns =
+        {
+            "Auto Kill",
+            "Auto Capture",
+            "Auto Refurb",
+            "Surround",
+            "Holo-Torp",
+            "Transwarp Drive",
+            "Planet Macros",
+            "Quick Script Loading",
+            "Dny Holo Kill",
+            "Stop Current Mode",
+            "Dock Macros",
+            "Exit Enter",
+            "Mow",
+            "Fast Foton",
+            "Clear Sector",
+            "Preferences",
+            "LS Dock Shopper",
+        };
+
+        if (slot >= 1 && slot <= builtIns.Length)
+            return builtIns[slot - 1];
+
+        return string.IsNullOrWhiteSpace(command) || command == "0"
+            ? $"Custom Hotkey {slot - 17}"
+            : command;
+    }
+
+    private static string GetMbotPreferencesPageTitle(MbotPreferencesPage page)
+    {
+        return page switch
+        {
+            MbotPreferencesPage.General => "***Preferences",
+            MbotPreferencesPage.GameStats => "***Game Stats",
+            MbotPreferencesPage.Hotkeys => "***Hot Keys",
+            MbotPreferencesPage.ShipInfo => "***Ship Info",
+            MbotPreferencesPage.PlanetTypes => "***Planet Types",
+            MbotPreferencesPage.PlanetList => "***Planet List",
+            MbotPreferencesPage.TraderList => "***Trader List",
+            _ => "***Preferences",
+        };
+    }
+
+    private static void AppendMbotPreferencesHeader(System.Text.StringBuilder body, string title, string subtitle)
+    {
+        body.Append("\x1b[1;33mMombot ").Append(title).Append("\x1b[0m");
+        if (!string.IsNullOrWhiteSpace(subtitle))
+            body.Append(" - ").Append(subtitle);
+        body.Append("\r\n\r\n");
+    }
+
+    private static void AppendMbotPreferencesEntry(System.Text.StringBuilder body, string key, string label, string value)
+    {
+        body.Append('[').Append(key).Append("] ")
+            .Append(label.PadRight(24))
+            .Append(value)
+            .Append("\r\n");
+    }
+
+    private static void AppendMbotPreferencesFooter(System.Text.StringBuilder body, string nextHint, string prevHint, string miscHint)
+    {
+        body.Append("\r\n")
+            .Append(nextHint)
+            .Append("   ")
+            .Append(prevHint)
+            .Append("\r\n")
+            .Append(miscHint)
+            .Append("\r\n");
+    }
+
+    private static string MaskMbotSecret(string value)
+        => string.IsNullOrWhiteSpace(value) ? "(empty)" : new string('*', Math.Max(4, value.Trim().Length));
+
+    private static string FormatMbotBoolDisplay(string value)
+        => IsMbotTruthy(value) ? "Yes" : "No";
+
+    private static string FormatMbotDefinedSectorDisplay(string value)
+        => int.TryParse(value, out int sector) && sector > 0 ? sector.ToString() : "Not Defined";
+
+    private static string FormatMbotHotkeyDisplay(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value == "0")
+            return "Undefined";
+
+        return value[0] switch
+        {
+            '\t' => "TAB-TAB",
+            '\r' => "TAB-Enter",
+            '\b' => "TAB-Backspace",
+            ' ' => "TAB-Spacebar",
+            _ => "TAB-" + value,
+        };
+    }
+
+    private static bool IsMbotTruthy(string value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        return string.Equals(normalized, "1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void PersistMbotVars(string value, params string[] names)
+    {
+        foreach (string name in names.Where(static name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            Core.ScriptRef.SetCurrentGameVar(name, value);
+            Core.ScriptRef.OnVariableSaved?.Invoke(name, value);
+        }
+    }
+
+    private static void PersistMbotBoolean(bool enabled, params string[] names)
+        => PersistMbotVars(enabled ? "1" : "0", names);
+
+    private static bool CanBindMbotHotkeyCode(IReadOnlyList<string> hotkeys, int charCode, string slotValue)
+    {
+        if (charCode <= 0 || charCode > hotkeys.Count)
+            return false;
+
+        string existing = hotkeys[charCode - 1];
+        return string.IsNullOrWhiteSpace(existing) || existing == "0" || existing == slotValue;
+    }
+
+    private static void SetMbotHotkeyCode(IList<string> hotkeys, int charCode, string slotValue)
+    {
+        if (charCode >= 1 && charCode <= hotkeys.Count)
+            hotkeys[charCode - 1] = slotValue;
+    }
+
+    private static void ClearMbotHotkeyCode(IList<string> hotkeys, int charCode, string slotValue)
+    {
+        if (charCode >= 1 && charCode <= hotkeys.Count && hotkeys[charCode - 1] == slotValue)
+            hotkeys[charCode - 1] = "0";
+    }
+
+    private static bool IsMbotBubbleSector(Core.SectorData sector)
+        => sector.Variables.TryGetValue("BUBBLE", out string? value) && IsMbotTruthy(value);
 
     private string BuildMbotMacroHelpLine()
     {

@@ -946,8 +946,11 @@ namespace TWXProxy.Core
                 configuredScript.IndexOf("0_", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 configuredScript.IndexOf("0_login", StringComparison.OrdinalIgnoreCase) >= 0;
 
-            if (ActiveLoginDisabled && !defaultLoginScript)
+            if (ActiveLoginDisabled)
+            {
+                GlobalModules.DebugLog("[ModInterpreter.HandleConnectionAccepted] Active login script disabled; skipping login script load\n");
                 return;
+            }
 
             string loginScript = !defaultLoginScript && !string.IsNullOrWhiteSpace(ActiveLoginScript)
                 ? ActiveLoginScript
