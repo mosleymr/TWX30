@@ -3958,6 +3958,24 @@ public class MainWindow : Window
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             });
+
+            if (ShouldStopNativeMombotAfterDisconnect())
+            {
+                Dispatcher.UIThread.Post(async () =>
+                {
+                    await _runtimeStopGate.WaitAsync();
+                    try
+                    {
+                        await StopInternalMombotCoreAsync(
+                            publishStopMessage: false,
+                            suppressMissingGameMessage: true);
+                    }
+                    finally
+                    {
+                        _runtimeStopGate.Release();
+                    }
+                });
+            }
         };
 
         // Wire getinput / getconsoleinput input buffering — mirrors what ProxyService does.
@@ -5275,11 +5293,23 @@ public class MainWindow : Window
     {
         Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
         Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
+        Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "0");
         Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
         Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
         Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+    }
+
+    private bool ShouldStopNativeMombotAfterDisconnect()
+    {
+        if (!_mombot.Enabled)
+            return false;
+
+        string stopRequested = ReadCurrentMombotVar("0", "$do_not_resuscitate");
+        return string.Equals(stopRequested, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(stopRequested, "1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(stopRequested, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private int StopScriptsForBotTree(string origin, Core.BotConfig config, string lastLoadedModule, string scriptDirectory, string programDir)
