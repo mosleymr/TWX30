@@ -6856,8 +6856,11 @@ public class MainWindow : Window
 
     private bool TryHandleMbotPromptInput(byte[] bytes)
     {
-        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen)
+        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen && !_mbotPreferencesOpen)
             return false;
+
+        if (_mbotPreferencesOpen)
+            return TryHandleMbotPreferencesInput(bytes);
 
         if (_mbotScriptPromptOpen)
             return TryHandleMbotScriptPromptInput(bytes);
@@ -7088,6 +7091,7 @@ public class MainWindow : Window
 
         _mbotHotkeyPromptOpen = true;
         _mbotScriptPromptOpen = false;
+        _mbotPreferencesOpen = false;
         _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
         RedrawMbotPrompt();
     }
@@ -7163,6 +7167,7 @@ public class MainWindow : Window
         _mbotPromptHistoryIndex = _mbotCommandHistory.Count;
         _mbotHotkeyPromptOpen = false;
         _mbotScriptPromptOpen = false;
+        _mbotPreferencesOpen = false;
         _mbotMacroPromptOpen = false;
         _mbotMacroContext = null;
         _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
@@ -7260,6 +7265,12 @@ public class MainWindow : Window
         _mbotPromptOpen = false;
         _mbotHotkeyPromptOpen = false;
         _mbotScriptPromptOpen = false;
+        _mbotPreferencesOpen = false;
+        _mbotPreferencesCaptureSingleKey = false;
+        _mbotPreferencesInputPrompt = string.Empty;
+        _mbotPreferencesInputBuffer = string.Empty;
+        _mbotPreferencesInputHandler = null;
+        _mbotPreferencesHotkeySlot = 0;
         _mbotMacroPromptOpen = false;
         _mbotMacroContext = null;
         _mbotHotkeyScripts = Array.Empty<MbotHotkeyScriptEntry>();
@@ -7270,16 +7281,22 @@ public class MainWindow : Window
 
     private void RedrawMbotPrompt()
     {
-        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen)
+        if (!_mbotPromptOpen && !_mbotHotkeyPromptOpen && !_mbotScriptPromptOpen && !_mbotPreferencesOpen)
             return;
 
         _parser.Feed("\r\x1b[K");
         _parser.Feed(
+            _mbotPreferencesOpen ? GetMbotPreferencesPromptPrefix() :
             _mbotScriptPromptOpen ? GetMbotScriptPromptPrefix() :
             _mbotHotkeyPromptOpen ? GetMbotHotkeyPromptPrefix() :
             _mbotMacroPromptOpen ? GetMbotMacroPromptPrefix() :
             GetMbotPromptPrefix());
-        if (!_mbotScriptPromptOpen && !_mbotHotkeyPromptOpen && !_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
+        if (_mbotPreferencesOpen)
+        {
+            if (_mbotPreferencesInputBuffer.Length > 0)
+                _parser.Feed(_mbotPreferencesInputBuffer);
+        }
+        else if (!_mbotScriptPromptOpen && !_mbotHotkeyPromptOpen && !_mbotMacroPromptOpen && _mbotPromptBuffer.Length > 0)
             _parser.Feed(_mbotPromptBuffer);
         _buffer.Dirty = true;
         FocusActiveTerminal();
@@ -7315,6 +7332,14 @@ public class MainWindow : Window
     private static string GetMbotScriptPromptPrefix()
     {
         return "\x1b[1;37m***Scripts\x1b[1;32m>\x1b[0m ";
+    }
+
+    private string GetMbotPreferencesPromptPrefix()
+    {
+        string label = string.IsNullOrWhiteSpace(_mbotPreferencesInputPrompt)
+            ? GetMbotPreferencesPageTitle(_mbotPreferencesPage)
+            : _mbotPreferencesInputPrompt;
+        return $"\x1b[1;37m{label}\x1b[1;32m>\x1b[0m ";
     }
 
     private string BuildMbotMacroHelpLine()
@@ -7407,7 +7432,7 @@ public class MainWindow : Window
         else
             _parser.Feed("\r\n" + message + "\r\n");
 
-        if (_mbotPromptOpen || _mbotHotkeyPromptOpen || _mbotScriptPromptOpen)
+        if (_mbotPromptOpen || _mbotHotkeyPromptOpen || _mbotScriptPromptOpen || _mbotPreferencesOpen)
             RedrawMbotPrompt();
         else
             FocusActiveTerminal();
@@ -7547,10 +7572,7 @@ public class MainWindow : Window
                 return;
 
             case ":menus~preferencesmenu":
-                ResetMbotPromptState();
-                _parser.Feed("\r\x1b[K");
-                _buffer.Dirty = true;
-                PublishMbotLocalMessage("Native Mombot preferences are not inline yet. Use Bot -> Configure for now.");
+                BeginMbotPreferencesMenu();
                 return;
 
             case ":internal_commands~twarpswitch":
