@@ -2006,6 +2006,9 @@ public class MainWindow : Window
         var filePrefs    = new MenuItem { Header = "_Preferences…" };
         filePrefs.Click += (_, _) => _ = OnPreferencesAsync();
 
+        var fileMacros = new MenuItem { Header = "_Macros…" };
+        fileMacros.Click += (_, _) => _ = OnMacrosAsync();
+
         var fileMenu = new MenuItem
         {
             Header = "_File",
@@ -2013,6 +2016,7 @@ public class MainWindow : Window
                        new Separator(), fileResetGame,
                        new Separator(), fileNewWin,
                        new Separator(), fileConnect, fileDisconnect,
+                       new Separator(), fileMacros,
                        new Separator(), filePrefs,
                        new Separator(), fileQuit },
         };
@@ -3715,6 +3719,34 @@ public class MainWindow : Window
         RefreshRuntimeScriptDirectoryFromPreferences();
         ApplyDebugLoggingPreferences();
         RebuildScriptsMenu();
+    }
+
+    private async Task OnMacrosAsync()
+    {
+        var dialog = new MacroSettingsDialog(
+            _appPrefs.MacroBindings
+                .Select(binding => new AppPreferences.MacroBinding
+                {
+                    Hotkey = binding.Hotkey,
+                    Macro = binding.Macro,
+                })
+                .ToArray());
+
+        bool saved = await dialog.ShowDialog<bool>(this);
+        if (!saved)
+            return;
+
+        _appPrefs.MacroBindings.Clear();
+        foreach (AppPreferences.MacroBinding binding in dialog.Result)
+        {
+            _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
+            {
+                Hotkey = binding.Hotkey,
+                Macro = binding.Macro,
+            });
+        }
+
+        _appPrefs.Save();
     }
 
     private void ApplyDebugLoggingPreferences()
@@ -8113,6 +8145,9 @@ public class MainWindow : Window
 
     private void RouteTerminalInput(byte[] bytes, Action<byte[]> forward)
     {
+        if (TryHandleConfiguredMacroHotkey(bytes, forward))
+            return;
+
         if (TryHandleMombotPromptInput(bytes))
             return;
 
@@ -8124,6 +8159,30 @@ public class MainWindow : Window
 
         forward(bytes);
     }
+
+    private bool TryHandleConfiguredMacroHotkey(byte[] bytes, Action<byte[]> forward)
+    {
+        if (!TerminalControl.TryGetMacroHotkeyName(bytes, out string hotkey))
+            return false;
+
+        AppPreferences.MacroBinding? binding = _appPrefs.MacroBindings
+            .LastOrDefault(entry =>
+                string.Equals(entry.Hotkey, hotkey, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(entry.Macro));
+
+        if (binding == null)
+            return false;
+
+        byte[] expandedBytes = System.Text.Encoding.Latin1.GetBytes(ExpandConfiguredMacro(binding.Macro));
+        if (expandedBytes.Length == 0)
+            return true;
+
+        RouteTerminalInput(expandedBytes, forward);
+        return true;
+    }
+
+    private static string ExpandConfiguredMacro(string macro)
+        => string.IsNullOrEmpty(macro) ? string.Empty : macro.Replace("*", "\r");
 
     private bool TryHandleMombotPromptInput(byte[] bytes)
     {

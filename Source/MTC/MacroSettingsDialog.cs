@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -237,7 +238,7 @@ public sealed class MacroSettingsDialog : Window
         hotkeyCombo.GotFocus += (_, _) => SelectRow(state);
         macroTextBox.GotFocus += (_, _) => SelectRow(state);
         hotkeyCombo.SelectionChanged += (_, _) => ClearError();
-        macroTextBox.GetObservable(TextBox.TextProperty).Subscribe(_ => ClearError());
+        macroTextBox.TextChanged += (_, _) => ClearError();
 
         _rows.Add(state);
         _rowsPanel.Children.Add(border);
