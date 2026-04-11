@@ -14,6 +14,12 @@ public class AppPreferences
     public const int MaxRecentFiles = 5;
     public const int CurrentCommandDeckLayoutVersion = 4;
 
+    public sealed class MacroBinding
+    {
+        public string Hotkey { get; set; } = string.Empty;
+        public string Macro { get; set; } = string.Empty;
+    }
+
     public sealed class DeckPanelLayout
     {
         public string PanelId { get; set; } = string.Empty;
@@ -27,6 +33,7 @@ public class AppPreferences
     }
 
     public List<string> RecentFiles { get; } = [];
+    public List<MacroBinding> MacroBindings { get; } = [];
     public Dictionary<string, DeckPanelLayout> CommandDeckPanels { get; }
         = new(StringComparer.OrdinalIgnoreCase);
 
@@ -114,6 +121,14 @@ public class AppPreferences
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
+                new XElement("Macros",
+                    MacroBindings
+                        .Where(binding => !string.IsNullOrWhiteSpace(binding.Hotkey) &&
+                                          !string.IsNullOrWhiteSpace(binding.Macro))
+                        .Select(binding => new XElement(
+                            "Macro",
+                            new XAttribute("Hotkey", NormalizeMacroHotkey(binding.Hotkey)),
+                            binding.Macro))),
                 new XElement("CommandDeckPanels",
                     CommandDeckPanels.Values
                         .OrderBy(layout => layout.PanelId, StringComparer.OrdinalIgnoreCase)
@@ -196,6 +211,21 @@ public class AppPreferences
                 string? path = ResolveRecentFilePath((string?)element, prefs.ProgramDirectory);
                 if (!string.IsNullOrWhiteSpace(path))
                     prefs.RecentFiles.Add(path);
+            }
+
+            foreach (XElement element in root.Element("Macros")?.Elements("Macro")
+                                   ?? Enumerable.Empty<XElement>())
+            {
+                string hotkey = NormalizeMacroHotkey((string?)element.Attribute("Hotkey"));
+                string macro = (string?)element ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(macro))
+                    continue;
+
+                prefs.MacroBindings.Add(new MacroBinding
+                {
+                    Hotkey = hotkey,
+                    Macro = macro,
+                });
             }
 
             foreach (XElement panel in root.Element("CommandDeckPanels")?.Elements("Panel")
@@ -284,6 +314,17 @@ public class AppPreferences
         {
             return value.Trim();
         }
+    }
+
+    private static string NormalizeMacroHotkey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "F1";
+
+        string normalized = value.Trim().ToUpperInvariant();
+        return normalized is "F1" or "F2" or "F3" or "F4" or "F5" or "F6" or "F7" or "F8" or "F9" or "F10" or "F11"
+            ? normalized
+            : "F1";
     }
 
     private static double ParseDouble(XAttribute? attribute)

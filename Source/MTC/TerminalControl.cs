@@ -16,6 +16,21 @@ namespace MTC;
 /// </summary>
 public class TerminalControl : Control
 {
+    private static readonly (string Name, byte[] Bytes)[] MacroHotkeyDefinitions =
+    [
+        ("F1", [0x1B, (byte)'O', (byte)'P']),
+        ("F2", [0x1B, (byte)'O', (byte)'Q']),
+        ("F3", [0x1B, (byte)'O', (byte)'R']),
+        ("F4", [0x1B, (byte)'O', (byte)'S']),
+        ("F5", [0x1B, (byte)'[', (byte)'1', (byte)'5', (byte)'~']),
+        ("F6", [0x1B, (byte)'[', (byte)'1', (byte)'7', (byte)'~']),
+        ("F7", [0x1B, (byte)'[', (byte)'1', (byte)'8', (byte)'~']),
+        ("F8", [0x1B, (byte)'[', (byte)'1', (byte)'9', (byte)'~']),
+        ("F9", [0x1B, (byte)'[', (byte)'2', (byte)'0', (byte)'~']),
+        ("F10", [0x1B, (byte)'[', (byte)'2', (byte)'1', (byte)'~']),
+        ("F11", [0x1B, (byte)'[', (byte)'2', (byte)'3', (byte)'~']),
+    ];
+
     private readonly TerminalBuffer _buffer;
     private readonly DispatcherTimer _cursorTimer;
     private bool _cursorOn = true;
@@ -53,6 +68,9 @@ public class TerminalControl : Control
     /// Set by the owner to forward key bytes to the server.
     /// </summary>
     public Action<byte[]>? SendInput { get; set; }
+
+    public static IReadOnlyList<string> SupportedMacroHotkeys { get; } =
+        MacroHotkeyDefinitions.Select(definition => definition.Name).ToArray();
 
     /// <summary>
     /// When false, all keyboard input is silently swallowed (no bytes sent, no messages printed).
@@ -433,6 +451,21 @@ public class TerminalControl : Control
             Key.F12      => [0x1B, (byte)'[', (byte)'2', (byte)'4', (byte)'~'],
             _            => null,
         };
+    }
+
+    internal static bool TryGetMacroHotkeyName(ReadOnlySpan<byte> bytes, out string hotkey)
+    {
+        foreach ((string name, byte[] definitionBytes) in MacroHotkeyDefinitions)
+        {
+            if (bytes.SequenceEqual(definitionBytes))
+            {
+                hotkey = name;
+                return true;
+            }
+        }
+
+        hotkey = string.Empty;
+        return false;
     }
 
     // ── Mouse selection ────────────────────────────────────────────────────
