@@ -44,6 +44,7 @@ public class TerminalControl : Control
     private double _scrollAccumulator;
     /// <summary>_scrollOffset captured when the current mouse selection started.</summary>
     private int    _selScrollOffset;
+    private long   _scrollGenerationSeen;
 
     private static readonly SolidColorBrush SelectionBrush =
         new(Color.FromArgb(100, 51, 153, 255));  // translucent blue
@@ -64,6 +65,7 @@ public class TerminalControl : Control
         _buffer   = buffer;
         Focusable = true;
         _typeFace = new Typeface(_fontFamily);
+        _scrollGenerationSeen = _buffer.ScrollbackGeneration;
 
         MeasureFont();
 
@@ -153,6 +155,8 @@ public class TerminalControl : Control
 
     public override void Render(DrawingContext ctx)
     {
+        SyncScrollAnchorToLatest();
+
         // Solid black background
         ctx.FillRectangle(Brushes.Black, new Rect(Bounds.Size));
 
@@ -262,13 +266,22 @@ public class TerminalControl : Control
     public void RequestRedraw()
     {
         if (_buffer.Dirty)
-            Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                bool scrollAdjusted = SyncScrollAnchorToLatest();
+                if (_buffer.Dirty || scrollAdjusted)
+                    InvalidateVisual();
+            }, DispatcherPriority.Render);
+        }
     }
 
     // ── Mouse wheel scrollback ─────────────────────────────────────────────
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
+        SyncScrollAnchorToLatest();
+
         // Accumulate fractional deltas so smooth-scroll trackpads work correctly.
         // Positive Delta.Y (scroll forward/up) = scroll back into history.
         _scrollAccumulator += e.Delta.Y * 3;
@@ -293,6 +306,7 @@ public class TerminalControl : Control
     /// </summary>
     private void SendBytes(byte[] bytes)
     {
+        SyncScrollAnchorToLatest();
         if (_scrollOffset != 0) { _scrollOffset = 0; InvalidateVisual(); }
         SendInput?.Invoke(bytes);
     }
@@ -567,6 +581,29 @@ public class TerminalControl : Control
             _brushCache[c] = brush;
         }
         return brush;
+    }
+
+    private bool SyncScrollAnchorToLatest()
+    {
+        long latestGeneration = _buffer.ScrollbackGeneration;
+        long delta = latestGeneration - _scrollGenerationSeen;
+        _scrollGenerationSeen = latestGeneration;
+        if (delta <= 0 || _scrollOffset == 0)
+            return false;
+
+        int maxOffset = _buffer.ScrollbackCount;
+        int nextOffset = (int)Math.Clamp((long)_scrollOffset + delta, 0L, (long)maxOffset);
+        int appliedDelta = nextOffset - _scrollOffset;
+        if (appliedDelta == 0)
+            return false;
+
+        _scrollOffset = nextOffset;
+
+        if (_selScrollOffset > 0 || _hasSelection)
+            _selScrollOffset = (int)Math.Clamp(
+                (long)_selScrollOffset + appliedDelta, 0L, (long)maxOffset);
+
+        return true;
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)

@@ -227,10 +227,12 @@ namespace TWXProxy.Core
         private static readonly Regex _rxPlanets = new(
             @"^Planets?\s+:\s+(.*)", RegexOptions.Compiled);
 
-        // Planet continuation line: indented spaces + planet decoration
-        // "          <<<< (L) Vulcan >>>> (Shielded)"
+        // Planet continuation line: any indented continuation while the sector parser is
+        // inside the planets block. TWX27 accepts plain lines like
+        // "          (M) ." as well as decorated forms such as
+        // "          <<<< (L) Vulcan >>>> (Shielded)".
         private static readonly Regex _rxPlanetCont = new(
-            @"^\s{2,}(<<<<.*>>>>.*)", RegexOptions.Compiled);
+            @"^\s{2,}(.+\S)\s*$", RegexOptions.Compiled);
 
         // Land-list entry (from the L command at a sector):
         // "   <   8> Romulus                            Level 6   0%     10M     15%    L"
@@ -417,6 +419,12 @@ namespace TWXProxy.Core
             {
                 _inLandList   = true;
                 _landListSector = _currentSector;
+                var sector = GetOrCreate(db, _landListSector);
+                if (sector != null)
+                {
+                    sector.PlanetNames.Clear();
+                    db.SaveSector(sector);
+                }
                 return;
             }
             if (_inLandList)
@@ -427,6 +435,12 @@ namespace TWXProxy.Core
                 {
                     string pname = le.Groups[2].Value.Trim();
                     db.SavePlanet(new Planet { Id = planetId, Name = pname, LastSector = _landListSector });
+                    var sector = GetOrCreate(db, _landListSector);
+                    if (sector != null && !string.IsNullOrEmpty(pname))
+                    {
+                        sector.PlanetNames.Add(pname);
+                        db.SaveSector(sector);
+                    }
                     return;
                 }
                 // Owned-by continuation lines belong to the active land list.
@@ -507,6 +521,9 @@ namespace TWXProxy.Core
                 var m = _rxSector.Match(rawLine);
                 if (m.Success && int.TryParse(m.Groups[1].Value, out int sn))
                 {
+                    if (_inHoloScan)
+                        FinalizeActiveSectorDisplay(db);
+
                     GlobalModules.DebugLog($"[AutoRecorder] lastSector {_lastSector}→{sn} inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport}\n");
                     // A sector display definitively ends any warp-lane sequence.
                     // For 1-hop FM transwarp paths the ':' re-query prompt never arrives,
@@ -902,6 +919,7 @@ namespace TWXProxy.Core
 
             if (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal))
             {
+                FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db, preservePortReport: _inPortReport || _pendingPortReportSectorOverride > 0);
 
                 var mc = _rxCommandSector.Match(trimmedLine);
@@ -936,6 +954,7 @@ namespace TWXProxy.Core
                 trimmedLine.StartsWith("Probe entering sector :", StringComparison.OrdinalIgnoreCase) ||
                 trimmedLine.StartsWith("Probe Self Destructs", StringComparison.OrdinalIgnoreCase))
             {
+                FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db);
                 return true;
             }
@@ -1026,6 +1045,23 @@ namespace TWXProxy.Core
             }
 
             return buffer == null ? stripped : new string(buffer, 0, length);
+        }
+
+        private void FinalizeActiveSectorDisplay(ModDatabase? db)
+        {
+            if (db == null || !_inHoloScan || _lastSector <= 0)
+                return;
+
+            var sector = GetOrCreate(db, _lastSector);
+            if (sector == null)
+                return;
+
+            // TWX27 SectorCompleted() promotes any completed sector display,
+            // including probe displays that only emitted a header, to etHolo.
+            sector.Explored = ExploreType.Yes;
+            sector.Update = DateTime.Now;
+            db.SaveSector(sector);
+            GlobalModules.DebugLog($"[AutoRecorder] SectorCompleted sector={_lastSector}\n");
         }
 
         private void ResetPromptDisplays(ModDatabase? db, bool preservePortReport = false)

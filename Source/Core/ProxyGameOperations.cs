@@ -84,8 +84,8 @@ public static class ProxyGameOperations
                 continue;
 
             string runningReference = script.Compiler?.ScriptFile ?? script.LoadEventName ?? script.ScriptName;
-            bool matchesProgramDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ProgramDir);
-            bool matchesScriptDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ScriptDirectory);
+            bool matchesProgramDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ProgramDir, interpreter.ScriptDirectory);
+            bool matchesScriptDir = ModInterpreter.ScriptReferencesMatch(runningReference, scriptName, interpreter.ScriptDirectory, interpreter.ScriptDirectory);
             if (matchesProgramDir || matchesScriptDir)
             {
                 interpreter.StopByHandle(script);

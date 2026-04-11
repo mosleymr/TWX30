@@ -214,9 +214,10 @@ namespace TWXProxy.Core
                 SetField("port.percentequip", "0");
             }
 
-            SetField("planets", sector.PlanetNames.Count.ToString(CultureInfo.InvariantCulture));
-            for (int i = 0; i < sector.PlanetNames.Count; i++)
-                SetField($"planet.{i + 1}", sector.PlanetNames[i]);
+            var planetNames = _activeDatabase.GetPlanetNamesInSector(sectorNum);
+            SetField("planets", planetNames.Count.ToString(CultureInfo.InvariantCulture));
+            for (int i = 0; i < planetNames.Count; i++)
+                SetField($"planet.{i + 1}", planetNames[i]);
 
             SetField("traders", sector.Traders.Count.ToString(CultureInfo.InvariantCulture));
             for (int i = 0; i < sector.Traders.Count; i++)

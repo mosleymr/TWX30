@@ -31,7 +31,7 @@ namespace TWXProxy.Core
                 return false;
 
             string loadedName = scriptObj.LoadEventName ?? scriptObj.Compiler?.ScriptFile ?? scriptObj.ScriptName;
-            return ModInterpreter.ScriptReferencesMatch(loadedName, requestedName, interpreter.ProgramDir);
+            return ModInterpreter.ScriptReferencesMatch(loadedName, requestedName, interpreter.ProgramDir, interpreter.ScriptDirectory);
         }
 
         private static BotConfig? FindNativeBotConfig(ITWXServer? server)
@@ -83,8 +83,8 @@ namespace TWXProxy.Core
                 ? configuredReference
                 : "scripts/" + configuredReference;
 
-            if (ModInterpreter.ScriptReferencesMatch(requestedName, configuredReference, interpreter.ProgramDir) ||
-                ModInterpreter.ScriptReferencesMatch(requestedName, prefixedReference, interpreter.ProgramDir))
+            if (ModInterpreter.ScriptReferencesMatch(requestedName, configuredReference, interpreter.ProgramDir, interpreter.ScriptDirectory) ||
+                ModInterpreter.ScriptReferencesMatch(requestedName, prefixedReference, interpreter.ProgramDir, interpreter.ScriptDirectory))
             {
                 return true;
             }
@@ -135,6 +135,18 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[LOAD] Redirecting '{filename}' to native bot '{nativeConfig.Name}'\n");
                     gameInstance.NativeBotActivator(nativeConfig, string.Empty);
                     return CmdAction.None;
+                }
+
+                if (GlobalModules.TWXServer is GameInstance activeGameInstance &&
+                    activeGameInstance.NativeBotScriptRedirector != null)
+                {
+                    string? redirectedReference = activeGameInstance.NativeBotScriptRedirector(filename);
+                    if (!string.IsNullOrWhiteSpace(redirectedReference) &&
+                        !ModInterpreter.ScriptReferencesMatch(filename, redirectedReference, interpreter.ProgramDir, interpreter.ScriptDirectory))
+                    {
+                        GlobalModules.DebugLog($"[LOAD] Redirecting native bot module '{filename}' -> '{redirectedReference}'\n");
+                        filename = redirectedReference;
+                    }
                 }
 
                 interpreter.Load(filename, false);

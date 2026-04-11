@@ -41,6 +41,7 @@ public class MainWindow : Window
     private const double DeckPanelSnapThreshold = 18;
     private const double DeckPanelSnapGap = 18;
     private const double DeckPanelGridSize = 18;
+    private const int EmbeddedLocalClientIndex = 0;
 
     // ── Core components ────────────────────────────────────────────────────
     private readonly GameState       _state;
@@ -89,6 +90,7 @@ public class MainWindow : Window
     private readonly MTC.mombot.mombotService _mombot = new();
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
+    private readonly StackPanel _statusBarContent = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
@@ -108,6 +110,12 @@ public class MainWindow : Window
     private string _commPrivateTarget = string.Empty;
     private ToggleSwitch _haggleToggle = null!;
     private ToggleSwitch _deckHaggleToggle = null!;
+    private readonly Button _statusLiveButton = new() { Content = "LIVE" };
+    private readonly Button _statusPausedButton = new() { Content = "Paused" };
+    private readonly Border _statusModeSelector = new();
+    private readonly object _pausedTerminalSync = new();
+    private readonly List<byte[]> _pausedTerminalChunks = [];
+    private bool _terminalLivePaused;
     private Border? _commPanelBorder;
     private Button? _commFedTabButton;
     private Button? _commSubspaceTabButton;
@@ -652,12 +660,17 @@ public class MainWindow : Window
         _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
         _statusText.Foreground         = FgStatus;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
-        _statusText.Margin             = new Thickness(8, 0);
+        _statusText.Margin             = new Thickness(8, 0, 0, 0);
         _statusText.FontSize           = 13;
+
+        ConfigureStatusModeSelector();
 
         _statusBar.Background = BgStatus;
         _statusBar.Height = 26;
-        _statusBar.Child = _statusText;
+        _statusBarContent.Children.Clear();
+        _statusBarContent.Children.Add(_statusText);
+        _statusBarContent.Children.Add(_statusModeSelector);
+        _statusBar.Child = _statusBarContent;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         dock.Children.Add(_statusBar);
 
@@ -1853,6 +1866,7 @@ public class MainWindow : Window
         _menuBar.Foreground = _useCommandDeckSkin ? HudText : FgKey;
         _statusBar.Background = _useCommandDeckSkin ? HudStatus : BgStatus;
         _statusText.Foreground = _useCommandDeckSkin ? HudText : FgStatus;
+        UpdateTerminalLiveSelector();
         _shellHost.Padding = _useCommandDeckSkin
             ? new Thickness(10, 8, 10, 10)
             : new Thickness(6, 4, 6, 4);
@@ -3214,6 +3228,7 @@ public class MainWindow : Window
 
         _statusText.Text =
             $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{botText}  {conn}";
+        UpdateTerminalLiveSelector();
 
         _deckHudHeaderConnection.Text = _state.Connected
             ? $"{_state.Host}:{_state.Port}"
@@ -4468,6 +4483,15 @@ public class MainWindow : Window
             });
             return true;
         };
+        gi.NativeBotScriptRedirector = requestedReference =>
+        {
+            if (!_mombot.Enabled)
+                return null;
+
+            return _mombot.TryResolveScriptLoadRedirect(requestedReference, out string? redirectedReference)
+                ? redirectedReference
+                : null;
+        };
 
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
@@ -4529,6 +4553,12 @@ public class MainWindow : Window
 
         gi.ServerDataReceived += (_, e) =>
         {
+            if (_terminalLivePaused)
+            {
+                _sessionLog.RecordServerData(e.Data);
+                QueuePausedTerminalChunk(e.Data);
+            }
+
             string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
             string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
 
@@ -4742,6 +4772,7 @@ public class MainWindow : Window
         };
 
         _gameInstance = gi;
+        ApplyEmbeddedTerminalOutputMode();
         ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mombot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mombot);
@@ -4840,6 +4871,9 @@ public class MainWindow : Window
             await moduleHost.DisposeAsync();
         }
         _mombot.DetachSession();
+        _terminalLivePaused = false;
+        ClearPausedTerminalChunks();
+        UpdateTerminalLiveSelector();
 
         Core.ScriptRef.SetActiveGameInstance(null);
         Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game
@@ -4861,6 +4895,158 @@ public class MainWindow : Window
         UpdateHaggleToggleState();
         _buffer.Dirty = true;
         TraceRuntimeStop($"[MTC.StopEmbedded] complete game={_embeddedGameName ?? "-"}");
+    }
+
+    private void ConfigureStatusModeSelector()
+    {
+        ConfigureStatusModeButton(_statusLiveButton, paused: false);
+        ConfigureStatusModeButton(_statusPausedButton, paused: true);
+
+        var selectorButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Margin = new Thickness(0),
+        };
+        selectorButtons.Children.Add(_statusLiveButton);
+        selectorButtons.Children.Add(_statusPausedButton);
+
+        _statusModeSelector.Padding = new Thickness(4, 2);
+        _statusModeSelector.Margin = new Thickness(4, 0, 8, 0);
+        _statusModeSelector.CornerRadius = new CornerRadius(8);
+        _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
+        _statusModeSelector.Child = selectorButtons;
+
+        UpdateTerminalLiveSelector();
+    }
+
+    private void ConfigureStatusModeButton(Button button, bool paused)
+    {
+        button.MinWidth = paused ? 70 : 56;
+        button.Height = 20;
+        button.Padding = new Thickness(10, 1);
+        button.FontSize = 11;
+        button.FontWeight = FontWeight.SemiBold;
+        button.VerticalAlignment = VerticalAlignment.Center;
+        button.Click += (_, _) =>
+        {
+            SetTerminalLivePaused(paused);
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+    }
+
+    private void UpdateTerminalLiveSelector()
+    {
+        bool enabled = _gameInstance != null;
+        _statusModeSelector.Background = _useCommandDeckSkin ? HudFrame : BgPanel;
+        _statusModeSelector.BorderBrush = _useCommandDeckSkin ? HudInnerEdge : BorderHi;
+        _statusModeSelector.BorderThickness = new Thickness(1);
+        _statusModeSelector.Opacity = enabled ? 1.0 : 0.55;
+
+        ApplyStatusModeButtonStyle(_statusLiveButton, selected: !_terminalLivePaused, enabled);
+        ApplyStatusModeButtonStyle(_statusPausedButton, selected: _terminalLivePaused, enabled);
+    }
+
+    private void ApplyStatusModeButtonStyle(Button button, bool selected, bool enabled)
+    {
+        bool pausedButton = ReferenceEquals(button, _statusPausedButton);
+
+        button.IsEnabled = enabled;
+        button.Background = selected
+            ? (_useCommandDeckSkin
+                ? (pausedButton ? HudAccentHot : HudAccentOk)
+                : (pausedButton ? FgTitle : FgValue))
+            : (_useCommandDeckSkin ? HudHeaderAlt : BgStatus);
+        button.BorderBrush = selected
+            ? (_useCommandDeckSkin ? HudEdge : BorderColor)
+            : (_useCommandDeckSkin ? HudInnerEdge : BorderHi);
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = selected
+            ? (_useCommandDeckSkin
+                ? HudAccentInk
+                : new SolidColorBrush(Color.FromRgb(32, 32, 32)))
+            : (_useCommandDeckSkin ? HudMuted : FgStatus);
+    }
+
+    private void SetTerminalLivePaused(bool paused)
+    {
+        if (_terminalLivePaused == paused && (_gameInstance != null || !paused))
+        {
+            UpdateTerminalLiveSelector();
+            return;
+        }
+
+        if (paused)
+        {
+            _terminalLivePaused = true;
+            ApplyEmbeddedTerminalOutputMode();
+            UpdateTerminalLiveSelector();
+            return;
+        }
+
+        _terminalLivePaused = false;
+        ApplyEmbeddedTerminalOutputMode();
+        FlushPausedTerminalChunksToDisplay();
+        UpdateTerminalLiveSelector();
+    }
+
+    private void ApplyEmbeddedTerminalOutputMode()
+    {
+        if (_gameInstance == null)
+            return;
+
+        _gameInstance.SetClientType(
+            EmbeddedLocalClientIndex,
+            _terminalLivePaused ? Core.ClientType.Deaf : Core.ClientType.Standard);
+    }
+
+    private void QueuePausedTerminalChunk(byte[] chunk)
+    {
+        if (chunk.Length == 0)
+            return;
+
+        var copy = new byte[chunk.Length];
+        Buffer.BlockCopy(chunk, 0, copy, 0, chunk.Length);
+
+        lock (_pausedTerminalSync)
+            _pausedTerminalChunks.Add(copy);
+    }
+
+    private void ClearPausedTerminalChunks()
+    {
+        lock (_pausedTerminalSync)
+            _pausedTerminalChunks.Clear();
+    }
+
+    private void FlushPausedTerminalChunksToDisplay()
+    {
+        bool replayed = false;
+
+        while (true)
+        {
+            List<byte[]> pending;
+            lock (_pausedTerminalSync)
+            {
+                if (_pausedTerminalChunks.Count == 0)
+                    break;
+
+                pending = new List<byte[]>(_pausedTerminalChunks);
+                _pausedTerminalChunks.Clear();
+            }
+
+            foreach (byte[] chunk in pending)
+            {
+                _parser.Feed(chunk, chunk.Length);
+                replayed = true;
+            }
+        }
+
+        if (!replayed)
+            return;
+
+        if (_mombotPromptOpen)
+            RedrawMombotPrompt();
+        _buffer.Dirty = true;
     }
 
     private async Task ConnectEmbeddedServerAsync()
@@ -10241,35 +10427,49 @@ public class MainWindow : Window
                 BeginMombotPrompt("mow ");
                 return;
 
-            case ":internal_commands~fotonswitch":
-                await ExecuteMombotHotkeyCommandAsync(
-                    string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General"), "Foton", StringComparison.OrdinalIgnoreCase)
-                        ? "foton off"
-                        : "foton on p");
-                return;
-
-            case ":internal_commands~autokill":
-                await ExecuteMombotHotkeyCommandAsync("kill furb silent");
-                return;
-
-            case ":internal_commands~autocap":
-                await ExecuteMombotHotkeyCommandAsync("cap");
-                return;
-
-            case ":internal_commands~autorefurb":
-                await ExecuteMombotHotkeyCommandAsync("refurb");
-                return;
-
-            case ":internal_commands~kit":
-                await ExecuteMombotHotkeyCommandAsync("macro_kit");
+            case ":internal_commands~stopmodules":
+                await ExecuteMombotHotkeyCommandAsync("stopmodules");
                 return;
         }
 
-        string command = actionRef[(actionRef.LastIndexOf('~') + 1)..];
-        if (string.Equals(command, "stopModules", StringComparison.OrdinalIgnoreCase))
-            command = "stopmodules";
+        if (TryTranslateMombotHotkeyActionToCommand(normalized, out string? translatedCommand) &&
+            !string.IsNullOrWhiteSpace(translatedCommand))
+        {
+            await ExecuteMombotHotkeyCommandAsync(translatedCommand);
+            return;
+        }
 
-        await ExecuteMombotHotkeyCommandAsync(command);
+        await ExecuteMombotHotkeyInternalActionAsync(actionRef);
+    }
+
+    private bool TryTranslateMombotHotkeyActionToCommand(string normalizedActionRef, out string? command)
+    {
+        command = normalizedActionRef switch
+        {
+            ":internal_commands~autocap" => "cap",
+            ":internal_commands~autokill" => "kill furb silent",
+            ":internal_commands~autorefurb" => "refurb",
+            ":internal_commands~surround" => "surround",
+            ":internal_commands~htorp" => "htorp",
+            ":internal_commands~kit" => "macro_kit",
+            ":internal_commands~dock_shopper" => "dock_shopper",
+            ":internal_commands~hkill" => "hkill",
+            ":internal_commands~clear" => "clear",
+            ":internal_commands~xenter" => "xenter",
+            ":internal_commands~exit" => "xenter",
+            ":internal_commands~fotonswitch" => ResolveMombotPhotonHotkeyCommand(),
+            _ => null,
+        };
+
+        return !string.IsNullOrWhiteSpace(command);
+    }
+
+    private string ResolveMombotPhotonHotkeyCommand()
+    {
+        string mode = Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", string.Empty);
+        return string.Equals(mode, "Foton", StringComparison.OrdinalIgnoreCase)
+            ? "foton off"
+            : "foton on p";
     }
 
     private async Task ExecuteMombotHotkeyCommandAsync(string command)
@@ -10278,6 +10478,19 @@ public class MainWindow : Window
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
         await ExecuteMombotUiCommandAsync(command);
+    }
+
+    private async Task ExecuteMombotHotkeyInternalActionAsync(string actionRef)
+    {
+        ResetMombotPromptState();
+        _parser.Feed("\r\x1b[K");
+        _buffer.Dirty = true;
+
+        if (!_mombot.TryExecuteInternalAction(actionRef, selfCommand: true, route: "hotkey", userName: "self", out _, out string? error))
+            PublishMombotLocalMessage($"Mombot could not execute hotkey action {actionRef}: {error}");
+
+        ApplyMombotExecutionRefresh();
+        await Task.CompletedTask;
     }
 
     private async Task ExecuteMombotHotkeyScriptAsync(int slot)

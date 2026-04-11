@@ -106,6 +106,7 @@ namespace TWXProxy.Core
         public string ActiveBotName { get; set; } = string.Empty;
         public Func<BotConfig, string, bool>? NativeBotActivator { get; set; }
         public Func<string, bool>? NativeBotStopper { get; set; }
+        public Func<string, string?>? NativeBotScriptRedirector { get; set; }
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;

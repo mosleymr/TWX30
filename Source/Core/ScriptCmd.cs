@@ -664,17 +664,16 @@ namespace TWXProxy.Core
                 return s?.NavHaz.ToString() ?? "0";
             });
             AddSysConstant("SECTOR.PLANETCOUNT", (indexes) => { // 50
-                var s = GetSectorByIndex(indexes);
-                return s?.PlanetNames.Count.ToString() ?? "0";
+                var planets = GetPlanetNamesByIndex(indexes);
+                return planets.Count.ToString();
             });
             AddSysConstant("SECTOR.PLANETS", (indexes) => { // 51
                 // Pascal: SECTOR.PLANETS[sector][planetIndex] — returns Nth planet name or '0'
-                var s = GetSectorByIndex(indexes);
-                if (s == null) return "0";
+                var planets = GetPlanetNamesByIndex(indexes);
                 if (indexes.Length >= 2 && int.TryParse(indexes[1], out int pi))
-                    return (pi >= 1 && pi <= s.PlanetNames.Count) ? s.PlanetNames[pi - 1] : "0";
+                    return (pi >= 1 && pi <= planets.Count) ? planets[pi - 1] : "0";
                 // Fallback (no second index): return joined list for convenience
-                return s.PlanetNames.Count > 0 ? string.Join(", ", s.PlanetNames) : "0";
+                return planets.Count > 0 ? string.Join(", ", planets) : "0";
             });
             AddSysConstant("SECTOR.SHIPCOUNT", (indexes) => { // 52
                 var s = GetSectorByIndex(indexes);
@@ -951,6 +950,13 @@ namespace TWXProxy.Core
             if (indexes.Length == 0) return null;
             if (!int.TryParse(indexes[0], out int sn) || sn < 1) return null;
             return GetActiveDatabase()?.GetSector(sn);
+        }
+
+        private static List<string> GetPlanetNamesByIndex(string[] indexes)
+        {
+            if (indexes.Length == 0) return new List<string>();
+            if (!int.TryParse(indexes[0], out int sn) || sn < 1) return new List<string>();
+            return GetActiveDatabase()?.GetPlanetNamesInSector(sn) ?? new List<string>();
         }
 
         private static ShipStatus GetCurrentShipStatus()

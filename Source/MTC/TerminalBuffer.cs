@@ -108,9 +108,16 @@ public class TerminalBuffer
 
     // Lines ordered oldest → newest.  Capped at ScrollbackLines entries.
     private readonly List<TerminalCell[]> _scrollback = [];
+    private long _scrollbackGeneration;
 
     /// <summary>Number of lines currently held in the scrollback buffer.</summary>
     public int ScrollbackCount => _scrollback.Count;
+
+    /// <summary>
+    /// Monotonic count of lines appended to scrollback over the life of the buffer.
+    /// Lets the UI keep a scrolled-back viewport anchored even while old lines roll off.
+    /// </summary>
+    public long ScrollbackGeneration => _scrollbackGeneration;
 
     /// <summary>
     /// Returns the cells for scrollback line <paramref name="index"/> (0 = oldest).
@@ -225,6 +232,7 @@ public class TerminalBuffer
                 for (int c = 0; c < Columns; c++)
                     saved[c] = _cells[ScrollTop, c];
                 _scrollback.Add(saved);
+                _scrollbackGeneration++;
                 if (_scrollback.Count > ScrollbackLines)
                     _scrollback.RemoveAt(0);
             }

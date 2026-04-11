@@ -685,9 +685,34 @@ namespace TWXProxy.Core
         public Planet? GetPlanet(int id) =>
             _planets.TryGetValue(id, out var p) ? p : null;
 
-        /// <summary>Return all planets with a known ID whose last-seen sector is <paramref name="sectorNumber"/>.</summary>
+        /// <summary>
+        /// Return all planets with a known ID whose last-seen sector is <paramref name="sectorNumber"/>.
+        /// The result is ordered by registry ID so script-visible enumeration is stable.
+        /// </summary>
         public List<Planet> GetPlanetsInSector(int sectorNumber) =>
-            _planets.Values.Where(p => p.LastSector == sectorNumber).ToList();
+            _planets.Values
+                .Where(p => p.LastSector == sectorNumber)
+                .OrderBy(p => p.Id)
+                .ToList();
+
+        /// <summary>
+        /// Returns the TWX27-style planet list for a sector.
+        /// TWX27 exposes the sector's current visible planet-item list here, so the
+        /// sector display cache is authoritative when present. If we have not yet seen
+        /// a full sector-visible list, fall back to the ID-keyed planet records so
+        /// scripts can still see known planets discovered from other paths.
+        /// </summary>
+        public List<string> GetPlanetNamesInSector(int sectorNumber)
+        {
+            var sector = GetSector(sectorNumber);
+            var sectorPlanetNames = sector?.PlanetNames.ToList() ?? new List<string>();
+
+            if (sectorPlanetNames.Count > 0)
+                return sectorPlanetNames;
+
+            var planets = GetPlanetsInSector(sectorNumber);
+            return planets.Select(p => p.Name ?? string.Empty).ToList();
+        }
 
         /// <summary>
         /// Update the warp-in cache for a sector's outbound warps.

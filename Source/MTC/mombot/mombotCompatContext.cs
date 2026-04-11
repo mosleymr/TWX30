@@ -20,7 +20,8 @@ internal sealed class mombotCompatContext
         mombotConfig config,
         mombotSettings settings,
         mombotCommandContext context,
-        string? lastLoadedModule = null)
+        string? lastLoadedModule = null,
+        string? userCommandLineOverride = null)
     {
         string scriptRootRelative = GetScriptRootRelative(config.ScriptRoot);
         string mode = ReadCurrentAny("General", "$BOT~MODE", "$bot~mode", "$mode");
@@ -88,9 +89,9 @@ internal sealed class mombotCompatContext
         };
 
         SetVars(vars, context.CommandName, "$BOT~COMMAND", "$bot~command", "$command");
-        string userCommandLine = context.Parameters.Count == 0
+        string userCommandLine = userCommandLineOverride ?? (context.Parameters.Count == 0
             ? string.Empty
-            : string.Join(" ", context.Parameters);
+            : string.Join(" ", context.Parameters));
         SetVars(vars, userCommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
         SetVars(vars, botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetVars(vars, context.SelfCommand ? "1" : "0", "$BOT~SELF_COMMAND", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$bot~self_command", "$self_command");
@@ -168,9 +169,16 @@ internal sealed class mombotCompatContext
         mombotConfig config,
         mombotSettings settings,
         mombotCommandContext context,
-        string? lastLoadedModule = null)
+        string? lastLoadedModule = null,
+        string? userCommandLineOverride = null)
     {
-        IReadOnlyDictionary<string, string> vars = BuildVariableSnapshot(database, config, settings, context, lastLoadedModule);
+        IReadOnlyDictionary<string, string> vars = BuildVariableSnapshot(
+            database,
+            config,
+            settings,
+            context,
+            lastLoadedModule,
+            userCommandLineOverride);
         foreach ((string name, string value) in vars)
             Core.ScriptRef.SetCurrentGameVar(name, value);
 

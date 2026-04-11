@@ -236,14 +236,59 @@ namespace TWXProxy.Core
             return current;
         }
 
-        internal static string NormalizeScriptReference(string filename, string baseDir)
+        private static bool IsScriptsRootRelativePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            string normalized = Utility.NormalizePathSeparators(path.Trim());
+            string[] parts = normalized.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            return parts.Length > 0 &&
+                   parts[0].Equals("scripts", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ResolveRelativeScriptReference(string filename, string baseDir, string? scriptDirectory)
+        {
+            string normalized = Utility.NormalizePathSeparators(filename.Trim());
+            if (Path.IsPathRooted(normalized))
+                return normalized;
+
+            if (IsScriptsRootRelativePath(normalized))
+            {
+                string[] parts = normalized.Split(
+                    new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                    StringSplitOptions.RemoveEmptyEntries);
+
+                string scriptsRoot = !string.IsNullOrWhiteSpace(scriptDirectory)
+                    ? scriptDirectory
+                    : (Path.GetFileName(baseDir).Equals("scripts", StringComparison.OrdinalIgnoreCase)
+                        ? baseDir
+                        : Path.Combine(baseDir, "scripts"));
+
+                if (parts.Length == 1)
+                    return scriptsRoot;
+
+                return Path.Combine(new[] { scriptsRoot }.Concat(parts.Skip(1)).ToArray());
+            }
+
+            string root = !string.IsNullOrWhiteSpace(scriptDirectory)
+                ? scriptDirectory
+                : baseDir;
+
+            return Path.Combine(root, normalized);
+        }
+
+        internal static string NormalizeScriptReference(string filename, string baseDir, string? scriptDirectory = null)
         {
             if (string.IsNullOrWhiteSpace(filename))
                 return string.Empty;
 
             string normalized = Utility.NormalizePathSeparators(filename.Trim());
             if (!Path.IsPathRooted(normalized))
-                normalized = Path.Combine(baseDir, normalized);
+                normalized = ResolveRelativeScriptReference(normalized, baseDir, scriptDirectory);
 
             try
             {
@@ -265,13 +310,13 @@ namespace TWXProxy.Core
             return Path.GetFileName(Utility.NormalizePathSeparators(filename.Trim()));
         }
 
-        internal static bool ScriptReferencesMatch(string? left, string? right, string baseDir)
+        internal static bool ScriptReferencesMatch(string? left, string? right, string baseDir, string? scriptDirectory = null)
         {
             if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
                 return false;
 
-            string leftFull = NormalizeScriptReference(left, baseDir);
-            string rightFull = NormalizeScriptReference(right, baseDir);
+            string leftFull = NormalizeScriptReference(left, baseDir, scriptDirectory);
+            string rightFull = NormalizeScriptReference(right, baseDir, scriptDirectory);
             if (leftFull.Equals(rightFull, StringComparison.OrdinalIgnoreCase))
                 return true;
 
@@ -288,7 +333,7 @@ namespace TWXProxy.Core
 
             // Normalise separators and resolve case-insensitively so scripts written
             // on Windows (with backslashes and arbitrary casing) work on macOS/Linux.
-            filename = ResolveFilePath(filename, _programDir);
+            filename = ResolveFilePath(NormalizeScriptReference(filename, _programDir, _scriptDirectory), _programDir);
             _scriptDirectory = ResolveScriptRoot(filename, _scriptDirectory);
 
             // MB - Stop script if it is already running
@@ -297,7 +342,7 @@ namespace TWXProxy.Core
             {
                 var runningScript = _scriptList[i];
                 string runningScriptName = runningScript.LoadEventName ?? runningScript.Compiler?.ScriptFile ?? runningScript.ScriptName;
-                if (ScriptReferencesMatch(runningScriptName, filename, _programDir))
+                if (ScriptReferencesMatch(runningScriptName, filename, _programDir, _scriptDirectory))
                     Stop(i);
                 else
                     i++;
@@ -478,18 +523,7 @@ namespace TWXProxy.Core
             if (string.IsNullOrWhiteSpace(scriptName))
                 scriptName = "0_Login.cts";
 
-            string fullPath;
-            if (Path.IsPathRooted(scriptName))
-            {
-                fullPath = scriptName;
-            }
-            else
-            {
-                string baseDir = !string.IsNullOrWhiteSpace(_scriptDirectory)
-                    ? _scriptDirectory
-                    : Directory.GetCurrentDirectory();
-                fullPath = Path.Combine(baseDir, scriptName);
-            }
+            string fullPath = NormalizeScriptReference(scriptName, _programDir, _scriptDirectory);
 
             string resolved = ResolveFilePath(fullPath, _programDir);
             if (!string.IsNullOrEmpty(Path.GetExtension(resolved)))
