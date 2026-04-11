@@ -103,13 +103,14 @@ public class ShipInfoParser
             }
         }
 
-        // ── Live credits/holds line seen during trading ───────────────────
+        // ── Live credits/holds lines seen during trading ──────────────────
         {
             var m = _rxCreditsAndEmptyHolds.Match(trimmed);
             if (m.Success)
             {
                 _s.Credits = ParseLong(m.Groups[1].Value);
-                _s.HoldsEmpty = ParseInt(m.Groups[2].Value);
+                if (m.Groups[2].Success)
+                    _s.HoldsEmpty = ParseInt(m.Groups[2].Value);
                 Updated?.Invoke(_s);
             }
         }
@@ -190,7 +191,7 @@ public class ShipInfoParser
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxCreditsAndEmptyHolds = new(
-        @"^You have ([\d,]+) credits and (\d+) empty cargo holds\.",
+        @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?\.",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxRankExp = new(

@@ -39,7 +39,7 @@ internal sealed class mombotCompatContext
         string loginPassword = ReadCurrentAny(settings.LoginPassword, "$BOT~PASSWORD", "$password");
         string lastModule = lastLoadedModule ?? ReadCurrentAny(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
         string unlimitedGame = ReadCurrentAny("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
-        string stardock = ReadCurrentAny(FormatSector(database?.DBHeader.StarDock), "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+        string stardock = ReadCurrentSectorAny(FormatSector(database?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         string rylos = ReadCurrentAny(FormatSector(database?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
         string alphaCentauri = ReadCurrentAny(FormatSector(database?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
         string backdoor = ReadCurrentAny("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
@@ -88,7 +88,10 @@ internal sealed class mombotCompatContext
         };
 
         SetVars(vars, context.CommandName, "$BOT~COMMAND", "$bot~command", "$command");
-        SetVars(vars, context.CommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
+        string userCommandLine = context.Parameters.Count == 0
+            ? string.Empty
+            : string.Join(" ", context.Parameters);
+        SetVars(vars, userCommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
         SetVars(vars, botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetVars(vars, context.SelfCommand ? "1" : "0", "$BOT~SELF_COMMAND", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$bot~self_command", "$self_command");
         SetVars(vars, teamName, "$BOT~BOT_TEAM_NAME", "$BOT~bot_team_name", "$bot~bot_team_name", "$bot_team_name");
@@ -105,7 +108,7 @@ internal sealed class mombotCompatContext
         SetVars(vars, defaultBotDirectory, "$bot~default_bot_directory", "$default_bot_directory");
         SetVars(vars, scriptRootRelative, "$bot~mombot_directory", "$BOT~MOMBOT_DIRECTORY", "$mombot_directory");
         SetVars(vars, lastModule, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
-        SetVars(vars, stardock, "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+        SetVars(vars, stardock, "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         SetVars(vars, rylos, "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
         SetVars(vars, alphaCentauri, "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
         SetVars(vars, backdoor, "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
@@ -212,6 +215,31 @@ internal sealed class mombotCompatContext
         }
 
         return fallback;
+    }
+
+    private static string ReadCurrentSectorAny(string fallback, params string[] names)
+    {
+        string? firstNonEmpty = null;
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            firstNonEmpty ??= value;
+            if (IsDefinedSectorValue(value))
+                return value;
+        }
+
+        return IsDefinedSectorValue(fallback) ? fallback : (firstNonEmpty ?? fallback);
+    }
+
+    private static bool IsDefinedSectorValue(string? value)
+    {
+        if (!int.TryParse(value, out int sector))
+            return false;
+
+        return sector > 0 && sector != ushort.MaxValue;
     }
 
     private static void SetVars(IDictionary<string, string> vars, string value, params string[] names)

@@ -172,6 +172,9 @@ public class MainWindow : Window
     private string _mombotLastKeepaliveLine = string.Empty;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
+    private bool _mombotStartupDataGatherRunning;
+    private bool _mombotStartupPostInitPending;
+    private bool _mombotStartupFinalizeRunning;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -4569,6 +4572,11 @@ public class MainWindow : Window
                         }
 
                         bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                        if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                        {
+                            SyncMombotPromptStateFromLine(strippedRemainder);
+                            _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
+                        }
                         if (nativeHaggleResponded)
                         {
                             serverLineBuf.Clear();
@@ -6049,11 +6057,17 @@ public class MainWindow : Window
     private void ArmNativeMombotStartupDataGather()
     {
         _mombotStartupDataGatherPending = true;
+        _mombotStartupDataGatherRunning = false;
+        _mombotStartupPostInitPending = true;
+        _mombotStartupFinalizeRunning = false;
     }
 
     private void ClearNativeMombotStartupDataGather()
     {
         _mombotStartupDataGatherPending = false;
+        _mombotStartupDataGatherRunning = false;
+        _mombotStartupPostInitPending = false;
+        _mombotStartupFinalizeRunning = false;
     }
 
     private async Task TryRunNativeMombotInitialSettingsAsync()
@@ -6061,6 +6075,7 @@ public class MainWindow : Window
         await Task.Yield();
 
         if (!_mombotStartupDataGatherPending ||
+            _mombotStartupDataGatherRunning ||
             !_mombot.Enabled ||
             _gameInstance == null ||
             !_gameInstance.IsConnected ||
@@ -6069,32 +6084,84 @@ public class MainWindow : Window
             return;
         }
 
-        MombotPromptSurface surface = GetMombotPromptSurface();
-        if (surface == MombotPromptSurface.Unknown && _gameInstance.IsConnected)
-        {
-            int currentSector = Core.ScriptRef.GetCurrentSector();
-            if (currentSector <= 0)
-                currentSector = _state.Sector;
-
-            if (currentSector > 0 && !_gameInstance.IsProxyMenuActive)
-            {
-                surface = MombotPromptSurface.Command;
-                SetMombotCurrentVars("Command", "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
-            }
-        }
-
-        if (surface != MombotPromptSurface.Command && surface != MombotPromptSurface.Citadel)
+        if (IsNativeMombotScriptLoaded("relog.cts") ||
+            IsNativeMombotScriptLoaded("twx3_native_initial_settings.ts"))
             return;
 
-        _mombotStartupDataGatherPending = false;
+        string currentLine = NormalizeMombotPromptComparisonValue(Core.ScriptRef.GetCurrentLine());
+        if (!TryGetMombotPromptNameFromLine(currentLine, out string promptName))
+            return;
+
+        SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+        _mombotStartupDataGatherRunning = true;
         if (!_mombot.TryLoadCompatScript("initsettings", out string? scriptReference, out string? error))
         {
+            _mombotStartupDataGatherRunning = false;
             PublishMombotLocalMessage($"Mombot: failed to load initial settings bootstrap: {error}");
             return;
         }
 
+        _mombotStartupDataGatherPending = false;
         PublishMombotLocalMessage($"mombot: loaded initial settings bootstrap ({scriptReference}).");
         ApplyMombotExecutionRefresh();
+        if (_mombotStartupPostInitPending && !_mombotStartupFinalizeRunning)
+        {
+            _mombotStartupFinalizeRunning = true;
+            _ = MonitorNativeMombotStartupCompletionAsync();
+        }
+    }
+
+    private async Task MonitorNativeMombotStartupCompletionAsync()
+    {
+        try
+        {
+            for (int attempt = 0; attempt < 600; attempt++)
+            {
+                await Task.Delay(100);
+
+                if (!_mombotStartupPostInitPending ||
+                    !_mombot.Enabled ||
+                    _gameInstance == null)
+                {
+                    return;
+                }
+
+                if (!_gameInstance.IsConnected || _gameInstance.IsProxyMenuActive)
+                    continue;
+
+                if (IsNativeMombotScriptLoaded("relog.cts") ||
+                    IsNativeMombotScriptLoaded("twx3_native_initial_settings.ts"))
+                {
+                    continue;
+                }
+
+                _mombotStartupDataGatherRunning = false;
+                _mombotStartupPostInitPending = false;
+                LoadMombotStartupScripts();
+                await SendMombotStartupAnnouncementsAsync();
+                ApplyMombotExecutionRefresh();
+                return;
+            }
+        }
+        finally
+        {
+            _mombotStartupFinalizeRunning = false;
+        }
+    }
+
+    private bool IsNativeMombotScriptLoaded(string scriptReference)
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null || string.IsNullOrWhiteSpace(scriptReference))
+            return false;
+
+        string normalizedReference = scriptReference.Replace('\\', '/').Trim();
+        return Core.ProxyGameOperations
+            .GetRunningScripts(interpreter)
+            .Any(script =>
+                script.Reference.Replace('\\', '/').EndsWith(normalizedReference, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Path.GetFileName(script.Reference.Replace('\\', '/')), Path.GetFileName(normalizedReference), StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(script.Name, scriptReference, StringComparison.OrdinalIgnoreCase));
     }
 
     private bool ShouldStopNativeMombotAfterDisconnect()
@@ -6690,8 +6757,6 @@ public class MainWindow : Window
             ApplyMombotConfigChange(config => config.Enabled = true);
             ShowMombotStartupBanner(connected: true);
             await TryRunNativeMombotInitialSettingsAsync();
-            LoadMombotStartupScripts();
-            await SendMombotStartupAnnouncementsAsync();
             ApplyMombotExecutionRefresh();
         }
         else
@@ -6711,7 +6776,6 @@ public class MainWindow : Window
 
             ApplyMombotRelogDialogResult(relogSettings);
             ApplyMombotConfigChange(config => config.Enabled = true);
-            LoadMombotStartupScripts();
             ShowMombotStartupBanner(connected: false);
             await ExecuteMombotUiCommandAsync("relog");
         }
@@ -7161,10 +7225,10 @@ public class MainWindow : Window
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
 
-        string stardock = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$MAP~STARDOCK", "$MAP~stardock", "$stardock");
+        string stardock = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         string rylos = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$rylos");
         string alphaCentauri = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$alpha_centauri");
-        MirrorMombotCurrentVars(stardock, "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+        MirrorMombotCurrentVars(stardock, "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         MirrorMombotCurrentVars(rylos, "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
         MirrorMombotCurrentVars(alphaCentauri, "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
         MirrorMombotCurrentVars("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
@@ -7530,6 +7594,23 @@ public class MainWindow : Window
         return fallback;
     }
 
+    private static string ReadCurrentMombotSectorVar(string fallback, params string[] names)
+    {
+        string? firstNonEmpty = null;
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            firstNonEmpty ??= value;
+            if (IsDefinedMombotSectorValue(value))
+                return value;
+        }
+
+        return IsDefinedMombotSectorValue(fallback) ? fallback : (firstNonEmpty ?? fallback);
+    }
+
     private static string GetMombotVersionDisplay()
     {
         string major = ReadCurrentMombotVar("4", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
@@ -7568,6 +7649,14 @@ public class MainWindow : Window
         if (treatSelfAsEmpty && string.Equals(trimmed, "self", StringComparison.OrdinalIgnoreCase))
             return string.Empty;
         return trimmed;
+    }
+
+    private static bool IsDefinedMombotSectorValue(string? value)
+    {
+        if (!int.TryParse(value, out int sector))
+            return false;
+
+        return sector > 0 && sector != ushort.MaxValue;
     }
 
     private static string NormalizeGameLetter(string? value)

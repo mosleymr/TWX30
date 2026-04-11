@@ -3082,9 +3082,12 @@ namespace TWXProxy.Core
 
             bool Finish(bool completed)
             {
+                _execScriptID = 0;
                 RecordVmExecutionMetrics(true, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 return completed;
             }
+
+            _execScriptID = 0;
 
             if (_codePos >= prepared.CodeLength)
                 return Finish(true);
@@ -3092,7 +3095,7 @@ namespace TWXProxy.Core
             if (!prepared.TryGetInstructionIndex(_codePos, out int instructionIndex))
             {
                 if (_codePos == prepared.CodeLength)
-                    return true;
+                    return Finish(true);
 
                 throw new Exception($"Prepared instruction not found for code position {_codePos}");
             }
@@ -3108,7 +3111,7 @@ namespace TWXProxy.Core
                     if (instruction.IsLabel)
                     {
                         if (_codePos >= prepared.CodeLength)
-                            return true;
+                            return Finish(true);
 
                         instructionIndex = instruction.NextInstructionIndex;
                         continue;
@@ -3287,6 +3290,7 @@ namespace TWXProxy.Core
 
             bool Finish(bool completed)
             {
+                _execScriptID = 0;
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 return completed;
             }
@@ -3342,6 +3346,8 @@ namespace TWXProxy.Core
             {
                 return Finish(true); // No code or reached end
             }
+
+            _execScriptID = 0;
 
             try
             {
@@ -3524,7 +3530,7 @@ namespace TWXProxy.Core
                         {
                             // Program variable - read from ParamList like other params
                             if (_codePos + 4 > code.Length)
-                                return true;
+                                return Finish(true);
                             
                             int paramID = BitConverter.ToInt32(code, _codePos);
                             _codePos += 4;
@@ -3819,7 +3825,7 @@ namespace TWXProxy.Core
             }
 
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[GotoLabel] Found label '{normalized}' at position {labelPos}\n");
+            GlobalModules.DebugLog($"[GotoLabel] Found label '{normalized}' at position {labelPos}\n");
             _codePos = labelPos;
         }
 

@@ -135,11 +135,13 @@ internal sealed class mombotService
 
         if (!TryResolveNativeCompatScriptReference(canonical, out string? reference, out _))
         {
+            Core.GlobalModules.DebugLog($"[mombot.compat] no compat script registered/resolved for '{canonical}'\n");
             error = $"No native compatibility script is registered for '{canonical}'.";
             return false;
         }
 
         scriptReference = reference;
+        Core.GlobalModules.DebugLog($"[mombot.compat] loading compat script canonical='{canonical}' ref='{reference}'\n");
         return TryLoadScript(reference!, out error);
     }
 
@@ -547,10 +549,16 @@ internal sealed class mombotService
         };
 
         if (string.IsNullOrWhiteSpace(compatPath) || !File.Exists(compatPath))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[mombot.compat] canonical='{canonical}' compatPath='{compatPath ?? "-"}' exists={(!string.IsNullOrWhiteSpace(compatPath) && File.Exists(compatPath))}\n");
             return false;
+        }
 
         fullPath = Path.GetFullPath(compatPath);
         scriptReference = BuildLoadReference(fullPath);
+        Core.GlobalModules.DebugLog(
+            $"[mombot.compat] canonical='{canonical}' fullPath='{fullPath}' loadRef='{scriptReference}'\n");
         return true;
     }
 
@@ -559,7 +567,10 @@ internal sealed class mombotService
         string scriptsDirectory = GetScriptsDirectory();
         string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
         if (!Directory.Exists(sourceRoot))
+        {
+            Core.GlobalModules.DebugLog($"[mombot.compat] refresh sourceRoot missing '{sourceRoot}'\n");
             return null;
+        }
 
         string compatPath = Path.Combine(sourceRoot, "commands", "data", "twx3_native_storeship.ts");
         string content =
@@ -582,13 +593,15 @@ internal sealed class mombotService
             "include \"source\\module_includes\\bot\\helpfile\\bot\"\n" +
             "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
             "include \"source\\bot_includes\\player\\currentprompt\\player\"\n" +
-            "include \"source\\bot_includes\\ship\"\n" +
+            "include \"source\\bot_includes\\ship\\savetheship\\ship\"\n" +
+            "include \"source\\bot_includes\\ship\\loadshipinfo\\ship\"\n" +
             "include \"source\\bot_includes\\switchboard\"\n";
 
         Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
         if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
             File.WriteAllText(compatPath, content);
 
+        Core.GlobalModules.DebugLog($"[mombot.compat] refresh compat ready '{compatPath}'\n");
         return compatPath;
     }
 
@@ -597,7 +610,10 @@ internal sealed class mombotService
         string scriptsDirectory = GetScriptsDirectory();
         string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
         if (!Directory.Exists(sourceRoot))
+        {
+            Core.GlobalModules.DebugLog($"[mombot.compat] initsettings sourceRoot missing '{sourceRoot}'\n");
             return null;
+        }
 
         string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_refresh.ts");
         string content =
@@ -643,6 +659,7 @@ internal sealed class mombotService
         if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
             File.WriteAllText(compatPath, content);
 
+        Core.GlobalModules.DebugLog($"[mombot.compat] initsettings compat ready '{compatPath}'\n");
         return compatPath;
     }
 
@@ -658,6 +675,12 @@ internal sealed class mombotService
             "# Native TWX3 compatibility wrapper for Mombot shell startup getInitial_Settings.\n" +
             ":getInitial_Settings\n" +
             ":twx3_native_initial_settings\n" +
+            "loadVar $folder\n" +
+            "loadVar $gconfig_file\n" +
+            "loadVar $SCRIPT_FILE\n" +
+            "loadVar $GAME~GAME_SETTINGS_FILE\n" +
+            "loadVar $SHIP~cap_file\n" +
+            "loadVar $PLANET~planet_file\n" +
             "setvar $connectivity~relogging false\n" +
             "savevar $connectivity~relogging\n" +
             "loadVar $GAME~gamestats\n" +
@@ -1146,7 +1169,6 @@ internal sealed class mombotService
         var parameters = rawParameters.Take(8).ToList();
 
         ApplyStockCommandRewrites(ref normalizedCommand, parameters);
-        ExpandStockParameterAliases(parameters);
         normalizedCommand = NormalizeStockCommandAlias(normalizedCommand);
         ApplyTravelCommandRewrites(ref normalizedCommand, parameters);
         normalizedCommand = mombotCatalog.NormalizeCommandName(normalizedCommand);
@@ -1221,7 +1243,7 @@ internal sealed class mombotService
                 continue;
 
             if (string.Equals(parameter, "s", StringComparison.OrdinalIgnoreCase))
-                parameters[index] = ReadCurrentAny(FormatSector(_database?.DBHeader.StarDock), "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
+                parameters[index] = ReadCurrentSectorAny(FormatSector(_database?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
             else if (string.Equals(parameter, "r", StringComparison.OrdinalIgnoreCase))
                 parameters[index] = ReadCurrentAny(FormatSector(_database?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
             else if (string.Equals(parameter, "a", StringComparison.OrdinalIgnoreCase))
@@ -1251,6 +1273,11 @@ internal sealed class mombotService
         if (!MatchesAnyCommand(commandName, "mow", "twarp", "bwarp", "pwarp", "smow"))
             return;
 
+        // Preserve Pascal/Mombot script parity for normal script-backed commands:
+        // single-letter arguments like "r" or "s" are often mode flags (for
+        // example "colo r 4547"), not sector aliases.  Only the travel-style
+        // commands handled here should expand sector shortcuts locally.
+        ExpandStockParameterAliases(parameters);
         RewriteTravelPlanetTarget(parameters);
     }
 
@@ -1373,6 +1400,31 @@ internal sealed class mombotService
         }
 
         return fallback;
+    }
+
+    private string ReadCurrentSectorAny(string fallback, params string[] names)
+    {
+        string? firstNonEmpty = null;
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            firstNonEmpty ??= value;
+            if (IsDefinedSectorValue(value))
+                return value;
+        }
+
+        return IsDefinedSectorValue(fallback) ? fallback : (firstNonEmpty ?? fallback);
+    }
+
+    private static bool IsDefinedSectorValue(string? value)
+    {
+        if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sector))
+            return false;
+
+        return sector > 0 && sector != ushort.MaxValue;
     }
 
     private static string FormatSector(ushort? sector)
