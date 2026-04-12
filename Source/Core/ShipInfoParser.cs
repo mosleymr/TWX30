@@ -20,6 +20,9 @@ public class ShipInfoParser
 
     // Multi-line "I" block tracking
     private bool _inInfoBlock;
+    private bool _infoBlockSawTransWarpSection;
+    private bool _infoBlockSawTransWarp1;
+    private bool _infoBlockSawTransWarp2;
 
     // "/" one-liner: the server sends 4 lines that each look like
     //   " Sect 12545³Turns 25,000³..."
@@ -52,11 +55,16 @@ public class ShipInfoParser
         if (trimmed.Equals("<Info>", StringComparison.OrdinalIgnoreCase))
         {
             _inInfoBlock = true;
+            _infoBlockSawTransWarpSection = false;
+            _infoBlockSawTransWarp1 = false;
+            _infoBlockSawTransWarp2 = false;
+            ResetInfoBlockShipSnapshot();
             return;
         }
 
         if (_inInfoBlock && IsInfoBlockTerminator(trimmed))
         {
+            FinalizeInfoBlockTranswarpState();
             _inInfoBlock = false;
             Updated?.Invoke(_s);
             return;
@@ -65,14 +73,14 @@ public class ShipInfoParser
         if (_inInfoBlock)
         {
             if (TryParseIncrementalInfoLine(trimmed))
-            {
-                Updated?.Invoke(_s);
                 return;
-            }
 
             // Do not let an interrupted or malformed info display trap the parser
-            // in info mode forever. Abort if the line no longer resembles info data.
+            // in info mode forever. Commit the block once if the next line no
+            // longer resembles info data.
+            FinalizeInfoBlockTranswarpState();
             _inInfoBlock = false;
+            Updated?.Invoke(_s);
         }
 
         // ── "/" one-liner lines (contain the ³ separator) ─────────────────
@@ -116,6 +124,19 @@ public class ShipInfoParser
         }
     }
 
+    /// <summary>
+    /// Applies a partial live ship-status update sourced from parser state outside
+    /// the dedicated "/" and "I" ship info displays.
+    /// </summary>
+    public void ApplyDelta(ShipStatusDelta delta)
+    {
+        if (delta == null || !delta.HasChanges())
+            return;
+
+        delta.ApplyTo(_s);
+        Updated?.Invoke(_s);
+    }
+
     // ── "/" one-liner parser ───────────────────────────────────────────────
 
     private bool ParseSlashLine(string line)
@@ -147,7 +168,7 @@ public class ShipInfoParser
             else if (TrySlash(tok, "Armd ",   out long armd))   _s.ArmidMines     = (int)armd;
             else if (TrySlash(tok, "Lmpt ",   out long lmpt))   _s.LimpetMines    = (int)lmpt;
             else if (TrySlash(tok, "GTorp ",  out long gtorp))  _s.GenesisTorps   = (int)gtorp;
-            else if (TrySlash(tok, "TWarp ",  out long twarp))  _s.TurnsPerWarp   = (int)twarp;
+            else if (TrySlash(tok, "TWarp ",  out string twarp)) ApplySlashTranswarpType(twarp);
             else if (TrySlash(tok, "Clks ",   out long clks))   _s.Cloaks         = (int)clks;
             else if (TrySlash(tok, "Beacns ", out long beacns)) _s.Beacons        = (int)beacns;
             else if (TrySlash(tok, "AtmDt ",  out long atmdt))  _s.AtomicDet      = (int)atmdt;
@@ -156,7 +177,7 @@ public class ShipInfoParser
             else if (TrySlash(tok, "MDis ",   out long mdis))   _s.MineDisruptors = (int)mdis;
             else if (TrySlash(tok, "PsPrb ",  out string psp))  _s.PsychProbe     = IsBoolYes(psp);
             else if (TrySlash(tok, "PlScn ",  out string plsn)) _s.PlanetScanner  = IsBoolYes(plsn);
-            else if (TrySlash(tok, "LRS ",    out string lrs))  _s.LRSType        = lrs.Trim();
+            else if (TrySlash(tok, "LRS ",    out string lrs))  _s.LRSType        = NormalizeLongRangeScannerType(lrs);
             else if (TrySlash(tok, "Aln ",    out long aln))    _s.Alignment      = aln;
             else if (TrySlash(tok, "Exp ",    out long exp))    _s.Experience     = exp;
             else if (TrySlash(tok, "Corp ",   out long corp))   _s.Corp           = (int)corp;
@@ -328,6 +349,10 @@ public class ShipInfoParser
                 _s.GenesisTorps = ParseSecondField(line, "Genesis Torps");
                 break;
 
+            case "Genesis Torps":
+                _s.GenesisTorps = ParseInt(val);
+                break;
+
             case var k when k.StartsWith("Atomic Detn"):
                 _s.AtomicDet  = ParseFirstNum(val);
                 _s.Corbomite  = ParseSecondField(line, "Corbomite Level");
@@ -355,16 +380,18 @@ public class ShipInfoParser
                 break;
 
             case "LongRange Scan":
-                // "Holographic Scanner" → "Holo", "Standard" → "Standard"
-                _s.LRSType = val.Contains("Holo", StringComparison.OrdinalIgnoreCase)
-                           ? "Holo" : val;
+                _s.LRSType = NormalizeLongRangeScannerType(val);
                 break;
 
             case var k when k.Contains("Type 1 Jump"):
+                _infoBlockSawTransWarpSection = true;
+                _infoBlockSawTransWarp1 = true;
                 _s.TransWarp1 = ParseInt(val.Split(' ')[0]);
                 break;
 
             case var k when k.Contains("Type 2 Jump"):
+                _infoBlockSawTransWarpSection = true;
+                _infoBlockSawTransWarp2 = true;
                 _s.TransWarp2 = ParseInt(val.Split(' ')[0]);
                 break;
 
@@ -382,13 +409,82 @@ public class ShipInfoParser
 
     private void CheckTransWarpHeader(string line)
     {
-        _ = line; // may be used in future for additional header detection
+        if (line.StartsWith("TransWarp Power", StringComparison.Ordinal))
+            _infoBlockSawTransWarpSection = true;
+    }
+
+    private void FinalizeInfoBlockTranswarpState()
+    {
+        if (!_infoBlockSawTransWarpSection)
+        {
+            _s.TransWarp1 = 0;
+            _s.TransWarp2 = 0;
+            return;
+        }
+
+        if (!_infoBlockSawTransWarp1)
+            _s.TransWarp1 = 0;
+
+        if (!_infoBlockSawTransWarp2)
+            _s.TransWarp2 = 0;
+    }
+
+    private void ResetInfoBlockShipSnapshot()
+    {
+        // A full "I" scan is authoritative for the current ship. Clear ship-local
+        // inventory/equipment fields up front so omitted lines on the new ship do
+        // not leave stale values behind from the previous hull.
+        _s.TotalHolds = 0;
+        _s.FuelOre = 0;
+        _s.Organics = 0;
+        _s.Equipment = 0;
+        _s.Colonists = 0;
+        _s.HoldsEmpty = 0;
+
+        _s.Fighters = 0;
+        _s.Shields = 0;
+        _s.Photons = 0;
+        _s.ArmidMines = 0;
+        _s.LimpetMines = 0;
+        _s.GenesisTorps = 0;
+        _s.AtomicDet = 0;
+        _s.Corbomite = 0;
+
+        _s.Cloaks = 0;
+        _s.Beacons = 0;
+        _s.EtherProbes = 0;
+        _s.MineDisruptors = 0;
+        _s.PsychProbe = false;
+        _s.PlanetScanner = false;
+        _s.LRSType = string.Empty;
+        _s.TransWarp1 = 0;
+        _s.TransWarp2 = 0;
+        _s.Interdictor = false;
     }
 
     private static bool IsInfoBlockTerminator(string line)
     {
         return line.StartsWith("Command [TL=", StringComparison.Ordinal) ||
                line.StartsWith("Computer command [TL=", StringComparison.Ordinal);
+    }
+
+    private static string NormalizeLongRangeScannerType(string value)
+    {
+        string normalized = value.Trim();
+        if (string.IsNullOrEmpty(normalized))
+            return string.Empty;
+
+        if (normalized.Contains("Holo", StringComparison.OrdinalIgnoreCase))
+            return "Holo";
+
+        if (normalized.Equals("None", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("No", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("No LRS", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return normalized;
     }
 
     private static bool ShouldIgnoreStatusCommLine(string line)
@@ -423,6 +519,7 @@ public class ShipInfoParser
                line.StartsWith("Shield points", StringComparison.Ordinal) ||
                line.StartsWith("Armid Mines", StringComparison.Ordinal) ||
                line.StartsWith("Photon Missiles", StringComparison.Ordinal) ||
+               line.StartsWith("Genesis Torps", StringComparison.Ordinal) ||
                line.StartsWith("Atomic Detn", StringComparison.Ordinal) ||
                line.StartsWith("Ether Probes", StringComparison.Ordinal) ||
                line.StartsWith("Cloaking Device", StringComparison.Ordinal) ||
@@ -516,6 +613,31 @@ public class ShipInfoParser
         if (!token.StartsWith(prefix, StringComparison.Ordinal)) return false;
         value = token[prefix.Length..].Trim();
         return true;
+    }
+
+    private void ApplySlashTranswarpType(string value)
+    {
+        string normalized = value.Trim();
+        if (normalized.Equals("No", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("0", StringComparison.OrdinalIgnoreCase))
+        {
+            _s.TransWarp1 = 0;
+            _s.TransWarp2 = 0;
+            return;
+        }
+
+        if (normalized.Equals("1", StringComparison.OrdinalIgnoreCase))
+        {
+            _s.TransWarp1 = Math.Max(_s.TransWarp1, 1);
+            _s.TransWarp2 = 0;
+            return;
+        }
+
+        if (normalized.Equals("2", StringComparison.OrdinalIgnoreCase))
+        {
+            _s.TransWarp1 = Math.Max(_s.TransWarp1, 1);
+            _s.TransWarp2 = Math.Max(_s.TransWarp2, 1);
+        }
     }
 
     private static bool IsBoolYes(string s) =>

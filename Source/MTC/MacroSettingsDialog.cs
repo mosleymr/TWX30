@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -26,6 +27,7 @@ public sealed class MacroSettingsDialog : Window
         public required Border Border { get; init; }
         public required ComboBox HotkeyCombo { get; init; }
         public required TextBox MacroTextBox { get; init; }
+        public required Button PlayButton { get; init; }
     }
 
     private readonly List<MacroRowState> _rows = [];
@@ -38,11 +40,13 @@ public sealed class MacroSettingsDialog : Window
     };
 
     private MacroRowState? _selectedRow;
+    private readonly Func<string, int, Task<string?>> _playMacroAsync;
 
     public IReadOnlyList<AppPreferences.MacroBinding> Result { get; private set; } = Array.Empty<AppPreferences.MacroBinding>();
 
-    public MacroSettingsDialog(IReadOnlyList<AppPreferences.MacroBinding> defaults)
+    public MacroSettingsDialog(IReadOnlyList<AppPreferences.MacroBinding> defaults, Func<string, int, Task<string?>> playMacroAsync)
     {
+        _playMacroAsync = playMacroAsync;
         Title = "Macros";
         Width = 720;
         SizeToContent = SizeToContent.Height;
@@ -90,7 +94,7 @@ public sealed class MacroSettingsDialog : Window
 
         var headerRow = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("130,*"),
+            ColumnDefinitions = new ColumnDefinitions("130,*,72"),
             Margin = new Thickness(0, 2, 0, 4),
         };
         headerRow.Children.Add(new TextBlock
@@ -211,12 +215,24 @@ public sealed class MacroSettingsDialog : Window
 
         var rowGrid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("130,*"),
+            ColumnDefinitions = new ColumnDefinitions("130,*,72"),
             ColumnSpacing = 10,
         };
         rowGrid.Children.Add(hotkeyCombo);
         Grid.SetColumn(macroTextBox, 1);
         rowGrid.Children.Add(macroTextBox);
+
+        var playButton = new Button
+        {
+            Content = "Play",
+            Width = 62,
+            Background = BgButton,
+            Foreground = FgNormal,
+            IsEnabled = !string.IsNullOrWhiteSpace(binding.Macro),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        Grid.SetColumn(playButton, 2);
+        rowGrid.Children.Add(playButton);
 
         var border = new Border
         {
@@ -232,13 +248,19 @@ public sealed class MacroSettingsDialog : Window
             Border = border,
             HotkeyCombo = hotkeyCombo,
             MacroTextBox = macroTextBox,
+            PlayButton = playButton,
         };
 
         border.PointerPressed += (_, _) => SelectRow(state);
         hotkeyCombo.GotFocus += (_, _) => SelectRow(state);
         macroTextBox.GotFocus += (_, _) => SelectRow(state);
+        playButton.Click += async (_, _) => await PlayMacroAsync(state);
         hotkeyCombo.SelectionChanged += (_, _) => ClearError();
-        macroTextBox.TextChanged += (_, _) => ClearError();
+        macroTextBox.TextChanged += (_, _) =>
+        {
+            state.PlayButton.IsEnabled = !string.IsNullOrWhiteSpace(macroTextBox.Text);
+            ClearError();
+        };
 
         _rows.Add(state);
         _rowsPanel.Children.Add(border);
@@ -328,6 +350,31 @@ public sealed class MacroSettingsDialog : Window
     {
         _errorText.Text = string.Empty;
         _errorText.IsVisible = false;
+    }
+
+    private async Task PlayMacroAsync(MacroRowState row)
+    {
+        SelectRow(row);
+        ClearError();
+
+        string macro = row.MacroTextBox.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(macro))
+        {
+            ShowError("Enter a macro before using Play.");
+            return;
+        }
+
+        var dialog = new MacroPlayDialog(macro);
+        bool accepted = await dialog.ShowDialog<bool>(this);
+        if (!accepted)
+            return;
+
+        string updatedMacro = dialog.MacroText;
+        row.MacroTextBox.Text = updatedMacro;
+
+        string? error = await _playMacroAsync(updatedMacro, dialog.PlayCount);
+        if (!string.IsNullOrWhiteSpace(error))
+            ShowError(error);
     }
 
     private static string NormalizeHotkey(string? hotkey)

@@ -512,6 +512,7 @@ namespace TWXProxy.Core
             AddCommand("WAITON", 1, 1, CmdWaitOn, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("DIAGLOG", 1, -1, CmdDiagLog, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("DIAGMODE", 1, 1, CmdDiagMode, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("AUTOHAGGLE", 1, 1, CmdAutoHaggle, Array.Empty<ParamKind>(), ParamKind.Value);
         }
 
         private void BuildSysConstList()
@@ -881,6 +882,7 @@ namespace TWXProxy.Core
             AddSysConstant("LIBSILENT", (indexes) => "0");
             AddSysConstant("LIBMULTILINE", (indexes) => "0");
             AddSysConstant("LIBMSG", (indexes) => string.Empty);
+            AddSysConstant("HAGGLE", (indexes) => GetNativeHaggle());
         }
         
         #region Text Processing Helpers
@@ -1000,8 +1002,12 @@ namespace TWXProxy.Core
         private static string GetCurrentGenTorps() => GetCurrentShipStatus().GenesisTorps.ToString(CultureInfo.InvariantCulture);
         private static string GetCurrentTwarpType()
         {
-            int value = GetCurrentShipStatus().TurnsPerWarp;
-            return value == 0 ? "No" : value.ToString(CultureInfo.InvariantCulture);
+            var status = GetCurrentShipStatus();
+            if (status.TransWarp2 > 0)
+                return "2";
+            if (status.TransWarp1 > 0)
+                return "1";
+            return "No";
         }
         private static string GetCurrentCloaks() => GetCurrentShipStatus().Cloaks.ToString(CultureInfo.InvariantCulture);
         private static string GetCurrentBeacons() => GetCurrentShipStatus().Beacons.ToString(CultureInfo.InvariantCulture);
@@ -1143,6 +1149,14 @@ namespace TWXProxy.Core
         public static string GetConnected()
         {
             return (_activeGameInstance?.IsConnected ?? false) ? "1" : "0";
+        }
+
+        /// <summary>
+        /// Get native haggle enabled status from active game instance.
+        /// </summary>
+        public static string GetNativeHaggle()
+        {
+            return (_activeGameInstance?.NativeHaggleEnabled ?? false) ? "1" : "0";
         }
         
         /// <summary>

@@ -237,6 +237,45 @@ namespace TWXProxy.Core
             return CmdAction.None;
         }
 
+        private static CmdAction CmdAutoHaggle_Impl(object script, CmdParam[] parameters)
+        {
+            if (_activeGameInstance == null)
+            {
+                Console.WriteLine("[Script] AUTOHAGGLE: No active game instance");
+                return CmdAction.None;
+            }
+
+            string mode = parameters.Length > 0 ? parameters[0].Value.Trim() : string.Empty;
+            if (string.IsNullOrWhiteSpace(mode))
+            {
+                Console.WriteLine("[Script] AUTOHAGGLE: Expected 'on' or 'off'");
+                return CmdAction.None;
+            }
+
+            bool? enabled = mode.ToLowerInvariant() switch
+            {
+                "on" => true,
+                "1" => true,
+                "true" => true,
+                "yes" => true,
+                "off" => false,
+                "0" => false,
+                "false" => false,
+                "no" => false,
+                _ => null
+            };
+
+            if (enabled == null)
+            {
+                Console.WriteLine($"[Script] AUTOHAGGLE: Unknown mode '{mode}'");
+                return CmdAction.None;
+            }
+
+            _activeGameInstance.SetNativeHaggleEnabled(enabled.Value);
+            GlobalModules.DebugLog($"[AUTOHAGGLE] Script set native haggle {(enabled.Value ? "ON" : "OFF")}\n");
+            return CmdAction.None;
+        }
+
         #endregion
 
         #region Network Access Helper

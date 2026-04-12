@@ -40,6 +40,13 @@ internal sealed record mombotStatusSnapshot(
     string LastLoadedModule,
     IReadOnlyList<string> AuthorizedUsers);
 
+internal sealed record mombotResolvedModule(
+    string ScriptReference,
+    string FullPath,
+    string Category,
+    string Type,
+    bool Hidden);
+
 internal sealed class mombotService
 {
     private Core.GameInstance? _gameInstance;
@@ -128,108 +135,70 @@ internal sealed class mombotService
         }
     }
 
-    public bool TryLoadCompatScript(string canonical, out string? scriptReference, out string? error)
+    public bool TryLoadScriptAtLabel(string scriptPath, string entryLabel, out string? error)
     {
-        scriptReference = null;
+        return TryLoadScriptAtLabel(scriptPath, entryLabel, null, out error);
+    }
+
+    public bool TryLoadScriptAtLabel(
+        string scriptPath,
+        string entryLabel,
+        IReadOnlyDictionary<string, string>? initialVars,
+        out string? error)
+    {
         error = null;
-
-        if (!TryResolveNativeCompatScriptReference(canonical, out string? reference, out _))
+        if (_interpreter == null)
         {
-            Core.GlobalModules.DebugLog($"[mombot.compat] no compat script registered/resolved for '{canonical}'\n");
-            error = $"No native compatibility script is registered for '{canonical}'.";
+            error = "No active interpreter.";
             return false;
         }
 
-        scriptReference = reference;
-        Core.GlobalModules.DebugLog($"[mombot.compat] loading compat script canonical='{canonical}' ref='{reference}'\n");
-        return TryLoadScript(reference!, out error);
+        try
+        {
+            _interpreter.LoadAtLabel(
+                scriptPath,
+                false,
+                entryLabel,
+                script =>
+                {
+                    if (initialVars == null || initialVars.Count == 0)
+                        return;
+
+                    foreach ((string name, string value) in initialVars)
+                        script.SetScriptVarIgnoreCase(name, value);
+                });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
     }
 
-    public bool TryResolveScriptLoadRedirect(string requestedReference, out string? scriptReference)
+    public bool TryLoadInstalledScriptAtLabel(string relativeReference, string entryLabel, out string? scriptReference, out string? error)
     {
-        scriptReference = null;
-
-        if (!_config.Enabled || _interpreter == null || string.IsNullOrWhiteSpace(requestedReference))
-            return false;
-
-        string requestedLeaf = Path.GetFileName(requestedReference.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar));
-        if (requestedLeaf.StartsWith("twx3_native_", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        string resolvedRequestedPath = _interpreter.ResolveScriptPath(requestedReference);
-        if (!File.Exists(resolvedRequestedPath))
-            return false;
-
-        string? scriptRoot = GetAbsoluteScriptRoot();
-        if (string.IsNullOrWhiteSpace(scriptRoot))
-            return false;
-
-        string normalizedRoot = Path.GetFullPath(scriptRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        string normalizedRequested = Path.GetFullPath(resolvedRequestedPath);
-        if (!normalizedRequested.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        string relative = Path.GetRelativePath(scriptRoot, normalizedRequested).Replace('\\', '/');
-        if (!relative.EndsWith(".cts", StringComparison.OrdinalIgnoreCase) ||
-            relative.StartsWith("Source/", StringComparison.OrdinalIgnoreCase) ||
-            !relative.StartsWith("commands/", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(relative, "commands/general/run.cts", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        string canonical = mombotCatalog.NormalizeCommandName(Path.GetFileNameWithoutExtension(relative).TrimStart('_'));
-        if (!TryResolveNativeSourceCommandWrapper(relative, canonical, out string? redirectedReference))
-            return false;
-
-        scriptReference = redirectedReference;
-        return true;
+        return TryLoadInstalledScriptAtLabel(relativeReference, entryLabel, null, out scriptReference, out error);
     }
 
-    public bool TryExecuteInternalAction(
-        string actionRef,
-        bool selfCommand,
-        string route,
-        string userName,
+    public bool TryLoadInstalledScriptAtLabel(
+        string relativeReference,
+        string entryLabel,
+        IReadOnlyDictionary<string, string>? initialVars,
         out string? scriptReference,
         out string? error)
     {
         scriptReference = null;
         error = null;
 
-        if (string.IsNullOrWhiteSpace(actionRef))
+        if (!TryResolveExplicitScriptReference(relativeReference, out string? reference, out _))
         {
-            error = "No Mombot action was provided.";
+            error = $"Unable to locate '{relativeReference}' in the configured Mombot script root.";
             return false;
         }
-
-        if (!TryResolveInternalActionScriptReference(out string? reference, out _))
-        {
-            error = "Unable to locate the native Mombot internal-action wrapper.";
-            return false;
-        }
-
-        mombotCommandContext context = new(
-            string.Empty,
-            string.Empty,
-            Array.Empty<string>(),
-            selfCommand,
-            route,
-            userName);
-
-        Compat.ApplyToSession(
-            _interpreter,
-            _database,
-            _config,
-            Settings,
-            context,
-            userCommandLineOverride: string.Empty);
-
-        ApplySessionVar("$BOT~NATIVE_ACTION", actionRef);
-        ApplySessionVar("$bot~native_action", actionRef);
 
         scriptReference = reference;
-        return TryLoadScript(reference!, out error);
+        return TryLoadScriptAtLabel(reference!, entryLabel, initialVars, out error);
     }
 
     public bool StopScriptByName(string scriptName)
@@ -379,43 +348,38 @@ internal sealed class mombotService
         List<string> words = GetWords(input);
         if (words.Count == 0)
         {
-            string message = "mombot: Empty mombot command.";
-            PublishMessage(message);
-            return new mombotDispatchResult(false, mombotDispatchKind.Invalid, string.Empty, message);
+            string emptyMessage = "mombot: Empty mombot command.";
+            PublishMessage(emptyMessage);
+            return new mombotDispatchResult(false, mombotDispatchKind.Invalid, string.Empty, emptyMessage);
         }
 
         string rawCommand = NormalizeRawCommandToken(words[0]);
         List<string> rawParameters = words.Skip(1).Take(8).ToList();
-        string canonical = mombotCatalog.NormalizeCommandName(rawCommand);
-        string commandLine = BuildNormalizedCommandLine(rawCommand, rawParameters);
-        mombotCommandContext shellContext = new(
-            commandLine,
+        mombotCommandContext dispatchContext = NormalizeDispatchContext(
             rawCommand,
             rawParameters,
             selfCommand,
             route,
             userName);
+        string canonical = dispatchContext.CommandName;
 
         if (ShouldHandleNatively(canonical))
         {
-            mombotCommandContext nativeContext = new(
-                BuildNormalizedCommandLine(canonical, rawParameters),
-                canonical,
-                rawParameters,
-                selfCommand,
-                route,
-                userName);
-
             mombotCatalog.TryGetCommandSpec(canonical, out mombotCommandSpec? nativeCommand);
             mombotCommandSpec effectiveCommand = nativeCommand ?? new mombotCommandSpec(
                 canonical,
                 mombotCommandKind.Internal,
                 $":INTERNAL_COMMANDS~{canonical}",
                 "Native mombot management command.");
-            return ExecuteNative(effectiveCommand, nativeContext);
+            return ExecuteNative(effectiveCommand, dispatchContext);
         }
 
-        return ExecuteShellDispatcher(shellContext, canonical);
+        if (TryExecuteResolvedModule(dispatchContext, out mombotDispatchResult resolved))
+            return resolved;
+
+        string message = $"mombot: {FormatModeName(canonical)} is not a valid command.";
+        PublishMessage(message);
+        return new mombotDispatchResult(false, mombotDispatchKind.Invalid, canonical, message);
     }
 
     private bool ShouldHandleNatively(string canonical)
@@ -427,13 +391,61 @@ internal sealed class mombotService
                string.Equals(canonical, "listall", StringComparison.OrdinalIgnoreCase);
     }
 
-    private mombotDispatchResult ExecuteShellDispatcher(mombotCommandContext context, string canonical)
+    private bool TryExecuteResolvedModule(mombotCommandContext context, out mombotDispatchResult result)
     {
-        if (!TryResolveShellDispatcherScriptReference(out string? scriptReference, out _))
+        result = default!;
+
+        if (!TryResolveCommandScriptReference(context.CommandName, out mombotResolvedModule? module) || module == null)
+            return false;
+
+        string currentLastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        bool isMode = string.Equals(module.Category, "Modes", StringComparison.OrdinalIgnoreCase);
+        bool helpRequested = HasHelpParameter(context.Parameters);
+        bool modeOffRequested = isMode &&
+                                !helpRequested &&
+                                context.Parameters.Any(parameter => string.Equals(parameter, "off", StringComparison.OrdinalIgnoreCase));
+        string moduleUserCommandLine = BuildModuleUserCommandLine(context);
+
+        if (modeOffRequested)
         {
-            string message = "mombot: unable to locate commands/general/run.cts in the configured Mombot script root.";
-            PublishMessage(message);
-            return new mombotDispatchResult(false, mombotDispatchKind.Script, canonical, message);
+            if (!string.IsNullOrWhiteSpace(currentLastLoadedModule))
+                StopScriptByName(currentLastLoadedModule);
+
+            ApplySessionVar("$BOT~MODE", "General");
+            ApplySessionVar("$bot~mode", "General");
+            ApplySessionVar("$mode", "General");
+            ApplySessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+            ApplySessionVar("$LAST_LOADED_MODULE", string.Empty);
+            Compat.ApplyToSession(
+                _interpreter,
+                _database,
+                _config,
+                Settings,
+                context,
+                lastLoadedModule: string.Empty,
+                userCommandLineOverride: moduleUserCommandLine);
+
+            string stopMessage = $"{FormatModeName(context.CommandName)} mode is now off.";
+            PublishMessage(stopMessage);
+            result = new mombotDispatchResult(true, mombotDispatchKind.Native, context.CommandName, stopMessage);
+            return true;
+        }
+
+        if (isMode && !helpRequested && !string.IsNullOrWhiteSpace(currentLastLoadedModule))
+            StopScriptByName(currentLastLoadedModule);
+
+        string effectiveLastLoadedModule = isMode && !helpRequested
+            ? module.ScriptReference
+            : currentLastLoadedModule;
+
+        if (isMode && !helpRequested)
+        {
+            string modeName = FormatModeName(context.CommandName);
+            ApplySessionVar("$BOT~MODE", modeName);
+            ApplySessionVar("$bot~mode", modeName);
+            ApplySessionVar("$mode", modeName);
+            ApplySessionVar("$BOT~LAST_LOADED_MODULE", module.ScriptReference);
+            ApplySessionVar("$LAST_LOADED_MODULE", module.ScriptReference);
         }
 
         Compat.ApplyToSession(
@@ -442,16 +454,27 @@ internal sealed class mombotService
             _config,
             Settings,
             context,
-            userCommandLineOverride: context.CommandLine);
+            lastLoadedModule: effectiveLastLoadedModule,
+            userCommandLineOverride: moduleUserCommandLine);
 
-        if (!TryLoadScript(scriptReference!, out string? error))
+        StopScriptByName(module.ScriptReference);
+        if (!TryLoadScript(module.ScriptReference, out string? error))
         {
-            string message = $"mombot: failed to load '{scriptReference}': {error}";
+            string message = $"mombot: failed to load '{module.ScriptReference}': {error}";
             PublishMessage(message);
-            return new mombotDispatchResult(false, mombotDispatchKind.Script, canonical, message, scriptReference);
+            result = new mombotDispatchResult(false, mombotDispatchKind.Script, context.CommandName, message, module.ScriptReference);
+            return true;
         }
 
-        return new mombotDispatchResult(true, mombotDispatchKind.Script, canonical, string.Empty, scriptReference);
+        result = new mombotDispatchResult(true, mombotDispatchKind.Script, context.CommandName, string.Empty, module.ScriptReference);
+        return true;
+    }
+
+    private static string BuildModuleUserCommandLine(mombotCommandContext context)
+    {
+        return context.Parameters.Count == 0
+            ? string.Empty
+            : string.Join(" ", context.Parameters);
     }
 
     private mombotDispatchResult ExecuteNative(mombotCommandSpec command, mombotCommandContext context)
@@ -629,837 +652,6 @@ internal sealed class mombotService
         Core.GlobalModules.DebugLog("[mombot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
     }
 
-    private string? TryResolveScriptReference(string canonical, mombotCommandSpec? command, out bool isModeScript)
-    {
-        isModeScript = false;
-
-        if (TryResolveNativeCompatScriptReference(canonical, out string? compatReference, out string? compatFullPath))
-        {
-            isModeScript = IsModeScriptPath(compatFullPath);
-            return compatReference;
-        }
-
-        if (command?.Kind == mombotCommandKind.Module &&
-            TryResolveExplicitScriptReference(command.Source, out string? explicitReference, out string? explicitFullPath))
-        {
-            isModeScript = IsModeScriptPath(explicitFullPath);
-            return explicitReference;
-        }
-
-        if (TryResolveRecursiveScriptReference(canonical, out string? recursiveReference, out string? recursiveFullPath))
-        {
-            isModeScript = IsModeScriptPath(recursiveFullPath);
-            return recursiveReference;
-        }
-
-        return null;
-    }
-
-    private bool TryResolveNativeSourceCommandWrapper(string relativeCompiledPath, string canonical, out string? scriptReference)
-    {
-        scriptReference = null;
-
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-            return false;
-
-        string sourceRelative = relativeCompiledPath[..^4] + ".ts";
-        string sourcePath = Path.Combine(sourceRoot, sourceRelative.Replace('/', Path.DirectorySeparatorChar));
-        if (!File.Exists(sourcePath))
-            return false;
-
-        string? shellBasePath = EnsureNativeShellBaseScript();
-        if (string.IsNullOrWhiteSpace(shellBasePath) || !File.Exists(shellBasePath))
-            return false;
-
-        string commandBody = ReadCommandBody(sourcePath);
-        if (string.IsNullOrWhiteSpace(commandBody))
-            return false;
-
-        string entryLabel = GetPrimaryLabel(commandBody, canonical);
-        IReadOnlyList<string> baseIncludes = ReadIncludeLines(Path.Combine(sourceRoot, "mombot.ts"));
-        IReadOnlyList<string> commandIncludes = ReadIncludeLines(sourcePath);
-        List<string> mergedIncludes = BuildMergedIncludeList(baseIncludes, commandIncludes);
-
-        string wrapperDirectory = Path.Combine(sourceRoot, Path.GetDirectoryName(sourceRelative.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty);
-        string wrapperFileName = "twx3_native_" + Path.GetFileNameWithoutExtension(sourceRelative) + ".ts";
-        string wrapperPath = Path.Combine(wrapperDirectory, wrapperFileName);
-
-        string shellBaseInclude = "include \"source\\commands\\general\\twx3_native_shell_base\"";
-        string includeText = string.Join(
-            Environment.NewLine,
-            new[] { shellBaseInclude }.Concat(mergedIncludes.Where(line =>
-                !line.Contains("source\\commands\\general\\twx3_native_shell_base", StringComparison.OrdinalIgnoreCase))));
-
-        string content =
-            $"# Native TWX3 source wrapper for {relativeCompiledPath}.{Environment.NewLine}" +
-            "gosub :combat~init" + Environment.NewLine +
-            "gosub :BOT~load_the_variables" + Environment.NewLine +
-            $"goto {entryLabel}{Environment.NewLine}" +
-            "halt" + Environment.NewLine +
-            Environment.NewLine +
-            commandBody.TrimEnd() + Environment.NewLine +
-            Environment.NewLine +
-            "#INCLUDES:" + Environment.NewLine +
-            includeText + Environment.NewLine;
-
-        Directory.CreateDirectory(wrapperDirectory);
-        if (!File.Exists(wrapperPath) || !string.Equals(File.ReadAllText(wrapperPath), content, StringComparison.Ordinal))
-            File.WriteAllText(wrapperPath, content);
-
-        string fullPath = Path.GetFullPath(wrapperPath);
-        scriptReference = BuildLoadReference(fullPath);
-        Core.GlobalModules.DebugLog($"[mombot.native] source redirect '{relativeCompiledPath}' -> '{scriptReference}' (entry={entryLabel})\n");
-        return true;
-    }
-
-    private string? EnsureNativeShellBaseScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-            return null;
-
-        string basePath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_shell_base.ts");
-        string content =
-            "# Shared native TWX3 shell support for Mombot source wrappers.\n" +
-            ":bot~load_watcher_variables\n" +
-            "\tloadVar $SHIP~SHIP_MAX_ATTACK\n" +
-            "\tloadVar $SHIP~SHIP_FIGHTERS_MAX\n" +
-            "\tloadVar $SHIP~SHIP_OFFENSIVE_ODDS\n" +
-            "\tloadVar $PLANET~PLANET\n" +
-            "\tloadVar $PLAYER~CURRENT_SECTOR\n" +
-            "return\n" +
-            "\n" +
-            ":MAIN~module_vars\n" +
-            "\tsaveVar $bot~command\n" +
-            "\tsaveVar $bot~user_command_line\n" +
-            "\tsetVar $switchboard~bot_name $bot~bot_name\n" +
-            "\tsaveVar $switchboard~bot_name\n" +
-            "\tsavevar $bot~name\n" +
-            "\tsaveVar $bot~parm1\n" +
-            "\tsaveVar $bot~parm2\n" +
-            "\tsaveVar $bot~parm3\n" +
-            "\tsaveVar $bot~parm4\n" +
-            "\tsaveVar $bot~parm5\n" +
-            "\tsaveVar $bot~parm6\n" +
-            "\tsaveVar $bot~parm7\n" +
-            "\tsaveVar $bot~parm8\n" +
-            "\tsaveVar $bot~bot_turn_limit\n" +
-            "\tsaveVar $player~unlimitedGame\n" +
-            "\tgosub :MAIN~backwards_compatible\n" +
-            "return\n" +
-            "\n" +
-            ":bot~wait_for_command\n" +
-            "halt\n" +
-            "\n" +
-            ":MAIN~backwards_compatible\n" +
-            "\tsetVar  $safe_ship $bot~safe_ship\n" +
-            "\tsaveVar $safe_ship\n" +
-            "\tsetVar  $safe_planet $bot~safe_planet\n" +
-            "\tsaveVar $safe_planet\n" +
-            "\tsetVar $command $bot~command\n" +
-            "\tsaveVar $command\n" +
-            "\tsetvar $user_command_line $bot~user_command_line\n" +
-            "\tsaveVar $user_command_line\n" +
-            "\tsetVar $bot_name $bot~bot_name\n" +
-            "\tsaveVar $bot_name\n" +
-            "\tsetVar $self_command $bot~self_command\n" +
-            "\tsaveVar $self_command\n" +
-            "\tsetvar $parm1 $bot~parm1\n" +
-            "\tsetvar $parm2 $bot~parm2\n" +
-            "\tsetvar $parm3 $bot~parm3\n" +
-            "\tsetvar $parm4 $bot~parm4\n" +
-            "\tsetvar $parm5 $bot~parm5\n" +
-            "\tsetvar $parm6 $bot~parm6\n" +
-            "\tsetvar $parm7 $bot~parm7\n" +
-            "\tsetvar $parm8 $bot~parm8\n" +
-            "\tif ($parm1 = \"\")\n" +
-            "\t\tsetvar $parm1 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm2 = \"\")\n" +
-            "\t\tsetvar $parm2 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm3 = \"\")\n" +
-            "\t\tsetvar $parm3 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm4 = \"\")\n" +
-            "\t\tsetvar $parm4 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm5 = \"\")\n" +
-            "\t\tsetvar $parm5 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm6 = \"\")\n" +
-            "\t\tsetvar $parm6 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm7 = \"\")\n" +
-            "\t\tsetvar $parm7 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm8 = \"\")\n" +
-            "\t\tsetvar $parm8 \"0\"\n" +
-            "\tend\n" +
-            "\tsaveVar $parm1\n" +
-            "\tsaveVar $parm2\n" +
-            "\tsaveVar $parm3\n" +
-            "\tsaveVar $parm4\n" +
-            "\tsaveVar $parm5\n" +
-            "\tsaveVar $parm6\n" +
-            "\tsaveVar $parm7\n" +
-            "\tsaveVar $parm8\n" +
-            "\tsetVar $rylos $map~rylos\n" +
-            "\tsaveVar $rylos\n" +
-            "\tsetVar $alpha_centauri $map~alpha_centauri\n" +
-            "\tsaveVar $alpha_centauri\n" +
-            "\tsetVar $stardock $map~stardock\n" +
-            "\tsaveVar $stardock\n" +
-            "\tsetVar $backdoor $map~backdoor\n" +
-            "\tsaveVar $backdoor\n" +
-            "\tsetVar $home_sector $map~home_sector\n" +
-            "\tsaveVar $home_sector\n" +
-            "\tsetVar $alarm_list $bot~alarm_list\n" +
-            "\tsaveVar $alarm_list\n" +
-            "\tsetVar $unlimitedGame $player~unlimitedGame\n" +
-            "\tsaveVar $unlimitedGame\n" +
-            "\tsetVar $bot_turn_limit $bot~bot_turn_limit\n" +
-            "\tsaveVar $bot_turn_limit\n" +
-            "\tsetVar $password $bot~password\n" +
-            "\tsaveVar $password\n" +
-            "\tsetVar $mode $bot~mode\n" +
-            "\tsaveVar $mode\n" +
-            "\tsetVar $subspace $bot~subspace\n" +
-            "\tsaveVar $subspace\n" +
-            "\tsetvar $letter $bot~letter\n" +
-            "\tsavevar $letter\n" +
-            "\tsetvar $offenseCapping $PLAYER~offenseCapping\n" +
-            "\tsetvar $cappingAliens $PLAYER~cappingAliens\n" +
-            "\tsavevar $offenseCapping\n" +
-            "\tsavevar $cappingAliens\n" +
-            "return\n" +
-            "\n" +
-            "#INCLUDES:\n" +
-            string.Join(Environment.NewLine, ReadIncludeLines(Path.Combine(sourceRoot, "mombot.ts"))) +
-            "\n";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(basePath)!);
-        if (!File.Exists(basePath) || !string.Equals(File.ReadAllText(basePath), content, StringComparison.Ordinal))
-            File.WriteAllText(basePath, content);
-
-        return basePath;
-    }
-
-    private static string ReadCommandBody(string sourcePath)
-    {
-        string text = File.ReadAllText(sourcePath);
-        int includeIndex = text.IndexOf("#INCLUDES:", StringComparison.OrdinalIgnoreCase);
-        return includeIndex >= 0 ? text[..includeIndex].TrimEnd() : text.TrimEnd();
-    }
-
-    private static IReadOnlyList<string> ReadIncludeLines(string sourcePath)
-    {
-        if (!File.Exists(sourcePath))
-            return Array.Empty<string>();
-
-        string text = File.ReadAllText(sourcePath);
-        int includeIndex = text.IndexOf("#INCLUDES:", StringComparison.OrdinalIgnoreCase);
-        if (includeIndex < 0)
-            return Array.Empty<string>();
-
-        var includes = new List<string>();
-        foreach (string rawLine in text[(includeIndex + "#INCLUDES:".Length)..].Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
-        {
-            string line = rawLine.Trim();
-            if (line.StartsWith("include ", StringComparison.OrdinalIgnoreCase))
-                includes.Add(line);
-        }
-
-        return includes;
-    }
-
-    private static List<string> BuildMergedIncludeList(IReadOnlyList<string> baseIncludes, IReadOnlyList<string> commandIncludes)
-    {
-        var merged = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string line in baseIncludes.Concat(commandIncludes))
-        {
-            if (seen.Add(line))
-                merged.Add(line);
-        }
-
-        return merged;
-    }
-
-    private static string GetPrimaryLabel(string body, string canonical)
-    {
-        foreach (string rawLine in body.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
-        {
-            string line = rawLine.Trim();
-            if (line.StartsWith(":", StringComparison.Ordinal) && line.Length > 1)
-                return line;
-        }
-
-        return ":" + canonical;
-    }
-
-    private bool TryResolveNativeCompatScriptReference(string canonical, out string? scriptReference, out string? fullPath)
-    {
-        scriptReference = null;
-        fullPath = null;
-
-        string? compatPath = canonical.ToLowerInvariant() switch
-        {
-            "cap" => EnsureCapCompatScript(),
-            "initsettings" => EnsureInitialSettingsCompatScript(),
-            "refresh" => EnsureRefreshCompatScript(),
-            "storeship" => EnsureStoreshipCompatScript(),
-            _ => null,
-        };
-
-        if (string.IsNullOrWhiteSpace(compatPath) || !File.Exists(compatPath))
-        {
-            Core.GlobalModules.DebugLog(
-                $"[mombot.compat] canonical='{canonical}' compatPath='{compatPath ?? "-"}' exists={(!string.IsNullOrWhiteSpace(compatPath) && File.Exists(compatPath))}\n");
-            return false;
-        }
-
-        fullPath = Path.GetFullPath(compatPath);
-        scriptReference = BuildLoadReference(fullPath);
-        Core.GlobalModules.DebugLog(
-            $"[mombot.compat] canonical='{canonical}' fullPath='{fullPath}' loadRef='{scriptReference}'\n");
-        return true;
-    }
-
-    private string? EnsureStoreshipCompatScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-        {
-            Core.GlobalModules.DebugLog($"[mombot.compat] refresh sourceRoot missing '{sourceRoot}'\n");
-            return null;
-        }
-
-        string compatPath = Path.Combine(sourceRoot, "commands", "data", "twx3_native_storeship.ts");
-        string content =
-            "# Native TWX3 compatibility wrapper for storeship.\n" +
-            ":storeship\n" +
-            ":shipstore\n" +
-            "\n" +
-            "gosub :BOT~loadVars\n" +
-            "\n" +
-            "\tgosub :player~currentPrompt\n" +
-            "\tsetVar $PLAYER~startingLocation $PLAYER~CURRENT_PROMPT\n" +
-            "\tsetVar $BOT~validPrompts \"Command Citadel\"\n" +
-            "\tgosub :BOT~checkStartingPrompt\n" +
-            "\tgosub :ship~savetheship\n" +
-            "\n" +
-            "halt\n" +
-            "\n" +
-            "#INCLUDES:\n" +
-            "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
-            "include \"source\\module_includes\\bot\\helpfile\\bot\"\n" +
-            "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
-            "include \"source\\bot_includes\\player\\currentprompt\\player\"\n" +
-            "include \"source\\bot_includes\\ship\\savetheship\\ship\"\n" +
-            "include \"source\\bot_includes\\ship\\loadshipinfo\\ship\"\n" +
-            "include \"source\\bot_includes\\switchboard\"\n";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
-        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
-            File.WriteAllText(compatPath, content);
-
-        Core.GlobalModules.DebugLog($"[mombot.compat] refresh compat ready '{compatPath}'\n");
-        return compatPath;
-    }
-
-    private string? EnsureCapCompatScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-        {
-            Core.GlobalModules.DebugLog($"[mombot.compat] cap sourceRoot missing '{sourceRoot}'\n");
-            return null;
-        }
-
-        string? content = ReadEmbeddedTextResource("MTC.mombot.twx3_native_cap.template.ts");
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            Core.GlobalModules.DebugLog("[mombot.compat] cap template resource missing\n");
-            return null;
-        }
-
-        string compatPath = Path.Combine(sourceRoot, "commands", "offense", "twx3_native_cap.ts");
-        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
-        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
-            File.WriteAllText(compatPath, content);
-
-        Core.GlobalModules.DebugLog($"[mombot.compat] cap compat ready '{compatPath}'\n");
-        return compatPath;
-    }
-
-    private string? EnsureRefreshCompatScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-        {
-            Core.GlobalModules.DebugLog($"[mombot.compat] initsettings sourceRoot missing '{sourceRoot}'\n");
-            return null;
-        }
-
-        string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_refresh.ts");
-        string content =
-            "# Native TWX3 compatibility wrapper for refresh/bootstrap data gathering.\n" +
-            ":refresh\n" +
-            ":twx3_native_refresh\n" +
-            "\n" +
-            "gosub :BOT~loadVars\n" +
-            "gosub :PLAYER~quikstats\n" +
-            "setVar $BOT~validPrompts \"Citadel Command\"\n" +
-            "gosub :BOT~checkStartingPrompt\n" +
-            "if ($PLAYER~CURRENT_PROMPT = \"Citadel\")\n" +
-            "\tsend \"q\"\n" +
-            "\tgosub :PLANET~getPlanetInfo\n" +
-            "\tsend \"q\"\n" +
-            "end\n" +
-            "\n" +
-            "gosub :PLAYER~getInfo\n" +
-            "gosub :GAME~gamestats\n" +
-            "gosub :SHIP~getShipStats\n" +
-            "gosub :PLAYER~quikstats\n" +
-            "gosub :SHIP~getShipCapStats\n" +
-            "gosub :SHIP~loadShipInfo\n" +
-            "gosub :PLANET~getPlanetStats\n" +
-            "gosub :PLANET~loadPlanetInfo\n" +
-            "\n" +
-            "if ($PLAYER~CURRENT_PROMPT = \"Citadel\")\n" +
-            "\tgosub :PLANET~landingSub\n" +
-            "end\n" +
-            "\n" +
-            "halt\n" +
-            "\n" +
-            "#INCLUDES:\n" +
-            "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
-            "include \"source\\module_includes\\bot\\checkstartingprompt\\bot\"\n" +
-            "include \"source\\bot_includes\\player\"\n" +
-            "include \"source\\bot_includes\\game\"\n" +
-            "include \"source\\bot_includes\\ship\"\n" +
-            "include \"source\\bot_includes\\planet\"\n" +
-            "include \"source\\bot_includes\\switchboard\"\n";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
-        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
-            File.WriteAllText(compatPath, content);
-
-        Core.GlobalModules.DebugLog($"[mombot.compat] initsettings compat ready '{compatPath}'\n");
-        return compatPath;
-    }
-
-    private string? EnsureInitialSettingsCompatScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-            return null;
-
-        string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_initial_settings.ts");
-        string content =
-            "# Native TWX3 compatibility wrapper for Mombot shell startup getInitial_Settings.\n" +
-            ":getInitial_Settings\n" +
-            ":twx3_native_initial_settings\n" +
-            "loadVar $folder\n" +
-            "loadVar $gconfig_file\n" +
-            "loadVar $SCRIPT_FILE\n" +
-            "loadVar $GAME~GAME_SETTINGS_FILE\n" +
-            "loadVar $SHIP~cap_file\n" +
-            "loadVar $PLANET~planet_file\n" +
-            "setvar $connectivity~relogging false\n" +
-            "savevar $connectivity~relogging\n" +
-            "loadVar $GAME~gamestats\n" +
-            "setVar $pgrid_type \"Normal\"\n" +
-            "setVar $pgrid_end_command \" scan \"\n" +
-            "getWord CURRENTLINE $PLAYER~startingLocation 1\n" +
-            "if (($PLAYER~startingLocation <> \"Command\") AND ($PLAYER~startingLocation <> \"Citadel\"))\n" +
-            "\tif (($PLAYER~CURRENT_PROMPT = \"Command\") OR ($PLAYER~CURRENT_PROMPT = \"Citadel\"))\n" +
-            "\t\tsetVar $PLAYER~startingLocation $PLAYER~CURRENT_PROMPT\n" +
-            "\tend\n" +
-            "end\n" +
-            "fileExists $SCRIPT_FILE_chk $SCRIPT_FILE\n" +
-            "if ($SCRIPT_FILE_chk)\n" +
-            "\tsetArray $HOTKEY_SCRIPTS 10 1\n" +
-            "\tsetVar $i 1\n" +
-            "\tsetVar $HOTKEY_SCRIPTS 0\n" +
-            "\tread $SCRIPT_FILE $line $i\n" +
-            "\twhile ($line <> \"EOF\")\n" +
-            "\t\tgetWord $line $fileLocation 1\n" +
-            "\t\tgetWordPos $line $pos #34\n" +
-            "\t\tif ($pos <= 0)\n" +
-            "\t\t\techo \"Error with script file. either remove \" & $SCRIPT_FILE & \", or fix it*\"\n" +
-            "\t\t\thalt\n" +
-            "\t\tend\n" +
-            "\t\tcutText $line $scriptName $pos 9999\n" +
-            "\t\tstripText $scriptName #34\n" +
-            "\t\tsetVar $HOTKEY_SCRIPTS[$i] $fileLocation\n" +
-            "\t\tsetVar $HOTKEY_SCRIPTS[$i][1] $scriptName\n" +
-            "\t\tadd $i 1\n" +
-            "\t\tadd $HOTKEY_SCRIPTS 1\n" +
-            "\t\tread $SCRIPT_FILE $line $i\n" +
-            "\tend\n" +
-            "else\n" +
-            "\tsetArray $HOTKEY_SCRIPTS 10 1\n" +
-            "end\n" +
-            "\n" +
-            "fileExists $gfile_chk $gconfig_file\n" +
-            "if ($gfile_chk)\n" +
-            "\tloadVar $GAME~mbbs\n" +
-            "\tloadVar $GAME~STEAL_FACTOR\n" +
-            "\tloadVar $GAME~rob_factor\n" +
-            "\tloadVar $GAME~ptradesetting\n" +
-            "\tloadVar $GAME~port_max\n" +
-            "\tloadVar $PLAYER~unlimitedGame\n" +
-            "\tsetVar $doRelog TRUE\n" +
-            "\tsaveVar $doRelog\n" +
-            "\tread $gconfig_file $bot_name 1\n" +
-            "\tsetvar $switchboard~bot_name $bot_name\n" +
-            "\tif (CONNECTED = TRUE)\n" +
-            "\t\tgosub :PLAYER~quikstats\n" +
-            "\tend\n" +
-            "\tif (CONNECTED = true)\n" +
-            "\t\tgosub :player~quikstats\n" +
-            "\t\tsetvar $player~startingLocation $player~current_prompt\n" +
-            "\tend\n" +
-            "\tif ((($PLAYER~startingLocation = \"Command\") OR ($PLAYER~startingLocation = \"Citadel\")) AND (CONNECTED = TRUE))\n" +
-            "\t\tif ($GAME~ptradesetting = 0)\n" +
-            "\t\t\tgosub :GAME~gamestats\n" +
-            "\t\tend\n" +
-            "\t\tgosub :player~quikstats\n" +
-            "\t\tgosub :PLAYER~getInfo\n" +
-            "\t\tgosub :SHIP~getShipStats\n" +
-            "\t\tgosub :player~quikstats\n" +
-            "\t\tfileExists $SHIP~cap_file_chk $SHIP~cap_file\n" +
-            "\t\tif ($SHIP~cap_file_chk)\n" +
-            "\t\t\tgosub :SHIP~loadShipInfo\n" +
-            "\t\telse\n" +
-            "\t\t\tgosub :SHIP~getShipCapStats\n" +
-            "\t\t\tgosub :SHIP~loadShipInfo\n" +
-            "\t\tend\n" +
-            "\t\tfileExists $PLANET~planet_file_chk $PLANET~planet_file\n" +
-            "\t\tif ($PLANET~planet_file_chk)\n" +
-            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
-            "\t\telse\n" +
-            "\t\t\tgosub :PLANET~getPlanetStats\n" +
-            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
-            "\t\tend\n" +
-            "\telse\n" +
-            "\t\tfileExists $SHIP~cap_file_chk $SHIP~cap_file\n" +
-            "\t\tif ($SHIP~cap_file_chk)\n" +
-            "\t\t\tgosub :SHIP~loadShipInfo\n" +
-            "\t\tend\n" +
-            "\t\tfileExists $PLANET~planet_file_chk $PLANET~planet_file\n" +
-            "\t\tif ($PLANET~planet_file_chk)\n" +
-            "\t\t\tgosub :PLANET~loadPlanetInfo\n" +
-            "\t\tend\n" +
-            "\tend\n" +
-            "end\n" +
-            "\n" +
-            "halt\n" +
-            "\n" +
-            "#INCLUDES:\n" +
-            "include \"source\\bot_includes\\player\"\n" +
-            "include \"source\\bot_includes\\game\"\n" +
-            "include \"source\\bot_includes\\ship\"\n" +
-            "include \"source\\bot_includes\\planet\"\n" +
-            "include \"source\\bot_includes\\switchboard\"\n";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
-        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
-            File.WriteAllText(compatPath, content);
-
-        return compatPath;
-    }
-
-    private static string? ReadEmbeddedTextResource(string resourceName)
-    {
-        var assembly = typeof(mombotService).Assembly;
-        using Stream? stream = assembly.GetManifestResourceStream(resourceName);
-        if (stream == null)
-            return null;
-
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
-    }
-
-    private bool TryResolveShellDispatcherScriptReference(out string? scriptReference, out string? fullPath)
-    {
-        return TryResolveExplicitScriptReference("commands/general/run.cts", out scriptReference, out fullPath);
-    }
-
-    private bool TryResolveInternalActionScriptReference(out string? scriptReference, out string? fullPath)
-    {
-        scriptReference = null;
-        fullPath = null;
-
-        string? compatPath = EnsureInternalActionCompatScript();
-        if (string.IsNullOrWhiteSpace(compatPath) || !File.Exists(compatPath))
-            return false;
-
-        fullPath = Path.GetFullPath(compatPath);
-        scriptReference = BuildLoadReference(fullPath);
-        return true;
-    }
-
-    private string? EnsureInternalActionCompatScript()
-    {
-        string scriptsDirectory = GetScriptsDirectory();
-        string sourceRoot = Path.Combine(scriptsDirectory, "Source", "mombot4.7.1", "source");
-        if (!Directory.Exists(sourceRoot))
-        {
-            Core.GlobalModules.DebugLog($"[mombot.compat] internal action sourceRoot missing '{sourceRoot}'\n");
-            return null;
-        }
-
-        string compatPath = Path.Combine(sourceRoot, "commands", "general", "twx3_native_internal_action.ts");
-        string content =
-            "# Native TWX3 compatibility wrapper for Mombot internal hotkey actions.\n" +
-            "loadVar $BOT~NATIVE_ACTION\n" +
-            "gosub :BOT~loadVars\n" +
-            "gosub :BOT~load_the_variables\n" +
-            "goto $BOT~NATIVE_ACTION\n" +
-            "halt\n" +
-            "\n" +
-            ":bot~load_watcher_variables\n" +
-            "\tloadVar $SHIP~SHIP_MAX_ATTACK\n" +
-            "\tloadVar $SHIP~SHIP_FIGHTERS_MAX\n" +
-            "\tloadVar $SHIP~SHIP_OFFENSIVE_ODDS\n" +
-            "\tloadVar $PLANET~PLANET\n" +
-            "\tloadVar $PLAYER~CURRENT_SECTOR\n" +
-            "return\n" +
-            "\n" +
-            ":MAIN~module_vars\n" +
-            "\tsaveVar $bot~command\n" +
-            "\tsaveVar $bot~user_command_line\n" +
-            "\tsetVar $switchboard~bot_name $bot~bot_name\n" +
-            "\tsaveVar $switchboard~bot_name\n" +
-            "\tsavevar $bot~name\n" +
-            "\tsaveVar $bot~parm1\n" +
-            "\tsaveVar $bot~parm2\n" +
-            "\tsaveVar $bot~parm3\n" +
-            "\tsaveVar $bot~parm4\n" +
-            "\tsaveVar $bot~parm5\n" +
-            "\tsaveVar $bot~parm6\n" +
-            "\tsaveVar $bot~parm7\n" +
-            "\tsaveVar $bot~parm8\n" +
-            "\tsaveVar $bot~bot_turn_limit\n" +
-            "\tsaveVar $player~unlimitedGame\n" +
-            "\tgosub :MAIN~backwards_compatible\n" +
-            "return\n" +
-            "\n" +
-            ":bot~wait_for_command\n" +
-            "halt\n" +
-            "\n" +
-            ":MAIN~backwards_compatible\n" +
-            "\tsetVar  $safe_ship $bot~safe_ship\n" +
-            "\tsaveVar $safe_ship\n" +
-            "\tsetVar  $safe_planet $bot~safe_planet\n" +
-            "\tsaveVar $safe_planet\n" +
-            "\tsetVar $command $bot~command\n" +
-            "\tsaveVar $command\n" +
-            "\tsetvar $user_command_line $bot~user_command_line\n" +
-            "\tsaveVar $user_command_line\n" +
-            "\tsetVar $bot_name $bot~bot_name\n" +
-            "\tsaveVar $bot_name\n" +
-            "\tsetVar $self_command $bot~self_command\n" +
-            "\tsaveVar $self_command\n" +
-            "\tsetvar $parm1 $bot~parm1\n" +
-            "\tsetvar $parm2 $bot~parm2\n" +
-            "\tsetvar $parm3 $bot~parm3\n" +
-            "\tsetvar $parm4 $bot~parm4\n" +
-            "\tsetvar $parm5 $bot~parm5\n" +
-            "\tsetvar $parm6 $bot~parm6\n" +
-            "\tsetvar $parm7 $bot~parm7\n" +
-            "\tsetvar $parm8 $bot~parm8\n" +
-            "\tif ($parm1 = \"\")\n" +
-            "\t\tsetvar $parm1 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm2 = \"\")\n" +
-            "\t\tsetvar $parm2 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm3 = \"\")\n" +
-            "\t\tsetvar $parm3 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm4 = \"\")\n" +
-            "\t\tsetvar $parm4 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm5 = \"\")\n" +
-            "\t\tsetvar $parm5 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm6 = \"\")\n" +
-            "\t\tsetvar $parm6 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm7 = \"\")\n" +
-            "\t\tsetvar $parm7 \"0\"\n" +
-            "\tend\n" +
-            "\tif ($parm8 = \"\")\n" +
-            "\t\tsetvar $parm8 \"0\"\n" +
-            "\tend\n" +
-            "\tsaveVar $parm1\n" +
-            "\tsaveVar $parm2\n" +
-            "\tsaveVar $parm3\n" +
-            "\tsaveVar $parm4\n" +
-            "\tsaveVar $parm5\n" +
-            "\tsaveVar $parm6\n" +
-            "\tsaveVar $parm7\n" +
-            "\tsaveVar $parm8\n" +
-            "\tsetVar $rylos $map~rylos\n" +
-            "\tsaveVar $rylos\n" +
-            "\tsetVar $alpha_centauri $map~alpha_centauri\n" +
-            "\tsaveVar $alpha_centauri\n" +
-            "\tsetVar $stardock $map~stardock\n" +
-            "\tsaveVar $stardock\n" +
-            "\tsetVar $backdoor $map~backdoor\n" +
-            "\tsaveVar $backdoor\n" +
-            "\tsetVar $home_sector $map~home_sector\n" +
-            "\tsaveVar $home_sector\n" +
-            "\tsetVar $alarm_list $bot~alarm_list\n" +
-            "\tsaveVar $alarm_list\n" +
-            "\tsetVar $unlimitedGame $player~unlimitedGame\n" +
-            "\tsaveVar $unlimitedGame\n" +
-            "\tsetVar $bot_turn_limit $bot~bot_turn_limit\n" +
-            "\tsaveVar $bot_turn_limit\n" +
-            "\tsetVar $steal_factor $game~steal_factor\n" +
-            "\tsetVar $rob_factor $game~rob_factor\n" +
-            "\tsetVar $actual_steal_factor $game~actual_steal_factor\n" +
-            "\tsetVar $actual_rob_factor $game~actual_rob_factor\n" +
-            "\tsaveVar $actual_steal_factor\n" +
-            "\tsaveVar $actual_rob_factor\n" +
-            "\tsaveVar $steal_factor\n" +
-            "\tsaveVar $rob_factor\n" +
-            "\tsetVar $password $bot~password\n" +
-            "\tsaveVar $password\n" +
-            "\tsetVar $mode $bot~mode\n" +
-            "\tsaveVar $mode\n" +
-            "\tsetVar $subspace $bot~subspace\n" +
-            "\tsaveVar $subspace\n" +
-            "\tsetvar $letter $bot~letter\n" +
-            "\tsavevar $letter\n" +
-            "\tsetvar $game_menu_prompt_ansi $game~game_menu_prompt_ansi\n" +
-            "\tsetvar $game_menu_prompt $game~game_menu_prompt\n" +
-            "\tsetvar $offenseCapping $PLAYER~offenseCapping\n" +
-            "\tsetvar $cappingAliens $PLAYER~cappingAliens\n" +
-            "\tsetvar $ATOMIC_COST $GAME~ATOMIC_COST\n" +
-            "\tsetvar $BEACON_COST $GAME~BEACON_COST\n" +
-            "\tsetvar $CORBO_COST $GAME~CORBO_COST\n" +
-            "\tsetvar $CLOAK_COST $GAME~CLOAK_COST\n" +
-            "\tsetvar $PROBE_COST $GAME~PROBE_COST\n" +
-            "\tsetvar $PLANET_SCANNER_COST $GAME~PLANET_SCANNER_COST\n" +
-            "\tsetvar $LIMPET_COST $GAME~LIMPET_COST\n" +
-            "\tsetvar $ARMID_COST $GAME~ARMID_COST\n" +
-            "\tsetvar $PHOTON_COST $GAME~PHOTON_COST\n" +
-            "\tsetvar $HOLO_COST $GAME~HOLO_COST\n" +
-            "\tsetvar $DENSITY_COST $GAME~DENSITY_COST\n" +
-            "\tsetvar $DISRUPTOR_COST $GAME~DISRUPTOR_COST\n" +
-            "\tsetvar $GENESIS_COST $GAME~GENESIS_COST\n" +
-            "\tsetvar $TWARPI_COST $GAME~TWARPI_COST\n" +
-            "\tsetvar $TWARPII_COST $GAME~TWARPII_COST\n" +
-            "\tsetvar $PSYCHIC_COST $GAME~PSYCHIC_COST\n" +
-            "\tsetvar $PHOTONS_ENABLED $GAME~PHOTONS_ENABLED\n" +
-            "\tsetvar $PHOTON_DURATION $GAME~PHOTON_DURATION\n" +
-            "\tsetvar $MAX_COMMANDS $GAME~MAX_COMMANDS\n" +
-            "\tsetvar $goldEnabled $GAME~goldEnabled\n" +
-            "\tsetvar $mbbs $GAME~mbbs\n" +
-            "\tsetvar $MULTIPLE_PHOTONS $GAME~MULTIPLE_PHOTONS\n" +
-            "\tsetvar $colonist_regen $GAME~colonist_regen\n" +
-            "\tsetvar $ptradesetting $GAME~ptradesetting\n" +
-            "\tsetvar $CLEAR_BUST_DAYS $GAME~CLEAR_BUST_DAYS\n" +
-            "\tsetvar $port_max $GAME~port_max\n" +
-            "\tsetvar $PRODUCTION_RATE $GAME~PRODUCTION_RATE\n" +
-            "\tsetvar $PRODUCTION_REGEN $GAME~PRODUCTION_REGEN\n" +
-            "\tsetvar $DEBRIS_LOSS $GAME~DEBRIS_LOSS\n" +
-            "\tsetvar $RADIATION_LIFETIME $GAME~RADIATION_LIFETIME\n" +
-            "\tsetvar $LIMPET_REMOVAL_COST $GAME~LIMPET_REMOVAL_COST\n" +
-            "\tsetvar $MAX_PLANETS_PER_SECTOR $GAME~MAX_PLANETS_PER_SECTOR\n" +
-            "\tsavevar $game_menu_prompt_ansi\n" +
-            "\tsavevar $game_menu_prompt\n" +
-            "\tsavevar $offenseCapping\n" +
-            "\tsavevar $cappingAliens\n" +
-            "\tsavevar $ATOMIC_COST\n" +
-            "\tsavevar $BEACON_COST\n" +
-            "\tsavevar $CORBO_COST\n" +
-            "\tsavevar $CLOAK_COST\n" +
-            "\tsavevar $PROBE_COST\n" +
-            "\tsavevar $PLANET_SCANNER_COST\n" +
-            "\tsavevar $LIMPET_COST\n" +
-            "\tsavevar $ARMID_COST\n" +
-            "\tsavevar $PHOTON_COST\n" +
-            "\tsavevar $HOLO_COST\n" +
-            "\tsavevar $DENSITY_COST\n" +
-            "\tsavevar $DISRUPTOR_COST\n" +
-            "\tsavevar $GENESIS_COST\n" +
-            "\tsavevar $TWARPI_COST\n" +
-            "\tsavevar $TWARPII_COST\n" +
-            "\tsavevar $PSYCHIC_COST\n" +
-            "\tsavevar $PHOTONS_ENABLED\n" +
-            "\tsavevar $PHOTON_DURATION\n" +
-            "\tsavevar $MAX_COMMANDS\n" +
-            "\tsavevar $goldEnabled\n" +
-            "\tsavevar $mbbs\n" +
-            "\tsavevar $MULTIPLE_PHOTONS\n" +
-            "\tsavevar $colonist_regen\n" +
-            "\tsavevar $ptradesetting\n" +
-            "\tsavevar $CLEAR_BUST_DAYS\n" +
-            "\tsavevar $port_max\n" +
-            "\tsavevar $PRODUCTION_RATE\n" +
-            "\tsavevar $PRODUCTION_REGEN\n" +
-            "\tsavevar $DEBRIS_LOSS\n" +
-            "\tsavevar $RADIATION_LIFETIME\n" +
-            "\tsavevar $LIMPET_REMOVAL_COST\n" +
-            "\tsavevar $MAX_PLANETS_PER_SECTOR\n" +
-            "return\n" +
-            "\n" +
-            "#INCLUDES:\n" +
-            "include \"source\\module_includes\\bot\\loadvars\\bot\"\n" +
-            "include \"source\\module_includes\\bot\\helpfile\\bot\"\n" +
-            "include \"source\\bot_includes\\bot\"\n" +
-            "include \"source\\bot_includes\\bot\\connectivity\"\n" +
-            "include \"source\\bot_includes\\bot\\menus\"\n" +
-            "include \"source\\bot_includes\\bot\\internal_commands\"\n" +
-            "include \"source\\bot_includes\\bot\\user_interface\"\n" +
-            "include \"source\\bot_includes\\switchboard\"\n" +
-            "include \"source\\module_includes\\modules\\clear\\modules\"\n" +
-            "include \"source\\module_includes\\modules\\xenter\\modules\"\n" +
-            "include \"source\\bot_includes\\player\\quikstats\\player\"\n" +
-            "include \"source\\bot_includes\\player\\currentprompt\\player\"\n" +
-            "include \"source\\bot_includes\\player\\startcnsettings\\player\"\n" +
-            "include \"source\\bot_includes\\player\\getinfo\\player\"\n" +
-            "include \"source\\bot_includes\\player\\moveintosector\\player\"\n" +
-            "include \"source\\bot_includes\\ship\\getshipcapstats\\ship\"\n" +
-            "include \"source\\bot_includes\\ship\\getshipstats\\ship\"\n" +
-            "include \"source\\bot_includes\\ship\\savetheship\\ship\"\n" +
-            "include \"source\\bot_includes\\ship\\loadshipinfo\\ship\"\n" +
-            "include \"source\\bot_includes\\combat\\fastattack\\combat\"\n" +
-            "include \"source\\bot_includes\\combat\\fastcapture\\combat\"\n" +
-            "include \"source\\bot_includes\\combat\\holokill\\combat\"\n" +
-            "include \"source\\bot_includes\\combat\\init\\combat\"\n" +
-            "include \"source\\bot_includes\\planet\\loadplanetinfo\\planet\"\n" +
-            "include \"source\\bot_includes\\planet\\landonplanetentercitadel\\planet\"\n" +
-            "include \"source\\bot_includes\\planet\\getplanetinfo\\planet\"\n" +
-            "include \"source\\bot_includes\\planet\\getplanetstats\\planet\"\n" +
-            "include \"source\\bot_includes\\planet\\landingsub\\planet\"\n" +
-            "include \"source\\bot_includes\\sector\\getsectordata\\sector\"\n" +
-            "include \"source\\bot_includes\\map\\displayadjacentgridansi\\map\"\n" +
-            "include \"source\\bot_includes\\map\\commas\\map\"\n" +
-            "include \"source\\bot_includes\\map\\displaysector\\map\"\n" +
-            "include \"source\\bot_includes\\game\\gamestats\\game\"\n";
-
-        Directory.CreateDirectory(Path.GetDirectoryName(compatPath)!);
-        if (!File.Exists(compatPath) || !string.Equals(File.ReadAllText(compatPath), content, StringComparison.Ordinal))
-            File.WriteAllText(compatPath, content);
-
-        return compatPath;
-    }
-
     private bool TryResolveExplicitScriptReference(string source, out string? scriptReference, out string? fullPath)
     {
         scriptReference = null;
@@ -1471,11 +663,19 @@ internal sealed class mombotService
             .Replace('\\', Path.DirectorySeparatorChar)
             .Replace('/', Path.DirectorySeparatorChar);
 
-        string configuredPath = Path.IsPathRooted(relative)
-            ? relative
-            : Path.Combine(_config.ScriptRoot, relative);
+        string resolvedFullPath;
+        if (Path.IsPathRooted(relative))
+        {
+            resolvedFullPath = Path.GetFullPath(relative);
+        }
+        else
+        {
+            string? scriptRoot = GetAbsoluteScriptRoot();
+            resolvedFullPath = !string.IsNullOrWhiteSpace(scriptRoot)
+                ? Path.GetFullPath(Path.Combine(scriptRoot, relative))
+                : ResolveAgainstProgramDirectory(relative);
+        }
 
-        string resolvedFullPath = ResolveAgainstProgramDirectory(configuredPath);
         if (!File.Exists(resolvedFullPath))
             return false;
 
@@ -1484,39 +684,91 @@ internal sealed class mombotService
         return true;
     }
 
-    private bool TryResolveRecursiveScriptReference(string canonical, out string? scriptReference, out string? fullPath)
+    private bool TryResolveCommandScriptReference(string canonical, out mombotResolvedModule? module)
     {
-        scriptReference = null;
-        fullPath = null;
+        module = null;
+
+        if (mombotCatalog.TryGetCommandSpec(canonical, out mombotCommandSpec? commandSpec) &&
+            commandSpec?.Kind == mombotCommandKind.Module &&
+            TryResolveExplicitScriptReference(commandSpec.Source, out string? explicitReference, out string? explicitFullPath))
+        {
+            ParseModuleSource(commandSpec.Source, out string category, out string type, out bool hidden);
+            module = new mombotResolvedModule(explicitReference!, explicitFullPath!, category, type, hidden);
+            return true;
+        }
 
         string? scriptRoot = GetAbsoluteScriptRoot();
         if (string.IsNullOrWhiteSpace(scriptRoot) || !Directory.Exists(scriptRoot))
             return false;
 
-        string visibleName = canonical + ".cts";
-        string hiddenName = "_" + canonical + ".cts";
-        var options = new EnumerationOptions
+        foreach (string category in mombotCatalog.Categories)
         {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
-            ReturnSpecialDirectories = false,
-        };
-
-        string? match = Directory
-            .EnumerateFiles(scriptRoot, "*.cts", options)
-            .FirstOrDefault(path =>
+            if (string.Equals(category, "Daemons", StringComparison.OrdinalIgnoreCase))
             {
-                string fileName = Path.GetFileName(path);
-                return string.Equals(fileName, visibleName, StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(fileName, hiddenName, StringComparison.OrdinalIgnoreCase);
-            });
+                if (TryResolveModuleCandidate(scriptRoot, category, string.Empty, canonical, out module))
+                    return true;
 
-        if (match == null)
+                continue;
+            }
+
+            foreach (string type in mombotCatalog.Types)
+            {
+                if (TryResolveModuleCandidate(scriptRoot, category, type, canonical, out module))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryResolveModuleCandidate(
+        string scriptRoot,
+        string category,
+        string type,
+        string canonical,
+        out mombotResolvedModule? module)
+    {
+        module = null;
+
+        string directory = string.IsNullOrWhiteSpace(type)
+            ? Path.Combine(scriptRoot, category.ToLowerInvariant())
+            : Path.Combine(scriptRoot, category.ToLowerInvariant(), type.ToLowerInvariant());
+        if (!Directory.Exists(directory))
             return false;
 
-        fullPath = Path.GetFullPath(match);
-        scriptReference = BuildLoadReference(fullPath);
+        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
+        if (File.Exists(hiddenPath))
+        {
+            module = new mombotResolvedModule(
+                BuildLoadReference(hiddenPath),
+                Path.GetFullPath(hiddenPath),
+                category,
+                type,
+                true);
+            return true;
+        }
+
+        string visiblePath = Path.Combine(directory, canonical + ".cts");
+        if (!File.Exists(visiblePath))
+            return false;
+
+        module = new mombotResolvedModule(
+            BuildLoadReference(visiblePath),
+            Path.GetFullPath(visiblePath),
+            category,
+            type,
+            false);
         return true;
+    }
+
+    private static void ParseModuleSource(string source, out string category, out string type, out bool hidden)
+    {
+        string normalized = source.Replace('\\', '/').Trim('/');
+        string[] parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        category = parts.Length > 0 ? parts[0] : "Commands";
+        type = parts.Length > 1 ? parts[1] : string.Empty;
+        string fileName = parts.Length > 0 ? parts[^1] : string.Empty;
+        hidden = fileName.StartsWith("_", StringComparison.OrdinalIgnoreCase);
     }
 
     private string? GetAbsoluteScriptRoot()
@@ -1524,11 +776,22 @@ internal sealed class mombotService
         if (string.IsNullOrWhiteSpace(_config.ScriptRoot))
             return null;
 
-        string root = Path.IsPathRooted(_config.ScriptRoot)
-            ? _config.ScriptRoot
-            : Path.Combine(GetProgramDirectory(), _config.ScriptRoot);
+        if (Path.IsPathRooted(_config.ScriptRoot))
+            return Path.GetFullPath(_config.ScriptRoot);
 
-        return Path.GetFullPath(root);
+        string normalized = _config.ScriptRoot
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar)
+            .Trim()
+            .Trim(Path.DirectorySeparatorChar);
+        string scriptsToken = "scripts" + Path.DirectorySeparatorChar;
+        if (string.Equals(normalized, "scripts", StringComparison.OrdinalIgnoreCase))
+            return GetScriptsDirectory();
+
+        if (normalized.StartsWith(scriptsToken, StringComparison.OrdinalIgnoreCase))
+            return Path.GetFullPath(Path.Combine(GetScriptsDirectory(), normalized[scriptsToken.Length..]));
+
+        return Path.GetFullPath(Path.Combine(GetProgramDirectory(), normalized));
     }
 
     private string ResolveAgainstProgramDirectory(string path)

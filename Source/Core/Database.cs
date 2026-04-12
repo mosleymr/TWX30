@@ -612,7 +612,12 @@ namespace TWXProxy.Core
                 _maxSectorSeen = sector.Number;
 
             // Pascal parity: saving a live sector with a special port updates the
-            // database header landmark sectors.
+            // database header landmark sectors. Do not clear landmark headers when a
+            // sector is saved without complete port data, because live parsing
+            // intentionally nulls SectorPort before the Ports line is re-read.
+            // Otherwise transient partial saves can make special sectors disappear
+            // from the UI even though the saved vars and subsequent parse still know
+            // the correct location.
             bool isStarDock = sector.SectorPort?.ClassIndex == 9;
             bool isAlpha = sector.SectorPort?.ClassIndex == 0 &&
                            string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase);
@@ -623,27 +628,15 @@ namespace TWXProxy.Core
             {
                 _header.StarDock = (ushort)sector.Number;
             }
-            else if (_header.StarDock == sector.Number)
-            {
-                _header.StarDock = 65535;
-            }
 
             if (isAlpha)
             {
                 _header.AlphaCentauri = (ushort)sector.Number;
             }
-            else if (_header.AlphaCentauri == sector.Number)
-            {
-                _header.AlphaCentauri = 65535;
-            }
 
             if (isRylos)
             {
                 _header.Rylos = (ushort)sector.Number;
-            }
-            else if (_header.Rylos == sector.Number)
-            {
-                _header.Rylos = 65535;
             }
 
             // Update warp-in cache for connected sectors

@@ -37,6 +37,14 @@ namespace TWXProxy.Core
         private readonly Trader _currentTrader = new();
         private readonly Ship _currentShip = new();
 
+        // StarDock prompt / purchase tracking
+        private enum DockArea { None, StarDock, HardwareEmporium, Shipyards, ShipyardCommerce }
+        private DockArea _dockArea;
+        private enum PendingDockPurchaseKind { None, Quantity, HoloScanner, DensityScanner, PlanetScanner, TransWarp1, TransWarp2 }
+        private PendingDockPurchaseKind _pendingDockPurchaseKind;
+        private string _pendingDockPurchaseItemName = string.Empty;
+        private int _pendingDockPurchaseQuantity;
+
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
         private int  _landListSector; // Sector the land list belongs to (_lastSector at entry)
@@ -103,6 +111,17 @@ namespace TWXProxy.Core
         public event Action<int>? GenesisTorpsChanged;
 
         /// <summary>
+        /// Raised when the server confirms a planet detonation, which consumes one
+        /// atomic detonator from the player's ship inventory.
+        /// </summary>
+        public event Action<int>? AtomicDetChanged;
+
+        /// <summary>
+        /// Raised when StarDock prompts reveal a live ship inventory or credit change.
+        /// </summary>
+        public event Action<ShipStatusDelta>? ShipStatusDeltaDetected;
+
+        /// <summary>
         /// Clears parser state when a session or active database changes so stale
         /// display/report mode from a previous game cannot bleed into the next one.
         /// </summary>
@@ -125,6 +144,7 @@ namespace TWXProxy.Core
             _currentShip.Fighters = 0;
             _inLandList = false;
             _landListSector = 0;
+            _dockArea = DockArea.None;
             _inWarpLane = false;
             _lastWarpLaneSect = 0;
             _inNavPointDisplay = false;
@@ -260,6 +280,38 @@ namespace TWXProxy.Core
             @"StarDock.*sector\s+(\d+)\.",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxDockCredits = new(
+            @"^You have ([\d,]+) credits\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockCurrentFighters = new(
+            @"^You have ([\d,]+) fighters\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockCurrentShields = new(
+            @"^You have ([\d,]+) shields?\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockPurchasePrompt = new(
+            @"^How many (.+?) do you want(?: to buy)?(?: .*?)?\?\s*([\d,]+)?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockScannerChoice = new(
+            @"^Which would you like\?\s+\(H/D/Quit\)\s*([HDQ])?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockTranswarpChoice = new(
+            @"^Which would you like\?\s+\(1/2/U/Quit\)\s*([12UQ])?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockPlanetScannerInterest = new(
+            @"^I can let you have one for [\d,]+ credits, interested\?\s*(Yes|No|Y|N)?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDockAlreadyOwned = new(
+            @"^You don't need two!\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Regex _rxFigScanSector = new(
             @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -282,6 +334,10 @@ namespace TWXProxy.Core
 
         private static readonly Regex _rxDestroyedFigsSector = new(
             @"fighters in sector\s+(\d+)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxDestroyedFriendlyFigs = new(
+            @"destroyed\s+([\d,]+)\s+of\s+your(?:\s+Corp's)?\s+fighters\s+in\s+sector\s+(\d+)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxLostCorpFigsSector = new(
@@ -340,6 +396,9 @@ namespace TWXProxy.Core
                 return;
 
             if (TryProcessPrompt(db, rawLine, trimmedLine))
+                return;
+
+            if (TryProcessDockStatus(trimmedLine))
                 return;
 
             {
@@ -558,14 +617,12 @@ namespace TWXProxy.Core
                         }
                     }
 
-                    // If we were NOT already inside a holo scan, this "Sector  : NNNN" line
-                    // is from a D-command display or an autopilot interim stop — update
-                    // _currentSector so it stays accurate for density-scan tracking.
-                    if (!_inHoloScan)
-                    {
-                        _currentSector = sn;
-                        GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
-                    }
+                    // Match Pascal extractor behavior: each "Sector  : NNNN" line advances
+                    // the extractor's current sector, including intermediate holo sectors.
+                    // Scripts such as DisR rely on the final holo sector (the live sector)
+                    // having become CURRENTSECTOR before the prompt returns.
+                    _currentSector = sn;
+                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
 
                     // Always capture constellation name when present (works for both
                     // normal sector display AND holo scan: "Sector  : 9363  in  The Crucible")
@@ -930,6 +987,7 @@ namespace TWXProxy.Core
                     CurrentSectorChanged?.Invoke(csn);
                     GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
                 }
+                _dockArea = DockArea.None;
                 return true;
             }
 
@@ -945,6 +1003,7 @@ namespace TWXProxy.Core
                     CurrentSectorChanged?.Invoke(csn);
                     GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from computer prompt\n");
                 }
+                _dockArea = DockArea.None;
                 return true;
             }
 
@@ -956,6 +1015,7 @@ namespace TWXProxy.Core
             {
                 FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db);
+                _dockArea = DockArea.None;
                 return true;
             }
 
@@ -965,6 +1025,7 @@ namespace TWXProxy.Core
                 _inNavPointDisplay = true;
                 _sectorPos = SectorPos.None;
                 GlobalModules.DebugLog("[AutoRecorder] Entered NavPoint preview\n");
+                _dockArea = DockArea.None;
                 return true;
             }
 
@@ -975,6 +1036,12 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog("[AutoRecorder] Exited NavPoint preview\n");
                 return true;
             }
+
+            if (TryProcessDockPrompt(trimmedLine))
+                return true;
+
+            if (TryProcessDockStatus(trimmedLine))
+                return true;
 
             if (trimmedLine == ":")
             {
@@ -1016,35 +1083,210 @@ namespace TWXProxy.Core
             return false;
         }
 
+        private bool TryProcessDockPrompt(string trimmedLine)
+        {
+            if (trimmedLine.StartsWith("<StarDock> Where to?", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.StarDock;
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("<Hardware Emporium>", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.HardwareEmporium;
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("<Shipyards>", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.Shipyards;
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Which item do you wish to buy?", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.ShipyardCommerce;
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Landing on Federation StarDock.", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.StarDock;
+                ResetPendingDockPurchase();
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("You return to your ship and blast off from the StarDock.", StringComparison.OrdinalIgnoreCase))
+            {
+                _dockArea = DockArea.None;
+                ResetPendingDockPurchase();
+                return true;
+            }
+
+            var scannerChoice = _rxDockScannerChoice.Match(trimmedLine);
+            if (scannerChoice.Success)
+            {
+                char choice = scannerChoice.Groups[1].Success && scannerChoice.Groups[1].Value.Length > 0
+                    ? char.ToUpperInvariant(scannerChoice.Groups[1].Value[0])
+                    : '\0';
+                _pendingDockPurchaseKind = choice switch
+                {
+                    'H' => PendingDockPurchaseKind.HoloScanner,
+                    'D' => PendingDockPurchaseKind.DensityScanner,
+                    _ => PendingDockPurchaseKind.None,
+                };
+                _pendingDockPurchaseItemName = string.Empty;
+                _pendingDockPurchaseQuantity = 0;
+                return true;
+            }
+
+            var transwarpChoice = _rxDockTranswarpChoice.Match(trimmedLine);
+            if (transwarpChoice.Success)
+            {
+                char choice = transwarpChoice.Groups[1].Success && transwarpChoice.Groups[1].Value.Length > 0
+                    ? char.ToUpperInvariant(transwarpChoice.Groups[1].Value[0])
+                    : '\0';
+                _pendingDockPurchaseKind = choice switch
+                {
+                    '1' => PendingDockPurchaseKind.TransWarp1,
+                    '2' => PendingDockPurchaseKind.TransWarp2,
+                    _ => PendingDockPurchaseKind.None,
+                };
+                _pendingDockPurchaseItemName = string.Empty;
+                _pendingDockPurchaseQuantity = 0;
+                return true;
+            }
+
+            var planetScannerInterest = _rxDockPlanetScannerInterest.Match(trimmedLine);
+            if (planetScannerInterest.Success)
+            {
+                string response = planetScannerInterest.Groups[1].Success
+                    ? planetScannerInterest.Groups[1].Value.Trim()
+                    : string.Empty;
+                _pendingDockPurchaseKind = IsBoolYes(response)
+                    ? PendingDockPurchaseKind.PlanetScanner
+                    : PendingDockPurchaseKind.None;
+                _pendingDockPurchaseItemName = string.Empty;
+                _pendingDockPurchaseQuantity = 0;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryProcessDockStatus(string trimmedLine)
+        {
+            if (_dockArea == DockArea.None)
+                return false;
+
+            var credits = _rxDockCredits.Match(trimmedLine);
+            if (credits.Success)
+            {
+                ShipStatusDelta? purchaseDelta = BuildPendingDockPurchaseConfirmationDelta();
+                if (purchaseDelta != null)
+                    EmitShipStatusDelta(purchaseDelta);
+
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    Credits = ParseCommaLong(credits.Groups[1].Value)
+                });
+                ResetPendingDockPurchase();
+                return true;
+            }
+
+            if (_dockArea == DockArea.ShipyardCommerce)
+            {
+                var fighters = _rxDockCurrentFighters.Match(trimmedLine);
+                if (fighters.Success)
+                {
+                    EmitShipStatusDelta(new ShipStatusDelta
+                    {
+                        Fighters = ParseCommaInt(fighters.Groups[1].Value)
+                    });
+                    return true;
+                }
+
+                var shields = _rxDockCurrentShields.Match(trimmedLine);
+                if (shields.Success)
+                {
+                    EmitShipStatusDelta(new ShipStatusDelta
+                    {
+                        Shields = ParseCommaInt(shields.Groups[1].Value)
+                    });
+                    return true;
+                }
+            }
+
+            if (trimmedLine.StartsWith("Ok!  We'll get that sent over to your ship, installation is free!", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Ok!  We'll get that installed in your ship right away!", StringComparison.OrdinalIgnoreCase))
+            {
+                ShipStatusDelta? purchaseDelta = BuildPendingDockPurchaseConfirmationDelta();
+                if (purchaseDelta != null)
+                {
+                    EmitShipStatusDelta(purchaseDelta);
+                    if (_pendingDockPurchaseKind != PendingDockPurchaseKind.Quantity)
+                        ResetPendingDockPurchase();
+                }
+                return true;
+            }
+
+            if (_rxDockAlreadyOwned.IsMatch(trimmedLine))
+            {
+                ShipStatusDelta? purchaseDelta = BuildPendingDockPurchaseConfirmationDelta();
+                if (purchaseDelta != null)
+                    EmitShipStatusDelta(purchaseDelta);
+                ResetPendingDockPurchase();
+                return true;
+            }
+
+            var purchase = _rxDockPurchasePrompt.Match(trimmedLine);
+            if (!purchase.Success)
+                return false;
+
+            int quantity = ParseCommaInt(purchase.Groups[2].Value);
+            if (quantity <= 0)
+            {
+                ResetPendingDockPurchase();
+                return true;
+            }
+
+            _pendingDockPurchaseKind = PendingDockPurchaseKind.Quantity;
+            _pendingDockPurchaseItemName = purchase.Groups[1].Value;
+            _pendingDockPurchaseQuantity = quantity;
+            return true;
+        }
+
+        private void EmitShipStatusDelta(ShipStatusDelta delta)
+        {
+            if (delta == null || !delta.HasChanges())
+                return;
+
+            ShipStatusDeltaDetected?.Invoke(delta);
+        }
+
         private static string NormalizeRecorderLine(string line)
         {
             if (string.IsNullOrEmpty(line))
                 return string.Empty;
 
             string stripped = AnsiCodes.StripANSI(line);
-            char[]? buffer = null;
-            int length = 0;
+            var normalized = new List<char>(stripped.Length);
 
             for (int i = 0; i < stripped.Length; i++)
             {
                 char ch = stripped[i];
-                bool keep = ch == '\t' || ch >= ' ';
-                if (keep)
+                if (ch == '\b' || ch == (char)0x7F)
                 {
-                    if (buffer != null)
-                        buffer[length] = ch;
-                    length++;
+                    if (normalized.Count > 0)
+                        normalized.RemoveAt(normalized.Count - 1);
                     continue;
                 }
 
-                if (buffer == null)
-                {
-                    buffer = stripped.ToCharArray();
-                    length = i;
-                }
+                if (ch == '\t' || ch >= ' ')
+                    normalized.Add(ch);
             }
 
-            return buffer == null ? stripped : new string(buffer, 0, length);
+            return normalized.Count == 0 ? string.Empty : new string(normalized.ToArray());
         }
 
         private void FinalizeActiveSectorDisplay(ModDatabase? db)
@@ -1306,6 +1548,168 @@ namespace TWXProxy.Core
             return int.TryParse(text.Replace(",", string.Empty, StringComparison.Ordinal), out int value) ? value : 0;
         }
 
+        private static long ParseCommaLong(string text)
+        {
+            return long.TryParse(text.Replace(",", string.Empty, StringComparison.Ordinal), out long value) ? value : 0L;
+        }
+
+        private static bool IsBoolYes(string text)
+        {
+            return text.Equals("Yes", StringComparison.OrdinalIgnoreCase) ||
+                   text.Equals("Y", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryBuildDockPurchaseDelta(string itemName, int quantity, out ShipStatusDelta? delta)
+        {
+            delta = null;
+            if (quantity <= 0)
+                return false;
+
+            string normalized = Regex.Replace(itemName, @"[^a-z0-9]+", " ", RegexOptions.IgnoreCase)
+                .Trim()
+                .ToLowerInvariant();
+
+            if (normalized.Contains("fighter", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { FightersDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("shield armor point", StringComparison.Ordinal) ||
+                normalized.Contains("shield point", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { ShieldsDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("cargo hold", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta
+                {
+                    TotalHoldsDelta = quantity,
+                    HoldsEmptyDelta = quantity
+                };
+                return true;
+            }
+
+            if (normalized.Contains("atomic detonator", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { AtomicDetDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("marker beacon", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { BeaconsDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("corbomite", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { CorbomiteDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("cloaking device", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { CloaksDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("ether probe", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { EtherProbesDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("planet scanner", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { PlanetScanner = true };
+                return true;
+            }
+
+            if (normalized.Contains("limpet", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { LimpetMinesDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("space mine", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { ArmidMinesDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("photon missile", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { PhotonsDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("mine disruptor", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { MineDisruptorsDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("genesis torpedo", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { GenesisTorpsDelta = quantity };
+                return true;
+            }
+
+            if (normalized.Contains("psychic probe", StringComparison.Ordinal))
+            {
+                delta = new ShipStatusDelta { PsychProbe = true };
+                return true;
+            }
+
+            return false;
+        }
+
+        private ShipStatusDelta? BuildPendingDockPurchaseConfirmationDelta()
+        {
+            switch (_pendingDockPurchaseKind)
+            {
+                case PendingDockPurchaseKind.HoloScanner:
+                    return new ShipStatusDelta { LRSType = "Holo" };
+
+                case PendingDockPurchaseKind.DensityScanner:
+                    return new ShipStatusDelta { LRSType = "Density" };
+
+                case PendingDockPurchaseKind.PlanetScanner:
+                    return new ShipStatusDelta { PlanetScanner = true };
+
+                case PendingDockPurchaseKind.TransWarp1:
+                    return new ShipStatusDelta
+                    {
+                        TransWarp1 = 1,
+                        TransWarp2 = 0
+                    };
+
+                case PendingDockPurchaseKind.TransWarp2:
+                    return new ShipStatusDelta
+                    {
+                        TransWarp1 = 1,
+                        TransWarp2 = 1
+                    };
+
+                case PendingDockPurchaseKind.Quantity:
+                    if (TryBuildDockPurchaseDelta(_pendingDockPurchaseItemName, _pendingDockPurchaseQuantity, out ShipStatusDelta? delta))
+                        return delta;
+                    break;
+            }
+
+            return null;
+        }
+
+        private void ResetPendingDockPurchase()
+        {
+            _pendingDockPurchaseKind = PendingDockPurchaseKind.None;
+            _pendingDockPurchaseItemName = string.Empty;
+            _pendingDockPurchaseQuantity = 0;
+        }
+
         private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
         {
             if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine: null))
@@ -1417,6 +1821,18 @@ namespace TWXProxy.Core
                 }
             }
 
+            {
+                var m = _rxDestroyedFriendlyFigs.Match(trimmedLine);
+                if (m.Success &&
+                    int.TryParse(m.Groups[2].Value, out int sector) &&
+                    sector > 0)
+                {
+                    int destroyed = ParseCommaInt(m.Groups[1].Value);
+                    ApplyFriendlyFighterLoss(db, sector, destroyed);
+                    return true;
+                }
+            }
+
             if (trimmedLine.Contains(" of your fighters in sector ", StringComparison.OrdinalIgnoreCase) &&
                 trimmedLine.Contains(" destroyed ", StringComparison.OrdinalIgnoreCase))
             {
@@ -1431,14 +1847,52 @@ namespace TWXProxy.Core
             return false;
         }
 
+        private static void ApplyFriendlyFighterLoss(ModDatabase db, int sectorNum, int destroyed)
+        {
+            if (sectorNum <= 0 || sectorNum > db.SectorCount)
+                return;
+
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector == null)
+                return;
+
+            int current = sector.Fighters.Quantity;
+            int updated = current > 0 && destroyed > 0
+                ? Math.Max(0, current - destroyed)
+                : 0;
+
+            sector.Fighters.Quantity = updated;
+            if (updated <= 0)
+            {
+                sector.Fighters.Owner = string.Empty;
+                sector.Fighters.FigType = FighterType.None;
+            }
+
+            db.SaveSector(sector);
+
+            if (updated <= 0)
+                RemoveFigMarker(db, sectorNum);
+
+            GlobalModules.DebugLog($"[AutoRecorder] Friendly fighters destroyed sector={sectorNum} destroyed={destroyed} remaining={updated}\n");
+        }
+
         private bool TryProcessGenesisTorpedoState(string trimmedLine)
         {
-            if (!trimmedLine.StartsWith("For building this planet you receive", StringComparison.OrdinalIgnoreCase))
-                return false;
+            if (trimmedLine.StartsWith("For building this planet you receive", StringComparison.OrdinalIgnoreCase))
+            {
+                GenesisTorpsChanged?.Invoke(-1);
+                GlobalModules.DebugLog("[AutoRecorder] Planet build detected, genesis torps delta=-1\n");
+                return true;
+            }
 
-            GenesisTorpsChanged?.Invoke(-1);
-            GlobalModules.DebugLog("[AutoRecorder] Planet build detected, genesis torps delta=-1\n");
-            return true;
+            if (trimmedLine.StartsWith("For blowing up this planet you receive", StringComparison.OrdinalIgnoreCase))
+            {
+                AtomicDetChanged?.Invoke(-1);
+                GlobalModules.DebugLog("[AutoRecorder] Planet detonation detected, atomic detonators delta=-1\n");
+                return true;
+            }
+
+            return false;
         }
 
         private static bool ShouldIgnoreRecorderCommLine(string line, string? ansiLine)

@@ -302,15 +302,29 @@ namespace TWXProxy.Core
             if (delta == 0)
                 return;
 
-            ShipStatus snapshot;
-            lock (_shipStatusLock)
+            _shipInfoParser.ApplyDelta(new ShipStatusDelta
             {
-                int updated = _currentShipStatus.GenesisTorps + delta;
-                _currentShipStatus.GenesisTorps = updated < 0 ? 0 : updated;
-                snapshot = CloneShipStatus(_currentShipStatus);
-            }
+                GenesisTorpsDelta = delta
+            });
+        }
 
-            ShipStatusUpdated?.Invoke(CloneShipStatus(snapshot));
+        public void AdjustAtomicDet(int delta)
+        {
+            if (delta == 0)
+                return;
+
+            _shipInfoParser.ApplyDelta(new ShipStatusDelta
+            {
+                AtomicDetDelta = delta
+            });
+        }
+
+        public void ApplyShipStatusDelta(ShipStatusDelta delta)
+        {
+            if (delta == null || !delta.HasChanges())
+                return;
+
+            _shipInfoParser.ApplyDelta(delta);
         }
 
         private static ShipStatus CloneShipStatus(ShipStatus status) => new()

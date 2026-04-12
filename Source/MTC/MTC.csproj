@@ -24,7 +24,6 @@
   <ItemGroup>
     <AvaloniaResource Include="mtc2.png" />
     <AvaloniaResource Include="mombot/mombot.png" />
-    <EmbeddedResource Include="mombot/twx3_native_cap.template.ts" />
     <None Include="..\Installer\Windows\Assets\mtc2.ico" Visible="false" />
   </ItemGroup>
 

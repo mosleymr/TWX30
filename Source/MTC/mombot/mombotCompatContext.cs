@@ -49,6 +49,9 @@ internal sealed class mombotCompatContext
         string shipCapFile = ReadCurrentAny(string.Empty, "$SHIP~CAP_FILE", "$SHIP~cap_file", "$ship~cap_file");
         string planetNumber = ReadCurrentAny("0", "$PLANET~PLANET", "$planet~planet");
         string folder = ReadCurrentAny(string.Empty, "$folder");
+        string offenseCapping = ReadCurrentAny("0", "$PLAYER~offenseCapping", "$offenseCapping");
+        string defenderCapping = ReadCurrentAny("0", "$PLAYER~defenderCapping");
+        string cappingAliens = ReadCurrentAny("0", "$PLAYER~cappingAliens", "$cappingAliens");
         string photonDuration = ReadCurrentAny("0", "$GAME~PHOTON_DURATION", "$GAME~photon_duration");
         string portMax = ReadCurrentAny("0", "$GAME~PORT_MAX", "$GAME~port_max");
         string settingsOverride = ReadCurrentAny("0", "$SETTINGS~OVERRIDE", "$settings~override");
@@ -57,8 +60,8 @@ internal sealed class mombotCompatContext
         string currentSector = ReadCurrentAny(FormatSector((ushort)Core.ScriptRef.GetCurrentSector()), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
         string currentPrompt = ReadCurrentAny("Undefined", "$PLAYER~CURRENT_PROMPT");
         string startingLocation = ReadCurrentAny(currentPrompt, "$PLAYER~startingLocation", "$bot~startingLocation");
-        string majorVersion = ReadCurrentAny("4", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
-        string minorVersion = ReadCurrentAny("7beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
+        string majorVersion = ReadCurrentAny("5", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
+        string minorVersion = ReadCurrentAny("0beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
         string gconfigFile = ReadCurrentAny(string.Empty, "$gconfig_file");
         string botUsersFile = ReadCurrentAny(string.Empty, "$BOT_USER_FILE");
         string figFile = ReadCurrentAny(string.Empty, "$FIG_FILE");
@@ -83,6 +86,9 @@ internal sealed class mombotCompatContext
 
         if (string.IsNullOrWhiteSpace(botPassword) && !string.IsNullOrWhiteSpace(subspace) && subspace != "0")
             botPassword = subspace;
+
+        planetFile = ResolveBotFilePath(planetFile, folder, "planets.cfg");
+        shipCapFile = ResolveBotFilePath(shipCapFile, folder, "ships.cfg");
 
         var vars = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -125,8 +131,13 @@ internal sealed class mombotCompatContext
         SetVars(vars, unlimitedGame, "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
         SetVars(vars, planetFile, "$PLANET~PLANET_FILE", "$PLANET~planet_file", "$planet~planet_file");
         SetVars(vars, shipCapFile, "$SHIP~CAP_FILE", "$SHIP~cap_file", "$ship~cap_file");
+        SetVars(vars, shipCapFile, "$cap_file");
+        SetVars(vars, planetFile, "$planet_file");
         SetVars(vars, planetNumber, "$PLANET~PLANET", "$planet~planet");
         SetVars(vars, folder, "$folder");
+        SetVars(vars, offenseCapping, "$PLAYER~offenseCapping", "$offenseCapping");
+        SetVars(vars, defenderCapping, "$PLAYER~defenderCapping");
+        SetVars(vars, cappingAliens, "$PLAYER~cappingAliens", "$cappingAliens");
         SetVars(vars, majorVersion, "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
         SetVars(vars, minorVersion, "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
         SetVars(vars, gconfigFile, "$gconfig_file");
@@ -179,6 +190,13 @@ internal sealed class mombotCompatContext
             context,
             lastLoadedModule,
             userCommandLineOverride);
+        ApplyVariableSnapshot(interpreter, vars);
+    }
+
+    public void ApplyVariableSnapshot(
+        Core.ModInterpreter? interpreter,
+        IReadOnlyDictionary<string, string> vars)
+    {
         foreach ((string name, string value) in vars)
             Core.ScriptRef.SetCurrentGameVar(name, value);
 
@@ -194,6 +212,17 @@ internal sealed class mombotCompatContext
             foreach ((string name, string value) in vars)
                 script.SetScriptVarIgnoreCase(name, value);
         }
+    }
+
+    public void ApplyVariableSnapshotToScript(
+        Core.Script? script,
+        IReadOnlyDictionary<string, string> vars)
+    {
+        if (script == null)
+            return;
+
+        foreach ((string name, string value) in vars)
+            script.SetScriptVarIgnoreCase(name, value);
     }
 
     private static string GetScriptRootRelative(string scriptRoot)
@@ -257,6 +286,26 @@ internal sealed class mombotCompatContext
             if (!string.IsNullOrWhiteSpace(name))
                 vars[name] = value;
         }
+    }
+
+    private static string ResolveBotFilePath(string currentValue, string folder, string fileName)
+    {
+        if (!string.IsNullOrWhiteSpace(currentValue) &&
+            !string.Equals(currentValue, "0", StringComparison.OrdinalIgnoreCase))
+        {
+            return currentValue;
+        }
+
+        if (string.IsNullOrWhiteSpace(folder) ||
+            string.Equals(folder, "0", StringComparison.OrdinalIgnoreCase))
+        {
+            return currentValue;
+        }
+
+        return Path.Combine(
+                folder.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar),
+                fileName)
+            .Replace('\\', '/');
     }
 
     private static string FormatSector(ushort? sector)

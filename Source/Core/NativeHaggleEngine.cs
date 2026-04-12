@@ -407,6 +407,7 @@ public sealed class NativeHaggleEngine
     private int _lastKnownEmptyHolds;
     private bool _hasLastKnownEmptyHolds;
     private int _lastKnownExperience = 1000;
+    private bool _tradeSuppressed;
     private RetryHint? _retryHint;
     private int _completedHaggles;
     private int _successfulHaggles;
@@ -540,7 +541,13 @@ public sealed class NativeHaggleEngine
             return null;
 
         _shipInfoParser.FeedLine(line);
-        UpdatePassiveState(line);
+        bool shouldTrackPassiveTradeState =
+            Enabled ||
+            _session != null ||
+            !string.IsNullOrWhiteSpace(_pendingProductKey) ||
+            !string.IsNullOrWhiteSpace(_pendingBuySell);
+        if (shouldTrackPassiveTradeState)
+            UpdatePassiveState(line);
 
         if (RxCommandPrompt.IsMatch(line))
         {
@@ -549,6 +556,9 @@ public sealed class NativeHaggleEngine
         }
 
         if (!Enabled)
+            return null;
+
+        if (_tradeSuppressed)
             return null;
 
         if (line.Equals("<Port>", StringComparison.OrdinalIgnoreCase) ||
@@ -616,12 +626,44 @@ public sealed class NativeHaggleEngine
 
     public void SuppressCurrentTrade(string reason)
     {
-        GlobalModules.DebugLog($"[NativeHaggle] SuppressCurrentTrade('{reason}') ignored while suppression is disabled.\n");
+        if (_tradeSuppressed)
+        {
+            GlobalModules.DebugLog($"[NativeHaggle] SuppressCurrentTrade('{reason}') ignored because trade is already suppressed.\n");
+            return;
+        }
+
+        if (_session == null &&
+            string.IsNullOrWhiteSpace(_pendingProductKey) &&
+            string.IsNullOrWhiteSpace(_pendingBuySell))
+        {
+            GlobalModules.DebugLog($"[NativeHaggle] SuppressCurrentTrade('{reason}') ignored because no trade is active.\n");
+            return;
+        }
+
+        _tradeSuppressed = true;
+        GlobalModules.DebugLog($"[NativeHaggle] Suppressing current trade due to '{reason}'.\n");
+        ClearTradeState();
     }
 
     public void ObserveScriptSend(string text)
     {
-        // Suppression is temporarily disabled for debugging.
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        if (_tradeSuppressed)
+            return;
+
+        if (_session == null &&
+            string.IsNullOrWhiteSpace(_pendingProductKey) &&
+            string.IsNullOrWhiteSpace(_pendingBuySell))
+        {
+            return;
+        }
+
+        string escaped = text.Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+        GlobalModules.DebugLog($"[NativeHaggle] Observed script send during active trade: '{escaped}'\n");
+        SuppressCurrentTrade("script-send");
     }
 
     private static void WriteTradeDebug(bool isPlanetTrade, string message)
@@ -2942,6 +2984,12 @@ public sealed class NativeHaggleEngine
 
             GlobalModules.DebugLog($"[NativeHaggle] Reset reason='{reason}' sector={_session.Sector} product={_session.ProductKey}\n");
         }
+        ClearTradeState();
+        _tradeSuppressed = false;
+    }
+
+    private void ClearTradeState()
+    {
         _session = null;
         _pendingProductKey = null;
         _pendingBuySell = null;

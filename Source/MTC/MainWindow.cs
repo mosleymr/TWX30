@@ -41,6 +41,7 @@ public class MainWindow : Window
     private const double DeckPanelSnapThreshold = 18;
     private const double DeckPanelSnapGap = 18;
     private const double DeckPanelGridSize = 18;
+    private const int TemporaryMacroMaxCharacters = 200;
     private const int EmbeddedLocalClientIndex = 0;
 
     // ── Core components ────────────────────────────────────────────────────
@@ -90,6 +91,7 @@ public class MainWindow : Window
     private readonly MTC.mombot.mombotService _mombot = new();
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
+    private readonly Border _menuBarHost = new();
     private readonly StackPanel _statusBarContent = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
@@ -110,6 +112,15 @@ public class MainWindow : Window
     private string _commPrivateTarget = string.Empty;
     private ToggleSwitch _haggleToggle = null!;
     private ToggleSwitch _deckHaggleToggle = null!;
+    private Button? _macroRecordButton;
+    private Button? _macroStopButton;
+    private Button? _macroPlayButton;
+    private Button? _deckMacroRecordButton;
+    private Button? _deckMacroStopButton;
+    private Button? _deckMacroPlayButton;
+    private readonly List<byte[]> _temporaryMacroChunks = [];
+    private bool _temporaryMacroRecording;
+    private bool _suppressTemporaryMacroRecording;
     private readonly Button _statusLiveButton = new() { Content = "LIVE" };
     private readonly Button _statusPausedButton = new() { Content = "Paused" };
     private readonly Border _statusModeSelector = new();
@@ -178,6 +189,8 @@ public class MainWindow : Window
     private int _mombotPromptHistoryIndex;
     private MombotPreferencesPage _mombotPreferencesPage;
     private string _mombotLastKeepaliveLine = string.Empty;
+    private int _mombotObservedGamePromptVersion;
+    private int _mombotPromptRestoreTicket;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;
@@ -231,6 +244,8 @@ public class MainWindow : Window
     private TextBlock _valCloak     = new();
     private TextBlock _valTW1       = new();
     private TextBlock _valTW2       = new();
+    private Border    _scanIndTW1   = new();
+    private Border    _scanIndTW2   = new();
     private Border    _scanIndD     = new();
     private Border    _scanIndH     = new();
     private Border    _scanIndP     = new();
@@ -261,6 +276,8 @@ public class MainWindow : Window
     private TextBlock _deckValCloak     = new();
     private TextBlock _deckValTW1       = new();
     private TextBlock _deckValTW2       = new();
+    private Border    _deckScanIndTW1   = new();
+    private Border    _deckScanIndTW2   = new();
     private Border    _deckScanIndD     = new();
     private Border    _deckScanIndH     = new();
     private Border    _deckScanIndP     = new();
@@ -322,6 +339,10 @@ public class MainWindow : Window
 
         return line;
     }
+
+    private static bool NormalizeDensityScanner(bool densityScanner, bool holoScanner)
+        => densityScanner || holoScanner;
+
     private static readonly IBrush HudText      = new SolidColorBrush(Color.FromRgb(222, 238, 242));
     private static readonly IBrush HudMuted     = new SolidColorBrush(Color.FromRgb(126, 170, 180));
     private static readonly IBrush HudEdge      = new SolidColorBrush(Color.FromRgb(57, 112, 128));
@@ -409,6 +430,20 @@ public class MainWindow : Window
 
         Core.GlobalModules.GlobalAutoRecorder.GenesisTorpsChanged += delta =>
             Dispatcher.UIThread.Post(() => OnGenesisTorpsChanged(delta));
+
+        Core.GlobalModules.GlobalAutoRecorder.AtomicDetChanged += delta =>
+            Dispatcher.UIThread.Post(() => OnAtomicDetChanged(delta));
+
+        Core.GlobalModules.GlobalAutoRecorder.ShipStatusDeltaDetected += delta =>
+        {
+            if (_gameInstance != null)
+            {
+                _gameInstance.ApplyShipStatusDelta(delta);
+                return;
+            }
+
+            _shipParser.ApplyDelta(delta);
+        };
 
         _state.Changed += () => Dispatcher.UIThread.Post(RefreshInfoPanels);
 
@@ -529,6 +564,9 @@ public class MainWindow : Window
     {
         _termCtrl = CreateTerminalControl();
         _haggleToggle = CreateHaggleToggle();
+        _macroRecordButton = null;
+        _macroStopButton = null;
+        _macroPlayButton = null;
         _commPanelBorder = null;
         _commFedTabButton = null;
         _commSubspaceTabButton = null;
@@ -584,6 +622,9 @@ public class MainWindow : Window
     {
         _deckTermCtrl = CreateTerminalControl();
         _deckHaggleToggle = CreateHaggleToggle();
+        _deckMacroRecordButton = null;
+        _deckMacroStopButton = null;
+        _deckMacroPlayButton = null;
         _deckCommPanelBorder = null;
         _deckCommFedTabButton = null;
         _deckCommSubspaceTabButton = null;
@@ -651,10 +692,13 @@ public class MainWindow : Window
         var dock = new DockPanel { Background = BgWindow };
         _rootDock = dock;
 
+        ConfigureStatusModeSelector();
+
         // ── Menu ──────────────────────────────────────────────────────────
         _menuBar = BuildMenuBar();
-        DockPanel.SetDock(_menuBar, Dock.Top);
-        dock.Children.Add(_menuBar);
+        _menuBarHost.Child = BuildMenuBarHost();
+        DockPanel.SetDock(_menuBarHost, Dock.Top);
+        dock.Children.Add(_menuBarHost);
 
         // ── Status bar ────────────────────────────────────────────────────
         _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
@@ -663,13 +707,10 @@ public class MainWindow : Window
         _statusText.Margin             = new Thickness(8, 0, 0, 0);
         _statusText.FontSize           = 13;
 
-        ConfigureStatusModeSelector();
-
         _statusBar.Background = BgStatus;
         _statusBar.Height = 26;
         _statusBarContent.Children.Clear();
         _statusBarContent.Children.Add(_statusText);
-        _statusBarContent.Children.Add(_statusModeSelector);
         _statusBar.Child = _statusBarContent;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         dock.Children.Add(_statusBar);
@@ -1424,6 +1465,7 @@ public class MainWindow : Window
                     {
                         BuildDeckScannerRow(),
                         BuildDeckHaggleRow(),
+                        BuildMacroRow(deckSkin: true),
                     },
                 }),
             },
@@ -1864,6 +1906,7 @@ public class MainWindow : Window
 
         _menuBar.Background = _useCommandDeckSkin ? HudMenu : BgSidebar;
         _menuBar.Foreground = _useCommandDeckSkin ? HudText : FgKey;
+        _menuBarHost.Background = _useCommandDeckSkin ? HudMenu : BgSidebar;
         _statusBar.Background = _useCommandDeckSkin ? HudStatus : BgStatus;
         _statusText.Foreground = _useCommandDeckSkin ? HudText : FgStatus;
         UpdateTerminalLiveSelector();
@@ -1937,6 +1980,10 @@ public class MainWindow : Window
     {
         _termCtrl.IsConnected = connected;
         _deckTermCtrl.IsConnected = connected;
+        if (!connected)
+            ResetTemporaryMacroSession();
+        else
+            UpdateTemporaryMacroControls();
     }
 
     private void SetTerminalFont(string familyName)
@@ -2095,6 +2142,31 @@ public class MainWindow : Window
         return menu;
     }
 
+    private Control BuildMenuBarHost()
+    {
+        var layout = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+        };
+
+        _menuBar.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _menuBar.VerticalAlignment = VerticalAlignment.Stretch;
+        Grid.SetColumn(_menuBar, 0);
+        layout.Children.Add(_menuBar);
+
+        _statusModeSelector.Margin = new Thickness(8, 4, 8, 4);
+        _statusModeSelector.HorizontalAlignment = HorizontalAlignment.Right;
+        _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_statusModeSelector, 1);
+        layout.Children.Add(_statusModeSelector);
+
+        return layout;
+    }
+
     private void OnViewMap()
     {
         var win = new MapWindow(
@@ -2214,7 +2286,6 @@ public class MainWindow : Window
             ("Arm",  _valArmid,     "Lim",  _valLimpet),
             ("Gen",  _valGenesis,   "Ato",  _valAtomic),
             ("Corb", _valCorbo,     "Clo",  _valCloak),
-            ("TW1",  _valTW1,       "TW2",  _valTW2),
         })
             panel.Children.Add(BuildPairedRow(k1, v1, k2, v2));
 
@@ -2224,6 +2295,7 @@ public class MainWindow : Window
         // Scanner indicators
         panel.Children.Add(BuildScannerRow());
         panel.Children.Add(BuildHaggleRow());
+        panel.Children.Add(BuildMacroRow(deckSkin: false));
         panel.Children.Add(new Border { Height = 6 });
         return panel;
     }
@@ -2254,33 +2326,40 @@ public class MainWindow : Window
 
     private Control BuildScannerRow()
     {
-        static Border MakeScanInd(string letter) => new Border
+        static Border MakeScanInd(string label, double width) => new Border
         {
-            Width = 20, Height = 18, CornerRadius = new CornerRadius(2),
+            Width = width, Height = 18, CornerRadius = new CornerRadius(2),
             Background = ScannerInactive, Margin = new Thickness(2, 0),
             Child = new TextBlock
             {
-                Text = letter, FontSize = 11, FontWeight = Avalonia.Media.FontWeight.Bold,
+                Text = label, FontSize = 11, FontWeight = Avalonia.Media.FontWeight.Bold,
                 Foreground = ScannerFgInact,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(2, 1),
             },
         };
-        _scanIndD = MakeScanInd("D");
-        _scanIndH = MakeScanInd("H");
-        _scanIndP = MakeScanInd("P");
-        var indicators = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _scanIndTW1 = MakeScanInd("TW1", 28);
+        _scanIndTW2 = MakeScanInd("TW2", 28);
+        _scanIndD = MakeScanInd("D", 20);
+        _scanIndH = MakeScanInd("H", 20);
+        _scanIndP = MakeScanInd("P", 20);
+        var indicators = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        indicators.Children.Add(_scanIndTW1);
+        indicators.Children.Add(_scanIndTW2);
         indicators.Children.Add(_scanIndD);
         indicators.Children.Add(_scanIndH);
         indicators.Children.Add(_scanIndP);
-        var row = new Grid { Margin = new Thickness(6, 2, 6, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock { Text = "Scanners", Foreground = FgKey, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
-        Grid.SetColumn(label, 0); Grid.SetColumn(indicators, 1);
-        row.Children.Add(label); row.Children.Add(indicators);
-        return row;
+        return new Border
+        {
+            Margin = new Thickness(6, 2, 6, 3),
+            Child = indicators,
+        };
     }
 
     private Control BuildHaggleRow()
@@ -2302,11 +2381,82 @@ public class MainWindow : Window
         return row;
     }
 
+    private Button CreateMacroControlButton(string glyph, bool deckSkin, Action onClick)
+    {
+        var button = new Button
+        {
+            Content = glyph,
+            Width = deckSkin ? 26 : 22,
+            Height = deckSkin ? 22 : 20,
+            Padding = Thickness.Parse("0"),
+            FontSize = deckSkin ? 12 : 11,
+            FontWeight = FontWeight.Bold,
+            Background = deckSkin ? HudHeaderAlt : ScannerInactive,
+            BorderBrush = deckSkin ? HudInnerEdge : BorderColor,
+            BorderThickness = new Thickness(1),
+            Foreground = deckSkin ? HudMuted : FgKey,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            CornerRadius = new CornerRadius(deckSkin ? 6 : 2),
+        };
+
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private Control BuildMacroRow(bool deckSkin)
+    {
+        Button recordButton = CreateMacroControlButton("●", deckSkin, StartTemporaryMacroRecording);
+        Button stopButton = CreateMacroControlButton("■", deckSkin, StopTemporaryMacroRecording);
+        Button playButton = CreateMacroControlButton("▶", deckSkin, () => _ = PlayTemporaryMacroAsync());
+
+        if (deckSkin)
+        {
+            _deckMacroRecordButton = recordButton;
+            _deckMacroStopButton = stopButton;
+            _deckMacroPlayButton = playButton;
+        }
+        else
+        {
+            _macroRecordButton = recordButton;
+            _macroStopButton = stopButton;
+            _macroPlayButton = playButton;
+        }
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { recordButton, stopButton, playButton },
+        };
+
+        var row = new Grid { Margin = deckSkin ? new Thickness(0, 2, 0, 3) : new Thickness(6, 2, 6, 3) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var label = new TextBlock
+        {
+            Text = "Macro",
+            Foreground = deckSkin ? HudMuted : FgKey,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        Grid.SetColumn(label, 0);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(label);
+        row.Children.Add(buttons);
+
+        UpdateTemporaryMacroControls();
+        return row;
+    }
+
     private Control BuildDeckScannerRow()
     {
-        static Border MakeScanInd(string letter) => new Border
+        static Border MakeScanInd(string label, double width) => new Border
         {
-            Width = 24,
+            Width = width,
             Height = 20,
             CornerRadius = new CornerRadius(6),
             Background = HudHeaderAlt,
@@ -2315,7 +2465,7 @@ public class MainWindow : Window
             Margin = new Thickness(2, 0),
             Child = new TextBlock
             {
-                Text = letter,
+                Text = label,
                 FontSize = 11,
                 FontWeight = FontWeight.Bold,
                 Foreground = HudMuted,
@@ -2324,32 +2474,25 @@ public class MainWindow : Window
             },
         };
 
-        _deckScanIndD = MakeScanInd("D");
-        _deckScanIndH = MakeScanInd("H");
-        _deckScanIndP = MakeScanInd("P");
+        _deckScanIndTW1 = MakeScanInd("TW1", 36);
+        _deckScanIndTW2 = MakeScanInd("TW2", 36);
+        _deckScanIndD = MakeScanInd("D", 24);
+        _deckScanIndH = MakeScanInd("H", 24);
+        _deckScanIndP = MakeScanInd("P", 24);
 
         var indicators = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { _deckScanIndD, _deckScanIndH, _deckScanIndP },
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { _deckScanIndTW1, _deckScanIndTW2, _deckScanIndD, _deckScanIndH, _deckScanIndP },
         };
 
-        var row = new Grid { Margin = new Thickness(0, 2, 0, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock
+        return new Border
         {
-            Text = "Scanners",
-            Foreground = HudMuted,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 2, 0, 3),
+            Child = indicators,
         };
-        Grid.SetColumn(label, 0);
-        Grid.SetColumn(indicators, 1);
-        row.Children.Add(label);
-        row.Children.Add(indicators);
-        return row;
     }
 
     private Control BuildDeckHaggleRow()
@@ -2369,6 +2512,56 @@ public class MainWindow : Window
         row.Children.Add(label);
         row.Children.Add(_deckHaggleToggle);
         return row;
+    }
+
+    private void UpdateTemporaryMacroControls()
+    {
+        int encodedLength = GetTemporaryMacroText().Length;
+
+        ConfigureMacroControlSet(_macroRecordButton, _macroStopButton, _macroPlayButton, deckSkin: false, encodedLength);
+        ConfigureMacroControlSet(_deckMacroRecordButton, _deckMacroStopButton, _deckMacroPlayButton, deckSkin: true, encodedLength);
+    }
+
+    private void ConfigureMacroControlSet(Button? recordButton, Button? stopButton, Button? playButton, bool deckSkin, int encodedLength)
+    {
+        if (recordButton == null || stopButton == null || playButton == null)
+            return;
+
+        bool connected = _state.Connected && _terminalInputHandler != null;
+        bool hasMacro = encodedLength > 0;
+
+        recordButton.IsEnabled = connected && !_temporaryMacroRecording;
+        stopButton.IsEnabled = _temporaryMacroRecording;
+        playButton.IsEnabled = connected && !_temporaryMacroRecording && hasMacro;
+
+        if (deckSkin)
+        {
+            recordButton.Background = _temporaryMacroRecording ? HudAccentWarn : HudHeaderAlt;
+            recordButton.BorderBrush = _temporaryMacroRecording ? HudAccentWarn : HudInnerEdge;
+            recordButton.Foreground = _temporaryMacroRecording ? Brushes.Black : HudMuted;
+
+            stopButton.Background = stopButton.IsEnabled ? HudHeaderAlt : HudHeaderAlt;
+            stopButton.BorderBrush = stopButton.IsEnabled ? HudAccentWarn : HudInnerEdge;
+            stopButton.Foreground = stopButton.IsEnabled ? HudText : HudMuted;
+
+            playButton.Background = playButton.IsEnabled ? HudAccentOk : HudHeaderAlt;
+            playButton.BorderBrush = playButton.IsEnabled ? HudAccentOk : HudInnerEdge;
+            playButton.Foreground = playButton.IsEnabled ? Brushes.Black : HudMuted;
+        }
+        else
+        {
+            recordButton.Background = _temporaryMacroRecording ? Brushes.IndianRed : ScannerInactive;
+            recordButton.BorderBrush = _temporaryMacroRecording ? Brushes.IndianRed : BorderColor;
+            recordButton.Foreground = _temporaryMacroRecording ? Brushes.Black : FgKey;
+
+            stopButton.Background = stopButton.IsEnabled ? new SolidColorBrush(Color.FromRgb(60, 28, 28)) : ScannerInactive;
+            stopButton.BorderBrush = stopButton.IsEnabled ? Brushes.IndianRed : BorderColor;
+            stopButton.Foreground = stopButton.IsEnabled ? Brushes.White : FgKey;
+
+            playButton.Background = playButton.IsEnabled ? new SolidColorBrush(Color.FromRgb(34, 72, 34)) : ScannerInactive;
+            playButton.BorderBrush = playButton.IsEnabled ? Brushes.LightGreen : BorderColor;
+            playButton.Foreground = playButton.IsEnabled ? Brushes.White : FgKey;
+        }
     }
 
     private static void UpdateScanInd(Border b, bool active)
@@ -3062,8 +3255,10 @@ public class MainWindow : Window
             _state.Etheral      = s.EtherProbes;
             _state.Disruptor    = s.MineDisruptors;
             _state.ScannerP     = s.PlanetScanner;
-            _state.ScannerH     = s.LRSType.Contains("Holo", StringComparison.OrdinalIgnoreCase);
-            _state.ScannerD     = !string.IsNullOrEmpty(s.LRSType) && !s.LRSType.Contains("Holo", StringComparison.OrdinalIgnoreCase);
+            bool hasHoloScanner = s.LRSType.Contains("Holo", StringComparison.OrdinalIgnoreCase);
+            bool hasDensityScanner = !string.IsNullOrEmpty(s.LRSType) && !hasHoloScanner;
+            _state.ScannerH     = hasHoloScanner;
+            _state.ScannerD     = NormalizeDensityScanner(hasDensityScanner, hasHoloScanner);
             _state.TranswarpDrive1 = s.TransWarp1;
             _state.TranswarpDrive2 = s.TransWarp2;
 
@@ -3091,6 +3286,26 @@ public class MainWindow : Window
 
         int updated = _state.Genesis + delta;
         _state.Genesis = updated < 0 ? 0 : updated;
+        _state.NotifyChanged();
+        RefreshInfoPanels();
+
+        if (_currentProfilePath != null)
+            _ = SaveCurrentGameConfigAsync();
+    }
+
+    private void OnAtomicDetChanged(int delta)
+    {
+        if (delta == 0)
+            return;
+
+        if (_gameInstance != null)
+        {
+            _gameInstance.AdjustAtomicDet(delta);
+            return;
+        }
+
+        int updated = _state.Atomic + delta;
+        _state.Atomic = updated < 0 ? 0 : updated;
         _state.NotifyChanged();
         RefreshInfoPanels();
 
@@ -3165,9 +3380,13 @@ public class MainWindow : Window
         _deckValTW1.Text   = _valTW1.Text;
         _valTW2.Text       = _state.TranswarpDrive2 > 0 ? _state.TranswarpDrive2.ToString() : "-";
         _deckValTW2.Text   = _valTW2.Text;
+        UpdateScanInd(_scanIndTW1, _state.TranswarpDrive1 > 0);
+        UpdateScanInd(_scanIndTW2, _state.TranswarpDrive2 > 0);
         UpdateScanInd(_scanIndD, _state.ScannerD);
         UpdateScanInd(_scanIndH, _state.ScannerH);
         UpdateScanInd(_scanIndP, _state.ScannerP);
+        UpdateDeckScanInd(_deckScanIndTW1, _state.TranswarpDrive1 > 0);
+        UpdateDeckScanInd(_deckScanIndTW2, _state.TranswarpDrive2 > 0);
         UpdateDeckScanInd(_deckScanIndD, _state.ScannerD);
         UpdateDeckScanInd(_deckScanIndH, _state.ScannerH);
         UpdateDeckScanInd(_deckScanIndP, _state.ScannerP);
@@ -3219,6 +3438,40 @@ public class MainWindow : Window
 
             if (header.AlphaCentauri != 0 && header.AlphaCentauri != 65535)
                 alpha = header.AlphaCentauri.ToString();
+        }
+
+        if (starDock == "-")
+        {
+            string savedStarDock = ReadCurrentMombotSectorVar("0",
+                "$STARDOCK",
+                "$MAP~STARDOCK",
+                "$MAP~stardock",
+                "$BOT~STARDOCK",
+                "$stardock");
+            if (IsDefinedMombotSectorValue(savedStarDock))
+                starDock = savedStarDock;
+        }
+
+        if (rylos == "-")
+        {
+            string savedRylos = ReadCurrentMombotSectorVar("0",
+                "$MAP~RYLOS",
+                "$MAP~rylos",
+                "$BOT~RYLOS",
+                "$rylos");
+            if (IsDefinedMombotSectorValue(savedRylos))
+                rylos = savedRylos;
+        }
+
+        if (alpha == "-")
+        {
+            string savedAlpha = ReadCurrentMombotSectorVar("0",
+                "$MAP~ALPHA_CENTAURI",
+                "$MAP~alpha_centauri",
+                "$BOT~ALPHA_CENTAURI",
+                "$alpha_centauri");
+            if (IsDefinedMombotSectorValue(savedAlpha))
+                alpha = savedAlpha;
         }
 
         string haggleText = showHagglePct
@@ -3730,7 +3983,8 @@ public class MainWindow : Window
                     Hotkey = binding.Hotkey,
                     Macro = binding.Macro,
                 })
-                .ToArray());
+                .ToArray(),
+            PlayConfiguredMacroBurstAsync);
 
         bool saved = await dialog.ShowDialog<bool>(this);
         if (!saved)
@@ -3922,7 +4176,7 @@ public class MainWindow : Window
             Cloak = state.Cloak,
             TranswarpDrive1 = state.TranswarpDrive1,
             TranswarpDrive2 = state.TranswarpDrive2,
-            ScannerD = state.ScannerD,
+            ScannerD = NormalizeDensityScanner(state.ScannerD, state.ScannerH),
             ScannerH = state.ScannerH,
             ScannerP = state.ScannerP,
         };
@@ -3961,7 +4215,7 @@ public class MainWindow : Window
             Cloak = _state.Cloak,
             TranswarpDrive1 = _state.TranswarpDrive1,
             TranswarpDrive2 = _state.TranswarpDrive2,
-            ScannerD = _state.ScannerD,
+            ScannerD = NormalizeDensityScanner(_state.ScannerD, _state.ScannerH),
             ScannerH = _state.ScannerH,
             ScannerP = _state.ScannerP,
         };
@@ -4127,7 +4381,7 @@ public class MainWindow : Window
             Cloak = profile.Cloak,
             TranswarpDrive1 = profile.TranswarpDrive1,
             TranswarpDrive2 = profile.TranswarpDrive2,
-            ScannerD = profile.ScannerD,
+            ScannerD = NormalizeDensityScanner(profile.ScannerD, profile.ScannerH),
             ScannerH = profile.ScannerH,
             ScannerP = profile.ScannerP,
         };
@@ -4272,7 +4526,7 @@ public class MainWindow : Window
         _state.Cloak          = p.Cloak;
         _state.TranswarpDrive1 = p.TranswarpDrive1;
         _state.TranswarpDrive2 = p.TranswarpDrive2;
-        _state.ScannerD       = p.ScannerD;
+        _state.ScannerD       = NormalizeDensityScanner(p.ScannerD, p.ScannerH);
         _state.ScannerH       = p.ScannerH;
         _state.ScannerP       = p.ScannerP;
         SyncMombotRuntimeConfigFromTwxpCfg();
@@ -4515,16 +4769,6 @@ public class MainWindow : Window
             });
             return true;
         };
-        gi.NativeBotScriptRedirector = requestedReference =>
-        {
-            if (!_mombot.Enabled)
-                return null;
-
-            return _mombot.TryResolveScriptLoadRedirect(requestedReference, out string? redirectedReference)
-                ? redirectedReference
-                : null;
-        };
-
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
         // termToServer: MTC writes keystrokes → gi reads as "local client" input.
@@ -4659,7 +4903,6 @@ public class MainWindow : Window
                 if (!string.IsNullOrEmpty(lineStripped))
                 {
                     gi.FeedShipStatusLine(lineStripped);
-                    _shipParser.FeedLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
                     if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                         Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
@@ -4944,7 +5187,7 @@ public class MainWindow : Window
         selectorButtons.Children.Add(_statusPausedButton);
 
         _statusModeSelector.Padding = new Thickness(4, 2);
-        _statusModeSelector.Margin = new Thickness(4, 0, 8, 0);
+        _statusModeSelector.Margin = new Thickness(8, 4, 8, 4);
         _statusModeSelector.CornerRadius = new CornerRadius(8);
         _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
         _statusModeSelector.Child = selectorButtons;
@@ -5279,9 +5522,26 @@ public class MainWindow : Window
 
     private async Task ApplyLoadedGameConfigAsync(EmbeddedGameConfig config, string configPath, bool addToRecent)
     {
+        string targetGameName = NormalizeGameName(config.Name);
+        bool switchingProfile =
+            !string.IsNullOrWhiteSpace(_currentProfilePath) &&
+            !PathsEqualSafe(_currentProfilePath, configPath);
+        bool switchingEmbeddedGame =
+            _gameInstance != null
+                ? !string.Equals(_gameInstance.GameName, targetGameName, StringComparison.OrdinalIgnoreCase)
+                : !string.IsNullOrWhiteSpace(_embeddedGameName) &&
+                  !string.Equals(_embeddedGameName, targetGameName, StringComparison.OrdinalIgnoreCase);
+
+        if (_gameInstance != null && (switchingProfile || switchingEmbeddedGame))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC] Switching loaded game: stopping embedded runtime currentGame='{_gameInstance.GameName}' targetGame='{targetGameName}' currentProfile='{_currentProfilePath ?? "<none>"}' targetProfile='{configPath}'\n");
+            await StopEmbeddedAsync();
+        }
+
         _currentProfilePath = configPath;
         _embeddedGameConfig = config;
-        _embeddedGameName = NormalizeGameName(config.Name);
+        _embeddedGameName = targetGameName;
         ApplyProfile(BuildProfileFromConfig(config));
         if (addToRecent)
             AddToRecentAndSave(configPath);
@@ -5295,6 +5555,24 @@ public class MainWindow : Window
         {
             _parser.Feed($"\x1b[1;36m[Game loaded: {_state.Host}:{_state.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
             _buffer.Dirty = true;
+        }
+    }
+
+    private static bool PathsEqualSafe(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(left),
+                Path.GetFullPath(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -6302,8 +6580,7 @@ public class MainWindow : Window
             return;
         }
 
-        if (IsNativeMombotScriptLoaded("relog.cts") ||
-            IsNativeMombotScriptLoaded("twx3_native_initial_settings.ts"))
+        if (IsNativeMombotRelogScriptLoaded())
             return;
 
         string currentLine = NormalizeMombotPromptComparisonValue(Core.ScriptRef.GetCurrentLine());
@@ -6312,54 +6589,42 @@ public class MainWindow : Window
 
         SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         _mombotStartupDataGatherRunning = true;
-        if (!_mombot.TryLoadCompatScript("initsettings", out string? scriptReference, out string? error))
-        {
-            _mombotStartupDataGatherRunning = false;
-            PublishMombotLocalMessage($"Mombot: failed to load initial settings bootstrap: {error}");
-            return;
-        }
-
         _mombotStartupDataGatherPending = false;
-        PublishMombotLocalMessage($"mombot: loaded initial settings bootstrap ({scriptReference}).");
-        ApplyMombotExecutionRefresh();
-        if (_mombotStartupPostInitPending && !_mombotStartupFinalizeRunning)
-        {
-            _mombotStartupFinalizeRunning = true;
-            _ = MonitorNativeMombotStartupCompletionAsync();
-        }
+        await FinalizeNativeMombotStartupAsync();
     }
 
-    private async Task MonitorNativeMombotStartupCompletionAsync()
+    private async Task FinalizeNativeMombotStartupAsync()
     {
+        if (_mombotStartupFinalizeRunning)
+            return;
+
+        _mombotStartupFinalizeRunning = true;
         try
         {
-            for (int attempt = 0; attempt < 600; attempt++)
+            await Task.Yield();
+
+            if (!_mombotStartupPostInitPending ||
+                !_mombot.Enabled ||
+                _gameInstance == null ||
+                !_gameInstance.IsConnected ||
+                _gameInstance.IsProxyMenuActive ||
+                IsNativeMombotRelogScriptLoaded())
             {
-                await Task.Delay(100);
-
-                if (!_mombotStartupPostInitPending ||
-                    !_mombot.Enabled ||
-                    _gameInstance == null)
-                {
-                    return;
-                }
-
-                if (!_gameInstance.IsConnected || _gameInstance.IsProxyMenuActive)
-                    continue;
-
-                if (IsNativeMombotScriptLoaded("relog.cts") ||
-                    IsNativeMombotScriptLoaded("twx3_native_initial_settings.ts"))
-                {
-                    continue;
-                }
-
-                _mombotStartupDataGatherRunning = false;
-                _mombotStartupPostInitPending = false;
-                LoadMombotStartupScripts();
-                await SendMombotStartupAnnouncementsAsync();
-                ApplyMombotExecutionRefresh();
                 return;
             }
+
+            MombotPromptSurface promptSurface = GetMombotPromptSurface();
+            if (promptSurface != MombotPromptSurface.Command &&
+                promptSurface != MombotPromptSurface.Citadel)
+            {
+                return;
+            }
+
+            _mombotStartupDataGatherRunning = false;
+            _mombotStartupPostInitPending = false;
+            LoadMombotStartupScripts();
+            await SendMombotStartupAnnouncementsAsync();
+            ApplyMombotExecutionRefresh();
         }
         finally
         {
@@ -6994,7 +7259,7 @@ public class MainWindow : Window
 
             ApplyMombotRelogDialogResult(relogSettings);
             ApplyMombotConfigChange(config => config.Enabled = true);
-            ShowMombotStartupBanner(connected: false);
+            LoadMombotStartupScripts();
             await ExecuteMombotUiCommandAsync("relog");
         }
 
@@ -7235,18 +7500,17 @@ public class MainWindow : Window
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             _mombot.Settings.BotName,
             "mombot");
-        string stateLabel = connected ? "online" : "relog armed";
         string version = GetMombotVersionDisplay();
-        string banner =
-            "\r\n" +
-            $"\u001b[1;36m=== Mombot {version} ===\u001b[0m\r\n" +
-            $"\u001b[1;33m{botName}\u001b[0m \u001b[1;32m{stateLabel}\u001b[0m\r\n" +
-            "\u001b[38;5;245mUse > to open the mombot prompt.\u001b[0m\r\n";
+        if (connected)
+            return;
+
+        string message =
+            $"\r\n{{{botName}}} is ACTIVE: Version - {version} - type \"{botName} help\" for command list\r\n";
 
         if (_gameInstance != null)
-            _gameInstance.ClientMessage(banner);
+            _gameInstance.ClientMessage(message);
         else
-            _parser.Feed(banner);
+            _parser.Feed(message);
 
         _buffer.Dirty = true;
     }
@@ -7255,6 +7519,13 @@ public class MainWindow : Window
     {
         if (_gameInstance == null || !_gameInstance.IsConnected)
             return;
+
+        MombotPromptSurface promptSurface = GetMombotPromptSurface();
+        if (promptSurface != MombotPromptSurface.Command &&
+            promptSurface != MombotPromptSurface.Citadel)
+        {
+            return;
+        }
 
         string botName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
@@ -7279,6 +7550,13 @@ public class MainWindow : Window
         await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
             TranslateMombotBurstText($"'{{{botName}}} - to login - send a corporate memo*")));
 
+        string? corpUsersMessage = BuildMombotStartupCorpUsersMessage();
+        if (!string.IsNullOrWhiteSpace(corpUsersMessage))
+        {
+            await _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(
+                TranslateMombotBurstText(corpUsersMessage)));
+        }
+
         if (string.IsNullOrWhiteSpace(loginName) ||
             string.IsNullOrWhiteSpace(gameLetter) ||
             !string.Equals(dorelog, "1", StringComparison.OrdinalIgnoreCase))
@@ -7288,20 +7566,58 @@ public class MainWindow : Window
         }
     }
 
+    private string? BuildMombotStartupCorpUsersMessage()
+    {
+        string? botUsersPath = ResolveCurrentMombotBotUsersFilePath();
+        if (string.IsNullOrWhiteSpace(botUsersPath) || !File.Exists(botUsersPath))
+            return null;
+
+        string[] names = File.ReadLines(botUsersPath)
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (names.Length == 0)
+            return null;
+
+        string namesDisplay = names.Length switch
+        {
+            1 => names[0],
+            2 => $"{names[0]} and {names[1]}",
+            _ => $"{string.Join(", ", names.Take(names.Length - 1))}, and {names[^1]}"
+        };
+        string suffix = names.Length == 1 ? " is added.*" : " are added.*";
+        return $"'[General] {{{ReadCurrentMombotVar("mombot", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name")}}} - Logging corp mates automatically - {namesDisplay}{suffix}";
+    }
+
+    private string? ResolveCurrentMombotBotUsersFilePath()
+    {
+        string relativePath = ReadCurrentMombotVar(string.Empty, "$BOT_USER_FILE");
+        if (string.IsNullOrWhiteSpace(relativePath))
+            return null;
+
+        string normalizedRelativePath = relativePath.Replace('\\', '/').Trim();
+        if (Path.IsPathRooted(normalizedRelativePath))
+            return normalizedRelativePath;
+
+        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
+        return Path.GetFullPath(Path.Combine(programDir, normalizedRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+    }
+
     private void PrimeMombotBootstrapState(Core.BotConfig botConfig)
     {
         string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
         string scriptRoot = GetNativeMombotScriptRoot(botConfig).Trim().Trim('/');
         string scriptRootRelative = GetMombotScriptRootRelative(scriptRoot);
-        string majorVersion = "4";
-        string minorVersion = "7beta";
+        string majorVersion = "5";
+        string minorVersion = "0beta";
 
         string gameName = _embeddedGameName ?? DeriveGameName();
         string folderRelative = Path.Combine(scriptRoot, "games", gameName).Replace('\\', '/');
         string folderFullPath = Path.Combine(programDir, folderRelative.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(folderFullPath);
 
-        string folderConfigRelative = Path.Combine("scripts", $"mombot{majorVersion}_{minorVersion}.cfg").Replace('\\', '/');
+        string folderConfigRelative = Path.Combine("scripts", "mombot4_7beta.cfg").Replace('\\', '/');
         string folderConfigFullPath = Path.Combine(programDir, folderConfigRelative.Replace('/', Path.DirectorySeparatorChar));
         string hotkeysRelative = Path.Combine(scriptRoot, "hotkeys.cfg").Replace('\\', '/');
         string hotkeysFullPath = Path.Combine(programDir, hotkeysRelative.Replace('/', Path.DirectorySeparatorChar));
@@ -7413,6 +7729,9 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
         MirrorMombotCurrentVars("0", "$BOT~SILENT_RUNNING", "$bot~silent_running", "$silent_running");
         MirrorMombotCurrentVars("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
+        MirrorMombotCurrentVars("0", "$PLAYER~defenderCapping");
+        MirrorMombotCurrentVars("0", "$PLAYER~offenseCapping", "$offenseCapping");
+        MirrorMombotCurrentVars("0", "$PLAYER~cappingAliens", "$cappingAliens");
         MirrorMombotCurrentVars("0", "$PLAYER~dropOffensive", "$PLAYER~DROPOFFENSIVE");
         MirrorMombotCurrentVars("0", "$PLAYER~dropToll", "$PLAYER~DROPTOLL");
         MirrorMombotCurrentVars("0", "$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate");
@@ -7442,6 +7761,8 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
+        SetMombotCurrentVars(shipCapRelative, "$cap_file");
+        SetMombotCurrentVars(planetFileRelative, "$planet_file");
 
         string stardock = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         string rylos = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$rylos");
@@ -7646,6 +7967,12 @@ public class MainWindow : Window
                 return;
             }
 
+            if (IsNativeMombotRelogInProgress())
+            {
+                _mombotLastKeepaliveLine = string.Empty;
+                return;
+            }
+
             if (!_gameInstance.IsConnected)
             {
                 _mombotLastKeepaliveLine = string.Empty;
@@ -7707,7 +8034,8 @@ public class MainWindow : Window
 
     private bool IsNativeMombotRelogInProgress()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging"));
+        return IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging")) ||
+               IsNativeMombotRelogScriptLoaded();
     }
 
     private bool IsNativeMombotShipDestroyed()
@@ -7733,6 +8061,11 @@ public class MainWindow : Window
             await _gameInstance.DisconnectFromServerAsync();
 
         await ExecuteMombotUiCommandAsync("relog");
+    }
+
+    private bool IsNativeMombotRelogScriptLoaded()
+    {
+        return IsNativeMombotScriptLoaded("relog.cts");
     }
 
     private bool IsNativeMombotReconnectPrompt(string line)
@@ -7831,8 +8164,8 @@ public class MainWindow : Window
 
     private static string GetMombotVersionDisplay()
     {
-        string major = ReadCurrentMombotVar("4", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
-        string minor = ReadCurrentMombotVar("7beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
+        string major = ReadCurrentMombotVar("5", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
+        string minor = ReadCurrentMombotVar("0beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
         return string.IsNullOrWhiteSpace(minor) ? major : $"{major}.{minor}";
     }
 
@@ -8145,7 +8478,9 @@ public class MainWindow : Window
 
     private void RouteTerminalInput(byte[] bytes, Action<byte[]> forward)
     {
-        if (TryHandleConfiguredMacroHotkey(bytes, forward))
+        RecordTemporaryMacroInput(bytes);
+
+        if (TryHandleConfiguredMacroHotkey(bytes))
             return;
 
         if (TryHandleMombotPromptInput(bytes))
@@ -8160,7 +8495,289 @@ public class MainWindow : Window
         forward(bytes);
     }
 
-    private bool TryHandleConfiguredMacroHotkey(byte[] bytes, Action<byte[]> forward)
+    private void StartTemporaryMacroRecording()
+    {
+        if (_terminalInputHandler == null || !_state.Connected)
+        {
+            ShowMacroNotice("temporary macro recording requires an active connection");
+            return;
+        }
+
+        _temporaryMacroChunks.Clear();
+        _temporaryMacroRecording = true;
+        UpdateTemporaryMacroControls();
+        ShowMacroNotice($"temporary macro recording started ({TemporaryMacroMaxCharacters} characters max)");
+        FocusActiveTerminal();
+    }
+
+    private void StopTemporaryMacroRecording()
+    {
+        if (!_temporaryMacroRecording)
+        {
+            FocusActiveTerminal();
+            return;
+        }
+
+        _temporaryMacroRecording = false;
+        UpdateTemporaryMacroControls();
+        ShowMacroNotice($"temporary macro recording stopped ({GetTemporaryMacroText().Length} characters)");
+        FocusActiveTerminal();
+    }
+
+    private void ResetTemporaryMacroSession()
+    {
+        _temporaryMacroRecording = false;
+        _temporaryMacroChunks.Clear();
+        UpdateTemporaryMacroControls();
+    }
+
+    private void RecordTemporaryMacroInput(byte[] bytes)
+    {
+        if (!_temporaryMacroRecording || _suppressTemporaryMacroRecording || bytes.Length == 0)
+            return;
+
+        var currentBytes = new List<byte>(GetTemporaryMacroBytes());
+        var acceptedBytes = new List<byte>(bytes.Length);
+        bool reachedLimit = false;
+
+        foreach (byte value in bytes)
+        {
+            currentBytes.Add(value);
+            if (EncodeTemporaryMacroBytes(currentBytes).Length > TemporaryMacroMaxCharacters)
+            {
+                currentBytes.RemoveAt(currentBytes.Count - 1);
+                reachedLimit = true;
+                break;
+            }
+
+            acceptedBytes.Add(value);
+        }
+
+        if (acceptedBytes.Count > 0)
+            _temporaryMacroChunks.Add(acceptedBytes.ToArray());
+
+        if (!reachedLimit)
+            return;
+
+        _temporaryMacroRecording = false;
+        UpdateTemporaryMacroControls();
+        ShowMacroNotice($"temporary macro recorder stopped at {TemporaryMacroMaxCharacters} characters");
+    }
+
+    private async Task PlayTemporaryMacroAsync()
+    {
+        if (_temporaryMacroRecording)
+            return;
+
+        if (_terminalInputHandler == null || !_state.Connected)
+        {
+            ShowMacroNotice("temporary macro playback requires an active connection");
+            return;
+        }
+
+        string macroText = GetTemporaryMacroText();
+        if (string.IsNullOrWhiteSpace(macroText))
+        {
+            ShowMacroNotice("temporary macro is empty");
+            return;
+        }
+
+        var dialog = new MacroPlayDialog(macroText, ValidateTemporaryMacroText);
+        bool accepted = await dialog.ShowDialog<bool>(this);
+        if (!accepted)
+        {
+            FocusActiveTerminal();
+            return;
+        }
+
+        if (!TryDecodeTemporaryMacroText(dialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
+        {
+            ShowMacroNotice(parseError ?? "temporary macro is invalid");
+            FocusActiveTerminal();
+            return;
+        }
+
+        _temporaryMacroChunks.Clear();
+        if (updatedMacroBytes.Length > 0)
+            _temporaryMacroChunks.Add(updatedMacroBytes);
+        UpdateTemporaryMacroControls();
+
+        string? error = await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, dialog.PlayCount);
+        if (!string.IsNullOrWhiteSpace(error))
+            ShowMacroNotice(error);
+
+        FocusActiveTerminal();
+    }
+
+    private Task<string?> PlayTemporaryMacroBurstAsync(IReadOnlyList<byte[]> macroChunks, int count)
+    {
+        if (macroChunks.Count == 0 || macroChunks.All(chunk => chunk.Length == 0))
+            return Task.FromResult<string?>("Temporary macro is empty.");
+
+        if (_terminalInputHandler == null || !_state.Connected)
+            return Task.FromResult<string?>("Temporary macros need an active game connection.");
+
+        _suppressTemporaryMacroRecording = true;
+        try
+        {
+            for (int iteration = 0; iteration < count; iteration++)
+            {
+                foreach (byte[] chunk in macroChunks)
+                {
+                    if (chunk.Length > 0)
+                        _terminalInputHandler(chunk);
+                }
+            }
+        }
+        finally
+        {
+            _suppressTemporaryMacroRecording = false;
+        }
+
+        return Task.FromResult<string?>(null);
+    }
+
+    private string GetTemporaryMacroText()
+        => EncodeTemporaryMacroBytes(GetTemporaryMacroBytes());
+
+    private byte[] GetTemporaryMacroBytes()
+    {
+        int totalLength = 0;
+        foreach (byte[] chunk in _temporaryMacroChunks)
+            totalLength += chunk.Length;
+
+        if (totalLength == 0)
+            return [];
+
+        byte[] bytes = new byte[totalLength];
+        int offset = 0;
+        foreach (byte[] chunk in _temporaryMacroChunks)
+        {
+            if (chunk.Length == 0)
+                continue;
+
+            Buffer.BlockCopy(chunk, 0, bytes, offset, chunk.Length);
+            offset += chunk.Length;
+        }
+
+        return bytes;
+    }
+
+    private static string EncodeTemporaryMacroBytes(IEnumerable<byte> bytes)
+    {
+        var builder = new System.Text.StringBuilder();
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case (byte)'\r':
+                    builder.Append('*');
+                    break;
+                case (byte)'*':
+                    builder.Append(@"\*");
+                    break;
+                case (byte)'\\':
+                    builder.Append(@"\\");
+                    break;
+                default:
+                    if (value is >= 32 and <= 126)
+                        builder.Append((char)value);
+                    else
+                        builder.Append(@"\x").Append(value.ToString("X2"));
+                    break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private string? ValidateTemporaryMacroText(string macroText)
+    {
+        if (string.IsNullOrWhiteSpace(macroText))
+            return "Enter a macro before playback.";
+
+        if (macroText.Length > TemporaryMacroMaxCharacters)
+            return $"Temporary macros are limited to {TemporaryMacroMaxCharacters} characters.";
+
+        return TryDecodeTemporaryMacroText(macroText, out _, out string? error)
+            ? null
+            : error ?? "Macro text is invalid.";
+    }
+
+    private static bool TryDecodeTemporaryMacroText(string macroText, out byte[] bytes, out string? error)
+    {
+        var values = new List<byte>(macroText.Length);
+
+        for (int index = 0; index < macroText.Length; index++)
+        {
+            char current = macroText[index];
+            if (current == '*')
+            {
+                values.Add((byte)'\r');
+                continue;
+            }
+
+            if (current != '\\')
+            {
+                if (current > byte.MaxValue)
+                {
+                    bytes = [];
+                    error = "Temporary macros support Latin-1 text only.";
+                    return false;
+                }
+
+                values.Add((byte)current);
+                continue;
+            }
+
+            if (index == macroText.Length - 1)
+            {
+                bytes = [];
+                error = "A backslash must be followed by \\\\, \\*, or \\xNN.";
+                return false;
+            }
+
+            char next = macroText[++index];
+            switch (next)
+            {
+                case '\\':
+                    values.Add((byte)'\\');
+                    break;
+                case '*':
+                    values.Add((byte)'*');
+                    break;
+                case 'x':
+                case 'X':
+                    if (index + 2 >= macroText.Length ||
+                        !byte.TryParse(macroText.Substring(index + 1, 2), System.Globalization.NumberStyles.HexNumber, null, out byte hexValue))
+                    {
+                        bytes = [];
+                        error = "Use \\x followed by two hex digits.";
+                        return false;
+                    }
+
+                    values.Add(hexValue);
+                    index += 2;
+                    break;
+                default:
+                    bytes = [];
+                    error = "A backslash must be followed by \\\\, \\*, or \\xNN.";
+                    return false;
+            }
+        }
+
+        bytes = values.ToArray();
+        error = null;
+        return true;
+    }
+
+    private void ShowMacroNotice(string message)
+    {
+        _parser.Feed($"\x1b[33m[{message}]\x1b[0m\r\n");
+        _buffer.Dirty = true;
+    }
+
+    private bool TryHandleConfiguredMacroHotkey(byte[] bytes)
     {
         if (!TerminalControl.TryGetMacroHotkeyName(bytes, out string hotkey))
             return false;
@@ -8173,16 +8790,72 @@ public class MainWindow : Window
         if (binding == null)
             return false;
 
-        byte[] expandedBytes = System.Text.Encoding.Latin1.GetBytes(ExpandConfiguredMacro(binding.Macro));
-        if (expandedBytes.Length == 0)
-            return true;
-
-        RouteTerminalInput(expandedBytes, forward);
+        _ = PromptAndPlayConfiguredMacroAsync(binding);
         return true;
     }
 
     private static string ExpandConfiguredMacro(string macro)
         => string.IsNullOrEmpty(macro) ? string.Empty : macro.Replace("*", "\r");
+
+    private async Task PromptAndPlayConfiguredMacroAsync(AppPreferences.MacroBinding binding)
+    {
+        string macro = binding.Macro;
+        if (string.IsNullOrWhiteSpace(macro))
+            return;
+
+        if (_terminalInputHandler == null || !_state.Connected)
+        {
+            _parser.Feed("\x1b[33m[macro requires an active connection]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+            return;
+        }
+
+        var dialog = new MacroPlayDialog(macro);
+        bool accepted = await dialog.ShowDialog<bool>(this);
+        if (!accepted)
+        {
+            FocusActiveTerminal();
+            return;
+        }
+
+        string updatedMacro = dialog.MacroText;
+        if (!string.Equals(binding.Macro, updatedMacro, StringComparison.Ordinal))
+        {
+            binding.Macro = updatedMacro;
+            _appPrefs.Save();
+        }
+
+        string? error = await PlayConfiguredMacroBurstAsync(updatedMacro, dialog.PlayCount);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            _parser.Feed($"\x1b[33m[{error}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+
+        FocusActiveTerminal();
+    }
+
+    private Task<string?> PlayConfiguredMacroBurstAsync(string macro, int count)
+    {
+        if (string.IsNullOrWhiteSpace(macro))
+            return Task.FromResult<string?>("Macro is empty.");
+
+        if (_terminalInputHandler == null || !_state.Connected)
+            return Task.FromResult<string?>("Macros need an active game connection.");
+
+        string expanded = ExpandConfiguredMacro(macro);
+        if (string.IsNullOrEmpty(expanded))
+            return Task.FromResult<string?>(null);
+
+        byte[] payload = System.Text.Encoding.Latin1.GetBytes(expanded);
+        if (payload.Length == 0)
+            return Task.FromResult<string?>(null);
+
+        for (int i = 0; i < count; i++)
+            _terminalInputHandler(payload);
+
+        return Task.FromResult<string?>(null);
+    }
 
     private bool TryHandleMombotPromptInput(byte[] bytes)
     {
@@ -8423,12 +9096,15 @@ public class MainWindow : Window
             return;
         }
 
+        bool preservePreferencesBotIsDeaf = _mombotPreferencesOpen;
+        ResetMombotPromptState();
+        if (preservePreferencesBotIsDeaf)
+            PersistMombotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+
         if (_mombotHotkeyPromptOpen)
             return;
 
         _mombotHotkeyPromptOpen = true;
-        _mombotScriptPromptOpen = false;
-        _mombotPreferencesOpen = false;
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
         RedrawMombotPrompt();
     }
@@ -10450,6 +11126,8 @@ public class MainWindow : Window
             return;
         }
 
+        EndMombotHotkeyPrompt();
+
         if (commandOrAction.StartsWith(":", StringComparison.Ordinal))
         {
             await ExecuteMombotHotkeyActionAsync(commandOrAction);
@@ -10489,38 +11167,57 @@ public class MainWindow : Window
             case ":internal_commands~stopmodules":
                 await ExecuteMombotHotkeyCommandAsync("stopmodules");
                 return;
-        }
 
-        if (TryTranslateMombotHotkeyActionToCommand(normalized, out string? translatedCommand) &&
-            !string.IsNullOrWhiteSpace(translatedCommand))
-        {
-            await ExecuteMombotHotkeyCommandAsync(translatedCommand);
-            return;
+            case ":internal_commands~autocap":
+            case ":internal_commands~autocapture":
+                await ExecuteMombotHotkeyCommandAsync("cap");
+                return;
+
+            case ":internal_commands~autokill":
+                await ExecuteMombotHotkeyCommandAsync("kill furb silent");
+                return;
+
+            case ":internal_commands~autorefurb":
+                await ExecuteMombotHotkeyCommandAsync("refurb");
+                return;
+
+            case ":internal_commands~hkill":
+            case ":holo_kill":
+                await ExecuteMombotHotkeyCommandAsync("hkill");
+                return;
+
+            case ":internal_commands~htorp":
+            case ":holotorp":
+                await ExecuteMombotHotkeyCommandAsync("htorp");
+                return;
+
+            case ":internal_commands~surround":
+                await ExecuteMombotHotkeyCommandAsync("surround");
+                return;
+
+            case ":internal_commands~xenter":
+            case ":internal_commands~exit":
+                await ExecuteMombotHotkeyCommandAsync("xenter");
+                return;
+
+            case ":internal_commands~clear":
+                await ExecuteMombotHotkeyCommandAsync("clear");
+                return;
+
+            case ":internal_commands~kit":
+                await ExecuteMombotHotkeyCommandAsync("macro_kit");
+                return;
+
+            case ":internal_commands~dock_shopper":
+                await ExecuteMombotHotkeyCommandAsync("dock_shopper");
+                return;
+
+            case ":internal_commands~fotonswitch":
+                await ExecuteMombotHotkeyCommandAsync(ResolveMombotPhotonHotkeyCommand());
+                return;
         }
 
         await ExecuteMombotHotkeyInternalActionAsync(actionRef);
-    }
-
-    private bool TryTranslateMombotHotkeyActionToCommand(string normalizedActionRef, out string? command)
-    {
-        command = normalizedActionRef switch
-        {
-            ":internal_commands~autocap" => "cap",
-            ":internal_commands~autokill" => "kill furb silent",
-            ":internal_commands~autorefurb" => "refurb",
-            ":internal_commands~surround" => "surround",
-            ":internal_commands~htorp" => "htorp",
-            ":internal_commands~kit" => "macro_kit",
-            ":internal_commands~dock_shopper" => "dock_shopper",
-            ":internal_commands~hkill" => "hkill",
-            ":internal_commands~clear" => "clear",
-            ":internal_commands~xenter" => "xenter",
-            ":internal_commands~exit" => "xenter",
-            ":internal_commands~fotonswitch" => ResolveMombotPhotonHotkeyCommand(),
-            _ => null,
-        };
-
-        return !string.IsNullOrWhiteSpace(command);
     }
 
     private string ResolveMombotPhotonHotkeyCommand()
@@ -10544,10 +11241,7 @@ public class MainWindow : Window
         ResetMombotPromptState();
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
-
-        if (!_mombot.TryExecuteInternalAction(actionRef, selfCommand: true, route: "hotkey", userName: "self", out _, out string? error))
-            PublishMombotLocalMessage($"Mombot could not execute hotkey action {actionRef}: {error}");
-
+        PublishMombotLocalMessage($"Mombot could not execute hotkey action {actionRef}: no native mapping is defined for this action.");
         ApplyMombotExecutionRefresh();
         await Task.CompletedTask;
     }

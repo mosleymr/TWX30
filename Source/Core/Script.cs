@@ -328,6 +328,21 @@ namespace TWXProxy.Core
 
         public void Load(string filename, bool silent)
         {
+            LoadInternal(filename, silent, null, null);
+        }
+
+        public void LoadAtLabel(string filename, bool silent, string entryLabel)
+        {
+            LoadInternal(filename, silent, entryLabel, null);
+        }
+
+        public void LoadAtLabel(string filename, bool silent, string entryLabel, Action<Script>? beforeExecute)
+        {
+            LoadInternal(filename, silent, entryLabel, beforeExecute);
+        }
+
+        private void LoadInternal(string filename, bool silent, string? entryLabel, Action<Script>? beforeExecute)
+        {
             GlobalModules.DebugLog($"[ModInterpreter.Load] Starting load of '{filename}', silent={silent}\n");
             string eventScriptName = filename;
 
@@ -415,6 +430,23 @@ namespace TWXProxy.Core
             
             if (!error)
             {
+                if (!string.IsNullOrWhiteSpace(entryLabel))
+                {
+                    try
+                    {
+                        script.GotoLabel(entryLabel);
+                    }
+                    catch (Exception ex)
+                    {
+                        GlobalModules.DebugLog(
+                            $"[ModInterpreter.Load] Failed to jump to entry label '{entryLabel}' in '{filename}': {ex.Message}\n");
+                        Stop(Count - 1);
+                        throw new Exception($"Entry label '{entryLabel}' not found in script '{filename}'", ex);
+                    }
+                }
+
+                beforeExecute?.Invoke(script);
+
                 ProgramEvent("SCRIPT LOADED", eventScriptName, true);
                 if (GlobalModules.TWXServer is GameInstance gameServer)
                     gameServer.NotifyScriptLoad();

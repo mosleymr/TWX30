@@ -1977,6 +1977,12 @@ namespace TWXProxy.Core
             return CmdProcessOut_Impl(script, parameters);
         }
 
+        private static CmdAction CmdAutoHaggle(object script, CmdParam[] parameters)
+        {
+            // CMD: autohaggle <on|off>
+            return CmdAutoHaggle_Impl(script, parameters);
+        }
+
         #endregion
 
         #region Menu Commands
