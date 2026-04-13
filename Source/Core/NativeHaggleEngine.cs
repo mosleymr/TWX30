@@ -402,6 +402,7 @@ public sealed class NativeHaggleEngine
     private ProductType _pendingProductType;
     private string? _pendingBuySell;
     private bool _pendingIsPlanetTrade;
+    private bool _awaitingTradeQtyReply;
     private long _lastKnownCredits;
     private bool _hasLastKnownCredits;
     private int _lastKnownEmptyHolds;
@@ -632,9 +633,7 @@ public sealed class NativeHaggleEngine
             return;
         }
 
-        if (_session == null &&
-            string.IsNullOrWhiteSpace(_pendingProductKey) &&
-            string.IsNullOrWhiteSpace(_pendingBuySell))
+        if (!HasMeaningfulActiveTrade())
         {
             GlobalModules.DebugLog($"[NativeHaggle] SuppressCurrentTrade('{reason}') ignored because no trade is active.\n");
             return;
@@ -653,9 +652,13 @@ public sealed class NativeHaggleEngine
         if (_tradeSuppressed)
             return;
 
-        if (_session == null &&
-            string.IsNullOrWhiteSpace(_pendingProductKey) &&
-            string.IsNullOrWhiteSpace(_pendingBuySell))
+        if (AllowScriptTradeQuantityReply(text))
+            return;
+
+        if (AllowScriptTradeSetupSend(text))
+            return;
+
+        if (!HasMeaningfulActiveTrade())
         {
             return;
         }
@@ -664,6 +667,58 @@ public sealed class NativeHaggleEngine
             .Replace("\n", "\\n", StringComparison.Ordinal);
         GlobalModules.DebugLog($"[NativeHaggle] Observed script send during active trade: '{escaped}'\n");
         SuppressCurrentTrade("script-send");
+    }
+
+    private bool AllowScriptTradeSetupSend(string text)
+    {
+        if (!HasMeaningfulActiveTrade())
+            return false;
+
+        bool preOfferPending =
+            _awaitingTradeQtyReply ||
+            !string.IsNullOrWhiteSpace(_pendingProductKey) ||
+            !string.IsNullOrWhiteSpace(_pendingBuySell);
+
+        bool armedButNoOfferSeen =
+            _session != null &&
+            !string.IsNullOrWhiteSpace(_session.ProductKey) &&
+            !string.IsNullOrWhiteSpace(_session.BuySell) &&
+            _session.BidNumber == 0 &&
+            _session.LastOffer == 0 &&
+            _session.PendingBid == 0 &&
+            _session.PendingBidOffer == 0 &&
+            !_session.FinalOffer;
+
+        if (!preOfferPending && !armedButNoOfferSeen)
+            return false;
+
+        string escaped = text.Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+        GlobalModules.DebugLog($"[NativeHaggle] Allowing pre-offer script send: '{escaped}'\n");
+        return true;
+    }
+
+    private bool HasMeaningfulActiveTrade()
+    {
+        if (!string.IsNullOrWhiteSpace(_pendingProductKey) ||
+            !string.IsNullOrWhiteSpace(_pendingBuySell) ||
+            _awaitingTradeQtyReply)
+        {
+            return true;
+        }
+
+        if (_session == null)
+            return false;
+
+        return !string.IsNullOrWhiteSpace(_session.ProductKey) ||
+               !string.IsNullOrWhiteSpace(_session.BuySell) ||
+               _session.BidNumber > 0 ||
+               _session.LastCounter > 0 ||
+               _session.LastOffer > 0 ||
+               _session.PendingBid > 0 ||
+               _session.PendingBidOffer > 0 ||
+               _session.FinalOffer ||
+               _session.PlanetAcceptanceSeen;
     }
 
     private static void WriteTradeDebug(bool isPlanetTrade, string message)
@@ -777,6 +832,7 @@ public sealed class NativeHaggleEngine
         _pendingProductType = ProductTypeFromKey(_pendingProductKey);
         string action = holdMatch.Groups[3].Value.ToUpperInvariant();
         _pendingBuySell = action == "BUY" ? "SELLING" : "BUYING";
+        _awaitingTradeQtyReply = true;
         WriteTradeDebug(
             _pendingIsPlanetTrade,
             $"[NativeHaggle] PROMPT product={_pendingProductKey} action={action} text='{line}'\n");
@@ -787,6 +843,8 @@ public sealed class NativeHaggleEngine
         EnsureSession();
         if (_session == null || string.IsNullOrEmpty(_pendingProductKey) || string.IsNullOrEmpty(_pendingBuySell))
             return;
+
+        _awaitingTradeQtyReply = false;
 
         ModDatabase? db = ScriptRef.GetActiveDatabase();
         int sector = GlobalModules.GlobalAutoRecorder.CurrentSector;
@@ -2994,6 +3052,39 @@ public sealed class NativeHaggleEngine
         _pendingProductKey = null;
         _pendingBuySell = null;
         _pendingIsPlanetTrade = false;
+        _awaitingTradeQtyReply = false;
+    }
+
+    private bool AllowScriptTradeQuantityReply(string text)
+    {
+        if (!_awaitingTradeQtyReply)
+            return false;
+
+        string trimmed = text.Trim();
+        if (trimmed.EndsWith("\r", StringComparison.Ordinal))
+            trimmed = trimmed[..^1];
+        if (trimmed.EndsWith("\n", StringComparison.Ordinal))
+            trimmed = trimmed[..^1];
+        trimmed = trimmed.Trim();
+
+        if (trimmed.Length == 0)
+            return false;
+
+        foreach (char c in trimmed)
+        {
+            if (!char.IsDigit(c))
+                return false;
+        }
+
+        _awaitingTradeQtyReply = false;
+        string escaped = text.Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+        GlobalModules.DebugLog($"[NativeHaggle] Allowing script quantity handoff: '{escaped}'\n");
+        if (_pendingIsPlanetTrade)
+            GlobalModules.PlanetHaggleDebug($"[NativeHaggle] QTY-HANDOFF product={_pendingProductKey ?? "-"} qty='{trimmed}'\n");
+        else
+            GlobalModules.PortHaggleDebug($"[NativeHaggle] QTY-HANDOFF product={_pendingProductKey ?? "-"} qty='{trimmed}'\n");
+        return true;
     }
 
     private void RecordOutcome(bool success, string reason)

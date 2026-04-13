@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -332,10 +333,11 @@ public class TerminalControl : Control
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        bool primaryModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control) ||
+                               e.KeyModifiers.HasFlag(KeyModifiers.Meta);
 
         // Ctrl+C: copy selection if active — works even when disconnected
-        if (ctrl && e.Key == Key.C)
+        if (primaryModifier && e.Key == Key.C)
         {
             if (_hasSelection)
             {
@@ -347,7 +349,24 @@ public class TerminalControl : Control
         }
 
         // Ctrl+V: paste from clipboard — only when connected
-        if (ctrl && e.Key == Key.V)
+        if (primaryModifier && e.Key == Key.V)
+        {
+            if (IsConnected)
+                _ = PasteFromClipboardAsync();
+            e.Handled = true;
+            return;
+        }
+
+        // Windows-style clipboard shortcuts
+        if (e.Key == Key.Insert && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            if (_hasSelection)
+                _ = CopySelectionAsync();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Insert && e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
             if (IsConnected)
                 _ = PasteFromClipboardAsync();
@@ -541,9 +560,10 @@ public class TerminalControl : Control
     {
         if (!_hasSelection) return;
         string text = GetSelectedText();
-        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-        if (clipboard != null && text.Length > 0)
-            await clipboard.SetTextAsync(text);
+        if (text.Length == 0)
+            return;
+
+        await TrySetClipboardTextAsync(text);
     }
 
     private async Task PasteFromClipboardAsync()
@@ -553,6 +573,72 @@ public class TerminalControl : Control
         string? text = await ClipboardExtensions.TryGetTextAsync(clipboard);
         if (!string.IsNullOrEmpty(text))
             SendBytes(Encoding.Latin1.GetBytes(text));
+    }
+
+    private async Task<bool> TrySetClipboardTextAsync(string text)
+    {
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard != null)
+        {
+            try
+            {
+                await clipboard.SetTextAsync(text);
+                string? roundTrip = await ClipboardExtensions.TryGetTextAsync(clipboard);
+                if (ClipboardTextMatches(roundTrip, text))
+                    return true;
+            }
+            catch
+            {
+                // Fall through to platform fallback below.
+            }
+        }
+
+        if (OperatingSystem.IsWindows())
+            return await TrySetWindowsClipboardFallbackAsync(text);
+
+        return false;
+    }
+
+    private static bool ClipboardTextMatches(string? actual, string expected)
+    {
+        if (string.IsNullOrEmpty(actual))
+            return false;
+
+        return NormalizeClipboardText(actual) == NormalizeClipboardText(expected);
+    }
+
+    private static string NormalizeClipboardText(string text)
+        => text.Replace("\r\n", "\n").Replace('\r', '\n');
+
+    private static async Task<bool> TrySetWindowsClipboardFallbackAsync(string text)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c clip",
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                CreateNoWindow = true,
+                StandardInputEncoding = Encoding.Unicode,
+            };
+
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+                return false;
+
+            string clipboardText = text.Replace("\n", "\r\n");
+            await process.StandardInput.WriteAsync(clipboardText);
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Close();
+            await process.WaitForExitAsync();
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // ── Selection helpers ─────────────────────────────────────────────────

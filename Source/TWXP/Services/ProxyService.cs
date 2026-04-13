@@ -314,6 +314,7 @@ public class ProxyService : IProxyService
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing partial line (prompt): '{strippedRemainder}'\n");
                                 // Restore CURRENTLINE to the actual prompt before firing
                                 TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                                bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");
                                 // Pascal ProcessPrompt calls TextEvent(CurrentLine) only — no TextLineEvent for partial prompts.
                                 // Pascal does NOT call ActivateTriggers after a prompt — only after a full \r-terminated
@@ -321,7 +322,6 @@ public class ProxyService : IProxyService
                                 // registered during a prompt handler to fire on the next full line's TextLineEvent
                                 // instead of waiting for the line after that.
                                 interpreter.TextEvent(scriptRemainder, false);
-                                bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
                                 if (nativeHaggleResponded)
                                 {
                                     proxyInstance.ServerLineBuffer.Clear();
@@ -376,6 +376,7 @@ public class ProxyService : IProxyService
                         }
 
                         gameInstance.History.ProcessLine(strippedLine);
+                        gameInstance.ProcessNativeHaggleLine(strippedLine);
 
                         // Fire text triggers and text line triggers for scripts (all lines, including blank)
                         if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
@@ -394,12 +395,6 @@ public class ProxyService : IProxyService
                             // Re-enable triggers for next line (they get disabled when they fire to prevent double-triggering)
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Re-activating triggers\n");
                             interpreter.ActivateTriggers();
-
-                            gameInstance.ProcessNativeHaggleLine(strippedLine);
-                        }
-                        else
-                        {
-                            gameInstance.ProcessNativeHaggleLine(strippedLine);
                         }
                     }
                     

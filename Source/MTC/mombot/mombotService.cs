@@ -688,6 +688,14 @@ internal sealed class mombotService
     {
         module = null;
 
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (!string.IsNullOrWhiteSpace(scriptRoot) &&
+            Directory.Exists(scriptRoot) &&
+            TryResolveLocalModuleCandidate(scriptRoot, canonical, out module))
+        {
+            return true;
+        }
+
         if (mombotCatalog.TryGetCommandSpec(canonical, out mombotCommandSpec? commandSpec) &&
             commandSpec?.Kind == mombotCommandKind.Module &&
             TryResolveExplicitScriptReference(commandSpec.Source, out string? explicitReference, out string? explicitFullPath))
@@ -697,7 +705,6 @@ internal sealed class mombotService
             return true;
         }
 
-        string? scriptRoot = GetAbsoluteScriptRoot();
         if (string.IsNullOrWhiteSpace(scriptRoot) || !Directory.Exists(scriptRoot))
             return false;
 
@@ -719,6 +726,42 @@ internal sealed class mombotService
         }
 
         return false;
+    }
+
+    private bool TryResolveLocalModuleCandidate(
+        string scriptRoot,
+        string canonical,
+        out mombotResolvedModule? module)
+    {
+        module = null;
+
+        string directory = Path.Combine(scriptRoot, "local");
+        if (!Directory.Exists(directory))
+            return false;
+
+        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
+        if (File.Exists(hiddenPath))
+        {
+            module = new mombotResolvedModule(
+                BuildLoadReference(hiddenPath),
+                Path.GetFullPath(hiddenPath),
+                "Local",
+                string.Empty,
+                true);
+            return true;
+        }
+
+        string visiblePath = Path.Combine(directory, canonical + ".cts");
+        if (!File.Exists(visiblePath))
+            return false;
+
+        module = new mombotResolvedModule(
+            BuildLoadReference(visiblePath),
+            Path.GetFullPath(visiblePath),
+            "Local",
+            string.Empty,
+            false);
+        return true;
     }
 
     private bool TryResolveModuleCandidate(
@@ -1155,7 +1198,7 @@ internal sealed class mombotService
             return;
         }
 
-        if (MatchesAnyCommand(commandName, "upgrade", "max"))
+        if (MatchesCommand(commandName, "max"))
         {
             string firstParameter = GetParameter(parameters, 0);
             commandName = IsPortOrPlanetTarget(firstParameter) ? firstParameter : "port";

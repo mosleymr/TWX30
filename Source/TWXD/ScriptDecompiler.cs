@@ -332,7 +332,7 @@ namespace TWXD
                                 lineElse = false;
                                 pendingElseLine = -1;
                             }
-                            WriteTrackedLine($"{Indent(indent)}:{labelName}");
+                            WriteTrackedLine($"{Indent(indent)}{NormalizeNamespacedTokenCasing(":" + labelName)}");
                         }
                         else if (lineGoto && !whileLabels.Contains(internalLabelKey!))
                         {
@@ -776,7 +776,7 @@ namespace TWXD
         {
             var lines = new List<string>(File.ReadAllLines(filename, Encoding.Latin1));
             bool changed = false;
-            var blockStack = new Stack<(string kind, int lineIndex, bool hasElse)>();
+            var blockStack = new Stack<(string kind, int lineIndex, int elseState)>();
 
             for (int i = 0; i < lines.Count; i++)
             {
@@ -786,19 +786,20 @@ namespace TWXD
 
                 if (trimmed.StartsWith("if ", StringComparison.OrdinalIgnoreCase))
                 {
-                    blockStack.Push(("if", i, false));
+                    blockStack.Push(("if", i, 0));
                     continue;
                 }
 
                 if (trimmed.StartsWith("while ", StringComparison.OrdinalIgnoreCase))
                 {
-                    blockStack.Push(("while", i, false));
+                    blockStack.Push(("while", i, 0));
                     continue;
                 }
 
                 if (string.Equals(trimmed, "else", StringComparison.OrdinalIgnoreCase) ||
                     trimmed.StartsWith("elseif ", StringComparison.OrdinalIgnoreCase))
                 {
+                    bool isElseIf = trimmed.StartsWith("elseif ", StringComparison.OrdinalIgnoreCase);
                     while (blockStack.Count > 0)
                     {
                         var block = blockStack.Pop();
@@ -807,11 +808,12 @@ namespace TWXD
                             string whileTrimmed = lines[block.lineIndex].TrimStart();
                             int indentLength = lines[block.lineIndex].Length - whileTrimmed.Length;
                             lines[block.lineIndex] = new string(' ', indentLength) + "if" + whileTrimmed.Substring(5);
-                            block = ("if", block.lineIndex, block.hasElse);
+                            block = ("if", block.lineIndex, block.elseState);
                             changed = true;
                         }
 
-                        if (string.Equals(block.kind, "if", StringComparison.OrdinalIgnoreCase) && block.hasElse)
+                        if (string.Equals(block.kind, "if", StringComparison.OrdinalIgnoreCase) &&
+                            ((isElseIf && block.elseState == 2) || (!isElseIf && block.elseState == 2)))
                         {
                             int indentLength = lines[i].Length - lines[i].TrimStart().Length;
                             lines.Insert(i, new string(' ', indentLength) + "end");
@@ -822,7 +824,8 @@ namespace TWXD
 
                         if (string.Equals(block.kind, "if", StringComparison.OrdinalIgnoreCase))
                         {
-                            blockStack.Push((block.kind, block.lineIndex, true));
+                            int nextElseState = isElseIf ? 1 : 2;
+                            blockStack.Push((block.kind, block.lineIndex, nextElseState));
                         }
 
                         break;
@@ -998,7 +1001,7 @@ namespace TWXD
         private static string SanitizePathSegment(string value)
         {
             if (string.IsNullOrWhiteSpace(value))
-                return "INCLUDE";
+                return "include";
 
             var builder = new StringBuilder(value.Length);
             foreach (char c in value)
@@ -1006,7 +1009,7 @@ namespace TWXD
                 builder.Append(Path.GetInvalidFileNameChars().Contains(c) ? '_' : c);
             }
 
-            return builder.ToString();
+            return builder.ToString().ToLowerInvariant();
         }
 
         private void SkipParameterPayload(byte paramType, ref int pos)
@@ -1212,9 +1215,9 @@ namespace TWXD
 	                            if (!name.StartsWith("$"))
 	                                name = "$" + name;
 
-	                            return name + indexes;
+	                            return NormalizeNamespacedTokenCasing(name + indexes);
 	                        }
-                        return $"$VAR_{paramIndex}{indexes}";
+                        return NormalizeNamespacedTokenCasing($"$VAR_{paramIndex}{indexes}");
                     }
 
                 case ScriptConstants.PARAM_PROGVAR:
@@ -1235,9 +1238,9 @@ namespace TWXD
                             // Check if name already has % prefix
                             if (!name.StartsWith("%"))
                                 name = "%" + name;
-                            return name + indexes;
+                            return NormalizeNamespacedTokenCasing(name + indexes);
                         }
-                        return $"%VAR_{paramIndex}{indexes}";
+                        return NormalizeNamespacedTokenCasing($"%VAR_{paramIndex}{indexes}");
                     }
 
                 case ScriptConstants.PARAM_CONST:
@@ -1402,7 +1405,7 @@ namespace TWXD
             string value = labelName.StartsWith(":") ? labelName : ":" + labelName;
             if (_scriptCmp != null)
                 value = _scriptCmp.StripLocalLabelReference(value, scriptID);
-            return value;
+            return NormalizeNamespacedTokenCasing(value);
         }
 
         private string GetStoredLabelLocalPart(string labelName, byte scriptID)
@@ -1441,7 +1444,25 @@ namespace TWXD
                 value = ":" + value;
             if (_scriptCmp != null)
                 value = _scriptCmp.StripLocalLabelReference(value, scriptID);
-            return value;
+            return NormalizeNamespacedTokenCasing(value);
+        }
+
+        private static string NormalizeNamespacedTokenCasing(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return value;
+
+            int prefixLength = 0;
+            if (value[0] == ':' || value[0] == '$' || value[0] == '%')
+                prefixLength = 1;
+
+            int tildeIndex = value.IndexOf('~', prefixLength);
+            if (tildeIndex < 0)
+                return value;
+
+            string prefix = value.Substring(0, prefixLength);
+            string namespacedPart = value.Substring(prefixLength);
+            return prefix + namespacedPart.ToLowerInvariant();
         }
 
         private static string FormatCondition(string condition)

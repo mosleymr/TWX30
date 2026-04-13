@@ -38,22 +38,6 @@ namespace TWXC
             return filename;
         }
 
-        static string GetUniqueArchiveFilename(string ctsFile)
-        {
-            if (!File.Exists(ctsFile))
-                return ctsFile;
-
-            string baseName = ctsFile;
-            int counter = 1;
-            while (true)
-            {
-                string filename = $"{baseName}_{counter}";
-                if (!File.Exists(filename))
-                    return filename;
-                counter++;
-            }
-        }
-
         static void Main(string[] args)
         {
             if (args.Length == 0)
@@ -75,8 +59,7 @@ namespace TWXC
                 Console.WriteLine("--precompile - Produce a Pascal-compatible encrypted .inc include file.");
                 Console.WriteLine();
                 Console.WriteLine("If the target .cts file already exists and compilation succeeds,");
-                Console.WriteLine("TWXC archives the previous file to .cts_1, .cts_2, etc. and writes");
-                Console.WriteLine("the new output to the current .cts filename.");
+                Console.WriteLine("TWXC replaces the existing file with the newly compiled output.");
                 Console.WriteLine();
                 return;
             }
@@ -154,19 +137,11 @@ namespace TWXC
                 string ctsFile = fileOut + ".cts";
                 string outputDir = Path.GetDirectoryName(Path.GetFullPath(ctsFile)) ?? Directory.GetCurrentDirectory();
                 string tempFile = Path.Combine(outputDir, $".{Path.GetFileName(ctsFile)}.{Guid.NewGuid():N}.tmp");
-                string? archivedFile = null;
 
                 try
                 {
                     scriptCmp.WriteToFile(tempFile);
-
-                    if (File.Exists(ctsFile))
-                    {
-                        archivedFile = GetUniqueArchiveFilename(ctsFile);
-                        File.Move(ctsFile, archivedFile);
-                    }
-
-                    File.Move(tempFile, ctsFile);
+                    File.Move(tempFile, ctsFile, overwrite: true);
                 }
                 catch
                 {
@@ -179,25 +154,12 @@ namespace TWXC
                     {
                     }
 
-                    if (archivedFile != null && File.Exists(archivedFile) && !File.Exists(ctsFile))
-                    {
-                        try
-                        {
-                            File.Move(archivedFile, ctsFile);
-                        }
-                        catch
-                        {
-                        }
-                    }
-
                     throw;
                 }
 
                 Console.WriteLine("Compilation successful.");
                 Console.WriteLine();
                 Console.WriteLine($"Output file: {ctsFile}");
-                if (archivedFile != null)
-                    Console.WriteLine($"Archived previous output: {archivedFile}");
                 Console.WriteLine($"Code Size: {scriptCmp.CodeSize}");
                 Console.WriteLine($"Lines: {scriptCmp.LineCount}");
                 Console.WriteLine($"Definitions: {scriptCmp.ParamCount}");

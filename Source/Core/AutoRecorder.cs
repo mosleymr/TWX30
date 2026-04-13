@@ -74,6 +74,8 @@ namespace TWXProxy.Core
         private bool _inPortCIM;          // Processing port CIM lines
         private bool _inWarpCIM;          // Processing warp CIM lines
         private bool _inFigScan;          // Processing deployed fighter scan lines
+        private bool _portCimBatchActive; // Tracking sectors observed in the current port CIM pass
+        private readonly HashSet<int> _currentPortCimSectors = new();
 
         // ── Empty-density-scan detection ──────────────────────────────────────
         // ── Public API ─────────────────────────────────────────────────────────
@@ -448,6 +450,7 @@ namespace TWXProxy.Core
                     if (trimmedLine.EndsWith("%"))
                     {
                         _inPortCIM = true;
+                        BeginPortCimBatch();
                         db.DBHeader.LastPortCIM = DateTime.Now;
                         ParsePortCIMLine(db, trimmedLine);
                     }
@@ -1330,6 +1333,8 @@ namespace TWXProxy.Core
             _inPortCIM = false;
             _inWarpCIM = false;
             _inFigScan = false;
+            _portCimBatchActive = false;
+            _currentPortCimSectors.Clear();
             _inNavPointDisplay = false;
             _inLandList = false;
             _landListSector = 0;
@@ -2408,6 +2413,7 @@ namespace TWXProxy.Core
 
             if (nums.Length < 7)
             {
+                FinishPortCimBatch(db, "short-line");
                 _inPortCIM = false;
                 return;
             }
@@ -2415,6 +2421,7 @@ namespace TWXProxy.Core
             if (!int.TryParse(nums[0], out int sect) || sect <= 0
                 || (db.SectorCount > 0 && sect > db.SectorCount))
             {
+                FinishPortCimBatch(db, "invalid-sector");
                 _inPortCIM = false;
                 return;
             }
@@ -2423,6 +2430,7 @@ namespace TWXProxy.Core
              || !int.TryParse(nums[3], out int org)   || !int.TryParse(nums[4], out int pOrg)
              || !int.TryParse(nums[5], out int equip) || !int.TryParse(nums[6], out int pEquip))
             {
+                FinishPortCimBatch(db, "invalid-values");
                 _inPortCIM = false;
                 return;
             }
@@ -2431,9 +2439,12 @@ namespace TWXProxy.Core
             if (ore < 0 || org < 0 || equip < 0
              || pOre < 0 || pOre > 100 || pOrg < 0 || pOrg > 100 || pEquip < 0 || pEquip > 100)
             {
+                FinishPortCimBatch(db, "invalid-percent");
                 _inPortCIM = false;
                 return;
             }
+
+            _currentPortCimSectors.Add(sect);
 
             var sector = GetOrCreate(db, sect);
             if (sector == null) return;
@@ -2480,6 +2491,73 @@ namespace TWXProxy.Core
 
             db.SaveSector(sector);
             GlobalModules.DebugLog($"[AutoRecorder] Port CIM: sector={sect} ore={ore}/{pOre}% org={org}/{pOrg}% equip={equip}/{pEquip}%\n");
+        }
+
+        private void BeginPortCimBatch()
+        {
+            _portCimBatchActive = true;
+            _currentPortCimSectors.Clear();
+        }
+
+        private void FinishPortCimBatch(ModDatabase db, string reason)
+        {
+            if (!_portCimBatchActive)
+                return;
+
+            _portCimBatchActive = false;
+
+            if (_currentPortCimSectors.Count == 0)
+            {
+                GlobalModules.DebugLog($"[AutoRecorder] Port CIM complete: seen=0 reason={reason}\n");
+                _currentPortCimSectors.Clear();
+                return;
+            }
+
+            int clearedFighterSectors = 0;
+            int removedFigMarkers = 0;
+
+            int maxSector = db.SectorCount == int.MaxValue ? db.MaxSectorSeen : db.SectorCount;
+            for (int sectorNum = 1; sectorNum <= maxSector; sectorNum++)
+            {
+                if (_currentPortCimSectors.Contains(sectorNum))
+                    continue;
+
+                var sector = db.GetSector(sectorNum);
+                if (sector?.SectorPort == null)
+                    continue;
+
+                int classIndex = sector.SectorPort.ClassIndex;
+                if (classIndex <= 0 || classIndex >= 9)
+                    continue;
+
+                bool hadFigMarker = IsSectorVarTrue(db, sectorNum, "FIGSEC");
+                bool hadFriendlyFighters =
+                    sector.Fighters.Quantity > 0 &&
+                    (sector.Fighters.Owner.Equals("yours", StringComparison.OrdinalIgnoreCase) ||
+                     sector.Fighters.Owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase));
+
+                if (!hadFigMarker && !hadFriendlyFighters)
+                    continue;
+
+                if (hadFriendlyFighters)
+                {
+                    sector.Fighters.Quantity = 0;
+                    sector.Fighters.Owner = string.Empty;
+                    sector.Fighters.FigType = FighterType.None;
+                    db.SaveSector(sector);
+                    clearedFighterSectors++;
+                }
+
+                if (hadFigMarker)
+                {
+                    RemoveFigMarker(db, sectorNum);
+                    removedFigMarkers++;
+                }
+            }
+
+            GlobalModules.DebugLog(
+                $"[AutoRecorder] Port CIM complete: seen={_currentPortCimSectors.Count} clearedFriendlyFigSectors={clearedFighterSectors} removedFigMarkers={removedFigMarkers} reason={reason}\n");
+            _currentPortCimSectors.Clear();
         }
 
         /// <summary>

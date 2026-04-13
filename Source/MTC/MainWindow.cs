@@ -92,7 +92,14 @@ public class MainWindow : Window
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
     private readonly Border _menuBarHost = new();
-    private readonly StackPanel _statusBarContent = new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+    private readonly Border _statusMacroHost = new();
+    private readonly StackPanel _statusBarContent = new()
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 8,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(8, 0),
+    };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
@@ -110,8 +117,6 @@ public class MainWindow : Window
     private double _deckCommWindowHeight = DeckCommWindowDefaultHeight;
     private Core.CommMessageChannel _commSelectedChannel = Core.CommMessageChannel.FedComm;
     private string _commPrivateTarget = string.Empty;
-    private ToggleSwitch _haggleToggle = null!;
-    private ToggleSwitch _deckHaggleToggle = null!;
     private Button? _macroRecordButton;
     private Button? _macroStopButton;
     private Button? _macroPlayButton;
@@ -121,6 +126,7 @@ public class MainWindow : Window
     private readonly List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
+    private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
     private readonly Button _statusLiveButton = new() { Content = "LIVE" };
     private readonly Button _statusPausedButton = new() { Content = "Paused" };
     private readonly Border _statusModeSelector = new();
@@ -162,7 +168,6 @@ public class MainWindow : Window
     private readonly List<CommEntry> _commEntries = [];
     private Action<byte[]>? _terminalInputHandler;
     private string? _terminalFontFamilyName;
-    private bool _updatingHaggleToggle;
     private bool _mombotPromptOpen;
     private bool _mombotHotkeyPromptOpen;
     private bool _mombotScriptPromptOpen;
@@ -284,6 +289,9 @@ public class MainWindow : Window
 
     // ── Status bar text ───────────────────────────────────────────────────
     private TextBlock _statusText = new();
+    private TextBlock _statusStarDockValue = new();
+    private TextBlock _statusRylosValue = new();
+    private TextBlock _statusAlphaValue = new();
     private TextBlock _deckHudHeaderSector = new();
     private TextBlock _deckHudHeaderConnection = new();
     private TextBlock _deckHudShipName = new();
@@ -538,32 +546,9 @@ public class MainWindow : Window
         return control;
     }
 
-    private static ToggleSwitch CreateHaggleToggle()
-    {
-        return new ToggleSwitch
-        {
-            OffContent = "Off",
-            OnContent = "On",
-            IsEnabled = false,
-            IsChecked = false,
-            Margin = new Thickness(8, 0, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-    }
-
-    private void ApplyCurrentHaggleState(ToggleSwitch toggle)
-    {
-        bool proxyActive = _gameInstance != null;
-        _updatingHaggleToggle = true;
-        toggle.IsEnabled = proxyActive;
-        toggle.IsChecked = proxyActive && _gameInstance?.NativeHaggleEnabled == true;
-        _updatingHaggleToggle = false;
-    }
-
     private void RecreateClassicShellControls()
     {
         _termCtrl = CreateTerminalControl();
-        _haggleToggle = CreateHaggleToggle();
         _macroRecordButton = null;
         _macroStopButton = null;
         _macroPlayButton = null;
@@ -583,8 +568,6 @@ public class MainWindow : Window
         _commSplitterRow = null;
         _commPanelRow = null;
         _commGridSplitter = null;
-        ApplyCurrentHaggleState(_haggleToggle);
-        _haggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
 
         _valName = new();
         _valSector = new();
@@ -621,7 +604,6 @@ public class MainWindow : Window
     private void RecreateDeckShellControls()
     {
         _deckTermCtrl = CreateTerminalControl();
-        _deckHaggleToggle = CreateHaggleToggle();
         _deckMacroRecordButton = null;
         _deckMacroStopButton = null;
         _deckMacroPlayButton = null;
@@ -641,8 +623,6 @@ public class MainWindow : Window
         _deckCommSplitterRow = null;
         _deckCommPanelRow = null;
         _deckCommGridSplitter = null;
-        ApplyCurrentHaggleState(_deckHaggleToggle);
-        _deckHaggleToggle.IsCheckedChanged += (_, _) => OnHaggleToggleRequested();
 
         _deckValName = new();
         _deckValSector = new();
@@ -689,7 +669,7 @@ public class MainWindow : Window
     private Control BuildLayout()
     {
         // Root: DockPanel – menu top, status bottom, swappable shell in the middle.
-        var dock = new DockPanel { Background = BgWindow };
+        var dock = new DockPanel { Background = HudWindow };
         _rootDock = dock;
 
         ConfigureStatusModeSelector();
@@ -701,15 +681,18 @@ public class MainWindow : Window
         dock.Children.Add(_menuBarHost);
 
         // ── Status bar ────────────────────────────────────────────────────
-        _statusText.Text              = " SD: -  Rylos: -  Alpha: -  [ disconnected ]";
-        _statusText.Foreground         = FgStatus;
+        _statusText.Text              = "[ disconnected ]";
+        _statusText.Foreground         = HudText;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
-        _statusText.Margin             = new Thickness(8, 0, 0, 0);
+        _statusText.Margin             = new Thickness(6, 0, 0, 0);
         _statusText.FontSize           = 13;
 
         _statusBar.Background = BgStatus;
-        _statusBar.Height = 26;
+        _statusBar.Height = 34;
         _statusBarContent.Children.Clear();
+        _statusBarContent.Children.Add(BuildStatusLocationChip("SD", _statusStarDockValue, HudAccentHot));
+        _statusBarContent.Children.Add(BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent));
+        _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
         _statusBarContent.Children.Add(_statusText);
         _statusBar.Child = _statusBarContent;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
@@ -742,7 +725,15 @@ public class MainWindow : Window
         Grid.SetColumn(termArea, 2);
         grid.Children.Add(termArea);
 
-        return grid;
+        return new Border
+        {
+            Background = HudShell,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(22),
+            Padding = new Thickness(14),
+            Child = grid,
+        };
     }
 
     private Control BuildCommandDeckShell()
@@ -757,6 +748,7 @@ public class MainWindow : Window
         {
             MinHeight = 220,
         };
+        _tacticalMap.SectorDoubleClicked += (_, sectorNumber) => _tacticalMap?.CenterOnSector(sectorNumber);
 
         var rootGrid = new Grid();
         rootGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -1464,8 +1456,6 @@ public class MainWindow : Window
                     Children =
                     {
                         BuildDeckScannerRow(),
-                        BuildDeckHaggleRow(),
-                        BuildMacroRow(deckSkin: true),
                     },
                 }),
             },
@@ -1689,6 +1679,44 @@ public class MainWindow : Window
         };
     }
 
+    private Control BuildStatusLocationChip(string label, TextBlock valueBlock, IBrush accent)
+    {
+        valueBlock.Text = "-";
+        valueBlock.Foreground = HudText;
+        valueBlock.FontFamily = HudTitleFont;
+        valueBlock.FontSize = 13;
+        valueBlock.FontWeight = FontWeight.SemiBold;
+        valueBlock.VerticalAlignment = VerticalAlignment.Center;
+        valueBlock.MinWidth = 28;
+        valueBlock.TextAlignment = TextAlignment.Center;
+
+        return new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(10, 4),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 7,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = label.ToUpperInvariant(),
+                        Foreground = HudMuted,
+                        FontSize = 10,
+                        FontWeight = FontWeight.SemiBold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    valueBlock,
+                },
+            },
+        };
+    }
+
     private Control BuildDeckLauncherButton(string text, Action onClick)
     {
         var button = new Button
@@ -1744,6 +1772,26 @@ public class MainWindow : Window
         };
         button.Click += (_, _) => onClick();
         return button;
+    }
+
+    private static void ApplyHudActionButtonStyle(Button button, bool primary)
+    {
+        button.Background = primary ? HudAccent : HudHeaderAlt;
+        button.BorderBrush = primary ? HudAccentHot : HudInnerEdge;
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = primary ? HudAccentInk : HudText;
+        button.FontWeight = FontWeight.SemiBold;
+        button.CornerRadius = new CornerRadius(10);
+        button.Padding = new Thickness(12, 5);
+    }
+
+    private static void ApplyHudTextBoxStyle(TextBox textBox)
+    {
+        textBox.Background = HudHeaderAlt;
+        textBox.BorderBrush = HudInnerEdge;
+        textBox.BorderThickness = new Thickness(1);
+        textBox.Foreground = HudText;
+        textBox.CaretBrush = HudAccent;
     }
 
     private void SetDeckToggleToolButtonState(Button button, bool isActive)
@@ -1900,19 +1948,17 @@ public class MainWindow : Window
 
     private void ApplySelectedSkin()
     {
-        Background = _useCommandDeckSkin ? HudWindow : BgWindow;
+        Background = HudWindow;
         if (_rootDock != null)
-            _rootDock.Background = _useCommandDeckSkin ? HudWindow : BgWindow;
+            _rootDock.Background = HudWindow;
 
-        _menuBar.Background = _useCommandDeckSkin ? HudMenu : BgSidebar;
-        _menuBar.Foreground = _useCommandDeckSkin ? HudText : FgKey;
-        _menuBarHost.Background = _useCommandDeckSkin ? HudMenu : BgSidebar;
-        _statusBar.Background = _useCommandDeckSkin ? HudStatus : BgStatus;
-        _statusText.Foreground = _useCommandDeckSkin ? HudText : FgStatus;
+        _menuBar.Background = HudMenu;
+        _menuBar.Foreground = HudText;
+        _menuBarHost.Background = HudMenu;
+        _statusBar.Background = HudStatus;
+        _statusText.Foreground = HudText;
         UpdateTerminalLiveSelector();
-        _shellHost.Padding = _useCommandDeckSkin
-            ? new Thickness(10, 8, 10, 10)
-            : new Thickness(6, 4, 6, 4);
+        _shellHost.Padding = new Thickness(10, 8, 10, 10);
         _shellHost.Child = null;
         _shellHost.Child = _useCommandDeckSkin
             ? BuildCommandDeckShell()
@@ -2158,11 +2204,27 @@ public class MainWindow : Window
         Grid.SetColumn(_menuBar, 0);
         layout.Children.Add(_menuBar);
 
-        _statusModeSelector.Margin = new Thickness(8, 4, 8, 4);
-        _statusModeSelector.HorizontalAlignment = HorizontalAlignment.Right;
+        _statusMacroHost.Margin = new Thickness(0, 4, 0, 4);
+        _statusMacroHost.VerticalAlignment = VerticalAlignment.Center;
+        _statusMacroHost.Child = BuildStatusMacroBox();
+
+        _statusModeSelector.Margin = new Thickness(0, 4, 8, 4);
         _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(_statusModeSelector, 1);
-        layout.Children.Add(_statusModeSelector);
+
+        var rightTools = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _statusMacroHost,
+                _statusModeSelector,
+            },
+        };
+        Grid.SetColumn(rightTools, 1);
+        layout.Children.Add(rightTools);
 
         return layout;
     }
@@ -2195,7 +2257,7 @@ public class MainWindow : Window
     {
         var stack = new StackPanel
         {
-            Background  = BgSidebar,
+            Background  = Brushes.Transparent,
             Orientation = Orientation.Vertical,
             Margin      = new Thickness(0, 0, 0, 0),
         };
@@ -2235,10 +2297,19 @@ public class MainWindow : Window
         // Wrap in a border that gives a raised look against the gray chrome
         var outer = new Border
         {
-            Background      = BgSidebar,
-            BorderBrush     = BorderColor,
-            BorderThickness = new Thickness(1),
-            Child           = scroll,
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = scroll,
+            },
         };
 
         return outer;
@@ -2248,15 +2319,15 @@ public class MainWindow : Window
 
     private Control BuildShipInfoPanel()
     {
-        var panel = new StackPanel { Background = BgPanel, Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 3) };
+        var panel = new StackPanel { Background = Brushes.Transparent, Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 3) };
 
         // Title header
         panel.Children.Add(new Border
         {
-            Background = BgStatus,
-            Child = new TextBlock { Text = "Ship Info", Foreground = FgTitle, FontSize = 14, FontWeight = Avalonia.Media.FontWeight.SemiBold, Margin = new Thickness(6, 4, 4, 4) },
+            Background = HudHeader,
+            Child = new TextBlock { Text = "Ship Info", Foreground = HudAccent, FontFamily = HudTitleFont, FontSize = 14, FontWeight = Avalonia.Media.FontWeight.SemiBold, Margin = new Thickness(10, 6, 8, 6) },
         });
-        panel.Children.Add(new Border { Background = BorderColor, Height = 1 });
+        panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1 });
 
         // Full-width rows: Fighters, Shields, Turns/Warp
         foreach (var (key, tb) in new (string, TextBlock)[] {
@@ -2265,9 +2336,9 @@ public class MainWindow : Window
             ("Turns/Warp", _valTrnWarp),
         })
         {
-            tb.Text = "-"; tb.Foreground = FgValue; tb.FontSize = 13;
+            tb.Text = "-"; tb.Foreground = HudText; tb.FontSize = 13;
             tb.TextAlignment = TextAlignment.Right; tb.MinWidth = 70;
-            var keyTb = new TextBlock { Text = key, Foreground = FgKey, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            var keyTb = new TextBlock { Text = key, Foreground = HudMuted, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
             var row = new Grid { Margin = new Thickness(6, 2, 6, 2) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -2277,7 +2348,7 @@ public class MainWindow : Window
         }
 
         // Divider before compact equipment rows
-        panel.Children.Add(new Border { Background = BorderColor, Height = 1, Margin = new Thickness(0, 2, 0, 1) });
+        panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1, Margin = new Thickness(0, 2, 0, 1) });
 
         // Paired rows: two equipment items per line
         foreach (var (k1, v1, k2, v2) in new (string, TextBlock, string, TextBlock)[] {
@@ -2290,23 +2361,38 @@ public class MainWindow : Window
             panel.Children.Add(BuildPairedRow(k1, v1, k2, v2));
 
         // Divider before scanners
-        panel.Children.Add(new Border { Background = BorderColor, Height = 1, Margin = new Thickness(0, 2, 0, 1) });
+        panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1, Margin = new Thickness(0, 2, 0, 1) });
 
         // Scanner indicators
         panel.Children.Add(BuildScannerRow());
-        panel.Children.Add(BuildHaggleRow());
-        panel.Children.Add(BuildMacroRow(deckSkin: false));
-        panel.Children.Add(new Border { Height = 6 });
-        return panel;
+        panel.Children.Add(new Border { Height = 8 });
+
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Margin = new Thickness(0, 0, 0, 3),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = panel,
+            },
+        };
     }
 
     private Control BuildPairedRow(string k1, TextBlock v1, string k2, TextBlock v2)
     {
         static Grid MakeHalf(string key, TextBlock valTb)
         {
-            valTb.Text = "0"; valTb.Foreground = FgValue; valTb.FontSize = 12;
+            valTb.Text = "0"; valTb.Foreground = HudText; valTb.FontSize = 12;
             valTb.TextAlignment = TextAlignment.Right; valTb.MinWidth = 30;
-            var keyTb = new TextBlock { Text = key, Foreground = FgKey, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+            var keyTb = new TextBlock { Text = key, Foreground = HudMuted, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
             var g = new Grid();
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -2329,11 +2415,13 @@ public class MainWindow : Window
         static Border MakeScanInd(string label, double width) => new Border
         {
             Width = width, Height = 18, CornerRadius = new CornerRadius(2),
-            Background = ScannerInactive, Margin = new Thickness(2, 0),
+            Background = HudHeaderAlt, Margin = new Thickness(2, 0),
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
             Child = new TextBlock
             {
                 Text = label, FontSize = 11, FontWeight = Avalonia.Media.FontWeight.Bold,
-                Foreground = ScannerFgInact,
+                Foreground = HudMuted,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(2, 1),
@@ -2362,46 +2450,82 @@ public class MainWindow : Window
         };
     }
 
-    private Control BuildHaggleRow()
-    {
-        var row = new Grid { Margin = new Thickness(6, 2, 6, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock
-        {
-            Text = "Haggle",
-            Foreground = FgKey,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(label, 0);
-        Grid.SetColumn(_haggleToggle, 1);
-        row.Children.Add(label);
-        row.Children.Add(_haggleToggle);
-        return row;
-    }
-
-    private Button CreateMacroControlButton(string glyph, bool deckSkin, Action onClick)
+    private Button CreateMacroControlButton(string glyph, bool deckSkin, Action onClick, bool compact = false)
     {
         var button = new Button
         {
             Content = glyph,
-            Width = deckSkin ? 26 : 22,
-            Height = deckSkin ? 22 : 20,
+            Width = compact ? 22 : deckSkin ? 34 : 30,
+            Height = compact ? 18 : deckSkin ? 30 : 26,
             Padding = Thickness.Parse("0"),
-            FontSize = deckSkin ? 12 : 11,
-            FontWeight = FontWeight.Bold,
-            Background = deckSkin ? HudHeaderAlt : ScannerInactive,
-            BorderBrush = deckSkin ? HudInnerEdge : BorderColor,
-            BorderThickness = new Thickness(1),
-            Foreground = deckSkin ? HudMuted : FgKey,
+            FontSize = glyph == "●"
+                ? (compact ? 14 : deckSkin ? 22 : 20)
+                : (compact ? 11 : deckSkin ? 18 : 16),
+            FontWeight = FontWeight.SemiBold,
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = HudMuted,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            CornerRadius = new CornerRadius(deckSkin ? 6 : 2),
+            CornerRadius = new CornerRadius(999),
         };
 
         button.Click += (_, _) => onClick();
         return button;
+    }
+
+    private Control BuildStatusMacroBox()
+    {
+        Button recordButton = CreateMacroControlButton("●", deckSkin: false, StartTemporaryMacroRecording, compact: true);
+        Button stopButton = CreateMacroControlButton("■", deckSkin: false, StopTemporaryMacroRecording, compact: true);
+        Button playButton = CreateMacroControlButton("▶", deckSkin: false, () => _ = PlayTemporaryMacroAsync(), compact: true);
+
+        _macroRecordButton = recordButton;
+        _macroStopButton = stopButton;
+        _macroPlayButton = playButton;
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { recordButton, stopButton, playButton },
+        };
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Macro",
+                    Foreground = HudMuted,
+                    FontSize = 10,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                buttons,
+            },
+        };
+
+        UpdateTemporaryMacroControls();
+
+        return new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(6, 2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = row,
+        };
     }
 
     private Control BuildMacroRow(bool deckSkin)
@@ -2426,7 +2550,7 @@ public class MainWindow : Window
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 4,
+            Spacing = deckSkin ? 6 : 5,
             VerticalAlignment = VerticalAlignment.Center,
             Children = { recordButton, stopButton, playButton },
         };
@@ -2495,25 +2619,6 @@ public class MainWindow : Window
         };
     }
 
-    private Control BuildDeckHaggleRow()
-    {
-        var row = new Grid { Margin = new Thickness(0, 2, 0, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var label = new TextBlock
-        {
-            Text = "Haggle",
-            Foreground = HudMuted,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-        Grid.SetColumn(label, 0);
-        Grid.SetColumn(_deckHaggleToggle, 1);
-        row.Children.Add(label);
-        row.Children.Add(_deckHaggleToggle);
-        return row;
-    }
-
     private void UpdateTemporaryMacroControls()
     {
         int encodedLength = GetTemporaryMacroText().Length;
@@ -2534,34 +2639,26 @@ public class MainWindow : Window
         stopButton.IsEnabled = _temporaryMacroRecording;
         playButton.IsEnabled = connected && !_temporaryMacroRecording && hasMacro;
 
-        if (deckSkin)
-        {
-            recordButton.Background = _temporaryMacroRecording ? HudAccentWarn : HudHeaderAlt;
-            recordButton.BorderBrush = _temporaryMacroRecording ? HudAccentWarn : HudInnerEdge;
-            recordButton.Foreground = _temporaryMacroRecording ? Brushes.Black : HudMuted;
+        recordButton.Background = Brushes.Transparent;
+        recordButton.BorderBrush = Brushes.Transparent;
+        stopButton.Background = Brushes.Transparent;
+        stopButton.BorderBrush = Brushes.Transparent;
+        playButton.Background = Brushes.Transparent;
+        playButton.BorderBrush = Brushes.Transparent;
 
-            stopButton.Background = stopButton.IsEnabled ? HudHeaderAlt : HudHeaderAlt;
-            stopButton.BorderBrush = stopButton.IsEnabled ? HudAccentWarn : HudInnerEdge;
-            stopButton.Foreground = stopButton.IsEnabled ? HudText : HudMuted;
+        IBrush recordIdle = new SolidColorBrush(Color.FromRgb(224, 76, 76));
+        IBrush recordActive = new SolidColorBrush(Color.FromRgb(255, 54, 54));
+        IBrush stopActive = new SolidColorBrush(Color.FromRgb(255, 214, 120));
+        IBrush playActive = new SolidColorBrush(Color.FromRgb(96, 225, 138));
+        IBrush muted = HudMuted;
 
-            playButton.Background = playButton.IsEnabled ? HudAccentOk : HudHeaderAlt;
-            playButton.BorderBrush = playButton.IsEnabled ? HudAccentOk : HudInnerEdge;
-            playButton.Foreground = playButton.IsEnabled ? Brushes.Black : HudMuted;
-        }
-        else
-        {
-            recordButton.Background = _temporaryMacroRecording ? Brushes.IndianRed : ScannerInactive;
-            recordButton.BorderBrush = _temporaryMacroRecording ? Brushes.IndianRed : BorderColor;
-            recordButton.Foreground = _temporaryMacroRecording ? Brushes.Black : FgKey;
+        recordButton.Foreground = _temporaryMacroRecording ? recordActive : recordIdle;
+        stopButton.Foreground = stopButton.IsEnabled ? stopActive : muted;
+        playButton.Foreground = playButton.IsEnabled ? playActive : muted;
 
-            stopButton.Background = stopButton.IsEnabled ? new SolidColorBrush(Color.FromRgb(60, 28, 28)) : ScannerInactive;
-            stopButton.BorderBrush = stopButton.IsEnabled ? Brushes.IndianRed : BorderColor;
-            stopButton.Foreground = stopButton.IsEnabled ? Brushes.White : FgKey;
-
-            playButton.Background = playButton.IsEnabled ? new SolidColorBrush(Color.FromRgb(34, 72, 34)) : ScannerInactive;
-            playButton.BorderBrush = playButton.IsEnabled ? Brushes.LightGreen : BorderColor;
-            playButton.Foreground = playButton.IsEnabled ? Brushes.White : FgKey;
-        }
+        recordButton.Opacity = _temporaryMacroRecording ? 1.0 : (recordButton.IsEnabled ? 0.92 : 0.30);
+        stopButton.Opacity = stopButton.IsEnabled ? 0.95 : 0.26;
+        playButton.Opacity = playButton.IsEnabled ? 0.95 : 0.26;
     }
 
     private static void UpdateScanInd(Border b, bool active)
@@ -2584,7 +2681,7 @@ public class MainWindow : Window
     {
         var panel = new StackPanel
         {
-            Background  = BgPanel,
+            Background  = Brushes.Transparent,
             Orientation = Orientation.Vertical,
             Margin      = new Thickness(0, 0, 0, 3),
         };
@@ -2592,7 +2689,7 @@ public class MainWindow : Window
         // Title row – dark background strip to contrast against gray panel body
         if (headerValue != null)
         {
-            headerValue.Foreground        = FgValue;
+            headerValue.Foreground        = HudText;
             headerValue.FontSize          = 14;
             headerValue.FontWeight        = Avalonia.Media.FontWeight.SemiBold;
             headerValue.VerticalAlignment = VerticalAlignment.Center;
@@ -2604,29 +2701,31 @@ public class MainWindow : Window
             var hdrTitle = new TextBlock
             {
                 Text       = title,
-                Foreground = FgTitle,
+                Foreground = HudAccent,
+                FontFamily = HudTitleFont,
                 FontSize   = 14,
                 FontWeight = Avalonia.Media.FontWeight.SemiBold,
-                Margin     = new Thickness(6, 4, 4, 4),
+                Margin     = new Thickness(10, 6, 8, 6),
             };
             Grid.SetColumn(hdrTitle,  0);
             Grid.SetColumn(headerValue, 1);
             hdrGrid.Children.Add(hdrTitle);
             hdrGrid.Children.Add(headerValue);
-            panel.Children.Add(new Border { Background = BgStatus, Child = hdrGrid });
+            panel.Children.Add(new Border { Background = HudHeader, Child = hdrGrid });
         }
         else
         {
             panel.Children.Add(new Border
             {
-                Background = BgStatus,
+                Background = HudHeader,
                 Child = new TextBlock
                 {
                     Text       = title,
-                    Foreground = FgTitle,
+                    Foreground = HudAccent,
+                    FontFamily = HudTitleFont,
                     FontSize   = 14,
                     FontWeight = Avalonia.Media.FontWeight.SemiBold,
-                    Margin     = new Thickness(6, 4, 4, 4),
+                    Margin     = new Thickness(10, 6, 8, 6),
                 },
             });
         }
@@ -2634,7 +2733,7 @@ public class MainWindow : Window
         // Separator
         panel.Children.Add(new Border
         {
-            Background = BorderColor,
+            Background = HudInnerEdge,
             Height     = 1,
             Margin     = new Thickness(0),
         });
@@ -2643,7 +2742,7 @@ public class MainWindow : Window
         foreach (var (key, valTb) in rows)
         {
             valTb.Text          = "-";
-            valTb.Foreground    = FgValue;
+            valTb.Foreground    = HudText;
             valTb.FontSize      = 13;
             valTb.TextAlignment = TextAlignment.Right;
             valTb.MinWidth      = 70;
@@ -2651,7 +2750,7 @@ public class MainWindow : Window
             var keyTb = new TextBlock
             {
                 Text              = key,
-                Foreground        = FgKey,
+                Foreground        = HudMuted,
                 FontSize          = 13,
                 VerticalAlignment = VerticalAlignment.Center,
             };
@@ -2666,8 +2765,24 @@ public class MainWindow : Window
             panel.Children.Add(row);
         }
 
-        panel.Children.Add(new Border { Height = 6 }); // bottom padding
-        return panel;
+        panel.Children.Add(new Border { Height = 8 }); // bottom padding
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Margin = new Thickness(0, 0, 0, 3),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = panel,
+            },
+        };
     }
 
     // ── Terminal area ──────────────────────────────────────────────────────
@@ -2695,12 +2810,21 @@ public class MainWindow : Window
         // Outer raised frame: gray chrome with padding so it shows on all sides
         var outer = new Border
         {
-            Background          = BgChrome,
-            BorderBrush         = BorderHi,
-            BorderThickness     = new Thickness(2),
+            Background          = HudFrame,
+            BorderBrush         = HudEdge,
+            BorderThickness     = new Thickness(1.5),
             Padding             = new Thickness(4),
             MinHeight           = 160,
-            Child               = inner,
+            CornerRadius        = new CornerRadius(18),
+            Child               = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Padding = new Thickness(4),
+                Child = inner,
+            },
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment   = VerticalAlignment.Stretch,
         };
@@ -2732,7 +2856,7 @@ public class MainWindow : Window
             ResizeDirection = GridResizeDirection.Rows,
             ResizeBehavior = GridResizeBehavior.PreviousAndNext,
             ShowsPreview = true,
-            Background = deckSkin ? HudInnerEdge : BorderHi,
+            Background = HudInnerEdge,
         };
 
         splitter.PointerReleased += (_, _) => CaptureCommWindowHeights();
@@ -2794,6 +2918,13 @@ public class MainWindow : Window
             Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
         };
+        ApplyHudActionButtonStyle(sendButton, primary: true);
+
+        if (!deckSkin)
+        {
+            ApplyHudTextBoxStyle(targetBox);
+            ApplyHudTextBoxStyle(composeBox);
+        }
 
         composeBox.KeyDown += async (_, e) =>
         {
@@ -2843,10 +2974,10 @@ public class MainWindow : Window
         {
             IsVisible = false,
             MinHeight = CommWindowMinHeight,
-            Background = deckSkin ? HudFrame : BgChrome,
-            BorderBrush = deckSkin ? HudInnerEdge : BorderColor,
-            BorderThickness = new Thickness(deckSkin ? 1.5 : 2),
-            CornerRadius = deckSkin ? new CornerRadius(12) : new CornerRadius(0),
+            Background = deckSkin ? HudFrame : HudFrame,
+            BorderBrush = deckSkin ? HudInnerEdge : HudInnerEdge,
+            BorderThickness = new Thickness(deckSkin ? 1.5 : 1.5),
+            CornerRadius = deckSkin ? new CornerRadius(12) : new CornerRadius(14),
             Child = body,
         };
 
@@ -2920,10 +3051,10 @@ public class MainWindow : Window
         var textBlock = new TextBlock
         {
             TextWrapping = TextWrapping.NoWrap,
-            Foreground = deckSkin ? HudText : FgValue,
+            Foreground = HudText,
             FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace"),
             FontSize = deckSkin ? 12 : 13,
-            Margin = new Thickness(deckSkin ? 8 : 6, 0, deckSkin ? 8 : 6, 0),
+            Margin = new Thickness(deckSkin ? 8 : 8, 0, deckSkin ? 8 : 8, 0),
         };
 
         var viewer = new ScrollViewer
@@ -3037,8 +3168,8 @@ public class MainWindow : Window
             return;
 
         button.Content = label;
-        button.Foreground = selected ? (deckSkin ? HudText : Brushes.White) : (deckSkin ? HudMuted : FgKey);
-        button.BorderBrush = selected ? (deckSkin ? HudAccent : ScannerActive) : Brushes.Transparent;
+        button.Foreground = selected ? HudText : HudMuted;
+        button.BorderBrush = selected ? HudAccent : Brushes.Transparent;
         button.BorderThickness = new Thickness(0, 0, 0, selected ? 2 : 0);
     }
 
@@ -3085,7 +3216,7 @@ public class MainWindow : Window
                 Core.CommMessageChannel.Private => "Send private message",
                 _ => "Send fedcomm message",
             };
-            composeBox.Foreground = deckSkin ? HudText : FgValue;
+            composeBox.Foreground = HudText;
         }
     }
 
@@ -3474,17 +3605,20 @@ public class MainWindow : Window
                 alpha = savedAlpha;
         }
 
-        string haggleText = showHagglePct
-            ? $"  Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
-            : string.Empty;
+        _statusStarDockValue.Text = starDock;
+        _statusRylosValue.Text = rylos;
+        _statusAlphaValue.Text = alpha;
+
+        string? haggleText = showHagglePct
+            ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
+            : null;
         bool showBot = _embeddedGameConfig?.Mtc?.mombot != null || _mombot.IsAttached || _gameInstance != null;
         BotRuntimeState botRuntime = GetBotRuntimeState();
-        string botText = showBot
-            ? $"  Bot: {botRuntime.DisplayName}"
-            : string.Empty;
+        string? botText = showBot
+            ? $"Bot: {botRuntime.DisplayName}"
+            : null;
 
-        _statusText.Text =
-            $" SD: {starDock,-6}  Rylos: {rylos,-6}  Alpha: {alpha,-6}{haggleText}{botText}  {conn}";
+        _statusText.Text = string.Join("  ", new[] { haggleText, botText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
         UpdateTerminalLiveSelector();
 
         _deckHudHeaderConnection.Text = _state.Connected
@@ -3512,6 +3646,7 @@ public class MainWindow : Window
         {
             SetTerminalConnected(true);
             OnGameConnected();
+            UpdateTemporaryMacroControls();
             _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
             RefreshStatusBar();
             _buffer.Dirty = true;
@@ -3530,6 +3665,7 @@ public class MainWindow : Window
         {
             SetTerminalConnected(false);
             OnGameDisconnected();
+            UpdateTemporaryMacroControls();
             _parser.Feed("\x1b[1;31m[Disconnected]\x1b[0m\r\n");
             RefreshStatusBar();
             _buffer.Dirty = true;
@@ -3590,9 +3726,6 @@ public class MainWindow : Window
 
     private void OnHaggleToggleRequested()
     {
-        if (_updatingHaggleToggle)
-            return;
-
         if (_gameInstance == null)
         {
             UpdateHaggleToggleState();
@@ -3606,15 +3739,8 @@ public class MainWindow : Window
     private void UpdateHaggleToggleState()
     {
         bool proxyActive = _gameInstance != null;
-        _haggleToggle.IsEnabled = proxyActive;
-        _deckHaggleToggle.IsEnabled = proxyActive;
-        if (!proxyActive)
-        {
-            _updatingHaggleToggle = true;
-            _haggleToggle.IsChecked = false;
-            _deckHaggleToggle.IsChecked = false;
-            _updatingHaggleToggle = false;
-        }
+        _statusHaggleButton.IsEnabled = proxyActive;
+        UpdateTerminalLiveSelector();
     }
 
     private void ApplyMombotConfigChange(Action<MTC.mombot.mombotConfig> update)
@@ -3685,10 +3811,6 @@ public class MainWindow : Window
 
         Dispatcher.UIThread.Post(() =>
         {
-            _updatingHaggleToggle = true;
-            _haggleToggle.IsChecked = enabled;
-            _deckHaggleToggle.IsChecked = enabled;
-            _updatingHaggleToggle = false;
             UpdateHaggleToggleState();
             RefreshMombotUi();
             RefreshStatusBar();
@@ -4871,21 +4993,33 @@ public class MainWindow : Window
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         if (!gi.IsProxyMenuActive)
                         {
+                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
                             Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
                             Core.ScriptRef.SetCurrentLine(scriptRemainder);
                             // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
                             interpreter.TextEvent(scriptRemainder, false);
+                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                            {
+                                SyncMombotPromptStateFromLine(strippedRemainder);
+                                _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
+                            }
+                            if (nativeHaggleResponded)
+                            {
+                                serverLineBuf.Clear();
+                            }
                         }
-
-                        bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
-                        if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                        else
                         {
-                            SyncMombotPromptStateFromLine(strippedRemainder);
-                            _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
-                        }
-                        if (nativeHaggleResponded)
-                        {
-                            serverLineBuf.Clear();
+                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                            {
+                                SyncMombotPromptStateFromLine(strippedRemainder);
+                                _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
+                            }
+                            if (nativeHaggleResponded)
+                            {
+                                serverLineBuf.Clear();
+                            }
                         }
                     }
                     break;
@@ -4909,6 +5043,7 @@ public class MainWindow : Window
                 }
 
                 gi.History.ProcessLine(lineStripped);
+                gi.ProcessNativeHaggleLine(lineStripped);
                 HandlePotentialCommLine(lineRaw);
                 if (!gi.IsProxyMenuActive)
                 {
@@ -4921,7 +5056,6 @@ public class MainWindow : Window
                     interpreter.ActivateTriggers();
                 }
 
-                gi.ProcessNativeHaggleLine(lineStripped);
                 if (!string.IsNullOrWhiteSpace(lineStripped))
                 {
                     SyncMombotPromptStateFromLine(lineStripped);
@@ -4960,6 +5094,7 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = true;
+                UpdateTemporaryMacroControls();
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
@@ -4973,6 +5108,7 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = false;
+                UpdateTemporaryMacroControls();
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             });
@@ -5174,6 +5310,7 @@ public class MainWindow : Window
 
     private void ConfigureStatusModeSelector()
     {
+        ConfigureStatusHaggleButton();
         ConfigureStatusModeButton(_statusLiveButton, paused: false);
         ConfigureStatusModeButton(_statusPausedButton, paused: true);
 
@@ -5183,6 +5320,8 @@ public class MainWindow : Window
             Spacing = 4,
             Margin = new Thickness(0),
         };
+        selectorButtons.Children.Add(_statusHaggleButton);
+        selectorButtons.Children.Add(new Border { Width = 8 });
         selectorButtons.Children.Add(_statusLiveButton);
         selectorButtons.Children.Add(_statusPausedButton);
 
@@ -5193,6 +5332,21 @@ public class MainWindow : Window
         _statusModeSelector.Child = selectorButtons;
 
         UpdateTerminalLiveSelector();
+    }
+
+    private void ConfigureStatusHaggleButton()
+    {
+        _statusHaggleButton.MinWidth = 62;
+        _statusHaggleButton.Height = 20;
+        _statusHaggleButton.Padding = new Thickness(6, 1, 3, 1);
+        _statusHaggleButton.FontSize = 11;
+        _statusHaggleButton.FontWeight = FontWeight.SemiBold;
+        _statusHaggleButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusHaggleButton.Click += (_, _) =>
+        {
+            OnHaggleToggleRequested();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
     }
 
     private void ConfigureStatusModeButton(Button button, bool paused)
@@ -5213,13 +5367,23 @@ public class MainWindow : Window
     private void UpdateTerminalLiveSelector()
     {
         bool enabled = _gameInstance != null;
-        _statusModeSelector.Background = _useCommandDeckSkin ? HudFrame : BgPanel;
-        _statusModeSelector.BorderBrush = _useCommandDeckSkin ? HudInnerEdge : BorderHi;
+        _statusModeSelector.Background = HudFrame;
+        _statusModeSelector.BorderBrush = HudInnerEdge;
         _statusModeSelector.BorderThickness = new Thickness(1);
         _statusModeSelector.Opacity = enabled ? 1.0 : 0.55;
 
+        ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: enabled && _gameInstance?.NativeHaggleEnabled == true, enabled);
         ApplyStatusModeButtonStyle(_statusLiveButton, selected: !_terminalLivePaused, enabled);
         ApplyStatusModeButtonStyle(_statusPausedButton, selected: _terminalLivePaused, enabled);
+    }
+
+    private void ApplyStatusHaggleButtonStyle(Button button, bool selected, bool enabled)
+    {
+        button.IsEnabled = enabled;
+        button.Background = selected ? HudAccent : HudHeaderAlt;
+        button.BorderBrush = selected ? HudAccentHot : HudInnerEdge;
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = selected ? HudAccentInk : HudMuted;
     }
 
     private void ApplyStatusModeButtonStyle(Button button, bool selected, bool enabled)
@@ -5228,19 +5392,15 @@ public class MainWindow : Window
 
         button.IsEnabled = enabled;
         button.Background = selected
-            ? (_useCommandDeckSkin
-                ? (pausedButton ? HudAccentHot : HudAccentOk)
-                : (pausedButton ? FgTitle : FgValue))
-            : (_useCommandDeckSkin ? HudHeaderAlt : BgStatus);
+            ? (pausedButton ? HudAccentHot : HudAccentOk)
+            : HudHeaderAlt;
         button.BorderBrush = selected
-            ? (_useCommandDeckSkin ? HudEdge : BorderColor)
-            : (_useCommandDeckSkin ? HudInnerEdge : BorderHi);
+            ? HudEdge
+            : HudInnerEdge;
         button.BorderThickness = new Thickness(1);
         button.Foreground = selected
-            ? (_useCommandDeckSkin
-                ? HudAccentInk
-                : new SolidColorBrush(Color.FromRgb(32, 32, 32)))
-            : (_useCommandDeckSkin ? HudMuted : FgStatus);
+            ? HudAccentInk
+            : HudMuted;
     }
 
     private void SetTerminalLivePaused(bool paused)
@@ -7941,6 +8101,7 @@ public class MainWindow : Window
 
         if (TryGetMombotPromptNameFromLine(line, out string promptName))
         {
+            _mombotObservedGamePromptVersion++;
             SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
             SetMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         }
@@ -9266,8 +9427,7 @@ public class MainWindow : Window
         _parser.Feed("\r\n");
 
         RememberMombotHistory(command);
-        _mombot.TryExecuteLocalInput(command, out _);
-        ApplyMombotExecutionRefresh();
+        ExecuteMombotLocalInput(command);
     }
 
     private void ResetMombotPromptState()
@@ -11502,9 +11662,154 @@ public class MainWindow : Window
 
     private void ApplyMombotExecutionRefresh()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(ApplyMombotExecutionRefresh, DispatcherPriority.Normal);
+            return;
+        }
+
         RefreshMombotUi();
+        UpdateTemporaryMacroControls();
         RefreshStatusBar();
         RebuildProxyMenu();
+        _buffer.Dirty = true;
+        FocusActiveTerminal();
+    }
+
+    private void ExecuteMombotLocalInput(string input)
+    {
+        (string promptAnsi, string promptPlain) = CaptureCurrentGamePromptSnapshot();
+        int promptVersionBefore = _mombotObservedGamePromptVersion;
+
+        _mombot.TryExecuteLocalInput(input, out IReadOnlyList<MTC.mombot.mombotDispatchResult> results);
+        ApplyMombotExecutionRefresh();
+        _ = RestoreCurrentGamePromptAfterMombotCommandAsync(results, promptAnsi, promptPlain, promptVersionBefore);
+    }
+
+    private (string PromptAnsi, string PromptPlain) CaptureCurrentGamePromptSnapshot()
+    {
+        string promptAnsi = Core.ScriptRef.GetCurrentAnsiLine() ?? string.Empty;
+        string promptPlainSource = Core.ScriptRef.GetCurrentLine();
+        if (string.IsNullOrWhiteSpace(promptPlainSource))
+            promptPlainSource = promptAnsi;
+
+        return (promptAnsi, Core.AnsiCodes.NormalizeTerminalText(promptPlainSource).TrimEnd());
+    }
+
+    private async Task RestoreCurrentGamePromptAfterMombotCommandAsync(
+        IReadOnlyList<MTC.mombot.mombotDispatchResult> results,
+        string promptAnsi,
+        string promptPlain,
+        int promptVersionBefore)
+    {
+        if (string.IsNullOrWhiteSpace(promptPlain))
+            return;
+
+        string[] pendingScriptReferences = results
+            .Where(result => result.Kind == MTC.mombot.mombotDispatchKind.Script &&
+                             !string.IsNullOrWhiteSpace(result.ScriptReference))
+            .Select(result => result.ScriptReference!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (pendingScriptReferences.Length == 0)
+            return;
+
+        int restoreTicket = ++_mombotPromptRestoreTicket;
+        for (int attempt = 0; attempt < 30; attempt++)
+        {
+            await Task.Delay(100).ConfigureAwait(false);
+
+            if (restoreTicket != _mombotPromptRestoreTicket)
+                return;
+
+            if (_mombotObservedGamePromptVersion != promptVersionBefore)
+                return;
+
+            if (_gameInstance == null ||
+                !_gameInstance.IsConnected ||
+                _gameInstance.IsProxyMenuActive ||
+                !_mombot.Enabled)
+            {
+                return;
+            }
+
+            if (pendingScriptReferences.Any(IsMombotScriptStillRunning))
+                continue;
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (restoreTicket != _mombotPromptRestoreTicket)
+                    return;
+
+                if (_mombotObservedGamePromptVersion != promptVersionBefore)
+                    return;
+
+                if (IsTerminalCurrentLineEquivalentTo(promptPlain))
+                    return;
+
+                AppendCurrentGamePrompt(promptAnsi, promptPlain);
+            });
+            return;
+        }
+    }
+
+    private bool IsMombotScriptStillRunning(string scriptReference)
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null || string.IsNullOrWhiteSpace(scriptReference))
+            return false;
+
+        string normalizedReference = scriptReference.Replace('\\', '/').Trim();
+        string normalizedLeaf = Path.GetFileName(normalizedReference);
+
+        return Core.ProxyGameOperations
+            .GetRunningScripts(interpreter)
+            .Any(script =>
+            {
+                string runningReference = (script.Reference ?? string.Empty).Replace('\\', '/').Trim();
+                string runningLeaf = Path.GetFileName(runningReference);
+                return runningReference.EndsWith(normalizedReference, StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(runningLeaf, normalizedLeaf, StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(script.Name, scriptReference, StringComparison.OrdinalIgnoreCase);
+            });
+    }
+
+    private bool IsTerminalCurrentLineEquivalentTo(string promptPlain)
+    {
+        if (string.IsNullOrWhiteSpace(promptPlain))
+            return false;
+
+        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
+        return string.Equals(
+            Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd(),
+            Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd(),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string ReadTerminalRowText(int row)
+    {
+        if (row < 0 || row >= _buffer.Rows)
+            return string.Empty;
+
+        char[] chars = new char[_buffer.Columns];
+        for (int col = 0; col < _buffer.Columns; col++)
+            chars[col] = _buffer[row, col].Char;
+
+        return new string(chars).TrimEnd();
+    }
+
+    private void AppendCurrentGamePrompt(string promptAnsi, string promptPlain)
+    {
+        string promptText = string.IsNullOrWhiteSpace(promptAnsi) ? promptPlain : promptAnsi;
+        if (string.IsNullOrWhiteSpace(promptText))
+            return;
+
+        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
+        bool needsNewLine = _buffer.CursorCol != 0 || !string.IsNullOrWhiteSpace(currentRowText);
+        if (needsNewLine)
+            _parser.Feed("\r\n");
+
+        _parser.Feed(promptText);
         _buffer.Dirty = true;
         FocusActiveTerminal();
     }
@@ -11546,8 +11851,7 @@ public class MainWindow : Window
         if (string.Equals(input.Trim(), "refresh", StringComparison.OrdinalIgnoreCase))
             _mombotStartupDataGatherPending = false;
 
-        _mombot.TryExecuteLocalInput(input, out _);
-        ApplyMombotExecutionRefresh();
+        ExecuteMombotLocalInput(input);
     }
 
     private Task ShowMombotCommandPromptAsync(string initialValue = "")

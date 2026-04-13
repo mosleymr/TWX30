@@ -22,6 +22,13 @@ namespace MTC;
 /// </summary>
 public class MapWindow : Window
 {
+    private enum MapViewMode
+    {
+        Classic,
+        Bubble,
+        Hex,
+    }
+
     // ── Layout constants ──────────────────────────────────────────────────
     private const float BoxW    = 56f;   // sector box width
     private const float BoxH    = 38f;   // sector box height
@@ -34,6 +41,7 @@ public class MapWindow : Window
     private readonly Func<int>            _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
     private bool _followCurrentSector = true;
+    private MapViewMode _viewMode = MapViewMode.Bubble;
 
     // Computed layout: sector number → canvas position
     private Dictionary<int, SKPoint> _positions = new();
@@ -56,14 +64,32 @@ public class MapWindow : Window
 
     // UI controls
     private readonly MapCanvas  _canvas;
+    private readonly TacticalMapControl _tacticalMap;
     private readonly TextBlock  _titleLabel;
     private readonly TextBox    _sectorBox;
+    private readonly ComboBox   _viewSelector;
     private          Button     _backBtn    = new();
     private          Button     _fwdBtn     = new();
     private          Slider     _zoomSlider = new();
+    private readonly TextBlock  _zoomLabel;
+    private readonly StackPanel _tacticalZoomBar;
+    private readonly TextBlock  _tacticalZoomText;
+    private readonly Control    _classicLegend;
     private readonly DispatcherTimer _refreshTimer;
 
     // ── Colors (SkiaSharp) ────────────────────────────────────────────────
+    private static readonly IBrush DeckWindow = new SolidColorBrush(Color.FromRgb(8, 14, 20));
+    private static readonly IBrush DeckFrame = new SolidColorBrush(Color.FromRgb(14, 33, 42));
+    private static readonly IBrush DeckFrameAlt = new SolidColorBrush(Color.FromRgb(18, 43, 53));
+    private static readonly IBrush DeckHeader = new SolidColorBrush(Color.FromRgb(16, 53, 67));
+    private static readonly IBrush DeckHeaderAlt = new SolidColorBrush(Color.FromRgb(20, 64, 74));
+    private static readonly IBrush DeckEdge = new SolidColorBrush(Color.FromRgb(57, 112, 128));
+    private static readonly IBrush DeckInnerEdge = new SolidColorBrush(Color.FromRgb(23, 81, 94));
+    private static readonly IBrush DeckText = new SolidColorBrush(Color.FromRgb(222, 238, 242));
+    private static readonly IBrush DeckMuted = new SolidColorBrush(Color.FromRgb(126, 170, 180));
+    private static readonly IBrush DeckAccent = new SolidColorBrush(Color.FromRgb(0, 212, 201));
+    private static readonly IBrush DeckAccentHot = new SolidColorBrush(Color.FromRgb(255, 193, 74));
+    private static readonly IBrush DeckAccentInk = new SolidColorBrush(Color.FromRgb(8, 26, 30));
     private static readonly SKColor ColBg         = new(0x0a, 0x0a, 0x18);
     private static readonly SKColor ColBoxExp      = new(0x00, 0xc8, 0xc8); // teal — explored
     private static readonly SKColor ColBoxDensity  = new(0x40, 0x80, 0x80); // dim teal — density only
@@ -94,7 +120,7 @@ public class MapWindow : Window
         Height         = 760;
         MinWidth       = 600;
         MinHeight      = 400;
-        Background     = new SolidColorBrush(Color.FromRgb(0x0a, 0x0a, 0x18));
+        Background     = DeckWindow;
 
         // Generate a fixed star field
         var rng = new Random(42);
@@ -108,33 +134,40 @@ public class MapWindow : Window
         _titleLabel = new TextBlock
         {
             Text              = "Visual Map",
-            Foreground        = Brushes.White,
-            FontSize          = 13,
+            Foreground        = DeckText,
+            FontFamily        = new FontFamily("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif"),
+            FontSize          = 14,
+            FontWeight        = FontWeight.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
             Margin            = new Thickness(6, 0, 12, 0),
         };
 
-        _backBtn = new Button { Content = "\u25c4", Width = 28, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _backBtn = new Button { Content = "\u25c4", Width = 32, Height = 32, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
         _backBtn.Click += (_, _) => NavBack();
         ToolTip.SetTip(_backBtn, "Back");
+        StyleToolbarButton(_backBtn);
 
-        _fwdBtn = new Button { Content = "\u25ba", Width = 28, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _fwdBtn = new Button { Content = "\u25ba", Width = 32, Height = 32, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
         _fwdBtn.Click += (_, _) => NavForward();
         ToolTip.SetTip(_fwdBtn, "Forward");
+        StyleToolbarButton(_fwdBtn);
 
-        var centerBtn  = new Button { Content = "Go",      Padding = new Thickness(10, 2), VerticalAlignment = VerticalAlignment.Center };
+        var centerBtn  = new Button { Content = "Go", Padding = new Thickness(12, 4), Height = 32, VerticalAlignment = VerticalAlignment.Center };
         centerBtn.Click  += (_, _) => GoToSector();
+        StyleToolbarButton(centerBtn, primary: true);
 
-        var currentBtn = new Button { Content = "Current", Padding = new Thickness(10, 2), VerticalAlignment = VerticalAlignment.Center };
+        var currentBtn = new Button { Content = "Current", Padding = new Thickness(12, 4), Height = 32, VerticalAlignment = VerticalAlignment.Center };
         currentBtn.Click += (_, _) =>
         {
             _followCurrentSector = true;
             NavigateTo(Math.Max(1, _getCurrentSector()));
         };
+        StyleToolbarButton(currentBtn);
 
-        var refreshBtn = new Button { Content = "\u21bb",  Width = 28, Padding = new Thickness(4, 2), VerticalAlignment = VerticalAlignment.Center };
+        var refreshBtn = new Button { Content = "\u21bb", Width = 32, Height = 32, Padding = new Thickness(4, 2), VerticalAlignment = VerticalAlignment.Center };
         refreshBtn.Click += (_, _) => Rebuild();
         ToolTip.SetTip(refreshBtn, "Refresh");
+        StyleToolbarButton(refreshBtn);
 
         _zoomSlider = new Slider
         {
@@ -149,6 +182,14 @@ public class MapWindow : Window
             _zoom = SliderToZoom((float)e.NewValue);
             _canvas?.InvalidateVisual();
         };
+        _zoomLabel = new TextBlock
+        {
+            Text = "Zoom:",
+            Foreground = DeckMuted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(10, 0, 4, 0),
+        };
 
         _sectorBox = new TextBox
         {
@@ -159,45 +200,105 @@ public class MapWindow : Window
             VerticalContentAlignment = VerticalAlignment.Center,
         };
         _sectorBox.KeyDown += OnSectorBoxKeyDown;
+        StyleToolbarTextBox(_sectorBox);
+
+        _viewSelector = new ComboBox
+        {
+            Width = 118,
+            Height = 32,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = DeckHeaderAlt,
+            BorderBrush = DeckInnerEdge,
+            BorderThickness = new Thickness(1),
+            Foreground = DeckText,
+            ItemsSource = new[] { "Classic", "Bubble", "Hex" },
+            SelectedIndex = 1,
+        };
+        _viewSelector.SelectionChanged += (_, _) =>
+        {
+            SetMapViewMode(_viewSelector.SelectedIndex switch
+            {
+                0 => MapViewMode.Classic,
+                2 => MapViewMode.Hex,
+                _ => MapViewMode.Bubble,
+            });
+        };
 
         var sectorLabelNav = new TextBlock
         {
             Text              = "Sector:",
-            Foreground        = Brushes.Silver,
+            Foreground        = DeckMuted,
             FontSize          = 12,
             VerticalAlignment = VerticalAlignment.Center,
             Margin            = new Thickness(10, 0, 4, 0),
         };
-        var zoomLabel = new TextBlock
+        var viewLabel = new TextBlock
         {
-            Text              = "Zoom:",
-            Foreground        = Brushes.Silver,
+            Text              = "View:",
+            Foreground        = DeckMuted,
             FontSize          = 12,
             VerticalAlignment = VerticalAlignment.Center,
             Margin            = new Thickness(10, 0, 4, 0),
         };
 
+        _tacticalZoomText = new TextBlock
+        {
+            Text = "--",
+            Foreground = DeckText,
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var zoomOutBtn = new Button { Content = "-", Width = 32, Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        zoomOutBtn.Click += (_, _) => _tacticalMap?.AdjustZoom(-0.12f);
+        StyleToolbarButton(zoomOutBtn);
+        var zoomInBtn = new Button { Content = "+", Width = 32, Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        zoomInBtn.Click += (_, _) => _tacticalMap?.AdjustZoom(0.12f);
+        StyleToolbarButton(zoomInBtn);
+        var zoomResetBtn = new Button { Content = "Reset", Height = 32, Padding = new Thickness(12, 4), VerticalAlignment = VerticalAlignment.Center };
+        zoomResetBtn.Click += (_, _) => _tacticalMap?.ResetZoom();
+        StyleToolbarButton(zoomResetBtn);
+        _tacticalZoomBar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                zoomOutBtn,
+                BuildInfoChip("Zoom", _tacticalZoomText),
+                zoomInBtn,
+                zoomResetBtn,
+            },
+        };
+
         var toolbar = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x1e, 0x1e, 0x2e)),
-            Padding    = new Thickness(4, 5),   // vertical padding lets controls breathe at their natural height
+            Background = DeckFrame,
+            BorderBrush = DeckEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(16),
+            Padding    = new Thickness(10, 8),
             Child      = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Spacing     = 4,
+                Spacing     = 6,
                 Children    =
                 {
                     _backBtn, _fwdBtn,
                     new Border { Width = 4 },
                     _titleLabel,
                     sectorLabelNav, _sectorBox, centerBtn, currentBtn, refreshBtn,
-                    zoomLabel, _zoomSlider,
+                    viewLabel, _viewSelector,
+                    _zoomLabel, _zoomSlider,
+                    _tacticalZoomBar,
                 },
             },
         };
 
         // Legend
-        var legend = BuildLegend();
+        _classicLegend = BuildLegend();
 
         // ── Canvas ────────────────────────────────────────────────────────
         _canvas = new MapCanvas(this);
@@ -207,12 +308,45 @@ public class MapWindow : Window
         _canvas.PointerReleased     += OnPointerReleased;
         _canvas.DoubleTapped        += OnDoubleTapped;
 
-        var layout = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0a, 0x18)) };
+        _tacticalMap = new TacticalMapControl(
+            () => _centerSector,
+            () => _getDb())
+        {
+            MinHeight = 220,
+        };
+        _tacticalMap.ZoomChanged += _ => Dispatcher.UIThread.Post(UpdateTacticalZoomUi, DispatcherPriority.Background);
+        _tacticalMap.SectorDoubleClicked += (_, sectorNumber) =>
+        {
+            _followCurrentSector = false;
+            NavigateTo(sectorNumber);
+        };
+
+        var mapSurface = new Grid();
+        mapSurface.Children.Add(_canvas);
+        mapSurface.Children.Add(_tacticalMap);
+
+        var layout = new DockPanel { Background = DeckWindow, Margin = new Thickness(10) };
         DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(legend,  Dock.Bottom);
+        DockPanel.SetDock(_classicLegend,  Dock.Bottom);
         layout.Children.Add(toolbar);
-        layout.Children.Add(legend);
-        layout.Children.Add(_canvas);
+        layout.Children.Add(_classicLegend);
+        layout.Children.Add(new Border
+        {
+            Background = DeckFrame,
+            BorderBrush = DeckEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Child = new Border
+            {
+                Background = DeckFrameAlt,
+                BorderBrush = DeckInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                ClipToBounds = true,
+                Child = mapSurface,
+            },
+        });
 
         Content = layout;
 
@@ -231,12 +365,13 @@ public class MapWindow : Window
         Opened  += (_, _) => _refreshTimer.Start();
         Closing += (_, _) => _refreshTimer.Stop();
 
+        SetMapViewMode(MapViewMode.Bubble);
         NavigateTo(_centerSector);
     }
 
     // ── Legend bar ────────────────────────────────────────────────────────
 
-    private Control BuildLegend()
+    private Border BuildLegend()
     {
         static Border Swatch(Color c) => new Border
         {
@@ -286,7 +421,118 @@ public class MapWindow : Window
         panel.Children.Add(dashPanel);
         panel.Children.Add(Lbl("One-way"));
 
-        return panel;
+        return new Border
+        {
+            Background = DeckFrame,
+            BorderBrush = DeckInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = new Thickness(6, 2),
+            Child = panel,
+        };
+    }
+
+    private void SetMapViewMode(MapViewMode viewMode)
+    {
+        _viewMode = viewMode;
+        bool classic = viewMode == MapViewMode.Classic;
+
+        _canvas.IsVisible = classic;
+        _canvas.IsHitTestVisible = classic;
+        _tacticalMap.IsVisible = !classic;
+        _tacticalMap.IsHitTestVisible = !classic;
+        _classicLegend.IsVisible = classic;
+        _zoomSlider.IsVisible = classic;
+        _zoomLabel.IsVisible = classic;
+        _tacticalZoomBar.IsVisible = !classic;
+
+        if (!classic)
+        {
+            _tacticalMap.SetViewMode(viewMode == MapViewMode.Hex
+                ? TacticalMapViewMode.Hex
+                : TacticalMapViewMode.Bubble);
+            UpdateTacticalZoomUi();
+            _tacticalMap.InvalidateVisual();
+        }
+        else
+        {
+            _canvas.InvalidateVisual();
+        }
+
+        UpdateTitle();
+    }
+
+    private void UpdateTitle()
+    {
+        string modeLabel = _viewMode switch
+        {
+            MapViewMode.Classic => "Classic",
+            MapViewMode.Hex => "Hex",
+            _ => "Bubble",
+        };
+        _titleLabel.Text = $"Map View  //  {modeLabel}  //  Center: Sector {_centerSector}";
+    }
+
+    private void UpdateTacticalZoomUi()
+    {
+        _tacticalZoomText.Text = $"{_tacticalMap.ZoomPercent}%";
+    }
+
+    private static void StyleToolbarButton(Button button, bool primary = false)
+    {
+        button.Background = primary ? DeckAccent : DeckHeaderAlt;
+        button.BorderBrush = primary ? DeckAccentHot : DeckInnerEdge;
+        button.BorderThickness = new Thickness(1);
+        button.CornerRadius = new CornerRadius(10);
+        button.Foreground = primary ? DeckAccentInk : DeckText;
+        button.FontSize = 12;
+        button.FontWeight = FontWeight.SemiBold;
+    }
+
+    private static void StyleToolbarTextBox(TextBox textBox)
+    {
+        textBox.Background = DeckHeaderAlt;
+        textBox.BorderBrush = DeckInnerEdge;
+        textBox.BorderThickness = new Thickness(1);
+        textBox.Foreground = DeckText;
+        textBox.CaretBrush = DeckAccent;
+    }
+
+    private static Border BuildInfoChip(string label, Control value)
+    {
+        if (value is TextBlock text)
+        {
+            text.Foreground = DeckText;
+            text.FontSize = 12;
+            text.FontWeight = FontWeight.SemiBold;
+            text.VerticalAlignment = VerticalAlignment.Center;
+        }
+
+        return new Border
+        {
+            Background = DeckHeaderAlt,
+            BorderBrush = DeckInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(10, 6),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = label.ToUpperInvariant(),
+                        Foreground = DeckMuted,
+                        FontSize = 11,
+                        FontWeight = FontWeight.SemiBold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    value,
+                },
+            },
+        };
     }
 
     // ── Navigation history ─────────────────────────────────────────────────
@@ -306,6 +552,7 @@ public class MapWindow : Window
         _centerSector = sector;
         _pan = new SKPoint(0, 0);
         Rebuild();
+        UpdateTitle();
     }
 
     private void NavBack()
@@ -354,7 +601,12 @@ public class MapWindow : Window
         _depthCache.Clear();
 
         var db = _getDb();
-        if (db == null) { _canvas.InvalidateVisual(); return; }
+        if (db == null)
+        {
+            _canvas.InvalidateVisual();
+            _tacticalMap.InvalidateVisual();
+            return;
+        }
 
         // BFS from center sector, collect sectors up to MaxDepth hops
         var visited  = new Dictionary<int, int>(); // sector → depth
@@ -416,9 +668,10 @@ public class MapWindow : Window
             }
         }
 
-        _titleLabel.Text = $"Visual Map  –  Center: Sector {_centerSector}";
+        UpdateTitle();
         UpdateNavButtons();
         _canvas.InvalidateVisual();
+        _tacticalMap.InvalidateVisual();
     }
 
     /// <summary>
@@ -430,11 +683,17 @@ public class MapWindow : Window
     private void RefreshData()
     {
         var db = _getDb();
-        if (db == null) { _canvas.InvalidateVisual(); return; }
+        if (db == null)
+        {
+            _canvas.InvalidateVisual();
+            _tacticalMap.InvalidateVisual();
+            return;
+        }
         foreach (var sn in _positions.Keys.ToList())
             _sectorCache[sn] = db.GetSector(sn);
         RefreshMajorSpaceLaneSectors(db);
         _canvas.InvalidateVisual();
+        _tacticalMap.InvalidateVisual();
     }
 
     private int VisibleDepthForZoom()
