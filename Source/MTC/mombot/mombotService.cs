@@ -49,6 +49,17 @@ internal sealed record mombotResolvedModule(
 
 internal sealed class mombotService
 {
+    private static readonly string[] WarmModuleCommands =
+    {
+        "cap",
+        "kill",
+        "refurb",
+        "hkill",
+        "htorp",
+        "surround",
+        "xenter",
+    };
+
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;
     private Core.ModInterpreter? _interpreter;
@@ -95,12 +106,17 @@ internal sealed class mombotService
     public void ApplyConfig(mombotConfig? config)
     {
         bool wasEnabled = _config.Enabled;
+        string previousScriptRoot = _config.ScriptRoot ?? string.Empty;
         _config = config ?? new mombotConfig();
         NormalizeConfig();
         ResetAuthorizedUsers();
         SyncWatcherState();
         if (!wasEnabled && _config.Enabled)
             ArmRelogFlagsIfEnabled();
+
+        bool scriptRootChanged = !string.Equals(previousScriptRoot, _config.ScriptRoot ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        if (_config.Enabled && (_interpreter != null || _gameInstance != null))
+            WarmPreparedHotkeyModules(forceRefresh: scriptRootChanged);
     }
 
     public IReadOnlyList<Core.RunningScriptInfo> GetRunningScripts()
@@ -173,6 +189,32 @@ internal sealed class mombotService
         {
             error = ex.Message;
             return false;
+        }
+    }
+
+    public void WarmPreparedHotkeyModules(bool forceRefresh = false)
+    {
+        if (_interpreter == null)
+            return;
+
+        foreach (string command in WarmModuleCommands)
+        {
+            if (!TryResolveCommandScriptReference(command, out mombotResolvedModule? module) || module == null)
+                continue;
+
+            if (!Core.ScriptCmp.PrewarmCompiledScript(
+                    module.FullPath,
+                    _interpreter.ScriptRef,
+                    _interpreter.ScriptDirectory,
+                    forceRefresh,
+                    out string? error))
+            {
+                if (!string.IsNullOrWhiteSpace(error))
+                    Core.GlobalModules.DebugLog($"[mombot] hotkey prewarm skipped for '{module.FullPath}': {error}\n");
+                continue;
+            }
+
+            Core.GlobalModules.DebugLog($"[mombot] hotkey prewarmed '{module.FullPath}'\n");
         }
     }
 
@@ -498,10 +540,6 @@ internal sealed class mombotService
             case "listall":
                 return ExecuteListAll(canonical);
 
-            case "refresh":
-                Compat.ApplyToSession(_interpreter, _database, _config, Settings, context);
-                return PublishNativeResult(canonical, "mombot refreshed its command context from current savevar/loadvar state.");
-
             case "bot":
                 return ExecuteBotStatus(canonical);
 
@@ -555,16 +593,19 @@ internal sealed class mombotService
 
     private mombotDispatchResult ExecuteStopModules(string canonical)
     {
-        string lastLoaded = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-        bool stopped = !string.IsNullOrWhiteSpace(lastLoaded) && StopScriptByName(lastLoaded);
+        StopAllNonSystemScripts();
 
-        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
-        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        ApplySessionVar("$BOT~MODE", "General");
+        ApplySessionVar("$bot~mode", "General");
+        ApplySessionVar("$mode", "General");
+        ApplySessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        ApplySessionVar("$LAST_LOADED_MODULE", string.Empty);
+        ApplySessionVar("$BOT~BOTISDEAF", "0");
+        ApplySessionVar("$BOT~botIsDeaf", "0");
+        ApplySessionVar("$bot~botIsDeaf", "0");
+        ApplySessionVar("$botIsDeaf", "0");
 
-        if (stopped)
-            return PublishNativeResult(canonical, $"mombot reset to General mode and stopped {lastLoaded}.");
-
-        return PublishNativeResult(canonical, "mombot reset to General mode.");
+        return PublishNativeResult(canonical, "mombot reset to General mode, undeafened the client, and stopped all non-system scripts.");
     }
 
     private mombotDispatchResult ExecuteListAll(string canonical)

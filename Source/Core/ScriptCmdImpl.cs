@@ -958,6 +958,22 @@ namespace TWXProxy.Core
             {
                 parameters[1].Value = parameters[0].DecValue.ToString("C2");
             }
+            else if (format == "NUMBER")
+            {
+                string source = parameters[0].Value;
+                if (double.TryParse(source, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out double numberValue) ||
+                    double.TryParse(source, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.CurrentCulture, out numberValue))
+                {
+                    bool isWholeNumber = Math.Abs(numberValue % 1d) < 0.0000001d;
+                    parameters[1].Value = isWholeNumber
+                        ? numberValue.ToString("#,0", CultureInfo.InvariantCulture)
+                        : numberValue.ToString("#,0.################", CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    parameters[1].Value = source;
+                }
+            }
             else if (format == "DATE")
             {
                 if (double.TryParse(parameters[0].Value, out double dateValue))

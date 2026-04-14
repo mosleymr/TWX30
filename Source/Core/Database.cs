@@ -412,6 +412,8 @@ namespace TWXProxy.Core
             if (File.Exists(filename))
             {
                 LoadDatabase();
+                if (RepairLandmarkHeadersFromSectorData())
+                    SaveDatabase();
             }
             else
             {
@@ -641,6 +643,56 @@ namespace TWXProxy.Core
 
             // Update warp-in cache for connected sectors
             UpdateWarpInCache(sector);
+        }
+
+        private bool RepairLandmarkHeadersFromSectorData()
+        {
+            ushort stardock = 0;
+            ushort alpha = 0;
+            ushort rylos = 0;
+
+            foreach (var sector in _sectors.Values)
+            {
+                var port = sector.SectorPort;
+                if (port == null || port.Dead)
+                    continue;
+
+                if (stardock == 0 && port.ClassIndex == 9)
+                    stardock = (ushort)sector.Number;
+
+                if (alpha == 0 &&
+                    port.ClassIndex == 0 &&
+                    string.Equals(port.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase))
+                {
+                    alpha = (ushort)sector.Number;
+                }
+
+                if (rylos == 0 &&
+                    port.ClassIndex == 0 &&
+                    string.Equals(port.Name, "Rylos", StringComparison.OrdinalIgnoreCase))
+                {
+                    rylos = (ushort)sector.Number;
+                }
+
+                if (stardock != 0 && alpha != 0 && rylos != 0)
+                    break;
+            }
+
+            bool changed = _header.StarDock != stardock ||
+                           _header.AlphaCentauri != alpha ||
+                           _header.Rylos != rylos;
+
+            if (changed)
+            {
+                GlobalModules.DebugLog(
+                    $"[ModDatabase] Repaired landmark header sectors SD {_header.StarDock}->{stardock}, " +
+                    $"Alpha {_header.AlphaCentauri}->{alpha}, Rylos {_header.Rylos}->{rylos}\n");
+                _header.StarDock = stardock;
+                _header.AlphaCentauri = alpha;
+                _header.Rylos = rylos;
+            }
+
+            return changed;
         }
 
         /// <summary>

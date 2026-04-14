@@ -30,7 +30,7 @@ public class TacticalMapControl : Control
     private const float BubbleGridY = 84f;
     private const float NodeRadius = 20f;
     private const float HexRadius = 34f;
-    private const float HexGapFactor = 1.16f;
+    private const float HexGapFactor = 1.0f;
     private const float DefaultZoomFactor = 0.82f;
     private const float MinZoomFactor = 0.45f;
     private const float MaxZoomFactor = 1.75f;
@@ -810,7 +810,7 @@ public class TacticalMapControl : Control
 
             foreach (int linkedSector in EnumerateLinkedSectors(sector).Where(linkedSector => visited.ContainsKey(linkedSector) && !placed.Contains(linkedSector)))
             {
-                if (!TryAssignHexCell(db, linkedSector, origin, orderedDirections, usedCells, sectorByCell, out HexCell assignedCell))
+                if (!TryAssignHexCell(db, linkedSector, origin, orderedDirections, cellOf, usedCells, sectorByCell, out HexCell assignedCell))
                     continue;
 
                 cellOf[linkedSector] = assignedCell;
@@ -820,6 +820,7 @@ public class TacticalMapControl : Control
             }
         }
 
+        RefineHexLayout(db, centerSector, visited, cellOf, sectorByCell);
         snapshot.HexCells = cellOf;
         snapshot.SectorByHexCell = sectorByCell;
         snapshot.Positions = cellOf.ToDictionary(kvp => kvp.Key, kvp => HexCellToPoint(kvp.Value));
@@ -867,19 +868,44 @@ public class TacticalMapControl : Control
         int sectorNumber,
         HexCell origin,
         IReadOnlyList<int> orderedDirections,
+        IReadOnlyDictionary<int, HexCell> cellOf,
         HashSet<HexCell> usedCells,
         IReadOnlyDictionary<HexCell, int> sectorByCell,
         out HexCell assignedCell)
     {
+        List<int> connectedPlacedSectors = GetPlacedConnectedSectors(db, sectorNumber, cellOf);
+        HexCell bestAdjacentCandidate = default;
+        int bestAdjacentScore = int.MinValue;
+
+        foreach (int directionIndex in orderedDirections)
+        {
+            HexCell direction = HexDirections[directionIndex];
+            HexCell candidate = new(origin.Q + direction.Q, origin.R + direction.R);
+            if (usedCells.Contains(candidate))
+                continue;
+
+            int candidateScore = ScoreHexCandidate(db, sectorNumber, candidate, connectedPlacedSectors, sectorByCell);
+            if (candidateScore > bestAdjacentScore)
+            {
+                bestAdjacentCandidate = candidate;
+                bestAdjacentScore = candidateScore;
+            }
+        }
+
+        if (bestAdjacentScore > int.MinValue)
+        {
+            usedCells.Add(bestAdjacentCandidate);
+            assignedCell = bestAdjacentCandidate;
+            return true;
+        }
+
         HexCell bestConnectedCandidate = default;
-        int bestConnectedRing = int.MaxValue;
-        int bestConnectedDistance = int.MaxValue;
+        int bestConnectedScore = int.MinValue;
 
         HexCell bestIsolatedCandidate = default;
-        int bestIsolatedRing = int.MaxValue;
-        int bestIsolatedDistance = int.MaxValue;
+        int bestIsolatedScore = int.MinValue;
 
-        for (int ring = 1; ring <= 5; ring++)
+        for (int ring = 2; ring <= 5; ring++)
         {
             foreach (int directionIndex in orderedDirections)
             {
@@ -905,36 +931,34 @@ public class TacticalMapControl : Control
                 if (touchesUnrelatedSector)
                     continue;
 
-                int originDistance = HexDistance(origin, candidate);
+                int candidateScore = ScoreHexCandidate(db, sectorNumber, candidate, connectedPlacedSectors, sectorByCell) - (ring * 120);
                 if (touchesConnectedSector)
                 {
-                    if (ring < bestConnectedRing || (ring == bestConnectedRing && originDistance < bestConnectedDistance))
+                    if (candidateScore > bestConnectedScore)
                     {
                         bestConnectedCandidate = candidate;
-                        bestConnectedRing = ring;
-                        bestConnectedDistance = originDistance;
+                        bestConnectedScore = candidateScore;
                     }
 
                     continue;
                 }
 
-                if (occupiedNeighbors.Count == 0 && (ring < bestIsolatedRing || (ring == bestIsolatedRing && originDistance < bestIsolatedDistance)))
+                if (occupiedNeighbors.Count == 0 && candidateScore > bestIsolatedScore)
                 {
                     bestIsolatedCandidate = candidate;
-                    bestIsolatedRing = ring;
-                    bestIsolatedDistance = originDistance;
+                    bestIsolatedScore = candidateScore;
                 }
             }
         }
 
-        if (bestConnectedRing != int.MaxValue)
+        if (bestConnectedScore > int.MinValue)
         {
             usedCells.Add(bestConnectedCandidate);
             assignedCell = bestConnectedCandidate;
             return true;
         }
 
-        if (bestIsolatedRing != int.MaxValue)
+        if (bestIsolatedScore > int.MinValue)
         {
             usedCells.Add(bestIsolatedCandidate);
             assignedCell = bestIsolatedCandidate;
@@ -943,6 +967,59 @@ public class TacticalMapControl : Control
 
         assignedCell = default;
         return false;
+    }
+
+    private static void RefineHexLayout(
+        Core.ModDatabase db,
+        int centerSector,
+        IReadOnlyDictionary<int, int> visited,
+        Dictionary<int, HexCell> cellOf,
+        Dictionary<HexCell, int> sectorByCell)
+    {
+        for (int pass = 0; pass < 10; pass++)
+        {
+            bool movedAny = false;
+            foreach (int sectorNumber in cellOf.Keys
+                         .OrderByDescending(sectorNumber => visited.GetValueOrDefault(sectorNumber))
+                         .ThenBy(sectorNumber => sectorNumber)
+                         .ToList())
+            {
+                if (sectorNumber == centerSector)
+                    continue;
+
+                HexCell currentCell = cellOf[sectorNumber];
+                List<int> connectedPlacedSectors = GetPlacedConnectedSectors(db, sectorNumber, cellOf);
+                if (connectedPlacedSectors.Count == 0)
+                    continue;
+
+                sectorByCell.Remove(currentCell);
+                HexCell bestCell = currentCell;
+                int bestScore = ScoreHexCandidate(db, sectorNumber, currentCell, connectedPlacedSectors, sectorByCell);
+
+                foreach (HexCell candidate in GetRefinementCandidates(currentCell, connectedPlacedSectors, cellOf))
+                {
+                    if (!candidate.Equals(currentCell) && sectorByCell.ContainsKey(candidate))
+                        continue;
+
+                    int candidateScore = ScoreHexCandidate(db, sectorNumber, candidate, connectedPlacedSectors, sectorByCell);
+                    if (candidateScore > bestScore)
+                    {
+                        bestCell = candidate;
+                        bestScore = candidateScore;
+                    }
+                }
+
+                sectorByCell[bestCell] = sectorNumber;
+                if (!bestCell.Equals(currentCell))
+                {
+                    cellOf[sectorNumber] = bestCell;
+                    movedAny = true;
+                }
+            }
+
+            if (!movedAny)
+                break;
+        }
     }
 
     private static IEnumerable<int> EnumerateLinkedSectors(Core.SectorData sector)
@@ -967,6 +1044,44 @@ public class TacticalMapControl : Control
         return neighbors;
     }
 
+    private static List<int> GetPlacedConnectedSectors(
+        Core.ModDatabase db,
+        int sectorNumber,
+        IReadOnlyDictionary<int, HexCell> cellOf)
+    {
+        var connected = new List<int>();
+        foreach (int otherSector in cellOf.Keys)
+        {
+            if (otherSector != sectorNumber && AreSectorsConnected(db, sectorNumber, otherSector))
+                connected.Add(otherSector);
+        }
+
+        return connected;
+    }
+
+    private static IEnumerable<HexCell> GetRefinementCandidates(
+        HexCell currentCell,
+        IReadOnlyList<int> connectedPlacedSectors,
+        IReadOnlyDictionary<int, HexCell> cellOf)
+    {
+        var candidates = new HashSet<HexCell> { currentCell };
+
+        foreach (HexCell direction in HexDirections)
+            candidates.Add(new HexCell(currentCell.Q + direction.Q, currentCell.R + direction.R));
+
+        foreach (int connectedSector in connectedPlacedSectors)
+        {
+            if (!cellOf.TryGetValue(connectedSector, out HexCell connectedCell))
+                continue;
+
+            candidates.Add(connectedCell);
+            foreach (HexCell direction in HexDirections)
+                candidates.Add(new HexCell(connectedCell.Q + direction.Q, connectedCell.R + direction.R));
+        }
+
+        return candidates;
+    }
+
     private static bool AreSectorsConnected(Core.ModDatabase db, int firstSector, int secondSector)
     {
         if (firstSector == secondSector)
@@ -989,6 +1104,54 @@ public class TacticalMapControl : Control
         int dr = a.R - b.R;
         int ds = (a.Q + a.R) - (b.Q + b.R);
         return (Math.Abs(dq) + Math.Abs(dr) + Math.Abs(ds)) / 2;
+    }
+
+    private static int ScoreHexCandidate(
+        Core.ModDatabase db,
+        int sectorNumber,
+        HexCell candidate,
+        IReadOnlyList<int> connectedPlacedSectors,
+        IReadOnlyDictionary<HexCell, int> sectorByCell)
+    {
+        int adjacentConnected = 0;
+        int adjacentUnrelated = 0;
+        foreach (int neighborSector in GetAdjacentOccupiedSectors(candidate, sectorByCell))
+        {
+            if (AreSectorsConnected(db, sectorNumber, neighborSector))
+                adjacentConnected++;
+            else
+                adjacentUnrelated++;
+        }
+
+        int totalDistance = 0;
+        foreach (int connectedSector in connectedPlacedSectors)
+        {
+            if (!TryGetSectorCell(sectorByCell, connectedSector, out HexCell connectedCell))
+                continue;
+
+            totalDistance += HexDistance(candidate, connectedCell);
+        }
+
+        int centerDistance = HexDistance(candidate, new HexCell(0, 0));
+        return (adjacentConnected * 220)
+             - (adjacentUnrelated * 140)
+             - (totalDistance * 16)
+             - centerDistance;
+    }
+
+    private static bool TryGetSectorCell(IReadOnlyDictionary<HexCell, int> sectorByCell, int sectorNumber, out HexCell cell)
+    {
+        foreach ((HexCell candidate, int occupant) in sectorByCell)
+        {
+            if (occupant == sectorNumber)
+            {
+                cell = candidate;
+                return true;
+            }
+        }
+
+        cell = default;
+        return false;
     }
 
     private static (float MinX, float MinY, float MaxX, float MaxY) MeasureBounds(IEnumerable<SKPoint> points, float margin)

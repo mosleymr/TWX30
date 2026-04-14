@@ -20,6 +20,11 @@ public sealed class ShipStatusDelta
     public int? HoldsEmpty { get; set; }
     public int HoldsEmptyDelta { get; set; }
 
+    public int FuelOreDelta { get; set; }
+    public int OrganicsDelta { get; set; }
+    public int EquipmentDelta { get; set; }
+    public int ColonistsDelta { get; set; }
+
     public int AtomicDetDelta { get; set; }
     public int BeaconsDelta { get; set; }
     public int CorbomiteDelta { get; set; }
@@ -44,6 +49,10 @@ public sealed class ShipStatusDelta
                Shields.HasValue || ShieldsDelta != 0 ||
                TotalHolds.HasValue || TotalHoldsDelta != 0 ||
                HoldsEmpty.HasValue || HoldsEmptyDelta != 0 ||
+               FuelOreDelta != 0 ||
+               OrganicsDelta != 0 ||
+               EquipmentDelta != 0 ||
+               ColonistsDelta != 0 ||
                AtomicDetDelta != 0 ||
                BeaconsDelta != 0 ||
                CorbomiteDelta != 0 ||
@@ -81,6 +90,11 @@ public sealed class ShipStatusDelta
         if (HoldsEmpty.HasValue)
             status.HoldsEmpty = ClampNonNegative(HoldsEmpty.Value);
         status.HoldsEmpty = ClampNonNegative(status.HoldsEmpty + HoldsEmptyDelta);
+
+        status.FuelOre = ClampNonNegative(status.FuelOre + FuelOreDelta);
+        status.Organics = ClampNonNegative(status.Organics + OrganicsDelta);
+        status.Equipment = ClampNonNegative(status.Equipment + EquipmentDelta);
+        status.Colonists = ClampNonNegative(status.Colonists + ColonistsDelta);
 
         status.AtomicDet = ClampNonNegative(status.AtomicDet + AtomicDetDelta);
         status.Beacons = ClampNonNegative(status.Beacons + BeaconsDelta);

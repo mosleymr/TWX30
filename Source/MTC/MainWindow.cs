@@ -191,6 +191,7 @@ public class MainWindow : Window
     private readonly List<string> _mombotCommandHistory = [];
     private string _mombotPromptBuffer = string.Empty;
     private string _mombotPromptDraft = string.Empty;
+    private Func<string, string>? _mombotPromptSubmitTransform;
     private int _mombotPromptHistoryIndex;
     private MombotPreferencesPage _mombotPreferencesPage;
     private string _mombotLastKeepaliveLine = string.Empty;
@@ -549,9 +550,6 @@ public class MainWindow : Window
     private void RecreateClassicShellControls()
     {
         _termCtrl = CreateTerminalControl();
-        _macroRecordButton = null;
-        _macroStopButton = null;
-        _macroPlayButton = null;
         _commPanelBorder = null;
         _commFedTabButton = null;
         _commSubspaceTabButton = null;
@@ -2020,6 +2018,7 @@ public class MainWindow : Window
         _terminalInputHandler = handler;
         _termCtrl.SendInput = handler;
         _deckTermCtrl.SendInput = handler;
+        UpdateTemporaryMacroControls();
     }
 
     private void SetTerminalConnected(bool connected)
@@ -2627,12 +2626,26 @@ public class MainWindow : Window
         ConfigureMacroControlSet(_deckMacroRecordButton, _deckMacroStopButton, _deckMacroPlayButton, deckSkin: true, encodedLength);
     }
 
+    private bool HasActiveMacroConnection()
+    {
+        if (_terminalInputHandler == null)
+            return false;
+
+        if (_gameInstance?.IsConnected == true)
+            return true;
+
+        if (_telnet.IsConnected)
+            return true;
+
+        return _state.Connected;
+    }
+
     private void ConfigureMacroControlSet(Button? recordButton, Button? stopButton, Button? playButton, bool deckSkin, int encodedLength)
     {
         if (recordButton == null || stopButton == null || playButton == null)
             return;
 
-        bool connected = _state.Connected && _terminalInputHandler != null;
+        bool connected = HasActiveMacroConnection();
         bool hasMacro = encodedLength > 0;
 
         recordButton.IsEnabled = connected && !_temporaryMacroRecording;
@@ -3795,6 +3808,22 @@ public class MainWindow : Window
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
         FocusActiveTerminal();
+    }
+
+    private void EnsureEmbeddedMombotClientAudible()
+    {
+        PersistMombotBoolean(false, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+
+        if (_gameInstance == null)
+            return;
+
+        if (_terminalLivePaused)
+        {
+            SetTerminalLivePaused(false);
+            return;
+        }
+
+        _gameInstance.SetClientType(EmbeddedLocalClientIndex, Core.ClientType.Standard);
     }
 
     private void OnNativeHaggleChanged(bool enabled)
@@ -5094,7 +5123,7 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = true;
-                UpdateTemporaryMacroControls();
+                SetTerminalConnected(true);
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
@@ -5108,7 +5137,7 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = false;
-                UpdateTemporaryMacroControls();
+                SetTerminalConnected(false);
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             });
@@ -5177,8 +5206,9 @@ public class MainWindow : Window
             {
                 string line = getInputBuffer.ToString().TrimEnd('\r', '\n');
                 getInputBuffer.Clear();
-                if (!string.IsNullOrEmpty(line))
-                    interpreter.LocalInputEvent(line);
+                // Blank Enter is a valid response for getinput/getconsoleinput and
+                // must be delivered to scripts to preserve TWX27 behavior.
+                interpreter.LocalInputEvent(line);
             }
         };
 
@@ -6726,6 +6756,53 @@ public class MainWindow : Window
         _mombotStartupFinalizeRunning = false;
     }
 
+    private static bool HasNonEmptyMombotDataFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return false;
+
+        try
+        {
+            return new FileInfo(path).Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool ShouldRunNativeMombotStartupRefresh()
+    {
+        string gconfigPath = ResolveMombotCurrentFilePath("$gconfig_file");
+        string shipCapPath = ResolveMombotCurrentFilePath("$SHIP~cap_file");
+        string planetFilePath = ResolveMombotCurrentFilePath("$PLANET~planet_file");
+
+        if (!HasNonEmptyMombotDataFile(gconfigPath))
+            return true;
+
+        if (!HasNonEmptyMombotDataFile(shipCapPath))
+            return true;
+
+        if (!HasNonEmptyMombotDataFile(planetFilePath))
+            return true;
+
+        return false;
+    }
+
+    private bool IsNativeMombotRefreshScriptLoaded()
+        => IsNativeMombotScriptLoaded("refresh.cts");
+
+    private bool TryStartNativeMombotStartupRefresh()
+    {
+        IReadOnlyList<MTC.mombot.mombotDispatchResult> results = _mombot.ExecuteCommandLine(
+            "refresh",
+            selfCommand: true,
+            route: "startup",
+            userName: "self");
+        ApplyMombotExecutionRefresh();
+        return results.Any(result => result.Success && result.Kind == MTC.mombot.mombotDispatchKind.Script);
+    }
+
     private async Task TryRunNativeMombotInitialSettingsAsync()
     {
         await Task.Yield();
@@ -6750,6 +6827,13 @@ public class MainWindow : Window
         SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         _mombotStartupDataGatherRunning = true;
         _mombotStartupDataGatherPending = false;
+
+        if (ShouldRunNativeMombotStartupRefresh() && !IsNativeMombotRefreshScriptLoaded())
+        {
+            if (!TryStartNativeMombotStartupRefresh())
+                _mombotStartupDataGatherRunning = false;
+        }
+
         await FinalizeNativeMombotStartupAsync();
     }
 
@@ -6778,6 +6862,14 @@ public class MainWindow : Window
                 promptSurface != MombotPromptSurface.Citadel)
             {
                 return;
+            }
+
+            if (_mombotStartupDataGatherRunning)
+            {
+                if (IsNativeMombotRefreshScriptLoaded())
+                    return;
+
+                _mombotStartupDataGatherRunning = false;
             }
 
             _mombotStartupDataGatherRunning = false;
@@ -8177,6 +8269,7 @@ public class MainWindow : Window
         }
 
         await TryRunNativeMombotInitialSettingsAsync();
+        await FinalizeNativeMombotStartupAsync();
     }
 
     private async Task SendNativeMombotEscapeAsync()
@@ -8658,7 +8751,7 @@ public class MainWindow : Window
 
     private void StartTemporaryMacroRecording()
     {
-        if (_terminalInputHandler == null || !_state.Connected)
+        if (!HasActiveMacroConnection())
         {
             ShowMacroNotice("temporary macro recording requires an active connection");
             return;
@@ -8730,7 +8823,7 @@ public class MainWindow : Window
         if (_temporaryMacroRecording)
             return;
 
-        if (_terminalInputHandler == null || !_state.Connected)
+        if (!HasActiveMacroConnection())
         {
             ShowMacroNotice("temporary macro playback requires an active connection");
             return;
@@ -8775,7 +8868,11 @@ public class MainWindow : Window
         if (macroChunks.Count == 0 || macroChunks.All(chunk => chunk.Length == 0))
             return Task.FromResult<string?>("Temporary macro is empty.");
 
-        if (_terminalInputHandler == null || !_state.Connected)
+        if (!HasActiveMacroConnection())
+            return Task.FromResult<string?>("Temporary macros need an active game connection.");
+
+        Action<byte[]>? send = _terminalInputHandler;
+        if (send == null)
             return Task.FromResult<string?>("Temporary macros need an active game connection.");
 
         _suppressTemporaryMacroRecording = true;
@@ -8786,7 +8883,7 @@ public class MainWindow : Window
                 foreach (byte[] chunk in macroChunks)
                 {
                     if (chunk.Length > 0)
-                        _terminalInputHandler(chunk);
+                        send(chunk);
                 }
             }
         }
@@ -8964,7 +9061,7 @@ public class MainWindow : Window
         if (string.IsNullOrWhiteSpace(macro))
             return;
 
-        if (_terminalInputHandler == null || !_state.Connected)
+        if (!HasActiveMacroConnection())
         {
             _parser.Feed("\x1b[33m[macro requires an active connection]\x1b[0m\r\n");
             _buffer.Dirty = true;
@@ -9001,7 +9098,11 @@ public class MainWindow : Window
         if (string.IsNullOrWhiteSpace(macro))
             return Task.FromResult<string?>("Macro is empty.");
 
-        if (_terminalInputHandler == null || !_state.Connected)
+        if (!HasActiveMacroConnection())
+            return Task.FromResult<string?>("Macros need an active game connection.");
+
+        Action<byte[]>? send = _terminalInputHandler;
+        if (send == null)
             return Task.FromResult<string?>("Macros need an active game connection.");
 
         string expanded = ExpandConfiguredMacro(macro);
@@ -9013,7 +9114,7 @@ public class MainWindow : Window
             return Task.FromResult<string?>(null);
 
         for (int i = 0; i < count; i++)
-            _terminalInputHandler(payload);
+            send(payload);
 
         return Task.FromResult<string?>(null);
     }
@@ -9318,7 +9419,7 @@ public class MainWindow : Window
         }
     }
 
-    private void BeginMombotPrompt(string initialValue = "")
+    private void BeginMombotPrompt(string initialValue = "", Func<string, string>? submitTransform = null)
     {
         if (_gameInstance == null)
         {
@@ -9338,6 +9439,7 @@ public class MainWindow : Window
         _mombotPromptOpen = true;
         _mombotPromptBuffer = initialValue;
         _mombotPromptDraft = initialValue;
+        _mombotPromptSubmitTransform = submitTransform;
         _mombotPromptHistoryIndex = _mombotCommandHistory.Count;
         _mombotHotkeyPromptOpen = false;
         _mombotScriptPromptOpen = false;
@@ -9379,6 +9481,23 @@ public class MainWindow : Window
         RedrawMombotPrompt();
     }
 
+    private string NormalizeMombotMowHotkeyCommand(string command)
+    {
+        string trimmed = (command ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+            return trimmed;
+
+        string[] parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || !string.Equals(parts[0], "mow", StringComparison.OrdinalIgnoreCase))
+            return trimmed;
+
+        string configuredDropCount = ReadCurrentMombotVar("1", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS").Trim();
+        if (string.IsNullOrWhiteSpace(configuredDropCount))
+            configuredDropCount = "1";
+
+        return $"mow {parts[1]} {configuredDropCount}";
+    }
+
     private void RecallMombotPromptHistory(int delta)
     {
         if (!_mombotPromptOpen || _mombotCommandHistory.Count == 0)
@@ -9409,9 +9528,13 @@ public class MainWindow : Window
             return;
 
         string command = _mombotPromptBuffer;
+        Func<string, string>? submitTransform = _mombotPromptSubmitTransform;
         string prompt = GetMombotPromptPrefix();
 
         ResetMombotPromptState();
+
+        if (submitTransform != null)
+            command = submitTransform(command);
 
         if (string.IsNullOrWhiteSpace(command))
         {
@@ -9446,6 +9569,7 @@ public class MainWindow : Window
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
         _mombotPromptBuffer = string.Empty;
         _mombotPromptDraft = string.Empty;
+        _mombotPromptSubmitTransform = null;
         _mombotPromptHistoryIndex = _mombotCommandHistory.Count;
     }
 
@@ -11321,11 +11445,13 @@ public class MainWindow : Window
                 ResetMombotPromptState();
                 _parser.Feed("\r\x1b[K");
                 _buffer.Dirty = true;
-                BeginMombotPrompt("mow ");
+                BeginMombotPrompt("mow ", NormalizeMombotMowHotkeyCommand);
                 return;
 
             case ":internal_commands~stopmodules":
                 await ExecuteMombotHotkeyCommandAsync("stopmodules");
+                EnsureEmbeddedMombotClientAudible();
+                ApplyMombotExecutionRefresh();
                 return;
 
             case ":internal_commands~autocap":

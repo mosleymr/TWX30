@@ -1,6 +1,9 @@
 using Avalonia;
 using TWXProxy.Core;
 
+if (MTC.UnixAutoDetach.TryRelaunchDetached(args))
+    return;
+
 // MTC is a GUI application — suppress all Console output so diagnostic
 // Console.WriteLine calls in Core do not leak to the terminal.
 Console.SetOut(TextWriter.Null);

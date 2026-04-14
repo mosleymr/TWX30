@@ -1103,6 +1103,16 @@ namespace TWXProxy.Core
 
                 await _gameInstance.SendMessageAsync($"\r\nLoading script: {Path.GetFileName(fullPath)}\r\n");
 
+                // If the previous script left a custom TWX menu half-open, launching a new
+                // script through the local loader can inherit that stale state and show only
+                // the raw '>' prompt on rerun. Start each local load from a clean custom-menu
+                // state so scripts like ram_Prober rebuild their menu fresh.
+                if (GlobalModules.TWXMenu is MenuManager staleMenuMgr)
+                {
+                    staleMenuMgr.CloseMenu(true);
+                    staleMenuMgr.ClearSuspendedMenu();
+                }
+
                 _interpreter.Load(fullPath, false);
                 _lastScript = fullPath;
 

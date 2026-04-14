@@ -45,6 +45,16 @@ namespace TWXProxy.Core
         private string _pendingDockPurchaseItemName = string.Empty;
         private int _pendingDockPurchaseQuantity;
 
+        // Planet fighter transfer tracking
+        private enum PendingPlanetFighterTransferKind { None, Take, Leave }
+        private PendingPlanetFighterTransferKind _pendingPlanetFighterTransferKind;
+        private int _pendingPlanetFighterTransferQuantity;
+
+        private enum PlanetProductTransferKind { None, Take, Leave }
+        private PlanetProductTransferKind _pendingPlanetProductTransferKind;
+        private string _pendingPlanetProductName = string.Empty;
+        private int _pendingPlanetProductQuantity;
+
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
         private int  _landListSector; // Sector the land list belongs to (_lastSector at entry)
@@ -159,6 +169,11 @@ namespace TWXProxy.Core
             _inPortCIM = false;
             _inWarpCIM = false;
             _inFigScan = false;
+            _pendingPlanetFighterTransferKind = PendingPlanetFighterTransferKind.None;
+            _pendingPlanetFighterTransferQuantity = 0;
+            _pendingPlanetProductTransferKind = PlanetProductTransferKind.None;
+            _pendingPlanetProductName = string.Empty;
+            _pendingPlanetProductQuantity = 0;
 
             GlobalModules.DebugLog($"[AutoRecorder] State reset reason={reason}\n");
         }
@@ -171,10 +186,14 @@ namespace TWXProxy.Core
 
         // "(T) Sector  : 1 in The Federation."
         // "(S) Sector  : 1034 in The Federation."
+        // "(*) Sector  : 4306 in The Federation."
+        // "(1) Sector  : 4612 in uncharted space."
         // NavPoint previews prefix the sector header, so they must not reuse the
-        // current sector when parsing the following indented port lines.
+        // previous sector when parsing the following indented port lines. The
+        // prefix is not limited to letters; it can also be "*", or a navpoint slot
+        // number like "(1)" / "(4)".
         private static readonly Regex _rxNavPointSector = new(
-            @"^\([A-Z]\)\s+Sector\s{1,4}:\s*(\d+)(?:\s+in\s+(.+))?", RegexOptions.Compiled);
+            @"^\([^)]+\)\s+Sector\s{1,4}:\s*(\d+)(?:\s+in\s+(.+))?", RegexOptions.Compiled);
 
         // "Warps to Sector(s) :  4497 - 5489 - 6477 - 15024 - 19702"
         // Parenthesised entries like "(3583)" are unexplored sectors and are still valid
@@ -314,6 +333,34 @@ namespace TWXProxy.Core
             @"^You don't need two!\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxPlanetFighterTransferChoice = new(
+            @"^Do you wish to \(L\)eave or \(T\)ake Fighters\?\s+\[([LT])\]\s+\(Q to Exit\)(?:\s+([LTQ]))?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetFighterTransferQuantity = new(
+            @"^How many Fighters do you want to (take|leave)\s+\(([\d,]+)\s+Max\)\s+\[([\d,]+)\]\s+\?\s*([\d,]+)?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetProductDirection = new(
+            @"^\(L\)eave or \(T\)ake Product\?\s+\[([LT])\](?:\s+([LTQ]))?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetProductSelector = new(
+            @"^Which product are you (taking|leaving)\?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetProductQuantity = new(
+            @"^How many holds of (Fuel Ore|Organics|Equipment) do you want to (take|leave)\s+\(\[([\d,]+)\]\s+(empty holds|on board)\)\s+\?\s*([\d,]+)?\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetProductLoaded = new(
+            @"^You load the (Fuel Ore|Organics|Equipment) aboard your ship\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetProductUnloaded = new(
+            @"^You unload the (Fuel Ore|Organics|Equipment) from your ship\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Regex _rxFigScanSector = new(
             @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -401,6 +448,12 @@ namespace TWXProxy.Core
                 return;
 
             if (TryProcessDockStatus(trimmedLine))
+                return;
+
+            if (TryProcessPlanetFighterTransferStatus(trimmedLine))
+                return;
+
+            if (TryProcessPlanetProductTransferStatus(trimmedLine))
                 return;
 
             {
@@ -1259,12 +1312,207 @@ namespace TWXProxy.Core
             return true;
         }
 
+        private bool TryProcessPlanetFighterTransferStatus(string trimmedLine)
+        {
+            var choice = _rxPlanetFighterTransferChoice.Match(trimmedLine);
+            if (choice.Success)
+            {
+                char action = choice.Groups[2].Success && choice.Groups[2].Value.Length > 0
+                    ? char.ToUpperInvariant(choice.Groups[2].Value[0])
+                    : char.ToUpperInvariant(choice.Groups[1].Value[0]);
+
+                _pendingPlanetFighterTransferKind = action switch
+                {
+                    'T' => PendingPlanetFighterTransferKind.Take,
+                    'L' => PendingPlanetFighterTransferKind.Leave,
+                    _ => PendingPlanetFighterTransferKind.None,
+                };
+                _pendingPlanetFighterTransferQuantity = 0;
+                return true;
+            }
+
+            var quantity = _rxPlanetFighterTransferQuantity.Match(trimmedLine);
+            if (quantity.Success)
+            {
+                bool isTake = quantity.Groups[1].Value.Equals("take", StringComparison.OrdinalIgnoreCase);
+                int explicitQuantity = quantity.Groups[4].Success ? ParseCommaInt(quantity.Groups[4].Value) : 0;
+                int defaultQuantity = ParseCommaInt(quantity.Groups[3].Value);
+                int selectedQuantity = quantity.Groups[4].Success ? explicitQuantity : defaultQuantity;
+
+                _pendingPlanetFighterTransferKind = isTake
+                    ? PendingPlanetFighterTransferKind.Take
+                    : PendingPlanetFighterTransferKind.Leave;
+                _pendingPlanetFighterTransferQuantity = Math.Max(0, selectedQuantity);
+
+                if (_pendingPlanetFighterTransferQuantity <= 0)
+                    ResetPendingPlanetFighterTransfer();
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("The Fighters join your battle force.", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("The Fighters join your battle force", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_pendingPlanetFighterTransferKind == PendingPlanetFighterTransferKind.Take &&
+                    _pendingPlanetFighterTransferQuantity > 0)
+                {
+                    EmitShipStatusDelta(new ShipStatusDelta
+                    {
+                        FightersDelta = _pendingPlanetFighterTransferQuantity
+                    });
+                }
+
+                ResetPendingPlanetFighterTransfer();
+                return true;
+            }
+
+            if (trimmedLine.Equals("Done!", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.Equals("Done.", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_pendingPlanetFighterTransferKind == PendingPlanetFighterTransferKind.Leave &&
+                    _pendingPlanetFighterTransferQuantity > 0)
+                {
+                    EmitShipStatusDelta(new ShipStatusDelta
+                    {
+                        FightersDelta = -_pendingPlanetFighterTransferQuantity
+                    });
+                }
+
+                ResetPendingPlanetFighterTransfer();
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Planet command (?=help)", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetPendingPlanetFighterTransfer();
+                return false;
+            }
+
+            return false;
+        }
+
+        private bool TryProcessPlanetProductTransferStatus(string trimmedLine)
+        {
+            var direction = _rxPlanetProductDirection.Match(trimmedLine);
+            if (direction.Success)
+            {
+                char action = direction.Groups[2].Success && direction.Groups[2].Value.Length > 0
+                    ? char.ToUpperInvariant(direction.Groups[2].Value[0])
+                    : char.ToUpperInvariant(direction.Groups[1].Value[0]);
+
+                _pendingPlanetProductTransferKind = action switch
+                {
+                    'T' => PlanetProductTransferKind.Take,
+                    'L' => PlanetProductTransferKind.Leave,
+                    _ => PlanetProductTransferKind.None,
+                };
+                _pendingPlanetProductName = string.Empty;
+                _pendingPlanetProductQuantity = 0;
+                return true;
+            }
+
+            var selector = _rxPlanetProductSelector.Match(trimmedLine);
+            if (selector.Success)
+                return true;
+
+            var quantity = _rxPlanetProductQuantity.Match(trimmedLine);
+            if (quantity.Success)
+            {
+                string productName = quantity.Groups[1].Value.Trim();
+                bool isTake = quantity.Groups[2].Value.Equals("take", StringComparison.OrdinalIgnoreCase);
+                int defaultQuantity = ParseCommaInt(quantity.Groups[3].Value);
+                int explicitQuantity = quantity.Groups[5].Success ? ParseCommaInt(quantity.Groups[5].Value) : 0;
+                int selectedQuantity = quantity.Groups[5].Success ? explicitQuantity : defaultQuantity;
+
+                _pendingPlanetProductTransferKind = isTake
+                    ? PlanetProductTransferKind.Take
+                    : PlanetProductTransferKind.Leave;
+                _pendingPlanetProductName = productName;
+                _pendingPlanetProductQuantity = Math.Max(0, selectedQuantity);
+
+                if (_pendingPlanetProductQuantity <= 0)
+                    ResetPendingPlanetProductTransfer();
+                return true;
+            }
+
+            var loaded = _rxPlanetProductLoaded.Match(trimmedLine);
+            if (loaded.Success)
+            {
+                EmitPendingPlanetProductDelta(
+                    PlanetProductTransferKind.Take,
+                    loaded.Groups[1].Value.Trim());
+                ResetPendingPlanetProductTransfer();
+                return true;
+            }
+
+            var unloaded = _rxPlanetProductUnloaded.Match(trimmedLine);
+            if (unloaded.Success)
+            {
+                EmitPendingPlanetProductDelta(
+                    PlanetProductTransferKind.Leave,
+                    unloaded.Groups[1].Value.Trim());
+                ResetPendingPlanetProductTransfer();
+                return true;
+            }
+
+            if (trimmedLine.StartsWith("Planet command (?=help)", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetPendingPlanetProductTransfer();
+                return false;
+            }
+
+            return false;
+        }
+
         private void EmitShipStatusDelta(ShipStatusDelta delta)
         {
             if (delta == null || !delta.HasChanges())
                 return;
 
             ShipStatusDeltaDetected?.Invoke(delta);
+        }
+
+        private void EmitPendingPlanetProductDelta(PlanetProductTransferKind confirmationKind, string confirmationProductName)
+        {
+            if (_pendingPlanetProductTransferKind == PlanetProductTransferKind.None ||
+                _pendingPlanetProductQuantity <= 0 ||
+                string.IsNullOrWhiteSpace(_pendingPlanetProductName))
+            {
+                return;
+            }
+
+            if (_pendingPlanetProductTransferKind != confirmationKind)
+                return;
+
+            if (!string.Equals(_pendingPlanetProductName, confirmationProductName, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            int direction = confirmationKind == PlanetProductTransferKind.Take ? 1 : -1;
+            int quantity = _pendingPlanetProductQuantity * direction;
+
+            var delta = new ShipStatusDelta
+            {
+                HoldsEmptyDelta = -quantity
+            };
+
+            switch (confirmationProductName.ToLowerInvariant())
+            {
+                case "fuel ore":
+                    delta.FuelOreDelta = quantity;
+                    break;
+
+                case "organics":
+                    delta.OrganicsDelta = quantity;
+                    break;
+
+                case "equipment":
+                    delta.EquipmentDelta = quantity;
+                    break;
+
+                default:
+                    return;
+            }
+
+            EmitShipStatusDelta(delta);
         }
 
         private static string NormalizeRecorderLine(string line)
@@ -1333,6 +1581,7 @@ namespace TWXProxy.Core
             _inPortCIM = false;
             _inWarpCIM = false;
             _inFigScan = false;
+            ResetPendingPlanetFighterTransfer();
             _portCimBatchActive = false;
             _currentPortCimSectors.Clear();
             _inNavPointDisplay = false;
@@ -1713,6 +1962,19 @@ namespace TWXProxy.Core
             _pendingDockPurchaseKind = PendingDockPurchaseKind.None;
             _pendingDockPurchaseItemName = string.Empty;
             _pendingDockPurchaseQuantity = 0;
+        }
+
+        private void ResetPendingPlanetFighterTransfer()
+        {
+            _pendingPlanetFighterTransferKind = PendingPlanetFighterTransferKind.None;
+            _pendingPlanetFighterTransferQuantity = 0;
+        }
+
+        private void ResetPendingPlanetProductTransfer()
+        {
+            _pendingPlanetProductTransferKind = PlanetProductTransferKind.None;
+            _pendingPlanetProductName = string.Empty;
+            _pendingPlanetProductQuantity = 0;
         }
 
         private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)

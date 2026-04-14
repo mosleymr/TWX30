@@ -491,12 +491,9 @@ public class ProxyService : IProxyService
                     // Extract the line
                     string line = proxyInstance.InputBuffer.TrimEnd('\r', '\n');
                     proxyInstance.InputBuffer = string.Empty; // Clear buffer
-                    
-                    if (!string.IsNullOrEmpty(line))
-                    {
-                        Console.WriteLine($"[ProxyService] Complete line received: '{line}', passing to interpreter");
-                        interpreter.LocalInputEvent(line);
-                    }
+
+                    Console.WriteLine($"[ProxyService] Complete line received: '{line}', passing to interpreter");
+                    interpreter.LocalInputEvent(line);
                 }
             };
             

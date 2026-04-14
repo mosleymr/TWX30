@@ -377,6 +377,7 @@ namespace TWXProxy.Core
     public class ScriptCmp : IDisposable
     {
         private readonly record struct SourceDependencyStamp(string Path, long LastWriteUtcTicks, long Length);
+        private readonly record struct CompiledScriptStamp(string Path, long LastWriteUtcTicks, long Length);
 
         private sealed class SourceScriptCacheEntry
         {
@@ -386,8 +387,19 @@ namespace TWXProxy.Core
             public PreparedScriptProgram? PreparedTemplate { get; set; }
         }
 
+        private sealed class CompiledScriptCacheEntry
+        {
+            public required string Path { get; init; }
+            public required long LastWriteUtcTicks { get; init; }
+            public required long Length { get; init; }
+            public required byte[] CompiledBytes { get; init; }
+            public PreparedScriptProgram? PreparedTemplate { get; set; }
+        }
+
         private static readonly object _sourceCacheLock = new();
         private static readonly Dictionary<string, SourceScriptCacheEntry> _sourceScriptCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _compiledCacheLock = new();
+        private static readonly Dictionary<string, CompiledScriptCacheEntry> _compiledScriptCache = new(StringComparer.OrdinalIgnoreCase);
 
         private Stack<ConditionStruct> _ifStack;
         private List<CmdParam> _paramList;
@@ -498,6 +510,7 @@ namespace TWXProxy.Core
                 {
                     _preparedProgram = PreparedScriptDecoder.Decode(this);
                     StorePreparedTemplateInSourceCache(_preparedProgram);
+                    StorePreparedTemplateInCompiledCache(_preparedProgram);
                 }
             }
             catch (Exception ex)
@@ -1936,6 +1949,20 @@ namespace TWXProxy.Core
             return new SourceDependencyStamp(fullPath, info.LastWriteTimeUtc.Ticks, info.Exists ? info.Length : -1);
         }
 
+        private static CompiledScriptStamp CaptureCompiledStamp(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            var info = new FileInfo(fullPath);
+            return new CompiledScriptStamp(fullPath, info.LastWriteTimeUtc.Ticks, info.Exists ? info.Length : -1);
+        }
+
+        private static bool IsCompiledScriptArtifact(string path)
+        {
+            string extension = Path.GetExtension(path);
+            return extension.Equals(".cts", StringComparison.OrdinalIgnoreCase) ||
+                   extension.Equals(".twx", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void AddSourceDependency(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -1964,6 +1991,87 @@ namespace TWXProxy.Core
             }
 
             return true;
+        }
+
+        private static bool IsCompiledCacheEntryValid(CompiledScriptCacheEntry entry)
+        {
+            if (!File.Exists(entry.Path))
+                return false;
+
+            var info = new FileInfo(entry.Path);
+            return info.LastWriteTimeUtc.Ticks == entry.LastWriteUtcTicks &&
+                   info.Length == entry.Length;
+        }
+
+        private bool TryLoadFromCompiledCache(string filename)
+        {
+            string fullPath = Path.GetFullPath(filename);
+            if (!IsCompiledScriptArtifact(fullPath))
+                return false;
+
+            long validationStart = Stopwatch.GetTimestamp();
+            CompiledScriptCacheEntry? entry;
+
+            lock (_compiledCacheLock)
+            {
+                if (!_compiledScriptCache.TryGetValue(fullPath, out entry))
+                {
+                    LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+                    return false;
+                }
+
+                if (!IsCompiledCacheEntryValid(entry))
+                {
+                    _compiledScriptCache.Remove(fullPath);
+                    LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+                    return false;
+                }
+            }
+
+            LastSourceCacheValidationTicks = Stopwatch.GetTimestamp() - validationStart;
+
+            long loadStart = Stopwatch.GetTimestamp();
+            LoadFromBytes(entry.CompiledBytes, fullPath);
+            LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
+
+            if (entry.PreparedTemplate != null)
+            {
+                _preparedProgram = PreparedScriptTemplateCloner.CloneForExecution(entry.PreparedTemplate, this);
+                LastPreparedCacheHit = true;
+            }
+
+            if (GlobalModules.EnableVmMetrics)
+            {
+                GlobalModules.VmMetricLog(
+                    $"[VM LOAD] phase=compiled-cache script='{fullPath}' " +
+                    $"validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} " +
+                    $"loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
+                    $"preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
+            }
+
+            return true;
+        }
+
+        private static void StoreCompiledCacheEntry(string filename, byte[] compiledBytes)
+        {
+            string fullPath = Path.GetFullPath(filename);
+            if (!IsCompiledScriptArtifact(fullPath))
+                return;
+
+            CompiledScriptStamp stamp = CaptureCompiledStamp(fullPath);
+            var entry = new CompiledScriptCacheEntry
+            {
+                Path = stamp.Path,
+                LastWriteUtcTicks = stamp.LastWriteUtcTicks,
+                Length = stamp.Length,
+                CompiledBytes = compiledBytes,
+                PreparedTemplate = null
+            };
+
+            lock (_compiledCacheLock)
+            {
+                _compiledScriptCache[fullPath] = entry;
+            }
         }
 
         private bool TryLoadFromSourceCache(string cacheKey, string filename)
@@ -2069,6 +2177,76 @@ namespace TWXProxy.Core
                 {
                     entry.PreparedTemplate ??= PreparedScriptTemplateCloner.CreateTemplate(preparedProgram);
                 }
+            }
+        }
+
+        private void StorePreparedTemplateInCompiledCache(PreparedScriptProgram preparedProgram)
+        {
+            if (string.IsNullOrWhiteSpace(_scriptFile))
+                return;
+
+            string fullPath = Path.GetFullPath(_scriptFile);
+            if (!IsCompiledScriptArtifact(fullPath))
+                return;
+
+            lock (_compiledCacheLock)
+            {
+                if (_compiledScriptCache.TryGetValue(fullPath, out CompiledScriptCacheEntry? entry) &&
+                    IsCompiledCacheEntryValid(entry))
+                {
+                    entry.PreparedTemplate ??= PreparedScriptTemplateCloner.CreateTemplate(preparedProgram);
+                }
+            }
+        }
+
+        public static void InvalidateCompiledScriptCache(string filename)
+        {
+            if (string.IsNullOrWhiteSpace(filename))
+                return;
+
+            string fullPath = Path.GetFullPath(filename);
+            lock (_compiledCacheLock)
+            {
+                _compiledScriptCache.Remove(fullPath);
+            }
+        }
+
+        public static bool PrewarmCompiledScript(string filename, ScriptRef? scriptRef, string scriptDirectory, bool forceRefresh, out string? error)
+        {
+            error = null;
+            if (string.IsNullOrWhiteSpace(filename))
+            {
+                error = "Script path is required.";
+                return false;
+            }
+
+            string fullPath = Path.GetFullPath(filename);
+            if (!File.Exists(fullPath))
+            {
+                error = $"Script file not found: {fullPath}";
+                return false;
+            }
+
+            if (!IsCompiledScriptArtifact(fullPath))
+            {
+                error = $"Only compiled scripts can be prewarmed: {fullPath}";
+                return false;
+            }
+
+            if (forceRefresh)
+                InvalidateCompiledScriptCache(fullPath);
+
+            try
+            {
+                using var cmp = new ScriptCmp(scriptRef, scriptDirectory);
+                cmp.LoadFromFile(fullPath);
+                cmp.PrepareForExecution();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
             }
         }
 
@@ -2227,17 +2405,20 @@ namespace TWXProxy.Core
         public void LoadFromFile(string filename)
         {
             ResetLoadMetrics();
-            long loadStart = Stopwatch.GetTimestamp();
+            string fullPath = Path.GetFullPath(filename);
+            if (TryLoadFromCompiledCache(fullPath))
+                return;
 
-            using var fs = new FileStream(filename, FileMode.Open, FileAccess.Read);
-            using var reader = new BinaryReader(fs);
-            LoadFromReader(reader, filename, fs.Length);
+            long loadStart = Stopwatch.GetTimestamp();
+            byte[] compiledBytes = File.ReadAllBytes(fullPath);
+            LoadFromBytes(compiledBytes, fullPath);
+            StoreCompiledCacheEntry(fullPath, compiledBytes);
 
             LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
             if (GlobalModules.EnableVmMetrics)
             {
                 GlobalModules.VmMetricLog(
-                    $"[VM LOAD] phase=compiled-load script='{filename}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
+                    $"[VM LOAD] phase=compiled-load script='{fullPath}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
                     $"codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
             }
         }

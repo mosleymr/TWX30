@@ -148,7 +148,7 @@ internal static class mombotCatalog
             new mombotCommandSpec("stop", mombotCommandKind.Internal, ":INTERNAL_COMMANDS~stop", "Stop the current bot module."),
             new mombotCommandSpec("listall", mombotCommandKind.Internal, ":INTERNAL_COMMANDS~listall", "List active bot and module scripts."),
             new mombotCommandSpec("relog", mombotCommandKind.Module, "commands/general/relog.cts", "Perform relog/recovery flow via script.", ServerInteractive: true),
-            new mombotCommandSpec("refresh", mombotCommandKind.Internal, ":INTERNAL_COMMANDS~refresh", "Refresh cached bot state."),
+            new mombotCommandSpec("refresh", mombotCommandKind.Module, "commands/general/refresh.cts", "Refresh cached bot state from the live game."),
             new mombotCommandSpec("reset", mombotCommandKind.Module, "commands/general/reset.cts", "Reset bot context via script."),
             new mombotCommandSpec("bot", mombotCommandKind.Internal, ":INTERNAL_COMMANDS~bot", "Bot shell/control command."),
             new mombotCommandSpec("login", mombotCommandKind.Module, "commands/general/login.cts", "Login helper command should stay script-backed.", ServerInteractive: true),
