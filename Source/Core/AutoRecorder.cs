@@ -34,6 +34,9 @@ namespace TWXProxy.Core
         // Sector-display position: tracks which continuation-line type we're inside
         private enum SectorPos { None, Mines, Ports, Planets, Traders, Ships }
         private SectorPos _sectorPos;
+        private int _activeSectorDisplaySector;
+        private bool _activeSectorDisplaySawPort;
+        private bool _activeSectorDisplayHadCachedPort;
         private readonly Trader _currentTrader = new();
         private readonly Ship _currentShip = new();
 
@@ -146,6 +149,9 @@ namespace TWXProxy.Core
             _densityFromSector = 0;
             _densityScanSectors.Clear();
             _sectorPos = SectorPos.None;
+            _activeSectorDisplaySector = 0;
+            _activeSectorDisplaySawPort = false;
+            _activeSectorDisplayHadCachedPort = false;
             _currentTrader.Name = string.Empty;
             _currentTrader.ShipType = string.Empty;
             _currentTrader.ShipName = string.Empty;
@@ -656,21 +662,22 @@ namespace TWXProxy.Core
                     var sec = GetOrCreate(db, sn);
                     if (sec != null)
                     {
-                        bool hadCachedPort = sec.SectorPort != null && !string.IsNullOrEmpty(sec.SectorPort.Name);
+                        _activeSectorDisplaySector = sn;
+                        _activeSectorDisplaySawPort = false;
+                        _activeSectorDisplayHadCachedPort = sec.SectorPort != null && !string.IsNullOrEmpty(sec.SectorPort.Name);
                         sec.Fighters    = new SpaceObject();
                         sec.MinesArmid  = new SpaceObject();
                         sec.MinesLimpet = new SpaceObject();
                         sec.PlanetNames.Clear();
                         sec.Ships.Clear();
                         sec.Traders.Clear();
-                        // Pascal NULLSector() clears sector display state before re-parsing the
-                        // live sector/holo block. If no Ports line arrives, that means the
-                        // sector has no port and any cached DB port must be discarded.
-                        sec.SectorPort = null;
-                        if (hadCachedPort)
-                        {
-                            GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {sn} pending live sector display\n");
-                        }
+                        // Keep cached port commerce data through the live sector display.
+                        // If no Ports line arrives by the time the display completes, we
+                        // discard the cached port then. This preserves fresh commerce-report
+                        // detail when a subsequent sector display only redraws the short
+                        // "Ports   :" header.
+                        if (_activeSectorDisplayHadCachedPort)
+                            GlobalModules.DebugLog($"[AutoRecorder] Preserving cached port for sector {sn} pending live sector display\n");
                     }
 
                     // Match Pascal extractor behavior: each "Sector  : NNNN" line advances
@@ -1549,12 +1556,23 @@ namespace TWXProxy.Core
             if (sector == null)
                 return;
 
+            if (_activeSectorDisplaySector == _lastSector &&
+                !_activeSectorDisplaySawPort &&
+                _activeSectorDisplayHadCachedPort)
+            {
+                sector.SectorPort = null;
+                GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {_lastSector} after live sector display showed no port\n");
+            }
+
             // TWX27 SectorCompleted() promotes any completed sector display,
             // including probe displays that only emitted a header, to etHolo.
             sector.Explored = ExploreType.Yes;
             sector.Update = DateTime.Now;
             db.SaveSector(sector);
             GlobalModules.DebugLog($"[AutoRecorder] SectorCompleted sector={_lastSector}\n");
+            _activeSectorDisplaySector = 0;
+            _activeSectorDisplaySawPort = false;
+            _activeSectorDisplayHadCachedPort = false;
         }
 
         private void ResetPromptDisplays(ModDatabase? db, bool preservePortReport = false)
@@ -1587,6 +1605,9 @@ namespace TWXProxy.Core
             _inNavPointDisplay = false;
             _inLandList = false;
             _landListSector = 0;
+            _activeSectorDisplaySector = 0;
+            _activeSectorDisplaySawPort = false;
+            _activeSectorDisplayHadCachedPort = false;
         }
 
         private void MarkDestroyedPort(ModDatabase db, int sectorNum)
@@ -2346,6 +2367,9 @@ namespace TWXProxy.Core
         {
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
+
+            if (_activeSectorDisplaySector == sectorNum)
+                _activeSectorDisplaySawPort = true;
 
             sector.SectorPort ??= new Port();
             sector.SectorPort.Name = m.Groups[1].Value.Trim();

@@ -1201,7 +1201,23 @@ public sealed class NativeHaggleEngine
 
     private string? HandleOfferPrompt(long offer)
     {
-        if (_session == null || _session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
+        if (_session == null)
+            return null;
+
+        if (_session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
+        {
+            string buySell = _session.BuySell;
+            if (!string.IsNullOrWhiteSpace(buySell))
+            {
+                GlobalModules.DebugLog(
+                    $"[NativeHaggle] Prompt-only offer fallback offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={buySell}\n");
+                WriteTradeDebug(_session,
+                    $"[NativeHaggle] TEXT prompt-only offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={buySell}\n");
+                HandleOffer(offer, buySell, finalOffer: false);
+            }
+        }
+
+        if (_session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
             return null;
 
         if (offer != _session.PendingBidOffer)
