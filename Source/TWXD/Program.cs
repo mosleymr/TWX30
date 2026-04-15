@@ -50,6 +50,11 @@ namespace TWXD
             }
         }
 
+        static string GetDefaultOutputFilename(string baseName)
+        {
+            return baseName + ".ts";
+        }
+
         static void Main(string[] args)
         {
             if (args.Length == 0)
@@ -58,18 +63,20 @@ namespace TWXD
                 Console.WriteLine($"TWXD - TWX Proxy decompilation utility v{Constants.ProgramVersion}");
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
-                Console.WriteLine("Usage: TWXD [--compact-whitespace] script.cts");
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--backup-existing] script.cts");
                 Console.WriteLine();
                 Console.WriteLine("script.cts - Filename of the compiled script to be decompiled.");
                 Console.WriteLine();
                 Console.WriteLine("The decompiler will create a .ts file with the decompiled script.");
-                Console.WriteLine("If the .ts file exists, it will use .ts_1, .ts_2, etc.");
+                Console.WriteLine("By default it overwrites the .ts file if it already exists.");
+                Console.WriteLine("--backup-existing - If the .ts file exists, use .ts_1, .ts_2, etc.");
                 Console.WriteLine("--compact-whitespace - Remove leading blank lines and collapse repeated blank lines.");
                 Console.WriteLine();
                 return;
             }
 
             bool compactWhitespace = false;
+            bool backupExisting = false;
             var positionalArgs = new List<string>();
             foreach (string arg in args)
             {
@@ -79,12 +86,18 @@ namespace TWXD
                     continue;
                 }
 
+                if (string.Equals(arg, "--backup-existing", StringComparison.OrdinalIgnoreCase))
+                {
+                    backupExisting = true;
+                    continue;
+                }
+
                 positionalArgs.Add(arg);
             }
 
             if (positionalArgs.Count != 1)
             {
-                Console.WriteLine("Usage: TWXD [--compact-whitespace] script.cts");
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--backup-existing] script.cts");
                 return;
             }
 
@@ -100,7 +113,11 @@ namespace TWXD
             if (baseName.EndsWith(".cts", StringComparison.OrdinalIgnoreCase))
                 baseName = baseName.Substring(0, baseName.Length - 4);
 
-            string outputFile = GetUniqueFilename(baseName);
+            string outputFile = backupExisting
+                ? GetUniqueFilename(baseName)
+                : GetDefaultOutputFilename(baseName);
+            string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(outputFile)) ?? Directory.GetCurrentDirectory();
+            string tempOutputFile = Path.Combine(outputDirectory, $".{Path.GetFileName(outputFile)}.{Guid.NewGuid():N}.tmp");
 
             Console.WriteLine($"Decompiling '{inputFile}' to '{outputFile}' ...");
 
@@ -111,7 +128,12 @@ namespace TWXD
                 decompiler.CompactWhitespace = compactWhitespace;
                 
                 decompiler.LoadFromFile(inputFile);
-                var generatedFiles = decompiler.DecompileToFile(outputFile);
+                var generatedFiles = decompiler.DecompileToFile(tempOutputFile);
+
+                if (File.Exists(outputFile))
+                    File.Delete(outputFile);
+
+                File.Move(tempOutputFile, outputFile);
 
                 Console.WriteLine("Decompilation successful.");
                 Console.WriteLine();
@@ -125,12 +147,12 @@ namespace TWXD
             {
                 Console.WriteLine($"Error: {ex.Message}");
                 
-                // Delete output file on error if it was created
-                if (File.Exists(outputFile))
+                // Delete temp output file on error if it was created.
+                if (File.Exists(tempOutputFile))
                 {
                     try
                     {
-                        File.Delete(outputFile);
+                        File.Delete(tempOutputFile);
                     }
                     catch
                     {

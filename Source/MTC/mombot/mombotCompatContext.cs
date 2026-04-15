@@ -75,9 +75,8 @@ internal sealed class mombotCompatContext
         string timerFile = ReadCurrentAny(string.Empty, "$timer_file");
         string mcicFile = ReadCurrentAny(string.Empty, "$MCIC_FILE");
         string gameSettingsFile = ReadCurrentAny(string.Empty, "$GAME~GAME_SETTINGS_FILE");
-        string hotkeysFile = ReadCurrentAny(string.Empty, "$hotkeys_file");
-        string customKeysFile = ReadCurrentAny(string.Empty, "$custom_keys_file");
-        string customCommandsFile = ReadCurrentAny(string.Empty, "$custom_commands_file");
+        string aliasesFile = ReadCurrentAny(string.Empty, "$aliases_file");
+        string mombotConfigFile = ReadCurrentAny(string.Empty, "$mombot_config_file", "$hotkeys_file", "$custom_keys_file", "$custom_commands_file");
         string folderConfigFile = ReadCurrentAny(string.Empty, "$mombot_folder_config");
         string defaultBotDirectory = ReadCurrentAny(scriptRootRelative, "$bot~default_bot_directory", "$default_bot_directory");
 
@@ -153,9 +152,11 @@ internal sealed class mombotCompatContext
         SetVars(vars, timerFile, "$timer_file");
         SetVars(vars, mcicFile, "$MCIC_FILE");
         SetVars(vars, gameSettingsFile, "$GAME~GAME_SETTINGS_FILE");
-        SetVars(vars, hotkeysFile, "$hotkeys_file");
-        SetVars(vars, customKeysFile, "$custom_keys_file");
-        SetVars(vars, customCommandsFile, "$custom_commands_file");
+        SetVars(vars, aliasesFile, "$aliases_file");
+        SetVars(vars, mombotConfigFile, "$mombot_config_file");
+        SetVars(vars, mombotConfigFile, "$hotkeys_file");
+        SetVars(vars, mombotConfigFile, "$custom_keys_file");
+        SetVars(vars, mombotConfigFile, "$custom_commands_file");
         SetVars(vars, folderConfigFile, "$mombot_folder_config");
         SetVars(vars, photonDuration, "$GAME~PHOTON_DURATION", "$game~photon_duration");
         SetVars(vars, portMax, "$GAME~PORT_MAX", "$GAME~port_max", "$game~port_max");

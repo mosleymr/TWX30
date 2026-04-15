@@ -59,6 +59,10 @@ internal class EmbeddedGameConfig
     /// <summary>MTC-specific settings/state stored alongside the shared game config.</summary>
     public EmbeddedMtcConfig Mtc { get; set; } = new();
 
+    /// <summary>Shared native Mombot settings stored at the top level for cross-app compatibility.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MTC.mombot.mombotConfig? mombot { get; set; }
+
     /// <summary>Preserves every TWXP GameConfig field not listed above.</summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
@@ -71,7 +75,19 @@ internal class EmbeddedMtcConfig
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
     public int ScrollbackLines { get; set; } = 2000;
+    [JsonIgnore]
     public MTC.mombot.mombotConfig mombot { get; set; } = new();
+    [JsonPropertyName("mombot")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MTC.mombot.mombotConfig? LegacyMombot
+    {
+        get => null;
+        set
+        {
+            if (value != null)
+                mombot = value;
+        }
+    }
     [JsonPropertyName("mbot")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MTC.mombot.mombotConfig? LegacyMbot

@@ -197,6 +197,8 @@ public class MainWindow : Window
     private string _mombotLastKeepaliveLine = string.Empty;
     private int _mombotObservedGamePromptVersion;
     private int _mombotPromptRestoreTicket;
+    private string _mombotLastObservedGamePromptAnsi = string.Empty;
+    private string _mombotLastObservedGamePromptPlain = string.Empty;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;
@@ -3625,7 +3627,7 @@ public class MainWindow : Window
         string? haggleText = showHagglePct
             ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : null;
-        bool showBot = _embeddedGameConfig?.Mtc?.mombot != null || _mombot.IsAttached || _gameInstance != null;
+        bool showBot = _embeddedGameConfig?.mombot != null || _mombot.IsAttached || _gameInstance != null;
         BotRuntimeState botRuntime = GetBotRuntimeState();
         string? botText = showBot
             ? $"Bot: {botRuntime.DisplayName}"
@@ -3759,12 +3761,11 @@ public class MainWindow : Window
     private void ApplyMombotConfigChange(Action<MTC.mombot.mombotConfig> update)
     {
         _embeddedGameConfig ??= new EmbeddedGameConfig();
-        _embeddedGameConfig.Mtc ??= new EmbeddedMtcConfig();
-        _embeddedGameConfig.Mtc.mombot ??= new MTC.mombot.mombotConfig();
+        MTC.mombot.mombotConfig config = GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig);
 
-        update(_embeddedGameConfig.Mtc.mombot);
-        _embeddedGameConfig.Mtc.mombot.WatcherEnabled = _embeddedGameConfig.Mtc.mombot.Enabled;
-        _mombot.ApplyConfig(_embeddedGameConfig.Mtc.mombot);
+        update(config);
+        config.WatcherEnabled = config.Enabled;
+        _mombot.ApplyConfig(config);
         RefreshStatusBar();
         RebuildProxyMenu();
         _ = SaveCurrentGameConfigAsync();
@@ -3915,6 +3916,9 @@ public class MainWindow : Window
     {
         if (_state.EmbeddedProxy)
         {
+            if (_gameInstance != null && !_gameInstance.IsRunning)
+                await StopEmbeddedAsync();
+
             if (_gameInstance == null)
                 await DoConnectEmbeddedAsync();
 
@@ -4681,7 +4685,7 @@ public class MainWindow : Window
         _state.ScannerH       = p.ScannerH;
         _state.ScannerP       = p.ScannerP;
         SyncMombotRuntimeConfigFromTwxpCfg();
-        _mombot.ApplyConfig(_embeddedGameConfig?.Mtc?.mombot);
+        _mombot.ApplyConfig(_embeddedGameConfig != null ? GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig) : null);
         UpdateWindowTitle();
         RefreshStatusBar();
         _state.NotifyChanged();
@@ -4690,6 +4694,7 @@ public class MainWindow : Window
     private static void LoadOfflineCurrentGameVars(EmbeddedGameConfig config)
     {
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
+        NormalizeEmbeddedMombotConfig(config);
 
         var varsToLoad = new Dictionary<string, string>(config.Variables, StringComparer.OrdinalIgnoreCase);
         varsToLoad.Remove("$gfile_chk");
@@ -4697,6 +4702,21 @@ public class MainWindow : Window
 
         Core.ScriptRef.ClearCurrentGameVars();
         Core.ScriptRef.LoadVarsForGame(varsToLoad);
+    }
+
+    private static EmbeddedGameConfig NormalizeEmbeddedMombotConfig(EmbeddedGameConfig config)
+    {
+        _ = GetOrCreateEmbeddedMombotConfig(config);
+        return config;
+    }
+
+    private static MTC.mombot.mombotConfig GetOrCreateEmbeddedMombotConfig(EmbeddedGameConfig config)
+    {
+        config.Mtc ??= new EmbeddedMtcConfig();
+        config.Mtc.State ??= new EmbeddedMtcState();
+        config.mombot ??= config.Mtc.mombot ?? new MTC.mombot.mombotConfig();
+        config.Mtc.mombot = config.mombot;
+        return config.mombot;
     }
 
     private void UpdateWindowTitle()
@@ -4754,9 +4774,7 @@ public class MainWindow : Window
                 ? AppPaths.TwxproxyDatabasePathForGame(config.Name)
                 : config.DatabasePath;
             config.Variables = NormalizeEmbeddedVariables(config.Variables);
-            config.Mtc ??= new EmbeddedMtcConfig();
-            config.Mtc.State ??= new EmbeddedMtcState();
-            return config;
+            return NormalizeEmbeddedMombotConfig(config);
         }
         catch
         {
@@ -5029,7 +5047,7 @@ public class MainWindow : Window
                             interpreter.TextEvent(scriptRemainder, false);
                             if (!string.IsNullOrWhiteSpace(strippedRemainder))
                             {
-                                SyncMombotPromptStateFromLine(strippedRemainder);
+                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
                                 _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
                             }
                             if (nativeHaggleResponded)
@@ -5042,7 +5060,7 @@ public class MainWindow : Window
                             bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
                             if (!string.IsNullOrWhiteSpace(strippedRemainder))
                             {
-                                SyncMombotPromptStateFromLine(strippedRemainder);
+                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
                                 _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
                             }
                             if (nativeHaggleResponded)
@@ -5087,7 +5105,7 @@ public class MainWindow : Window
 
                 if (!string.IsNullOrWhiteSpace(lineStripped))
                 {
-                    SyncMombotPromptStateFromLine(lineStripped);
+                    SyncMombotPromptStateFromLine(lineStripped, lineRaw);
                     _ = HandleNativeMombotWatchLineAsync(lineStripped);
                 }
 
@@ -5124,6 +5142,7 @@ public class MainWindow : Window
             {
                 _state.Connected = true;
                 SetTerminalConnected(true);
+                OnGameConnected();
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
@@ -5137,7 +5156,12 @@ public class MainWindow : Window
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = false;
-                SetTerminalConnected(false);
+                // In embedded mode the proxy is still alive after a server
+                // disconnect, so keep the terminal "connected" unless the
+                // GameInstance itself is being torn down.
+                bool proxyStillRunning = _gameInstance?.IsRunning == true;
+                SetTerminalConnected(proxyStillRunning);
+                OnGameDisconnected();
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             });
@@ -5216,7 +5240,7 @@ public class MainWindow : Window
         ApplyEmbeddedTerminalOutputMode();
         ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
-        _mombot.AttachSession(gi, _sessionDb, interpreter, gameConfig.Mtc.mombot);
+        _mombot.AttachSession(gi, _sessionDb, interpreter, GetOrCreateEmbeddedMombotConfig(gameConfig));
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
         OnNativeHaggleChanged(gi.NativeHaggleEnabled);
@@ -5516,6 +5540,12 @@ public class MainWindow : Window
 
     private async Task ConnectEmbeddedServerAsync()
     {
+        if (_gameInstance != null && !_gameInstance.IsRunning)
+        {
+            await StopEmbeddedAsync();
+            await DoConnectEmbeddedAsync();
+        }
+
         if (_gameInstance == null || _gameInstance.IsConnected)
             return;
 
@@ -5550,9 +5580,7 @@ public class MainWindow : Window
                     cfg.DatabasePath = string.IsNullOrWhiteSpace(cfg.DatabasePath)
                         ? AppPaths.TwxproxyDatabasePathForGame(cfg.Name)
                         : cfg.DatabasePath;
-                    cfg.Mtc ??= new EmbeddedMtcConfig();
-                    cfg.Mtc.State ??= new EmbeddedMtcState();
-                    return cfg;
+                    return NormalizeEmbeddedMombotConfig(cfg);
                 }
             }
             catch { }
@@ -5575,6 +5603,7 @@ public class MainWindow : Window
             LoginName = _state.LoginName,
             Password = _state.Password,
             GameLetter = _state.GameLetter,
+            mombot = new MTC.mombot.mombotConfig(),
             Mtc = new EmbeddedMtcConfig
             {
                 Protocol = _state.Protocol.ToString(),
@@ -5585,6 +5614,7 @@ public class MainWindow : Window
                 State = BuildEmbeddedMtcState(),
             },
         };
+        NormalizeEmbeddedMombotConfig(newCfg);
         await SaveEmbeddedGameConfigAsync(gameName, newCfg);
         return newCfg;
     }
@@ -5594,6 +5624,7 @@ public class MainWindow : Window
     {
         try
         {
+            NormalizeEmbeddedMombotConfig(cfg);
             AppPaths.EnsureTwxproxyGamesDir();
             string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
             string? runtimeNativeHaggleMode = cfg.NativeHaggleMode;
@@ -6771,11 +6802,31 @@ public class MainWindow : Window
         }
     }
 
+    private bool HasCachedNativeMombotGameSettings()
+    {
+        static bool HasValue(string value) => !string.IsNullOrWhiteSpace(value) && value != "0";
+
+        string portMax = ReadCurrentMombotVar("0", "$GAME~PORT_MAX", "$GAME~port_max", "$PORT_MAX", "$port_max");
+        string photonDuration = ReadCurrentMombotVar("0", "$GAME~PHOTON_DURATION", "$game~photon_duration", "$PHOTON_DURATION", "$photon_duration");
+        string mbbs = ReadCurrentMombotVar("0", "$GAME~MBBS", "$MBBS", "$mbbs");
+        string ptrade = ReadCurrentMombotVar("0", "$GAME~PTRADESETTING", "$PTRADESETTING", "$ptradesetting");
+        string stealFactor = ReadCurrentMombotVar("0", "$GAME~STEAL_FACTOR", "$STEAL_FACTOR", "$steal_factor");
+        string robFactor = ReadCurrentMombotVar("0", "$GAME~ROB_FACTOR", "$ROB_FACTOR", "$rob_factor");
+
+        return HasValue(portMax) &&
+               (HasValue(photonDuration) ||
+                HasValue(mbbs) ||
+                HasValue(ptrade) ||
+                HasValue(stealFactor) ||
+                HasValue(robFactor));
+    }
+
     private bool ShouldRunNativeMombotStartupRefresh()
     {
         string gconfigPath = ResolveMombotCurrentFilePath("$gconfig_file");
         string shipCapPath = ResolveMombotCurrentFilePath("$SHIP~cap_file");
         string planetFilePath = ResolveMombotCurrentFilePath("$PLANET~planet_file");
+        string gameSettingsPath = ResolveMombotCurrentFilePath("$GAME~GAME_SETTINGS_FILE");
 
         if (!HasNonEmptyMombotDataFile(gconfigPath))
             return true;
@@ -6784,6 +6835,10 @@ public class MainWindow : Window
             return true;
 
         if (!HasNonEmptyMombotDataFile(planetFilePath))
+            return true;
+
+        if (!HasNonEmptyMombotDataFile(gameSettingsPath) &&
+            !HasCachedNativeMombotGameSettings())
             return true;
 
         return false;
@@ -7144,7 +7199,7 @@ public class MainWindow : Window
         ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg();
         if (_mombot.IsAttached)
-            _mombot.ApplyConfig(_embeddedGameConfig?.Mtc?.mombot);
+            _mombot.ApplyConfig(_embeddedGameConfig != null ? GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig) : null);
         RefreshActiveBotContextFromConfig(bot);
 
         RefreshStatusBar();
@@ -7324,10 +7379,7 @@ public class MainWindow : Window
             return;
 
         StoredBotSection nativeBot = LoadConfiguredBotSections().First(bot => bot.IsNative);
-        targetConfig.Mtc ??= new EmbeddedMtcConfig();
-        targetConfig.Mtc.mombot ??= new MTC.mombot.mombotConfig();
-
-        MTC.mombot.mombotConfig runtimeConfig = targetConfig.Mtc.mombot;
+        MTC.mombot.mombotConfig runtimeConfig = GetOrCreateEmbeddedMombotConfig(targetConfig);
         runtimeConfig.AutoStart = nativeBot.Config.AutoStart;
         runtimeConfig.ScriptRoot = GetNativeMombotScriptRoot(nativeBot.Config);
         runtimeConfig.WatcherEnabled = runtimeConfig.Enabled;
@@ -7865,18 +7917,22 @@ public class MainWindow : Window
         string minorVersion = "0beta";
 
         string gameName = _embeddedGameName ?? DeriveGameName();
-        string folderRelative = Path.Combine(scriptRoot, "games", gameName).Replace('\\', '/');
+        string legacyFolderRelative = Path.Combine(scriptRoot, "games", gameName).Replace('\\', '/');
+        string legacyFolderFullPath = Path.Combine(programDir, legacyFolderRelative.Replace('/', Path.DirectorySeparatorChar));
+        string folderRelative = Path.Combine("games", gameName).Replace('\\', '/');
         string folderFullPath = Path.Combine(programDir, folderRelative.Replace('/', Path.DirectorySeparatorChar));
+        EnsureMombotGameFolderMigrated(legacyFolderFullPath, folderFullPath);
         Directory.CreateDirectory(folderFullPath);
 
         string folderConfigRelative = Path.Combine("scripts", "mombot4_7beta.cfg").Replace('\\', '/');
         string folderConfigFullPath = Path.Combine(programDir, folderConfigRelative.Replace('/', Path.DirectorySeparatorChar));
-        string hotkeysRelative = Path.Combine(scriptRoot, "hotkeys.cfg").Replace('\\', '/');
-        string hotkeysFullPath = Path.Combine(programDir, hotkeysRelative.Replace('/', Path.DirectorySeparatorChar));
-        string customKeysRelative = Path.Combine(scriptRoot, "custom_keys.cfg").Replace('\\', '/');
-        string customKeysFullPath = Path.Combine(programDir, customKeysRelative.Replace('/', Path.DirectorySeparatorChar));
-        string customCommandsRelative = Path.Combine(scriptRoot, "custom_commands.cfg").Replace('\\', '/');
-        string customCommandsFullPath = Path.Combine(programDir, customCommandsRelative.Replace('/', Path.DirectorySeparatorChar));
+        string mombotConfigRelative = Path.Combine(scriptRoot, "mombot.cfg").Replace('\\', '/');
+        string mombotConfigFullPath = Path.Combine(programDir, mombotConfigRelative.Replace('/', Path.DirectorySeparatorChar));
+        string aliasesConfigRelative = Path.Combine(scriptRoot, "aliases.cfg").Replace('\\', '/');
+        string aliasesConfigFullPath = Path.Combine(programDir, aliasesConfigRelative.Replace('/', Path.DirectorySeparatorChar));
+        string legacyHotkeysFullPath = Path.Combine(programDir, scriptRoot, "hotkeys.cfg");
+        string legacyCustomKeysFullPath = Path.Combine(programDir, scriptRoot, "custom_keys.cfg");
+        string legacyCustomCommandsFullPath = Path.Combine(programDir, scriptRoot, "custom_commands.cfg");
         string gconfigPath = Path.Combine(folderFullPath, "bot.cfg");
         bool hadExistingBotConfig = File.Exists(gconfigPath);
         string gconfigRelative = Path.Combine(folderRelative, "bot.cfg").Replace('\\', '/');
@@ -7897,9 +7953,12 @@ public class MainWindow : Window
         string mcicFileRelative = Path.Combine(folderRelative, "planet.nego").Replace('\\', '/');
 
         EnsureMombotFolderConfigFile(folderConfigFullPath, scriptRootRelative);
-        EnsureMombotIndexedConfigFile(hotkeysFullPath, BuildDefaultMombotHotkeyFileLines());
-        EnsureMombotIndexedConfigFile(customKeysFullPath, BuildDefaultMombotCustomKeyFileLines());
-        EnsureMombotIndexedConfigFile(customCommandsFullPath, BuildDefaultMombotCustomCommandFileLines());
+        EnsureMombotHotkeyConfigFile(
+            mombotConfigFullPath,
+            legacyHotkeysFullPath,
+            legacyCustomKeysFullPath,
+            legacyCustomCommandsFullPath);
+        EnsureMombotAliasConfigFile(aliasesConfigFullPath);
 
         string fileBotName = string.Empty;
         try
@@ -7938,27 +7997,29 @@ public class MainWindow : Window
         SetMombotCurrentVars(minorVersion, "$bot~minor_version", "$minor_version", "$BOT~MINOR_VERSION");
         SetMombotCurrentVars(scriptRootRelative, "$bot~default_bot_directory", "$default_bot_directory");
         SetMombotCurrentVars(scriptRootRelative, "$bot~mombot_directory", "$mombot_directory", "$BOT~MOMBOT_DIRECTORY");
-        SetMombotCurrentVars(folderConfigRelative, "$mombot_folder_config");
-        SetMombotCurrentVars(hotkeysRelative, "$hotkeys_file");
-        SetMombotCurrentVars(customKeysRelative, "$custom_keys_file");
-        SetMombotCurrentVars(customCommandsRelative, "$custom_commands_file");
-        SetMombotCurrentVars(folderRelative, "$folder");
-        SetMombotCurrentVars(gconfigRelative, "$gconfig_file");
-        SetMombotCurrentVars(botUsersRelative, "$BOT_USER_FILE");
-        SetMombotCurrentVars(ckFigRelative, "$CK_FIG_FILE");
-        SetMombotCurrentVars(shipCapRelative, "$SHIP~cap_file", "$SHIP~CAP_FILE", "$ship~cap_file");
-        SetMombotCurrentVars(planetFileRelative, "$PLANET~planet_file", "$PLANET~PLANET_FILE", "$planet~planet_file");
-        SetMombotCurrentVars(figFileRelative, "$FIG_FILE");
-        SetMombotCurrentVars(figCountRelative, "$FIG_COUNT_FILE");
-        SetMombotCurrentVars(limpetFileRelative, "$LIMP_FILE");
-        SetMombotCurrentVars(limpetCountRelative, "$LIMP_COUNT_FILE");
-        SetMombotCurrentVars(armidFileRelative, "$ARMID_FILE");
-        SetMombotCurrentVars(armidCountRelative, "$ARMID_COUNT_FILE");
-        SetMombotCurrentVars(gameSettingsRelative, "$GAME~GAME_SETTINGS_FILE");
-        SetMombotCurrentVars(scriptFileRelative, "$SCRIPT_FILE");
-        SetMombotCurrentVars(bustFileRelative, "$BUST_FILE");
-        SetMombotCurrentVars(timerFileRelative, "$timer_file");
-        SetMombotCurrentVars(mcicFileRelative, "$MCIC_FILE");
+        PersistMombotVars(folderConfigRelative, "$mombot_folder_config");
+        PersistMombotVars(mombotConfigRelative, "$mombot_config_file");
+        PersistMombotVars(aliasesConfigRelative, "$aliases_file");
+        PersistMombotVars(mombotConfigRelative, "$hotkeys_file");
+        PersistMombotVars(mombotConfigRelative, "$custom_keys_file");
+        PersistMombotVars(mombotConfigRelative, "$custom_commands_file");
+        PersistMombotVars(folderRelative, "$folder", "$BOT~FOLDER");
+        PersistMombotVars(gconfigRelative, "$gconfig_file", "$BOT~GCONFIG_FILE");
+        PersistMombotVars(botUsersRelative, "$BOT_USER_FILE", "$BOT~BOT_USER_FILE");
+        PersistMombotVars(ckFigRelative, "$CK_FIG_FILE", "$BOT~CK_FIG_FILE");
+        PersistMombotVars(shipCapRelative, "$SHIP~cap_file", "$SHIP~CAP_FILE", "$ship~cap_file", "$cap_file");
+        PersistMombotVars(planetFileRelative, "$PLANET~planet_file", "$PLANET~PLANET_FILE", "$planet~planet_file", "$planet_file");
+        PersistMombotVars(figFileRelative, "$FIG_FILE", "$BOT~FIG_FILE");
+        PersistMombotVars(figCountRelative, "$FIG_COUNT_FILE", "$BOT~FIG_COUNT_FILE");
+        PersistMombotVars(limpetFileRelative, "$LIMP_FILE", "$BOT~LIMP_FILE");
+        PersistMombotVars(limpetCountRelative, "$LIMP_COUNT_FILE", "$BOT~LIMP_COUNT_FILE");
+        PersistMombotVars(armidFileRelative, "$ARMID_FILE", "$BOT~ARMID_FILE");
+        PersistMombotVars(armidCountRelative, "$ARMID_COUNT_FILE", "$BOT~ARMID_COUNT_FILE");
+        PersistMombotVars(gameSettingsRelative, "$GAME~GAME_SETTINGS_FILE");
+        PersistMombotVars(scriptFileRelative, "$SCRIPT_FILE", "$BOT~SCRIPT_FILE");
+        PersistMombotVars(bustFileRelative, "$BUST_FILE", "$BOT~BUST_FILE");
+        PersistMombotVars(timerFileRelative, "$timer_file", "$BOT~TIMER_FILE");
+        PersistMombotVars(mcicFileRelative, "$MCIC_FILE", "$BOT~MCIC_FILE");
 
         SetMombotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetMombotCurrentVars(teamName, "$BOT~BOT_TEAM_NAME", "$BOT~bot_team_name", "$bot~bot_team_name", "$bot_team_name");
@@ -7986,7 +8047,9 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$PLAYER~cappingAliens", "$cappingAliens");
         MirrorMombotCurrentVars("0", "$PLAYER~dropOffensive", "$PLAYER~DROPOFFENSIVE");
         MirrorMombotCurrentVars("0", "$PLAYER~dropToll", "$PLAYER~DROPTOLL");
-        MirrorMombotCurrentVars("0", "$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate");
+        // Match script Mombot startup: a fresh bot start clears any stale
+        // "do not resuscitate" state left behind by a prior logoff.
+        SetMombotCurrentVars("0", "$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate");
         MirrorMombotCurrentVars("0", "$SETTINGS~OVERRIDE", "$settings~override");
         MirrorMombotCurrentVars("0", "$GAME~PORT_MAX", "$GAME~port_max", "$game~port_max");
         MirrorMombotCurrentVars("0", "$GAME~PHOTON_DURATION", "$game~photon_duration");
@@ -8013,8 +8076,8 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
-        SetMombotCurrentVars(shipCapRelative, "$cap_file");
-        SetMombotCurrentVars(planetFileRelative, "$planet_file");
+        PersistMombotVars(shipCapRelative, "$cap_file");
+        PersistMombotVars(planetFileRelative, "$planet_file");
 
         string stardock = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         string rylos = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$rylos");
@@ -8079,65 +8142,142 @@ public class MainWindow : Window
         }
     }
 
-    private static void EnsureMombotIndexedConfigFile(string fullPath, IReadOnlyList<string> lines)
+    private sealed record MombotHotkeyConfigData(
+        string[] Hotkeys,
+        string[] CustomKeys,
+        string[] CustomCommands);
+
+    private static void EnsureMombotHotkeyConfigFile(
+        string configPath,
+        string legacyHotkeysPath,
+        string legacyCustomKeysPath,
+        string legacyCustomCommandsPath)
     {
         try
         {
-            string? directory = Path.GetDirectoryName(fullPath);
+            string? directory = Path.GetDirectoryName(configPath);
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
 
-            bool rewrite = true;
-            if (File.Exists(fullPath))
+            if (!TryLoadMombotHotkeyConfigFromFile(configPath, out _))
             {
-                string[] existingLines = File.ReadAllLines(fullPath);
-                rewrite = existingLines.Length != lines.Count;
+                MombotHotkeyConfigData config = TryLoadLegacyMombotHotkeyConfig(
+                    legacyCustomKeysPath,
+                    legacyCustomCommandsPath,
+                    out MombotHotkeyConfigData? migrated)
+                    ? migrated!
+                    : BuildDefaultMombotHotkeyConfigData();
+                WriteMombotHotkeyConfigFile(configPath, config);
             }
 
-            if (rewrite)
-                File.WriteAllLines(fullPath, lines);
+            foreach (string legacyPath in new[] { legacyHotkeysPath, legacyCustomKeysPath, legacyCustomCommandsPath })
+            {
+                try
+                {
+                    if (!string.Equals(Path.GetFullPath(legacyPath), Path.GetFullPath(configPath), StringComparison.OrdinalIgnoreCase) &&
+                        File.Exists(legacyPath))
+                    {
+                        File.Delete(legacyPath);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
         catch
         {
         }
     }
 
-    private static IReadOnlyList<string> BuildDefaultMombotHotkeyFileLines()
+    private static void EnsureMombotAliasConfigFile(string configPath)
     {
-        string[] lines = Enumerable.Repeat("0", 255).ToArray();
-        SetMombotIndexedLine(lines, 76, "9");
-        SetMombotIndexedLine(lines, 108, "9");
-        SetMombotIndexedLine(lines, 102, "14");
-        SetMombotIndexedLine(lines, 70, "14");
-        SetMombotIndexedLine(lines, 109, "13");
-        SetMombotIndexedLine(lines, 77, "13");
-        SetMombotIndexedLine(lines, 104, "5");
-        SetMombotIndexedLine(lines, 72, "5");
-        SetMombotIndexedLine(lines, 107, "1");
-        SetMombotIndexedLine(lines, 75, "1");
-        SetMombotIndexedLine(lines, 99, "2");
-        SetMombotIndexedLine(lines, 67, "2");
-        SetMombotIndexedLine(lines, 98, "17");
-        SetMombotIndexedLine(lines, 66, "17");
-        SetMombotIndexedLine(lines, 112, "7");
-        SetMombotIndexedLine(lines, 80, "7");
-        SetMombotIndexedLine(lines, 100, "11");
-        SetMombotIndexedLine(lines, 68, "11");
-        SetMombotIndexedLine(lines, 116, "6");
-        SetMombotIndexedLine(lines, 84, "6");
-        SetMombotIndexedLine(lines, 114, "3");
-        SetMombotIndexedLine(lines, 82, "3");
-        SetMombotIndexedLine(lines, 115, "4");
-        SetMombotIndexedLine(lines, 83, "4");
-        SetMombotIndexedLine(lines, 120, "12");
-        SetMombotIndexedLine(lines, 88, "12");
-        SetMombotIndexedLine(lines, 122, "15");
-        SetMombotIndexedLine(lines, 90, "15");
-        SetMombotIndexedLine(lines, 126, "16");
-        SetMombotIndexedLine(lines, 113, "8");
-        SetMombotIndexedLine(lines, 81, "8");
-        SetMombotIndexedLine(lines, 9, "10");
+        try
+        {
+            string? directory = Path.GetDirectoryName(configPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            if (File.Exists(configPath))
+                return;
+
+            File.WriteAllLines(configPath, BuildDefaultMombotAliasConfigFileLines());
+        }
+        catch
+        {
+        }
+    }
+
+    private static IReadOnlyList<string> BuildDefaultMombotAliasConfigFileLines()
+    {
+        var lines = new List<string>
+        {
+            "# mombot command aliases",
+            "# format: alias=real command",
+            string.Empty,
+        };
+        lines.AddRange(MTC.mombot.mombotCatalog.BuildDefaultAliasConfigLines());
         return lines;
+    }
+
+    private static void EnsureMombotGameFolderMigrated(string legacyFolderPath, string folderPath)
+    {
+        try
+        {
+            Directory.CreateDirectory(folderPath);
+            if (string.IsNullOrWhiteSpace(legacyFolderPath) ||
+                string.Equals(Path.GetFullPath(legacyFolderPath), Path.GetFullPath(folderPath), StringComparison.OrdinalIgnoreCase) ||
+                !Directory.Exists(legacyFolderPath))
+            {
+                return;
+            }
+
+            MergeMombotGameFolderContents(legacyFolderPath, folderPath);
+            DeleteEmptyMombotGameFolderTree(legacyFolderPath);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void MergeMombotGameFolderContents(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+
+        foreach (string directory in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            string name = Path.GetFileName(directory);
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            MergeMombotGameFolderContents(directory, Path.Combine(destinationDirectory, name));
+        }
+
+        foreach (string file in Directory.EnumerateFiles(sourceDirectory))
+        {
+            string name = Path.GetFileName(file);
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            string destinationFile = Path.Combine(destinationDirectory, name);
+            if (File.Exists(destinationFile))
+                continue;
+
+            string? destinationParent = Path.GetDirectoryName(destinationFile);
+            if (!string.IsNullOrWhiteSpace(destinationParent))
+                Directory.CreateDirectory(destinationParent);
+
+            File.Move(file, destinationFile);
+        }
+    }
+
+    private static void DeleteEmptyMombotGameFolderTree(string directory)
+    {
+        foreach (string child in Directory.EnumerateDirectories(directory))
+            DeleteEmptyMombotGameFolderTree(child);
+
+        if (!Directory.EnumerateFileSystemEntries(directory).Any())
+            Directory.Delete(directory, false);
     }
 
     private static IReadOnlyList<string> BuildDefaultMombotCustomKeyFileLines()
@@ -8180,13 +8320,203 @@ public class MainWindow : Window
         return lines;
     }
 
-    private static void SetMombotIndexedLine(IList<string> lines, int oneBasedIndex, string value)
+    private static MombotHotkeyConfigData BuildDefaultMombotHotkeyConfigData()
     {
-        if (oneBasedIndex >= 1 && oneBasedIndex <= lines.Count)
-            lines[oneBasedIndex - 1] = value;
+        string[] customKeys = BuildDefaultMombotCustomKeyFileLines().ToArray();
+        string[] customCommands = BuildDefaultMombotCustomCommandFileLines().ToArray();
+        return new MombotHotkeyConfigData(
+            BuildMombotHotkeyIndex(customKeys),
+            customKeys,
+            customCommands);
     }
 
-    private void SyncMombotPromptStateFromLine(string line)
+    private static bool TryLoadLegacyMombotHotkeyConfig(
+        string legacyCustomKeysPath,
+        string legacyCustomCommandsPath,
+        out MombotHotkeyConfigData? config)
+    {
+        config = null;
+        try
+        {
+            if (!File.Exists(legacyCustomKeysPath) || !File.Exists(legacyCustomCommandsPath))
+                return false;
+
+            string[] customKeys = File.ReadAllLines(legacyCustomKeysPath);
+            string[] customCommands = File.ReadAllLines(legacyCustomCommandsPath);
+            if (customKeys.Length != 33 || customCommands.Length != 33)
+                return false;
+
+            config = new MombotHotkeyConfigData(
+                BuildMombotHotkeyIndex(customKeys),
+                NormalizeMombotCustomLines(customKeys, 33),
+                NormalizeMombotCustomLines(customCommands, 33));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryLoadMombotHotkeyConfigFromFile(string configPath, out MombotHotkeyConfigData? config)
+    {
+        config = null;
+        try
+        {
+            if (!File.Exists(configPath))
+                return false;
+
+            string[] lines = File.ReadAllLines(configPath);
+            if (lines.Length != 33)
+                return false;
+
+            string[] customKeys = Enumerable.Repeat("0", 33).ToArray();
+            string[] customCommands = Enumerable.Repeat("0", 33).ToArray();
+            for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+            {
+                string line = lines[lineIndex].Trim();
+                if (string.IsNullOrWhiteSpace(line))
+                    return false;
+
+                string[] parts = line.Split('$');
+                int slot = lineIndex + 1;
+                string keyToken;
+                string commandToken;
+                if (parts.Length >= 3 && int.TryParse(parts[0].Trim(), out int explicitSlot))
+                {
+                    if (explicitSlot < 1 || explicitSlot > 33)
+                        return false;
+                    slot = explicitSlot;
+                    keyToken = parts[1].Trim();
+                    commandToken = string.Join("$", parts.Skip(2)).Trim();
+                }
+                else if (parts.Length >= 2)
+                {
+                    keyToken = parts[0].Trim();
+                    commandToken = string.Join("$", parts.Skip(1)).Trim();
+                }
+                else
+                {
+                    return false;
+                }
+
+                if (!TryDecodeMombotHotkeyToken(keyToken, out string normalizedKey))
+                    return false;
+
+                customKeys[slot - 1] = normalizedKey;
+                customCommands[slot - 1] = string.IsNullOrWhiteSpace(commandToken) ? "0" : commandToken;
+            }
+
+            config = new MombotHotkeyConfigData(
+                BuildMombotHotkeyIndex(customKeys),
+                customKeys,
+                customCommands);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string[] NormalizeMombotCustomLines(string[] source, int count)
+    {
+        string[] normalized = Enumerable.Repeat("0", count).ToArray();
+        for (int i = 0; i < Math.Min(count, source.Length); i++)
+        {
+            string value = source[i].Trim();
+            normalized[i] = string.IsNullOrWhiteSpace(value) ? "0" : value;
+        }
+
+        return normalized;
+    }
+
+    private static string[] BuildMombotHotkeyIndex(IReadOnlyList<string> customKeys)
+    {
+        string[] hotkeys = Enumerable.Repeat("0", 255).ToArray();
+        for (int slot = 1; slot <= Math.Min(33, customKeys.Count); slot++)
+        {
+            string keyToken = customKeys[slot - 1];
+            if (!TryDecodeMombotHotkeyToken(keyToken, out string normalizedKey) ||
+                string.IsNullOrWhiteSpace(normalizedKey) ||
+                normalizedKey == "0")
+            {
+                continue;
+            }
+
+            char hotkey = normalizedKey[0];
+            int lower = char.ToLowerInvariant(hotkey);
+            int upper = char.ToUpperInvariant(hotkey);
+            if (lower >= 1 && lower <= hotkeys.Length)
+                hotkeys[lower - 1] = slot.ToString();
+            if (upper >= 1 && upper <= hotkeys.Length)
+                hotkeys[upper - 1] = slot.ToString();
+        }
+
+        return hotkeys;
+    }
+
+    private static bool TryDecodeMombotHotkeyToken(string token, out string normalizedKey)
+    {
+        normalizedKey = "0";
+        string trimmed = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed == "0")
+            return true;
+
+        return trimmed.ToUpperInvariant() switch
+        {
+            "TAB" => AssignHotkey("\t", out normalizedKey),
+            "ENTER" => AssignHotkey("\r", out normalizedKey),
+            "BACKSPACE" => AssignHotkey("\b", out normalizedKey),
+            "SPACE" => AssignHotkey(" ", out normalizedKey),
+            _ => AssignHotkey(trimmed[..1], out normalizedKey),
+        };
+    }
+
+    private static bool AssignHotkey(string value, out string normalizedKey)
+    {
+        normalizedKey = value;
+        return !string.IsNullOrEmpty(value);
+    }
+
+    private static string EncodeMombotHotkeyToken(string key)
+    {
+        return key switch
+        {
+            "\t" => "TAB",
+            "\r" => "ENTER",
+            "\b" => "BACKSPACE",
+            " " => "SPACE",
+            "" => "0",
+            "0" => "0",
+            _ => key[..1],
+        };
+    }
+
+    private static IReadOnlyList<string> BuildMombotConfigLines(MombotHotkeyConfigData config)
+    {
+        var lines = new string[33];
+        for (int slot = 1; slot <= 33; slot++)
+        {
+            string key = slot <= config.CustomKeys.Length ? config.CustomKeys[slot - 1] : "0";
+            string command = slot <= config.CustomCommands.Length ? config.CustomCommands[slot - 1] : "0";
+            if (string.IsNullOrWhiteSpace(command))
+                command = "0";
+            lines[slot - 1] = $"{slot}${EncodeMombotHotkeyToken(key)}${command}";
+        }
+
+        return lines;
+    }
+
+    private static void WriteMombotHotkeyConfigFile(string configPath, MombotHotkeyConfigData config)
+    {
+        string? directory = Path.GetDirectoryName(configPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+        File.WriteAllLines(configPath, BuildMombotConfigLines(config));
+    }
+
+    private void SyncMombotPromptStateFromLine(string line, string? ansiLine = null)
     {
         if (line.Contains("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
             SetMombotCurrentVars("1", "$BOT~ISSHIPDESTROYED");
@@ -8194,6 +8524,10 @@ public class MainWindow : Window
         if (TryGetMombotPromptNameFromLine(line, out string promptName))
         {
             _mombotObservedGamePromptVersion++;
+            _mombotLastObservedGamePromptPlain = Core.AnsiCodes.NormalizeTerminalText(line).TrimEnd();
+            _mombotLastObservedGamePromptAnsi = string.IsNullOrWhiteSpace(ansiLine)
+                ? _mombotLastObservedGamePromptPlain
+                : ansiLine;
             SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
             SetMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         }
@@ -8740,6 +9074,25 @@ public class MainWindow : Window
         if (TryHandleMombotPromptInput(bytes))
             return;
 
+        if (bytes.Length > 1 && bytes[0] == 0x09)
+        {
+            if (TryInterceptMombotHotkeyAccess(new byte[] { 0x09 }))
+            {
+                byte[] remaining = bytes[1..];
+                if (remaining.Length == 0)
+                    return;
+
+                if (TryHandleMombotPromptInput(remaining))
+                    return;
+
+                if (TryInterceptMombotCommandPrompt(remaining))
+                    return;
+
+                forward(remaining);
+                return;
+            }
+        }
+
         if (TryInterceptMombotHotkeyAccess(bytes))
             return;
 
@@ -9272,6 +9625,18 @@ public class MainWindow : Window
                     EndMombotHotkeyPrompt();
                     return true;
 
+                case 0x09:
+                    if (TryResolveMombotHotkeyCommand(0x09, out string? tabCommandOrAction) &&
+                        !string.IsNullOrWhiteSpace(tabCommandOrAction))
+                    {
+                        _ = ExecuteMombotHotkeySelectionAsync(tabCommandOrAction);
+                    }
+                    else
+                    {
+                        _ = ExecuteMombotHotkeySelectionAsync(":INTERNAL_COMMANDS~stopModules");
+                    }
+                    return true;
+
                 case (byte)'?':
                     _ = ExecuteMombotHotkeyCommandAsync("help");
                     return true;
@@ -9383,7 +9748,8 @@ public class MainWindow : Window
         {
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
-            FocusActiveTerminal();
+            if (!TryRestoreLatestObservedGamePrompt())
+                FocusActiveTerminal();
         }
     }
 
@@ -9415,7 +9781,8 @@ public class MainWindow : Window
         {
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
-            FocusActiveTerminal();
+            if (!TryRestoreLatestObservedGamePrompt())
+                FocusActiveTerminal();
         }
     }
 
@@ -9681,6 +10048,8 @@ public class MainWindow : Window
         ClearMombotPreferencesInputState();
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
+        if (!TryRestoreLatestObservedGamePrompt())
+            FocusActiveTerminal();
         ApplyMombotExecutionRefresh();
     }
 
@@ -10376,15 +10745,11 @@ public class MainWindow : Window
 
     private void BuildMombotGeneralPreferencesPage(System.Text.StringBuilder body)
     {
-        AppendMombotPreferencesHeader(body, "Preferences", "General");
-
         string botName = ReadCurrentMombotVar("mombot", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name");
         string loginPassword = ReadCurrentMombotVar(string.Empty, "$BOT~PASSWORD", "$bot~password", "$password");
         string botPassword = ReadCurrentMombotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
         string loginName = ReadCurrentMombotVar(string.Empty, "$BOT~USERNAME", "$bot~username", "$username");
-        string turnLimit = IsMombotTruthy(ReadCurrentMombotVar("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame"))
-            ? "Unlimited"
-            : ReadCurrentMombotVar("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+        string turnLimit = ReadCurrentMombotVar("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
         string captureMode = IsMombotTruthy(ReadCurrentMombotVar("0", "$PLAYER~defenderCapping"))
             ? "Using defense"
             : IsMombotTruthy(ReadCurrentMombotVar("0", "$PLAYER~offenseCapping", "$offenseCapping"))
@@ -10407,100 +10772,150 @@ public class MainWindow : Window
                 : "Normal";
         string alarmList = ReadCurrentMombotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list");
 
-        AppendMombotPreferencesEntry(body, "C", "Login Name", loginName);
-        AppendMombotPreferencesEntry(body, "P", "Game Password", MaskMombotSecret(loginPassword));
-        AppendMombotPreferencesEntry(body, "N", "Bot Name", botName);
-        AppendMombotPreferencesEntry(body, "Z", "Bot Password", MaskMombotSecret(botPassword));
-        AppendMombotPreferencesEntry(body, "G", "Game Letter", ReadCurrentMombotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter"));
-        AppendMombotPreferencesEntry(body, "E", "Banner Interval", ReadCurrentMombotVar("5760", "$BOT~echoInterval", "$echoInterval") + " Minutes");
-        AppendMombotPreferencesEntry(body, "1", "Turn Limit", turnLimit);
-        AppendMombotPreferencesEntry(body, "0", "MSL / Busted Prompt", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$BOT~command_prompt_extras", "$command_prompt_extras")));
-        AppendMombotPreferencesEntry(body, "V", "Silent Mode", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$BOT~silent_running", "$bot~silent_running", "$silent_running")));
-        AppendMombotPreferencesEntry(body, "J", "Alarm List", string.IsNullOrWhiteSpace(alarmList) ? "None" : "Active");
-        AppendMombotPreferencesEntry(body, "3", "Figs to Drop", ReadCurrentMombotVar("0", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS"));
-        AppendMombotPreferencesEntry(body, "4", "Limpets to Drop", ReadCurrentMombotVar("0", "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP"));
-        AppendMombotPreferencesEntry(body, "5", "Armids to Drop", ReadCurrentMombotVar("0", "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE"));
-        AppendMombotPreferencesEntry(body, "6", "Fig Type", figType);
-        AppendMombotPreferencesEntry(body, "7", "Auto Kill Mode", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$bot~autoattack", "$BOT~autoattack", "$autoattack")));
-        AppendMombotPreferencesEntry(body, "8", "Avoid Planets", avoidPlanets);
-        AppendMombotPreferencesEntry(body, "9", "Surround Type", surroundType);
-        AppendMombotPreferencesEntry(body, "K", "Surround HKILL", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$PLAYER~surround_before_hkill")));
-        AppendMombotPreferencesEntry(body, "2", "Alien Ships", captureMode);
-        AppendMombotPreferencesEntry(body, "S", "Stardock", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock")));
-        AppendMombotPreferencesEntry(body, "R", "Rylos", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos")));
-        AppendMombotPreferencesEntry(body, "A", "Alpha", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri")));
-        AppendMombotPreferencesEntry(body, "H", "Home Sector", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector")));
-        AppendMombotPreferencesEntry(body, "B", "Backdoor", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor")));
-        AppendMombotPreferencesEntry(body, "X", "Safe Ship", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship")));
-        AppendMombotPreferencesEntry(body, "L", "Safe Planet", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet")));
+        int totalWidth = GetMombotPreferencesLayoutWidth();
+        int columnGap = totalWidth >= 104 ? 6 : 4;
+        int columnWidth = Math.Max(36, (totalWidth - columnGap) / 2);
+
+        List<MombotPreferencesDisplayCell> leftColumn =
+        [
+            BuildMombotPreferencesSectionCell("General Info", columnWidth),
+            BuildMombotPreferencesKeyValueCell("C", "Login Name:", loginName),
+            BuildMombotPreferencesKeyValueCell("P", "Login Password", loginPassword),
+            BuildMombotPreferencesKeyValueCell("N", "Bot Name", botName),
+            BuildMombotPreferencesKeyValueCell("Z", "Bot Password", botPassword),
+            BuildMombotPreferencesKeyValueCell("G", "Game Letter:", ReadCurrentMombotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter")),
+            BuildMombotPreferencesKeyValueCell("E", "Banner Interval:", ReadCurrentMombotVar("5760", "$BOT~echoInterval", "$echoInterval") + " Minutes"),
+            BuildMombotPreferencesKeyValueCell("1", "Turn Limit:", turnLimit),
+            BuildMombotPreferencesKeyValueCell("0", "MSL/Busted Prompt", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$BOT~command_prompt_extras", "$command_prompt_extras"))),
+            BuildMombotPreferencesKeyValueCell("V", "Silent Mode:", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$BOT~silent_running", "$bot~silent_running", "$silent_running"))),
+            BuildMombotPreferencesSectionCell("Capture Options", columnWidth),
+            BuildMombotPreferencesKeyValueCell("2", "Alien Ships:", captureMode),
+            BuildMombotPreferencesSectionCell("Current Ship Stats", columnWidth),
+            BuildMombotPreferencesStatCell("Offensive Odds:", ReadCurrentMombotVar("0", "$SHIP~SHIP_OFFENSIVE_ODDS")),
+            BuildMombotPreferencesStatCell("Max Attack:", ReadCurrentMombotVar("0", "$SHIP~SHIP_MAX_ATTACK")),
+            BuildMombotPreferencesStatCell("Max Fighters:", ReadCurrentMombotVar("0", "$SHIP~SHIP_FIGHTERS_MAX")),
+        ];
+
+        List<MombotPreferencesDisplayCell> rightColumn =
+        [
+            BuildMombotPreferencesSectionCell("Gridding/Attack Options", columnWidth),
+            BuildMombotPreferencesKeyValueCell("3", "Figs to drop:", ReadCurrentMombotVar("0", "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS")),
+            BuildMombotPreferencesKeyValueCell("4", "Limps to drop:", ReadCurrentMombotVar("0", "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP")),
+            BuildMombotPreferencesKeyValueCell("5", "Armids to drop:", ReadCurrentMombotVar("0", "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE")),
+            BuildMombotPreferencesKeyValueCell("6", "Fig Type:", figType),
+            BuildMombotPreferencesKeyValueCell("7", "Auto Kill Mode?", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$bot~autoattack", "$BOT~autoattack", "$autoattack"))),
+            BuildMombotPreferencesKeyValueCell("8", "Avoid Planets?", avoidPlanets),
+            BuildMombotPreferencesKeyValueCell("9", "Surround type?", surroundType),
+            BuildMombotPreferencesKeyValueCell("K", "Surround HKILL?", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$PLAYER~surround_before_hkill"))),
+            BuildMombotPreferencesKeyValueCell("J", "Alarm List", string.IsNullOrWhiteSpace(alarmList) ? "None" : "Active"),
+            BuildMombotPreferencesSectionCell("Location Variables", columnWidth),
+            BuildMombotPreferencesLocationCell("S", "Stardock", "S", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock"))),
+            BuildMombotPreferencesLocationCell("B", "Backdoor", "B", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor"))),
+            BuildMombotPreferencesLocationCell("R", "Rylos", "R", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos"))),
+            BuildMombotPreferencesLocationCell("A", "Alpha", "A", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri"))),
+            BuildMombotPreferencesLocationCell("H", "Home Sector", "H", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector"))),
+            BuildMombotPreferencesLocationCell("X", "Safe Ship", "X", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship"))),
+            BuildMombotPreferencesLocationCell("L", "Safe Planet", "L", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet"))),
+        ];
+
         body.Append("\r\n");
-        AppendMombotPreferencesEntry(body, "-", "Current Ship Offensive Odds", ReadCurrentMombotVar("0", "$SHIP~SHIP_OFFENSIVE_ODDS"));
-        AppendMombotPreferencesEntry(body, "-", "Current Ship Max Attack", ReadCurrentMombotVar("0", "$SHIP~SHIP_MAX_ATTACK"));
-        AppendMombotPreferencesEntry(body, "-", "Current Ship Max Fighters", ReadCurrentMombotVar("0", "$SHIP~SHIP_FIGHTERS_MAX"));
-        AppendMombotPreferencesFooter(body, "[>] Game Stats", "[<] Trader List", "Any other key exits");
+        AppendMombotPreferencesTwoColumnCells(body, leftColumn, rightColumn, columnWidth, columnGap);
+        body.Append("\r\n");
+        AppendMombotPreferencesStyledFooter(body, "[<] Trader List", "Game Stats [>]", totalWidth: totalWidth);
     }
 
     private void BuildMombotGameStatsPreferencesPage(System.Text.StringBuilder body)
     {
-        AppendMombotPreferencesHeader(body, "Preferences", "Game Stats");
+        string serverMaxCommands = ReadCurrentMombotVar("0", "$GAME~MAX_COMMANDS", "$MAX_COMMANDS");
 
-        (string Label, string Value)[] items =
-        {
-            ("Atomic Detonators", ReadCurrentMombotVar("0", "$GAME~ATOMIC_COST", "$ATOMIC_COST")),
-            ("Marker Beacons", ReadCurrentMombotVar("0", "$GAME~BEACON_COST", "$BEACON_COST")),
-            ("Corbomite Devices", ReadCurrentMombotVar("0", "$GAME~CORBO_COST", "$CORBO_COST")),
-            ("Cloaking Devices", ReadCurrentMombotVar("0", "$GAME~CLOAK_COST", "$CLOAK_COST")),
-            ("Subspace Ether Probes", ReadCurrentMombotVar("0", "$GAME~PROBE_COST", "$PROBE_COST")),
-            ("Planet Scanners", ReadCurrentMombotVar("0", "$GAME~PLANET_SCANNER_COST", "$PLANET_SCANNER_COST")),
-            ("Limpet Tracking Mines", ReadCurrentMombotVar("0", "$GAME~LIMPET_COST", "$LIMPET_REMOVAL_COST")),
-            ("Space Mines", ReadCurrentMombotVar("0", "$GAME~ARMID_COST", "$ARMID_COST")),
-            ("Photon Missiles", IsMombotTruthy(ReadCurrentMombotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? ReadCurrentMombotVar("0", "$GAME~PHOTON_COST", "$PHOTON_COST") : "Disabled"),
-            ("Holographic Scan", ReadCurrentMombotVar("0", "$GAME~HOLO_COST", "$HOLO_COST")),
-            ("Density Scan", ReadCurrentMombotVar("0", "$GAME~DENSITY_COST", "$DENSITY_COST")),
-            ("Mine Disruptors", ReadCurrentMombotVar("0", "$GAME~DISRUPTOR_COST", "$DISRUPTOR_COST")),
-            ("Genesis Torpedoes", ReadCurrentMombotVar("0", "$GAME~GENESIS_COST", "$GENESIS_COST")),
-            ("TransWarp I", ReadCurrentMombotVar("0", "$GAME~TWARPI_COST", "$TWARPI_COST")),
-            ("TransWarp II", ReadCurrentMombotVar("0", "$GAME~TWARPII_COST", "$TWARPII_COST")),
-            ("Psychic Probes", ReadCurrentMombotVar("0", "$GAME~PSYCHIC_COST", "$PSYCHIC_COST")),
-            ("Limpet Removal", ReadCurrentMombotVar("0", "$GAME~LIMPET_REMOVAL_COST", "$LIMPET_REMOVAL_COST")),
-            ("Server Max Commands", ReadCurrentMombotVar("0", "$GAME~MAX_COMMANDS", "$MAX_COMMANDS") is "0" ? "Unlimited" : ReadCurrentMombotVar("0", "$GAME~MAX_COMMANDS", "$MAX_COMMANDS")),
-            ("Gold Enabled", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~goldEnabled", "$goldEnabled"))),
-            ("MBBS Mode", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~mbbs", "$mbbs"))),
-            ("Multiple Photons", IsMombotTruthy(ReadCurrentMombotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~MULTIPLE_PHOTONS", "$MULTIPLE_PHOTONS")) : "Disabled"),
-            ("Colonists Per Day", ReadCurrentMombotVar("0", "$GAME~colonist_regen", "$colonist_regen")),
-            ("Planet Trade", ReadCurrentMombotVar("0", "$GAME~ptradesetting", "$ptradesetting") + "%"),
-            ("Steal Factor", ReadCurrentMombotVar("0", "$GAME~STEAL_FACTOR", "$steal_factor")),
-            ("Rob Factor", ReadCurrentMombotVar("0", "$GAME~rob_factor", "$rob_factor")),
-            ("Days To Bust Clear", ReadCurrentMombotVar("0", "$GAME~CLEAR_BUST_DAYS", "$CLEAR_BUST_DAYS")),
-            ("Port Maximum", ReadCurrentMombotVar("0", "$GAME~PORT_MAX", "$port_max")),
-            ("Port Production Rate", ReadCurrentMombotVar("0", "$GAME~PRODUCTION_RATE", "$PRODUCTION_RATE") + "%"),
-            ("Max Port Regen Per Day", ReadCurrentMombotVar("0", "$GAME~PRODUCTION_REGEN", "$PRODUCTION_REGEN") + "%"),
-            ("Nav Haz Loss Per Day", ReadCurrentMombotVar("0", "$GAME~DEBRIS_LOSS", "$DEBRIS_LOSS") + "%"),
-            ("Radiation Lifetime", ReadCurrentMombotVar("0", "$GAME~RADIATION_LIFETIME", "$RADIATION_LIFETIME")),
-        };
+        int totalWidth = GetMombotPreferencesLayoutWidth();
+        int columnGap = totalWidth >= 104 ? 6 : 4;
+        int columnWidth = Math.Max(36, (totalWidth - columnGap) / 2);
 
-        foreach (var item in items)
-            AppendMombotPreferencesEntry(body, "-", item.Label, item.Value);
+        List<MombotPreferencesDisplayCell> leftColumn =
+        [
+            BuildMombotPreferencesSectionCell("Hardware / Dock Costs", columnWidth),
+            BuildMombotPreferencesStatCell("Atomic Detonators:", ReadCurrentMombotVar("0", "$GAME~ATOMIC_COST", "$ATOMIC_COST"), 24),
+            BuildMombotPreferencesStatCell("Marker Beacons:", ReadCurrentMombotVar("0", "$GAME~BEACON_COST", "$BEACON_COST"), 24),
+            BuildMombotPreferencesStatCell("Corbomite Devices:", ReadCurrentMombotVar("0", "$GAME~CORBO_COST", "$CORBO_COST"), 24),
+            BuildMombotPreferencesStatCell("Cloaking Devices:", ReadCurrentMombotVar("0", "$GAME~CLOAK_COST", "$CLOAK_COST"), 24),
+            BuildMombotPreferencesStatCell("Subspace Ether:", ReadCurrentMombotVar("0", "$GAME~PROBE_COST", "$PROBE_COST"), 24),
+            BuildMombotPreferencesStatCell("Planet Scanners:", ReadCurrentMombotVar("0", "$GAME~PLANET_SCANNER_COST", "$PLANET_SCANNER_COST"), 24),
+            BuildMombotPreferencesStatCell("Limpet Mines:", ReadCurrentMombotVar("0", "$GAME~LIMPET_COST", "$LIMPET_REMOVAL_COST"), 24),
+            BuildMombotPreferencesStatCell("Space Mines:", ReadCurrentMombotVar("0", "$GAME~ARMID_COST", "$ARMID_COST"), 24),
+            BuildMombotPreferencesStatCell("Photon Missiles:", IsMombotTruthy(ReadCurrentMombotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? ReadCurrentMombotVar("0", "$GAME~PHOTON_COST", "$PHOTON_COST") : "Disabled", 24),
+            BuildMombotPreferencesSectionCell("Scanner / Ship Costs", columnWidth),
+            BuildMombotPreferencesStatCell("Holographic Scan:", ReadCurrentMombotVar("0", "$GAME~HOLO_COST", "$HOLO_COST"), 24),
+            BuildMombotPreferencesStatCell("Density Scan:", ReadCurrentMombotVar("0", "$GAME~DENSITY_COST", "$DENSITY_COST"), 24),
+            BuildMombotPreferencesStatCell("Mine Disruptors:", ReadCurrentMombotVar("0", "$GAME~DISRUPTOR_COST", "$DISRUPTOR_COST"), 24),
+            BuildMombotPreferencesStatCell("Genesis Torps:", ReadCurrentMombotVar("0", "$GAME~GENESIS_COST", "$GENESIS_COST"), 24),
+            BuildMombotPreferencesStatCell("TransWarp I:", ReadCurrentMombotVar("0", "$GAME~TWARPI_COST", "$TWARPI_COST"), 24),
+            BuildMombotPreferencesStatCell("TransWarp II:", ReadCurrentMombotVar("0", "$GAME~TWARPII_COST", "$TWARPII_COST"), 24),
+            BuildMombotPreferencesStatCell("Psychic Probes:", ReadCurrentMombotVar("0", "$GAME~PSYCHIC_COST", "$PSYCHIC_COST"), 24),
+            BuildMombotPreferencesStatCell("Limpet Removal:", ReadCurrentMombotVar("0", "$GAME~LIMPET_REMOVAL_COST", "$LIMPET_REMOVAL_COST"), 24),
+        ];
 
-        AppendMombotPreferencesFooter(body, "[>] Hot Keys", "[<] Preferences", "Any other key exits");
+        List<MombotPreferencesDisplayCell> rightColumn =
+        [
+            BuildMombotPreferencesSectionCell("Server / Trade Rules", columnWidth),
+            BuildMombotPreferencesStatCell("Server Max Cmds:", serverMaxCommands == "0" ? "Unlimited" : serverMaxCommands, 24),
+            BuildMombotPreferencesStatCell("Gold Enabled:", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~goldEnabled", "$goldEnabled")), 24),
+            BuildMombotPreferencesStatCell("MBBS Mode:", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~mbbs", "$mbbs")), 24),
+            BuildMombotPreferencesStatCell("Multiple Photons:", IsMombotTruthy(ReadCurrentMombotVar("0", "$GAME~PHOTONS_ENABLED", "$PHOTONS_ENABLED")) ? FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$GAME~MULTIPLE_PHOTONS", "$MULTIPLE_PHOTONS")) : "Disabled", 24),
+            BuildMombotPreferencesStatCell("Colonists / Day:", ReadCurrentMombotVar("0", "$GAME~colonist_regen", "$colonist_regen"), 24),
+            BuildMombotPreferencesStatCell("Planet Trade:", ReadCurrentMombotVar("0", "$GAME~ptradesetting", "$ptradesetting") + "%", 24),
+            BuildMombotPreferencesStatCell("Steal Factor:", ReadCurrentMombotVar("0", "$GAME~STEAL_FACTOR", "$steal_factor"), 24),
+            BuildMombotPreferencesStatCell("Rob Factor:", ReadCurrentMombotVar("0", "$GAME~rob_factor", "$rob_factor"), 24),
+            BuildMombotPreferencesStatCell("Bust Clear Days:", ReadCurrentMombotVar("0", "$GAME~CLEAR_BUST_DAYS", "$CLEAR_BUST_DAYS"), 24),
+            BuildMombotPreferencesSectionCell("Port / Universe Rules", columnWidth),
+            BuildMombotPreferencesStatCell("Port Maximum:", ReadCurrentMombotVar("0", "$GAME~PORT_MAX", "$port_max"), 24),
+            BuildMombotPreferencesStatCell("Port Prod Rate:", ReadCurrentMombotVar("0", "$GAME~PRODUCTION_RATE", "$PRODUCTION_RATE") + "%", 24),
+            BuildMombotPreferencesStatCell("Port Regen Max:", ReadCurrentMombotVar("0", "$GAME~PRODUCTION_REGEN", "$PRODUCTION_REGEN") + "%", 24),
+            BuildMombotPreferencesStatCell("Nav Haz Loss:", ReadCurrentMombotVar("0", "$GAME~DEBRIS_LOSS", "$DEBRIS_LOSS") + "%", 24),
+            BuildMombotPreferencesStatCell("Radiation Life:", ReadCurrentMombotVar("0", "$GAME~RADIATION_LIFETIME", "$RADIATION_LIFETIME"), 24),
+        ];
+
+        body.Append("\r\n");
+        AppendMombotPreferencesTwoColumnCells(body, leftColumn, rightColumn, columnWidth, columnGap);
+        body.Append("\r\n");
+        AppendMombotPreferencesStyledFooter(body, "[<] Preferences", "Hot Keys [>]", totalWidth: totalWidth);
     }
 
     private void BuildMombotHotkeyPreferencesPage(System.Text.StringBuilder body)
     {
-        AppendMombotPreferencesHeader(body, "Preferences", "Hot Keys");
+        MombotHotkeyConfigData config = LoadMombotHotkeyConfigData();
+        int totalWidth = GetMombotPreferencesLayoutWidth();
+        int columnGap = totalWidth >= 104 ? 6 : 4;
+        int columnWidth = Math.Max(36, (totalWidth - columnGap) / 2);
 
-        IReadOnlyList<string> customKeys = LoadMombotCustomKeyConfigLines();
-        IReadOnlyList<string> customCommands = LoadMombotIndexedConfig("$custom_commands_file", BuildDefaultMombotCustomCommandFileLines());
-        string[] slotLabels = "1234567890ABCDEFGHIJKLMNOPRSTUVWX".Select(c => c.ToString()).ToArray();
+        List<MombotPreferencesDisplayCell> leftColumn =
+        [
+            BuildMombotPreferencesSectionCell("Standard Hot Keys", columnWidth),
+        ];
 
-        for (int slot = 1; slot <= 33; slot++)
+        List<MombotPreferencesDisplayCell> rightColumn =
+        [
+            BuildMombotPreferencesSectionCell("Custom Hot Keys", columnWidth),
+        ];
+
+        for (int slot = 1; slot <= 17; slot++)
         {
-            string title = GetMombotHotkeySlotTitle(slot, customCommands[Math.Min(slot - 1, customCommands.Count - 1)]);
-            string keyValue = slot <= customKeys.Count ? customKeys[slot - 1] : "0";
-            AppendMombotPreferencesEntry(body, slotLabels[slot - 1], title, FormatMombotHotkeyDisplay(keyValue));
+            string title = GetMombotHotkeySlotTitle(slot, config.CustomCommands[Math.Min(slot - 1, config.CustomCommands.Length - 1)]);
+            string keyValue = slot <= config.CustomKeys.Length ? config.CustomKeys[slot - 1] : "0";
+            leftColumn.Add(BuildMombotPreferencesHotkeyCell(GetMombotHotkeySlotLabel(slot), title, FormatMombotHotkeyDisplay(keyValue)));
         }
 
-        AppendMombotPreferencesFooter(body, "[>] Ship Info", "[<] Game Stats", "Choose a slot to rebind, any other key exits");
+        for (int slot = 18; slot <= 33; slot++)
+        {
+            string title = GetMombotHotkeySlotTitle(slot, config.CustomCommands[Math.Min(slot - 1, config.CustomCommands.Length - 1)]);
+            string keyValue = slot <= config.CustomKeys.Length ? config.CustomKeys[slot - 1] : "0";
+            rightColumn.Add(BuildMombotPreferencesHotkeyCell(GetMombotHotkeySlotLabel(slot), title, FormatMombotHotkeyDisplay(keyValue)));
+        }
+
+        body.Append("\r\n");
+        AppendMombotPreferencesTwoColumnCells(body, leftColumn, rightColumn, columnWidth, columnGap);
+        body.Append("\r\n");
+        AppendMombotPreferencesStyledFooter(body, "[<] Game Stats", "Ship Info [>]", "Choose a slot to rebind, any other key exits", totalWidth);
     }
 
     private void BuildMombotShipPreferencesPage(System.Text.StringBuilder body)
@@ -10658,7 +11073,8 @@ public class MainWindow : Window
     private void PromptMombotHotkeySelection(int slot)
     {
         _mombotPreferencesHotkeySlot = slot;
-        string slotName = GetMombotHotkeySlotTitle(slot, LoadMombotIndexedConfig("$custom_commands_file", BuildDefaultMombotCustomCommandFileLines())[slot - 1]);
+        MombotHotkeyConfigData config = LoadMombotHotkeyConfigData();
+        string slotName = GetMombotHotkeySlotTitle(slot, config.CustomCommands[slot - 1]);
         BeginMombotPreferencesInput(
             $"New Hotkey For {slotName}",
             value => CompleteMombotHotkeySelection(slot, value),
@@ -10679,9 +11095,10 @@ public class MainWindow : Window
             return;
         }
 
-        string[] hotkeys = LoadMombotIndexedConfig("$hotkeys_file", BuildDefaultMombotHotkeyFileLines()).ToArray();
-        string[] customKeys = LoadMombotCustomKeyConfigLines().ToArray();
-        string[] customCommands = LoadMombotIndexedConfig("$custom_commands_file", BuildDefaultMombotCustomCommandFileLines()).ToArray();
+        MombotHotkeyConfigData config = LoadMombotHotkeyConfigData();
+        string[] hotkeys = config.Hotkeys.ToArray();
+        string[] customKeys = config.CustomKeys.ToArray();
+        string[] customCommands = config.CustomCommands.ToArray();
         string slotValue = slot.ToString();
 
         if (!CanBindMombotHotkeyCode(hotkeys, lower, slotValue) || !CanBindMombotHotkeyCode(hotkeys, upper, slotValue))
@@ -10711,13 +11128,13 @@ public class MainWindow : Window
                 command =>
                 {
                     customCommands[slot - 1] = string.IsNullOrWhiteSpace(command) ? "0" : command.Trim();
-                    WriteMombotHotkeyConfigFiles(hotkeys, customKeys, customCommands);
+                    WriteMombotHotkeyConfig(new MombotHotkeyConfigData(hotkeys, customKeys, customCommands));
                 },
                 currentCommand);
             return;
         }
 
-        WriteMombotHotkeyConfigFiles(hotkeys, customKeys, customCommands);
+        WriteMombotHotkeyConfig(new MombotHotkeyConfigData(hotkeys, customKeys, customCommands));
     }
 
     private void ToggleMombotShipDefender(int pageOffset)
@@ -10976,44 +11393,58 @@ public class MainWindow : Window
             planets.Select(planet => $"{planet.FuelMin} {planet.FuelMax} {planet.OrgMin} {planet.OrgMax} {planet.EquipMin} {planet.EquipMax} {(planet.Keeper ? "1" : "0")}  {planet.Name}"));
     }
 
-    private IReadOnlyList<string> LoadMombotCustomKeyConfigLines()
+    private MombotHotkeyConfigData LoadMombotHotkeyConfigData()
     {
-        string[] merged = BuildDefaultMombotCustomKeyFileLines().ToArray();
-        string filePath = ResolveMombotCurrentFilePath("$custom_keys_file");
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-            return merged;
-
-        try
+        string filePath = ResolveMombotCurrentFilePath("$mombot_config_file");
+        if (!string.IsNullOrWhiteSpace(filePath) &&
+            TryLoadMombotHotkeyConfigFromFile(filePath, out MombotHotkeyConfigData? loaded) &&
+            loaded != null)
         {
-            string[] existing = File.ReadAllLines(filePath);
-            int count = Math.Min(existing.Length, merged.Length);
-            for (int i = 0; i < count; i++)
-                merged[i] = existing[i];
-        }
-        catch
-        {
-            return merged;
+            return loaded;
         }
 
-        return merged;
+        string? directory = string.IsNullOrWhiteSpace(filePath) ? null : Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrWhiteSpace(directory) &&
+            TryLoadLegacyMombotHotkeyConfig(
+                Path.Combine(directory, "custom_keys.cfg"),
+                Path.Combine(directory, "custom_commands.cfg"),
+                out MombotHotkeyConfigData? migrated) &&
+            migrated != null)
+        {
+            if (!string.IsNullOrWhiteSpace(filePath))
+                WriteMombotHotkeyConfig(migrated);
+            return migrated;
+        }
+
+        return BuildDefaultMombotHotkeyConfigData();
     }
 
-    private void WriteMombotHotkeyConfigFiles(IReadOnlyList<string> hotkeys, IReadOnlyList<string> customKeys, IReadOnlyList<string> customCommands)
+    private void WriteMombotHotkeyConfig(MombotHotkeyConfigData config)
     {
-        string hotkeysFile = ResolveMombotCurrentFilePath("$hotkeys_file");
-        string customKeysFile = ResolveMombotCurrentFilePath("$custom_keys_file");
-        string customCommandsFile = ResolveMombotCurrentFilePath("$custom_commands_file");
+        string filePath = ResolveMombotCurrentFilePath("$mombot_config_file");
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
 
-        foreach (string path in new[] { hotkeysFile, customKeysFile, customCommandsFile })
+        WriteMombotHotkeyConfigFile(filePath, config);
+        string? directory = Path.GetDirectoryName(filePath);
+        if (string.IsNullOrWhiteSpace(directory))
+            return;
+
+        foreach (string legacyName in new[] { "hotkeys.cfg", "custom_keys.cfg", "custom_commands.cfg" })
         {
-            string? directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
+            string legacyPath = Path.Combine(directory, legacyName);
+            try
+            {
+                if (!string.Equals(Path.GetFullPath(legacyPath), Path.GetFullPath(filePath), StringComparison.OrdinalIgnoreCase) &&
+                    File.Exists(legacyPath))
+                {
+                    File.Delete(legacyPath);
+                }
+            }
+            catch
+            {
+            }
         }
-
-        File.WriteAllLines(hotkeysFile, hotkeys);
-        File.WriteAllLines(customKeysFile, customKeys);
-        File.WriteAllLines(customCommandsFile, customCommands);
     }
 
     private static bool TryParseMombotCatalogLine(string line, int fixedFieldCount, out string[] fields, out string trailingName)
@@ -11104,6 +11535,14 @@ public class MainWindow : Window
         };
     }
 
+    private int GetMombotPreferencesLayoutWidth()
+    {
+        int columns = _buffer.Columns > 0 ? _buffer.Columns : 110;
+        return Math.Clamp(columns - 2, 78, 110);
+    }
+
+    private readonly record struct MombotPreferencesDisplayCell(string Text, int VisibleWidth);
+
     private static void AppendMombotPreferencesHeader(System.Text.StringBuilder body, string title, string subtitle)
     {
         body.Append("\x1b[1;33mMombot ").Append(title).Append("\x1b[0m");
@@ -11111,6 +11550,112 @@ public class MainWindow : Window
             body.Append(" - ").Append(subtitle);
         body.Append("\r\n\r\n");
     }
+
+    private static MombotPreferencesDisplayCell BuildMombotPreferencesSectionCell(string title, int width)
+    {
+        int visibleWidth = Math.Max(width, title.Length);
+        int pad = Math.Max(0, visibleWidth - title.Length);
+        int leftPad = pad / 2;
+        int rightPad = pad - leftPad;
+        string text = "\x1b[1;36m" + new string(' ', leftPad) + title + new string(' ', rightPad) + "\x1b[0m";
+        return new MombotPreferencesDisplayCell(text, visibleWidth);
+    }
+
+    private static MombotPreferencesDisplayCell BuildMombotPreferencesKeyValueCell(string key, string label, string value, int labelWidth = 18)
+    {
+        string safeValue = FormatMombotPreferencesValue(value);
+        string paddedLabel = label.PadRight(labelWidth);
+        string text = "\x1b[1;35m<\x1b[1;32m" + key + "\x1b[1;35m>\x1b[0m " +
+            "\x1b[1;37m" + paddedLabel + "\x1b[0m " +
+            "\x1b[1;33m" + safeValue + "\x1b[0m";
+        int visibleWidth = 3 + 1 + labelWidth + 1 + safeValue.Length;
+        return new MombotPreferencesDisplayCell(text, visibleWidth);
+    }
+
+    private static MombotPreferencesDisplayCell BuildMombotPreferencesLocationCell(string key, string label, string shortLabel, string value)
+    {
+        string safeValue = FormatMombotPreferencesValue(value);
+        string paddedLabel = (label + ":").PadRight(12);
+        string paddedShortLabel = ("(" + shortLabel + ")").PadRight(4);
+        string text = "\x1b[1;35m<\x1b[1;32m" + key + "\x1b[1;35m>\x1b[0m " +
+            "\x1b[1;37m" + paddedLabel + "\x1b[0m " +
+            "\x1b[1;37m" + paddedShortLabel + "\x1b[0m " +
+            "\x1b[1;33m" + safeValue + "\x1b[0m";
+        int visibleWidth = 3 + 1 + 12 + 1 + 4 + 1 + safeValue.Length;
+        return new MombotPreferencesDisplayCell(text, visibleWidth);
+    }
+
+    private static MombotPreferencesDisplayCell BuildMombotPreferencesStatCell(string label, string value, int labelWidth = 18)
+    {
+        string safeValue = FormatMombotPreferencesValue(value);
+        string paddedLabel = label.PadRight(labelWidth);
+        string text = "\x1b[1;37m" + paddedLabel + "\x1b[0m " +
+            "\x1b[1;33m" + safeValue + "\x1b[0m";
+        int visibleWidth = labelWidth + 1 + safeValue.Length;
+        return new MombotPreferencesDisplayCell(text, visibleWidth);
+    }
+
+    private static MombotPreferencesDisplayCell BuildMombotPreferencesHotkeyCell(string key, string title, string binding, int titleWidth = 24)
+    {
+        string safeBinding = FormatMombotPreferencesValue(binding);
+        string paddedTitle = title.PadRight(titleWidth);
+        string text = "\x1b[1;35m<\x1b[1;32m" + key + "\x1b[1;35m>\x1b[0m " +
+            "\x1b[1;37m" + paddedTitle + "\x1b[0m " +
+            "\x1b[1;33m" + safeBinding + "\x1b[0m";
+        int visibleWidth = 3 + 1 + titleWidth + 1 + safeBinding.Length;
+        return new MombotPreferencesDisplayCell(text, visibleWidth);
+    }
+
+    private static void AppendMombotPreferencesTwoColumnCells(
+        System.Text.StringBuilder body,
+        IReadOnlyList<MombotPreferencesDisplayCell> leftColumn,
+        IReadOnlyList<MombotPreferencesDisplayCell> rightColumn,
+        int columnWidth,
+        int columnGap)
+    {
+        int rows = Math.Max(leftColumn.Count, rightColumn.Count);
+        for (int i = 0; i < rows; i++)
+        {
+            MombotPreferencesDisplayCell left = i < leftColumn.Count
+                ? leftColumn[i]
+                : new MombotPreferencesDisplayCell(string.Empty, 0);
+            MombotPreferencesDisplayCell right = i < rightColumn.Count
+                ? rightColumn[i]
+                : new MombotPreferencesDisplayCell(string.Empty, 0);
+
+            body.Append(left.Text);
+            int spacing = Math.Max(columnGap, columnWidth - left.VisibleWidth + columnGap);
+            body.Append(' ', spacing);
+            body.Append(right.Text);
+            body.Append("\r\n");
+        }
+    }
+
+    private static void AppendMombotPreferencesStyledFooter(System.Text.StringBuilder body, string leftHint, string rightHint, string miscHint = "Any other key exits", int totalWidth = 110)
+    {
+        string leftText = FormatMombotPreferencesNavHint(leftHint);
+        string rightText = FormatMombotPreferencesNavHint(rightHint);
+        int visibleWidth = leftHint.Length + rightHint.Length;
+        int spacing = Math.Max(6, totalWidth - visibleWidth);
+
+        body.Append(leftText)
+            .Append(' ', spacing)
+            .Append(rightText)
+            .Append("\r\n")
+            .Append("\x1b[0;37m")
+            .Append(miscHint)
+            .Append("\x1b[0m\r\n");
+    }
+
+    private static string FormatMombotPreferencesNavHint(string text)
+    {
+        return text
+            .Replace("[<]", "\x1b[1;35m[\x1b[1;32m<\x1b[1;35m]\x1b[0m")
+            .Replace("[>]", "\x1b[1;35m[\x1b[1;32m>\x1b[1;35m]\x1b[0m");
+    }
+
+    private static string FormatMombotPreferencesValue(string value)
+        => string.IsNullOrWhiteSpace(value) ? "(empty)" : value.Trim();
 
     private static void AppendMombotPreferencesEntry(System.Text.StringBuilder body, string key, string label, string value)
     {
@@ -11577,9 +12122,8 @@ public class MainWindow : Window
     {
         commandOrAction = null;
 
-        IReadOnlyList<string> hotkeys = LoadMombotIndexedConfig(
-            "$hotkeys_file",
-            BuildDefaultMombotHotkeyFileLines());
+        MombotHotkeyConfigData config = LoadMombotHotkeyConfigData();
+        IReadOnlyList<string> hotkeys = config.Hotkeys;
         if (keyByte == 0 || keyByte > hotkeys.Count)
             return false;
 
@@ -11587,13 +12131,10 @@ public class MainWindow : Window
         if (!int.TryParse(slotValue, out int slot) || slot <= 0)
             return false;
 
-        IReadOnlyList<string> commands = LoadMombotIndexedConfig(
-            "$custom_commands_file",
-            BuildDefaultMombotCustomCommandFileLines());
-        if (slot > commands.Count)
+        if (slot > config.CustomCommands.Length)
             return false;
 
-        string entry = commands[slot - 1].Trim();
+        string entry = config.CustomCommands[slot - 1].Trim();
         if (string.IsNullOrWhiteSpace(entry) || entry == "0")
             return false;
 
@@ -11642,32 +12183,6 @@ public class MainWindow : Window
         }
 
         return scripts;
-    }
-
-    private IReadOnlyList<string> LoadMombotIndexedConfig(string currentVarName, IReadOnlyList<string> defaultLines)
-    {
-        string[] merged = defaultLines.ToArray();
-        string filePath = ResolveMombotCurrentFilePath(currentVarName);
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-            return merged;
-
-        try
-        {
-            string[] existing = File.ReadAllLines(filePath);
-            int count = Math.Min(existing.Length, merged.Length);
-            for (int i = 0; i < count; i++)
-            {
-                string trimmed = existing[i].Trim();
-                if (!string.IsNullOrWhiteSpace(trimmed))
-                    merged[i] = trimmed;
-            }
-        }
-        catch
-        {
-            return merged;
-        }
-
-        return merged;
     }
 
     private string NormalizeMombotHotkeyScriptReference(string loadReference)
@@ -11837,18 +12352,14 @@ public class MainWindow : Window
             .Select(result => result.ScriptReference!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        if (pendingScriptReferences.Length == 0)
-            return;
 
         int restoreTicket = ++_mombotPromptRestoreTicket;
-        for (int attempt = 0; attempt < 30; attempt++)
+        DateTime restoreDeadlineUtc = DateTime.UtcNow.AddHours(8);
+        while (DateTime.UtcNow < restoreDeadlineUtc)
         {
             await Task.Delay(100).ConfigureAwait(false);
 
             if (restoreTicket != _mombotPromptRestoreTicket)
-                return;
-
-            if (_mombotObservedGamePromptVersion != promptVersionBefore)
                 return;
 
             if (_gameInstance == null ||
@@ -11864,16 +12375,26 @@ public class MainWindow : Window
 
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
+                string candidatePromptAnsi = promptAnsi;
+                string candidatePromptPlain = promptPlain;
+
                 if (restoreTicket != _mombotPromptRestoreTicket)
                     return;
 
-                if (_mombotObservedGamePromptVersion != promptVersionBefore)
+                if (_mombotObservedGamePromptVersion != promptVersionBefore &&
+                    !string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain))
+                {
+                    candidatePromptAnsi = _mombotLastObservedGamePromptAnsi;
+                    candidatePromptPlain = _mombotLastObservedGamePromptPlain;
+                }
+
+                if (string.IsNullOrWhiteSpace(candidatePromptPlain))
                     return;
 
-                if (IsTerminalCurrentLineEquivalentTo(promptPlain))
+                if (IsTerminalCurrentLineEquivalentTo(candidatePromptPlain))
                     return;
 
-                AppendCurrentGamePrompt(promptAnsi, promptPlain);
+                AppendCurrentGamePrompt(candidatePromptAnsi, candidatePromptPlain);
             });
             return;
         }
@@ -11910,6 +12431,26 @@ public class MainWindow : Window
             Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd(),
             Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd(),
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool TryRestoreLatestObservedGamePrompt()
+    {
+        if (_gameInstance == null ||
+            !_gameInstance.IsConnected ||
+            _gameInstance.IsProxyMenuActive ||
+            string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain))
+        {
+            return false;
+        }
+
+        if (IsTerminalCurrentLineEquivalentTo(_mombotLastObservedGamePromptPlain))
+        {
+            FocusActiveTerminal();
+            return true;
+        }
+
+        AppendCurrentGamePrompt(_mombotLastObservedGamePromptAnsi, _mombotLastObservedGamePromptPlain);
+        return true;
     }
 
     private string ReadTerminalRowText(int row)

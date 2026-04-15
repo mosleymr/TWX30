@@ -1754,7 +1754,7 @@ namespace TWXProxy.Core
 
         public void Broadcast(string message)
         {
-            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
 
@@ -1763,7 +1763,7 @@ namespace TWXProxy.Core
 
         public void Broadcast(string message, bool broadcastDeaf)
         {
-            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf))
                 return;
 
@@ -1772,7 +1772,7 @@ namespace TWXProxy.Core
 
         public void ClientMessage(string message)
         {
-            byte[] data = Encoding.ASCII.GetBytes(ApplyQuickText(message));
+            byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
 

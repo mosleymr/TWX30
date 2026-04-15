@@ -58,13 +58,27 @@ internal sealed class mombotService
         "htorp",
         "surround",
         "xenter",
+        "macro_kit",
+        "dock_shopper",
+        "kazi",
+        "ldrop",
     };
+
+    private static readonly Dictionary<string, (string Category, string Type)> PreloadModuleMap =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["macro_kit"] = ("Commands", "Defense"),
+            ["dock_shopper"] = ("Commands", "Resource"),
+            ["kazi"] = ("Commands", "Offense"),
+            ["ldrop"] = ("Modes", "Offense"),
+        };
 
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;
     private Core.ModInterpreter? _interpreter;
     private mombotConfig _config = new();
     private readonly HashSet<string> _authorizedUsers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _commandAliases = new(StringComparer.OrdinalIgnoreCase);
 
     public mombotConfig Config => _config;
     public mombotWatcher Watcher { get; } = new();
@@ -75,7 +89,6 @@ internal sealed class mombotService
     public IReadOnlyList<mombotHotkeyBinding> DefaultHotkeys => mombotCatalog.DefaultHotkeys;
     public IReadOnlyList<mombotMenuSurface> MenuSurfaces => mombotCatalog.MenuSurfaces;
     public IReadOnlyList<mombotCommandSpec> InitialCommands => mombotCatalog.InitialCommands;
-    public IReadOnlyList<mombotAliasSpec> InitialAliases => mombotCatalog.InitialAliases;
     public mombotSettings Settings => mombotSettings.Load();
 
     public void AttachSession(
@@ -90,6 +103,7 @@ internal sealed class mombotService
         _config = config ?? new mombotConfig();
         _config.Enabled = false;
         NormalizeConfig();
+        ReloadCommandAliases();
         ResetAuthorizedUsers();
         SyncWatcherState();
     }
@@ -109,6 +123,7 @@ internal sealed class mombotService
         string previousScriptRoot = _config.ScriptRoot ?? string.Empty;
         _config = config ?? new mombotConfig();
         NormalizeConfig();
+        ReloadCommandAliases();
         ResetAuthorizedUsers();
         SyncWatcherState();
         if (!wasEnabled && _config.Enabled)
@@ -126,6 +141,9 @@ internal sealed class mombotService
 
     public string BuildModulePath(string category, string type, string commandName, bool hidden = false)
     {
+        if (hidden)
+            return Path.Combine(_config.ScriptRoot, "preload", $"_{commandName}.cts");
+
         string fileName = hidden ? $"_{commandName}.cts" : $"{commandName}.cts";
         return Path.Combine(_config.ScriptRoot, category, type, fileName);
     }
@@ -272,7 +290,8 @@ internal sealed class mombotService
 
     public bool TryResolveInitialCommand(string input, out mombotCommandSpec? command, out string canonical)
     {
-        return mombotCatalog.TryResolveInitialCommand(input, out command, out canonical);
+        canonical = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(input));
+        return mombotCatalog.TryGetCommandSpec(canonical, out command);
     }
 
     public mombotStatusSnapshot GetStatusSnapshot()
@@ -737,6 +756,13 @@ internal sealed class mombotService
             return true;
         }
 
+        if (!string.IsNullOrWhiteSpace(scriptRoot) &&
+            Directory.Exists(scriptRoot) &&
+            TryResolvePreloadModuleCandidate(scriptRoot, canonical, out module))
+        {
+            return true;
+        }
+
         if (mombotCatalog.TryGetCommandSpec(canonical, out mombotCommandSpec? commandSpec) &&
             commandSpec?.Kind == mombotCommandKind.Module &&
             TryResolveExplicitScriptReference(commandSpec.Source, out string? explicitReference, out string? explicitFullPath))
@@ -802,6 +828,33 @@ internal sealed class mombotService
             "Local",
             string.Empty,
             false);
+        return true;
+    }
+
+    private bool TryResolvePreloadModuleCandidate(
+        string scriptRoot,
+        string canonical,
+        out mombotResolvedModule? module)
+    {
+        module = null;
+
+        if (!PreloadModuleMap.TryGetValue(canonical, out (string Category, string Type) location))
+            return false;
+
+        string directory = Path.Combine(scriptRoot, "preload");
+        if (!Directory.Exists(directory))
+            return false;
+
+        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
+        if (!File.Exists(hiddenPath))
+            return false;
+
+        module = new mombotResolvedModule(
+            BuildLoadReference(hiddenPath),
+            Path.GetFullPath(hiddenPath),
+            location.Category,
+            location.Type,
+            true);
         return true;
     }
 
@@ -876,6 +929,93 @@ internal sealed class mombotService
             return Path.GetFullPath(Path.Combine(GetScriptsDirectory(), normalized[scriptsToken.Length..]));
 
         return Path.GetFullPath(Path.Combine(GetProgramDirectory(), normalized));
+    }
+
+    private string? GetAliasConfigPath()
+    {
+        string? scriptRoot = GetAbsoluteScriptRoot();
+        if (string.IsNullOrWhiteSpace(scriptRoot))
+            return null;
+
+        return Path.Combine(scriptRoot, "aliases.cfg");
+    }
+
+    private void ReloadCommandAliases()
+    {
+        _commandAliases.Clear();
+
+        string? filePath = GetAliasConfigPath();
+        if (!string.IsNullOrWhiteSpace(filePath) &&
+            TryLoadCommandAliasesFromFile(filePath, out Dictionary<string, string>? loaded) &&
+            loaded != null)
+        {
+            foreach ((string alias, string canonical) in loaded)
+                _commandAliases[alias] = canonical;
+            return;
+        }
+
+        foreach ((string alias, string canonical) in mombotCatalog.BuildDefaultAliasMap())
+            _commandAliases[alias] = canonical;
+    }
+
+    private static bool TryLoadCommandAliasesFromFile(string filePath, out Dictionary<string, string>? aliases)
+    {
+        aliases = null;
+        try
+        {
+            if (!File.Exists(filePath))
+                return false;
+
+            var loaded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string rawLine in File.ReadLines(filePath))
+            {
+                string line = rawLine.Trim();
+                if (string.IsNullOrWhiteSpace(line) ||
+                    line.StartsWith("#", StringComparison.Ordinal) ||
+                    line.StartsWith(";", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                int separator = line.IndexOf('=');
+                if (separator <= 0 || separator >= line.Length - 1)
+                    continue;
+
+                string alias = line[..separator].Trim();
+                string canonical = line[(separator + 1)..].Trim();
+                if (string.IsNullOrWhiteSpace(alias) || string.IsNullOrWhiteSpace(canonical))
+                    continue;
+
+                loaded[alias] = canonical;
+            }
+
+            aliases = loaded;
+            return true;
+        }
+        catch
+        {
+            aliases = null;
+            return false;
+        }
+    }
+
+    private string NormalizeConfiguredCommandAlias(string commandName)
+    {
+        string normalized = string.IsNullOrWhiteSpace(commandName)
+            ? string.Empty
+            : commandName.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (_commandAliases.TryGetValue(normalized, out string? mapped) &&
+               !string.IsNullOrWhiteSpace(mapped) &&
+               seen.Add(normalized))
+        {
+            normalized = mombotCatalog.NormalizeCommandName(mapped);
+        }
+
+        return normalized;
     }
 
     private string ResolveAgainstProgramDirectory(string path)
@@ -1189,9 +1329,9 @@ internal sealed class mombotService
         var parameters = rawParameters.Take(8).ToList();
 
         ApplyStockCommandRewrites(ref normalizedCommand, parameters);
-        normalizedCommand = NormalizeStockCommandAlias(normalizedCommand);
+        normalizedCommand = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(normalizedCommand));
         ApplyTravelCommandRewrites(ref normalizedCommand, parameters);
-        normalizedCommand = mombotCatalog.NormalizeCommandName(normalizedCommand);
+        normalizedCommand = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(normalizedCommand));
 
         string normalizedLine = BuildNormalizedCommandLine(normalizedCommand, parameters);
         return new mombotCommandContext(
@@ -1281,15 +1421,6 @@ internal sealed class mombotService
 
     private void ApplyTravelCommandRewrites(ref string commandName, List<string> parameters)
     {
-        if (string.Equals(commandName, "m", StringComparison.OrdinalIgnoreCase))
-            commandName = "mow";
-        else if (string.Equals(commandName, "p", StringComparison.OrdinalIgnoreCase))
-            commandName = "pwarp";
-        else if (string.Equals(commandName, "t", StringComparison.OrdinalIgnoreCase))
-            commandName = "twarp";
-        else if (string.Equals(commandName, "b", StringComparison.OrdinalIgnoreCase))
-            commandName = "bwarp";
-
         if (!MatchesAnyCommand(commandName, "mow", "twarp", "bwarp", "pwarp", "smow"))
             return;
 
@@ -1299,28 +1430,6 @@ internal sealed class mombotService
         // commands handled here should expand sector shortcuts locally.
         ExpandStockParameterAliases(parameters);
         RewriteTravelPlanetTarget(parameters);
-    }
-
-    private static string NormalizeStockCommandAlias(string commandName)
-    {
-        if (string.IsNullOrWhiteSpace(commandName))
-            return string.Empty;
-
-        return commandName.ToLowerInvariant() switch
-        {
-            "l" => "land",
-            "x" => "xport",
-            "qss" => "status",
-            "d" => "dep",
-            "w" => "with",
-            "k" => "keep",
-            "exit" => "xenter",
-            "cn" => "cn9",
-            "emx" => "reset",
-            "pinfo" => "pscan",
-            "shipstore" => "storeship",
-            _ => commandName,
-        };
     }
 
     private void RewriteTravelPlanetTarget(List<string> parameters)
@@ -1497,15 +1606,11 @@ internal sealed class mombotService
 
     private string? GetGameStorageDirectory()
     {
-        string? scriptRoot = GetAbsoluteScriptRoot();
-        if (string.IsNullOrWhiteSpace(scriptRoot))
-            return null;
-
         string gameName = Path.GetFileNameWithoutExtension(_database?.DatabasePath ?? _database?.DatabaseName ?? string.Empty);
         if (string.IsNullOrWhiteSpace(gameName))
             return null;
 
-        return Path.Combine(scriptRoot, "games", gameName);
+        return Path.Combine(GetProgramDirectory(), "games", gameName);
     }
 
     private static string ExpandNumericSuffix(string token)
