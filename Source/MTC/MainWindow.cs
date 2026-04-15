@@ -127,12 +127,14 @@ public class MainWindow : Window
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
     private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
-    private readonly Button _statusLiveButton = new() { Content = "LIVE" };
-    private readonly Button _statusPausedButton = new() { Content = "Paused" };
-    private readonly Border _statusModeSelector = new();
+    private readonly Button _statusLivePausedButton = new() { Content = "LIVE" };
+    private readonly Border _statusHaggleFrame = new();
+    private readonly Border _statusLivePausedFrame = new();
     private readonly object _pausedTerminalSync = new();
     private readonly List<byte[]> _pausedTerminalChunks = [];
     private bool _terminalLivePaused;
+    private bool _statusHaggleHovered;
+    private bool _statusLivePausedHovered;
     private Border? _commPanelBorder;
     private Button? _commFedTabButton;
     private Button? _commSubspaceTabButton;
@@ -2210,8 +2212,10 @@ public class MainWindow : Window
         _statusMacroHost.VerticalAlignment = VerticalAlignment.Center;
         _statusMacroHost.Child = BuildStatusMacroBox();
 
-        _statusModeSelector.Margin = new Thickness(0, 4, 8, 4);
-        _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
+        _statusHaggleFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusHaggleFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusLivePausedFrame.Margin = new Thickness(0, 4, 8, 4);
+        _statusLivePausedFrame.VerticalAlignment = VerticalAlignment.Center;
 
         var rightTools = new StackPanel
         {
@@ -2222,7 +2226,8 @@ public class MainWindow : Window
             Children =
             {
                 _statusMacroHost,
-                _statusModeSelector,
+                _statusHaggleFrame,
+                _statusLivePausedFrame,
             },
         };
         Grid.SetColumn(rightTools, 1);
@@ -5380,25 +5385,15 @@ public class MainWindow : Window
     private void ConfigureStatusModeSelector()
     {
         ConfigureStatusHaggleButton();
-        ConfigureStatusModeButton(_statusLiveButton, paused: false);
-        ConfigureStatusModeButton(_statusPausedButton, paused: true);
+        ConfigureStatusToggleButton();
 
-        var selectorButtons = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 4,
-            Margin = new Thickness(0),
-        };
-        selectorButtons.Children.Add(_statusHaggleButton);
-        selectorButtons.Children.Add(new Border { Width = 8 });
-        selectorButtons.Children.Add(_statusLiveButton);
-        selectorButtons.Children.Add(_statusPausedButton);
+        _statusHaggleFrame.Padding = new Thickness(4, 2);
+        _statusHaggleFrame.CornerRadius = new CornerRadius(8);
+        _statusHaggleFrame.Child = _statusHaggleButton;
 
-        _statusModeSelector.Padding = new Thickness(4, 2);
-        _statusModeSelector.Margin = new Thickness(8, 4, 8, 4);
-        _statusModeSelector.CornerRadius = new CornerRadius(8);
-        _statusModeSelector.VerticalAlignment = VerticalAlignment.Center;
-        _statusModeSelector.Child = selectorButtons;
+        _statusLivePausedFrame.Padding = new Thickness(4, 2);
+        _statusLivePausedFrame.CornerRadius = new CornerRadius(8);
+        _statusLivePausedFrame.Child = _statusLivePausedButton;
 
         UpdateTerminalLiveSelector();
     }
@@ -5416,34 +5411,65 @@ public class MainWindow : Window
             OnHaggleToggleRequested();
             Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
         };
+        _statusHaggleButton.PointerEntered += (_, _) =>
+        {
+            _statusHaggleHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusHaggleButton.PointerExited += (_, _) =>
+        {
+            _statusHaggleHovered = false;
+            UpdateTerminalLiveSelector();
+        };
     }
 
-    private void ConfigureStatusModeButton(Button button, bool paused)
+    private void ConfigureStatusToggleButton()
     {
-        button.MinWidth = paused ? 70 : 56;
-        button.Height = 20;
-        button.Padding = new Thickness(10, 1);
-        button.FontSize = 11;
-        button.FontWeight = FontWeight.SemiBold;
-        button.VerticalAlignment = VerticalAlignment.Center;
-        button.Click += (_, _) =>
+        _statusLivePausedButton.MinWidth = 62;
+        _statusLivePausedButton.Height = 20;
+        _statusLivePausedButton.Padding = new Thickness(6, 1, 3, 1);
+        _statusLivePausedButton.FontSize = 11;
+        _statusLivePausedButton.FontWeight = FontWeight.SemiBold;
+        _statusLivePausedButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusLivePausedButton.Click += (_, _) =>
         {
-            SetTerminalLivePaused(paused);
+            SetTerminalLivePaused(!_terminalLivePaused);
             Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusLivePausedButton.PointerEntered += (_, _) =>
+        {
+            _statusLivePausedHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusLivePausedButton.PointerExited += (_, _) =>
+        {
+            _statusLivePausedHovered = false;
+            UpdateTerminalLiveSelector();
         };
     }
 
     private void UpdateTerminalLiveSelector()
     {
         bool enabled = _gameInstance != null;
-        _statusModeSelector.Background = HudFrame;
-        _statusModeSelector.BorderBrush = HudInnerEdge;
-        _statusModeSelector.BorderThickness = new Thickness(1);
-        _statusModeSelector.Opacity = enabled ? 1.0 : 0.55;
+        ApplyStatusToggleFrameStyle(_statusHaggleFrame, enabled);
+        ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
 
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: enabled && _gameInstance?.NativeHaggleEnabled == true, enabled);
-        ApplyStatusModeButtonStyle(_statusLiveButton, selected: !_terminalLivePaused, enabled);
-        ApplyStatusModeButtonStyle(_statusPausedButton, selected: _terminalLivePaused, enabled);
+        _statusHaggleButton.Content = enabled && _statusHaggleHovered
+            ? (_gameInstance?.NativeHaggleEnabled == true ? "OFF" : "ON")
+            : "HAGGLE";
+        _statusLivePausedButton.Content = enabled && _statusLivePausedHovered
+            ? (_terminalLivePaused ? "RESUME" : "PAUSE")
+            : (_terminalLivePaused ? "PAUSED" : "LIVE");
+        ApplyStatusModeButtonStyle(_statusLivePausedButton, paused: _terminalLivePaused, enabled);
+    }
+
+    private void ApplyStatusToggleFrameStyle(Border frame, bool enabled)
+    {
+        frame.Background = HudFrame;
+        frame.BorderBrush = HudInnerEdge;
+        frame.BorderThickness = new Thickness(1);
+        frame.Opacity = enabled ? 1.0 : 0.55;
     }
 
     private void ApplyStatusHaggleButtonStyle(Button button, bool selected, bool enabled)
@@ -5455,21 +5481,13 @@ public class MainWindow : Window
         button.Foreground = selected ? HudAccentInk : HudMuted;
     }
 
-    private void ApplyStatusModeButtonStyle(Button button, bool selected, bool enabled)
+    private void ApplyStatusModeButtonStyle(Button button, bool paused, bool enabled)
     {
-        bool pausedButton = ReferenceEquals(button, _statusPausedButton);
-
         button.IsEnabled = enabled;
-        button.Background = selected
-            ? (pausedButton ? HudAccentHot : HudAccentOk)
-            : HudHeaderAlt;
-        button.BorderBrush = selected
-            ? HudEdge
-            : HudInnerEdge;
+        button.Background = paused ? HudAccentWarn : HudAccentOk;
+        button.BorderBrush = paused ? HudAccentHot : HudAccent;
         button.BorderThickness = new Thickness(1);
-        button.Foreground = selected
-            ? HudAccentInk
-            : HudMuted;
+        button.Foreground = HudAccentInk;
     }
 
     private void SetTerminalLivePaused(bool paused)
