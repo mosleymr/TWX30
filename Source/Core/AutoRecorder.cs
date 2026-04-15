@@ -367,6 +367,10 @@ namespace TWXProxy.Core
             @"^You unload the (Fuel Ore|Organics|Equipment) from your ship\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxJettisonedCargo = new(
+            @"^([\d,]+)\s+holds?\s+of\s+(Fuel Ore|Organics|Equipment|Colonists)\s+jettisoned\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Regex _rxFigScanSector = new(
             @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -460,6 +464,9 @@ namespace TWXProxy.Core
                 return;
 
             if (TryProcessPlanetProductTransferStatus(trimmedLine))
+                return;
+
+            if (TryProcessCargoJettisonStatus(trimmedLine))
                 return;
 
             {
@@ -1496,30 +1503,63 @@ namespace TWXProxy.Core
             int direction = confirmationKind == PlanetProductTransferKind.Take ? 1 : -1;
             int quantity = _pendingPlanetProductQuantity * direction;
 
+            ShipStatusDelta? delta = BuildCargoDelta(confirmationProductName, quantity, -quantity);
+            if (delta == null)
+                return;
+
+            EmitShipStatusDelta(delta);
+        }
+
+        private bool TryProcessCargoJettisonStatus(string trimmedLine)
+        {
+            var match = _rxJettisonedCargo.Match(trimmedLine);
+            if (!match.Success)
+                return false;
+
+            int quantity = ParseCommaInt(match.Groups[1].Value);
+            if (quantity <= 0)
+                return true;
+
+            ShipStatusDelta? delta = BuildCargoDelta(
+                match.Groups[2].Value.Trim(),
+                -quantity,
+                quantity);
+            if (delta != null)
+                EmitShipStatusDelta(delta);
+
+            return true;
+        }
+
+        private static ShipStatusDelta? BuildCargoDelta(string productName, int cargoDelta, int holdsEmptyDelta)
+        {
             var delta = new ShipStatusDelta
             {
-                HoldsEmptyDelta = -quantity
+                HoldsEmptyDelta = holdsEmptyDelta
             };
 
-            switch (confirmationProductName.ToLowerInvariant())
+            switch (productName.Trim().ToLowerInvariant())
             {
                 case "fuel ore":
-                    delta.FuelOreDelta = quantity;
+                    delta.FuelOreDelta = cargoDelta;
                     break;
 
                 case "organics":
-                    delta.OrganicsDelta = quantity;
+                    delta.OrganicsDelta = cargoDelta;
                     break;
 
                 case "equipment":
-                    delta.EquipmentDelta = quantity;
+                    delta.EquipmentDelta = cargoDelta;
+                    break;
+
+                case "colonists":
+                    delta.ColonistsDelta = cargoDelta;
                     break;
 
                 default:
-                    return;
+                    return null;
             }
 
-            EmitShipStatusDelta(delta);
+            return delta;
         }
 
         private static string NormalizeRecorderLine(string line)

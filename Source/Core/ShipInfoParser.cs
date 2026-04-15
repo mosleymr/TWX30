@@ -17,6 +17,7 @@ public class ShipInfoParser
 {
     // ── State ──────────────────────────────────────────────────────────────
     private ShipStatus _s = new();
+    private ShipStatus? _infoBlockSnapshot;
 
     // Multi-line "I" block tracking
     private bool _inInfoBlock;
@@ -58,15 +59,22 @@ public class ShipInfoParser
             _infoBlockSawTransWarpSection = false;
             _infoBlockSawTransWarp1 = false;
             _infoBlockSawTransWarp2 = false;
-            ResetInfoBlockShipSnapshot();
+            _infoBlockSnapshot = CloneStatus(_s);
+            ResetInfoBlockShipSnapshot(_infoBlockSnapshot);
             return;
         }
 
         if (_inInfoBlock && IsInfoBlockTerminator(trimmed))
         {
-            FinalizeInfoBlockTranswarpState();
+            if (_infoBlockSnapshot != null)
+            {
+                FinalizeInfoBlockTranswarpState(_infoBlockSnapshot);
+                _s = _infoBlockSnapshot;
+                Updated?.Invoke(_s);
+            }
+
+            _infoBlockSnapshot = null;
             _inInfoBlock = false;
-            Updated?.Invoke(_s);
             return;
         }
 
@@ -76,11 +84,10 @@ public class ShipInfoParser
                 return;
 
             // Do not let an interrupted or malformed info display trap the parser
-            // in info mode forever. Commit the block once if the next line no
-            // longer resembles info data.
-            FinalizeInfoBlockTranswarpState();
+            // in info mode forever. Discard the partial snapshot instead of
+            // publishing half-reset ship state.
+            _infoBlockSnapshot = null;
             _inInfoBlock = false;
-            Updated?.Invoke(_s);
         }
 
         // ── "/" one-liner lines (contain the ³ separator) ─────────────────
@@ -243,12 +250,14 @@ public class ShipInfoParser
 
     private void ParseInfoLine(string line)
     {
+        ShipStatus target = _infoBlockSnapshot ?? _s;
+
         // Key: value lines — split on the first ':'
         int colon = line.IndexOf(':');
         if (colon <= 0)
         {
             CheckTransWarpHeader(line);
-            ParseCorpLine(line);
+            ParseCorpLine(target, line);
             return;
         }
 
@@ -261,7 +270,7 @@ public class ShipInfoParser
             {
                 // val is "Rank Name" — we only want the last word (the name, not the rank)
                 var parts = val.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                _s.TraderName = parts.Length > 0 ? parts[^1] : val;
+                target.TraderName = parts.Length > 0 ? parts[^1] : val;
                 break;
             }
 
@@ -270,17 +279,17 @@ public class ShipInfoParser
                 var m = _rxRankExp.Match(val);
                 if (m.Success)
                 {
-                    _s.Experience = ParseLong(m.Groups[1].Value);
-                    _s.Alignment  = ParseLong(m.Groups[2].Value);
+                    target.Experience = ParseLong(m.Groups[1].Value);
+                    target.Alignment  = ParseLong(m.Groups[2].Value);
                     // Optional alignment text after the number
                     string rest = val[(m.Index + m.Length)..].Trim();
-                    if (!string.IsNullOrEmpty(rest)) _s.AlignText = rest;
+                    if (!string.IsNullOrEmpty(rest)) target.AlignText = rest;
                 }
                 break;
             }
 
             case "Times Blown Up":
-                _s.TimesBlownUp = ParseInt(val);
+                target.TimesBlownUp = ParseInt(val);
                 break;
 
             // "Corp           # 2," — colon split gives key="Corp           # 2,"
@@ -288,25 +297,25 @@ public class ShipInfoParser
             // We catch it below in the '#' branch.
 
             case "Ship Name":
-                _s.ShipName = val;
+                target.ShipName = val;
                 break;
 
             case "Ship Info":
-                _s.ShipType = val;
-                if (string.IsNullOrWhiteSpace(_s.ShipClass))
-                    _s.ShipClass = val;
+                target.ShipType = val;
+                if (string.IsNullOrWhiteSpace(target.ShipClass))
+                    target.ShipClass = val;
                 break;
 
             case "Turns to Warp":
-                _s.TurnsPerWarp = ParseInt(val);
+                target.TurnsPerWarp = ParseInt(val);
                 break;
 
             case "Current Sector":
-                _s.CurrentSector = ParseInt(val);
+                target.CurrentSector = ParseInt(val);
                 break;
 
             case "Turns left":
-                _s.Turns = ParseInt(val);
+                target.Turns = ParseInt(val);
                 break;
 
             case "Total Holds":
@@ -314,97 +323,97 @@ public class ShipInfoParser
                 var m = _rxTotalHolds.Match(val);
                 if (m.Success)
                 {
-                    _s.TotalHolds = ParseInt(m.Groups[1].Value);
-                    ParseHoldComponents(m.Groups[2].Value);
+                    target.TotalHolds = ParseInt(m.Groups[1].Value);
+                    ParseHoldComponents(target, m.Groups[2].Value);
 
-                    if (_s.HoldsEmpty <= 0)
+                    if (target.HoldsEmpty <= 0)
                     {
-                        int empty = _s.TotalHolds - _s.FuelOre - _s.Organics - _s.Equipment - _s.Colonists;
-                        _s.HoldsEmpty = empty < 0 ? 0 : empty;
+                        int empty = target.TotalHolds - target.FuelOre - target.Organics - target.Equipment - target.Colonists;
+                        target.HoldsEmpty = empty < 0 ? 0 : empty;
                     }
                 }
                 else
                 {
-                    _s.TotalHolds = ParseInt(val.Split('-')[0].Trim());
+                    target.TotalHolds = ParseInt(val.Split('-')[0].Trim());
                 }
                 break;
             }
 
             case "Fighters":
-                _s.Fighters = ParseInt(val);
+                target.Fighters = ParseInt(val);
                 break;
 
             case "Shield points":
-                _s.Shields = ParseInt(val.Split('+')[0]); // strip "+X regeneration"
+                target.Shields = ParseInt(val.Split('+')[0]); // strip "+X regeneration"
                 break;
 
             // Two-value lines — handled below after the switch
             case var k when k.StartsWith("Armid Mines"):
-                _s.ArmidMines  = ParseFirstNum(val);
-                _s.LimpetMines = ParseSecondField(line, "Limpet Mines");
+                target.ArmidMines  = ParseFirstNum(val);
+                target.LimpetMines = ParseSecondField(line, "Limpet Mines");
                 break;
 
             case var k when k.StartsWith("Photon Missiles"):
-                _s.Photons      = ParseFirstNum(val);
-                _s.GenesisTorps = ParseSecondField(line, "Genesis Torps");
+                target.Photons      = ParseFirstNum(val);
+                target.GenesisTorps = ParseSecondField(line, "Genesis Torps");
                 break;
 
             case "Genesis Torps":
-                _s.GenesisTorps = ParseInt(val);
+                target.GenesisTorps = ParseInt(val);
                 break;
 
             case var k when k.StartsWith("Atomic Detn"):
-                _s.AtomicDet  = ParseFirstNum(val);
-                _s.Corbomite  = ParseSecondField(line, "Corbomite Level");
+                target.AtomicDet  = ParseFirstNum(val);
+                target.Corbomite  = ParseSecondField(line, "Corbomite Level");
                 break;
 
             case "Ether Probes":
-                _s.EtherProbes = ParseInt(val);
+                target.EtherProbes = ParseInt(val);
                 break;
 
             case var k when k.StartsWith("Cloaking Device"):
-                _s.Cloaks      = ParseFirstNum(val);
-                _s.EtherProbes = ParseSecondField(line, "Ether Probes");
+                target.Cloaks      = ParseFirstNum(val);
+                target.EtherProbes = ParseSecondField(line, "Ether Probes");
                 break;
 
             case "Mine Disruptors":
-                _s.MineDisruptors = ParseInt(val);
+                target.MineDisruptors = ParseInt(val);
                 break;
 
             case var k when k.StartsWith("Navigation Beacons") || k.Equals("Beacons"):
-                _s.Beacons = ParseFirstNum(val);
+                target.Beacons = ParseFirstNum(val);
                 break;
 
             case "Planet Scanner":
-                _s.PlanetScanner = IsBoolYes(val);
+                target.PlanetScanner = IsBoolYes(val);
                 break;
 
             case "LongRange Scan":
-                _s.LRSType = NormalizeLongRangeScannerType(val);
+                target.LRSType = NormalizeLongRangeScannerType(val);
                 break;
 
             case var k when k.Contains("Type 1 Jump"):
                 _infoBlockSawTransWarpSection = true;
                 _infoBlockSawTransWarp1 = true;
-                _s.TransWarp1 = ParseInt(val.Split(' ')[0]);
+                target.TransWarp1 = ParseInt(val.Split(' ')[0]);
                 break;
 
             case var k when k.Contains("Type 2 Jump"):
                 _infoBlockSawTransWarpSection = true;
                 _infoBlockSawTransWarp2 = true;
-                _s.TransWarp2 = ParseInt(val.Split(' ')[0]);
+                target.TransWarp2 = ParseInt(val.Split(' ')[0]);
                 break;
 
             case var k when k.StartsWith("Interdictor"):
-                _s.Interdictor = IsBoolYes(val);
+                target.Interdictor = IsBoolYes(val);
                 break;
 
             case "Credits":
-                _s.Credits = ParseLong(val);
+                target.Credits = ParseLong(val);
                 break;
         }
 
-        ParseCorpLine(line);
+        ParseCorpLine(target, line);
     }
 
     private void CheckTransWarpHeader(string line)
@@ -413,53 +422,53 @@ public class ShipInfoParser
             _infoBlockSawTransWarpSection = true;
     }
 
-    private void FinalizeInfoBlockTranswarpState()
+    private void FinalizeInfoBlockTranswarpState(ShipStatus target)
     {
         if (!_infoBlockSawTransWarpSection)
         {
-            _s.TransWarp1 = 0;
-            _s.TransWarp2 = 0;
+            target.TransWarp1 = 0;
+            target.TransWarp2 = 0;
             return;
         }
 
         if (!_infoBlockSawTransWarp1)
-            _s.TransWarp1 = 0;
+            target.TransWarp1 = 0;
 
         if (!_infoBlockSawTransWarp2)
-            _s.TransWarp2 = 0;
+            target.TransWarp2 = 0;
     }
 
-    private void ResetInfoBlockShipSnapshot()
+    private static void ResetInfoBlockShipSnapshot(ShipStatus target)
     {
         // A full "I" scan is authoritative for the current ship. Clear ship-local
         // inventory/equipment fields up front so omitted lines on the new ship do
         // not leave stale values behind from the previous hull.
-        _s.TotalHolds = 0;
-        _s.FuelOre = 0;
-        _s.Organics = 0;
-        _s.Equipment = 0;
-        _s.Colonists = 0;
-        _s.HoldsEmpty = 0;
+        target.TotalHolds = 0;
+        target.FuelOre = 0;
+        target.Organics = 0;
+        target.Equipment = 0;
+        target.Colonists = 0;
+        target.HoldsEmpty = 0;
 
-        _s.Fighters = 0;
-        _s.Shields = 0;
-        _s.Photons = 0;
-        _s.ArmidMines = 0;
-        _s.LimpetMines = 0;
-        _s.GenesisTorps = 0;
-        _s.AtomicDet = 0;
-        _s.Corbomite = 0;
+        target.Fighters = 0;
+        target.Shields = 0;
+        target.Photons = 0;
+        target.ArmidMines = 0;
+        target.LimpetMines = 0;
+        target.GenesisTorps = 0;
+        target.AtomicDet = 0;
+        target.Corbomite = 0;
 
-        _s.Cloaks = 0;
-        _s.Beacons = 0;
-        _s.EtherProbes = 0;
-        _s.MineDisruptors = 0;
-        _s.PsychProbe = false;
-        _s.PlanetScanner = false;
-        _s.LRSType = string.Empty;
-        _s.TransWarp1 = 0;
-        _s.TransWarp2 = 0;
-        _s.Interdictor = false;
+        target.Cloaks = 0;
+        target.Beacons = 0;
+        target.EtherProbes = 0;
+        target.MineDisruptors = 0;
+        target.PsychProbe = false;
+        target.PlanetScanner = false;
+        target.LRSType = string.Empty;
+        target.TransWarp1 = 0;
+        target.TransWarp2 = 0;
+        target.Interdictor = false;
     }
 
     private static bool IsInfoBlockTerminator(string line)
@@ -535,7 +544,7 @@ public class ShipInfoParser
                line.StartsWith("Credits", StringComparison.Ordinal);
     }
 
-    private void ParseHoldComponents(string value)
+    private static void ParseHoldComponents(ShipStatus target, string value)
     {
         foreach (Match match in _rxHoldComponent.Matches(value))
         {
@@ -546,25 +555,25 @@ public class ShipInfoParser
             switch (match.Groups[1].Value.Trim().ToUpperInvariant())
             {
                 case "FUEL ORE":
-                    _s.FuelOre = amount;
+                    target.FuelOre = amount;
                     break;
                 case "ORGANICS":
-                    _s.Organics = amount;
+                    target.Organics = amount;
                     break;
                 case "EQUIPMENT":
-                    _s.Equipment = amount;
+                    target.Equipment = amount;
                     break;
                 case "COLONISTS":
-                    _s.Colonists = amount;
+                    target.Colonists = amount;
                     break;
                 case "EMPTY":
-                    _s.HoldsEmpty = amount;
+                    target.HoldsEmpty = amount;
                     break;
             }
         }
     }
 
-    private void ParseCorpLine(string line)
+    private static void ParseCorpLine(ShipStatus target, string line)
     {
         if (!line.Contains("Corp", StringComparison.Ordinal) || !line.Contains('#', StringComparison.Ordinal))
             return;
@@ -579,7 +588,7 @@ public class ShipInfoParser
             corpVal = corpVal[..comma];
 
         if (int.TryParse(corpVal.Trim(), out int corpNumber))
-            _s.Corp = corpNumber;
+            target.Corp = corpNumber;
     }
 
     /// <summary>
@@ -663,4 +672,46 @@ public class ShipInfoParser
         if (long.TryParse(s.Replace(",", "").Trim(), out long v)) return v;
         return 0;
     }
+
+    private static ShipStatus CloneStatus(ShipStatus status) => new()
+    {
+        TraderName = status.TraderName,
+        Experience = status.Experience,
+        Alignment = status.Alignment,
+        AlignText = status.AlignText,
+        TimesBlownUp = status.TimesBlownUp,
+        Corp = status.Corp,
+        ShipName = status.ShipName,
+        ShipType = status.ShipType,
+        ShipNumber = status.ShipNumber,
+        ShipClass = status.ShipClass,
+        CurrentSector = status.CurrentSector,
+        Turns = status.Turns,
+        TurnsPerWarp = status.TurnsPerWarp,
+        TotalHolds = status.TotalHolds,
+        FuelOre = status.FuelOre,
+        Organics = status.Organics,
+        Equipment = status.Equipment,
+        Colonists = status.Colonists,
+        HoldsEmpty = status.HoldsEmpty,
+        Fighters = status.Fighters,
+        Shields = status.Shields,
+        Photons = status.Photons,
+        ArmidMines = status.ArmidMines,
+        LimpetMines = status.LimpetMines,
+        GenesisTorps = status.GenesisTorps,
+        AtomicDet = status.AtomicDet,
+        Corbomite = status.Corbomite,
+        Cloaks = status.Cloaks,
+        Beacons = status.Beacons,
+        EtherProbes = status.EtherProbes,
+        MineDisruptors = status.MineDisruptors,
+        PsychProbe = status.PsychProbe,
+        PlanetScanner = status.PlanetScanner,
+        LRSType = status.LRSType,
+        TransWarp1 = status.TransWarp1,
+        TransWarp2 = status.TransWarp2,
+        Interdictor = status.Interdictor,
+        Credits = status.Credits
+    };
 }

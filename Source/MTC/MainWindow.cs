@@ -199,6 +199,7 @@ public class MainWindow : Window
     private int _mombotPromptRestoreTicket;
     private string _mombotLastObservedGamePromptAnsi = string.Empty;
     private string _mombotLastObservedGamePromptPlain = string.Empty;
+    private long _mombotLastServerOutputUtcTicks;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;
@@ -3464,11 +3465,12 @@ public class MainWindow : Window
     private void RefreshInfoPanels()
     {
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
+        string turnsDisplay = GetTurnsDisplayText();
         _valName.Text      = traderName;
         _deckValName.Text  = traderName;
         _valSector.Text    = _state.Sector.ToString();
         _deckValSector.Text = _valSector.Text;
-        _valTurns.Text     = _state.Turns.ToString();
+        _valTurns.Text     = turnsDisplay;
         _deckValTurns.Text = _valTurns.Text;
         _valExper.Text     = _state.Experience.ToString("N0");
         _deckValExper.Text = _valExper.Text;
@@ -3550,6 +3552,17 @@ public class MainWindow : Window
 
         RefreshStatusBar();
         _tacticalMap?.InvalidateVisual();
+    }
+
+    private string GetTurnsDisplayText()
+    {
+        if (_state.Turns == 0 &&
+            IsMombotTruthy(ReadCurrentMombotVar("0", "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame")))
+        {
+            return "Unlimited";
+        }
+
+        return _state.Turns.ToString();
     }
 
     private void RefreshStatusBar()
@@ -4998,6 +5011,8 @@ public class MainWindow : Window
 
         gi.ServerDataReceived += (_, e) =>
         {
+            Interlocked.Exchange(ref _mombotLastServerOutputUtcTicks, DateTime.UtcNow.Ticks);
+
             if (_terminalLivePaused)
             {
                 _sessionLog.RecordServerData(e.Data);
@@ -12373,6 +12388,14 @@ public class MainWindow : Window
             if (pendingScriptReferences.Any(IsMombotScriptStillRunning))
                 continue;
 
+            long lastServerOutputUtcTicks = Interlocked.Read(ref _mombotLastServerOutputUtcTicks);
+            if (lastServerOutputUtcTicks > 0)
+            {
+                DateTime lastServerOutputUtc = new(lastServerOutputUtcTicks, DateTimeKind.Utc);
+                if ((DateTime.UtcNow - lastServerOutputUtc) < TimeSpan.FromMilliseconds(300))
+                    continue;
+            }
+
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 string candidatePromptAnsi = promptAnsi;
@@ -12392,6 +12415,9 @@ public class MainWindow : Window
                     return;
 
                 if (IsTerminalCurrentLineEquivalentTo(candidatePromptPlain))
+                    return;
+
+                if (!IsTerminalCurrentLineBlank())
                     return;
 
                 AppendCurrentGamePrompt(candidatePromptAnsi, candidatePromptPlain);
@@ -12431,6 +12457,13 @@ public class MainWindow : Window
             Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd(),
             Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd(),
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsTerminalCurrentLineBlank()
+    {
+        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
+        return string.IsNullOrWhiteSpace(
+            Core.AnsiCodes.NormalizeTerminalText(currentRowText).Trim());
     }
 
     private bool TryRestoreLatestObservedGamePrompt()
