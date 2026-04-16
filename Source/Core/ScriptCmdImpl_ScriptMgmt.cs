@@ -104,6 +104,15 @@ namespace TWXProxy.Core
                    string.Equals(activeConfig?.Name, nativeConfig.Name, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsAnyNativeBotRunning(GameInstance? gameInstance)
+        {
+            if (gameInstance == null || string.IsNullOrWhiteSpace(gameInstance.ActiveBotName))
+                return false;
+
+            BotConfig? activeConfig = gameInstance.GetBotConfig(gameInstance.ActiveBotName);
+            return ProxyMenuCatalog.IsNativeBotConfig(activeConfig);
+        }
+
         #region Script Management Command Implementation
 
         private static CmdAction CmdLoadScript_Impl(object script, CmdParam[] parameters)
@@ -205,6 +214,74 @@ namespace TWXProxy.Core
             }
             
             return CmdAction.None;
+        }
+
+        private static CmdAction CmdNativeBot(object script, CmdParam[] parameters)
+        {
+            string action = parameters[0].Value.Trim().ToUpperInvariant();
+            GameInstance? gameInstance = GlobalModules.TWXServer as GameInstance;
+            BotConfig? nativeConfig = FindNativeBotConfig(gameInstance);
+
+            if (gameInstance == null || nativeConfig == null)
+            {
+                GlobalModules.DebugLog($"[NATIVEBOT] Ignored action '{action}' because no native bot is available.\n");
+                return CmdAction.None;
+            }
+
+            switch (action)
+            {
+                case "START":
+                    if (IsNativeBotRunning(gameInstance, nativeConfig))
+                    {
+                        GlobalModules.DebugLog($"[NATIVEBOT] Start ignored; native bot '{nativeConfig.Name}' is already running.\n");
+                        return CmdAction.None;
+                    }
+
+                    if (gameInstance.NativeBotActivator == null)
+                    {
+                        GlobalModules.DebugLog($"[NATIVEBOT] Start ignored; no activator is registered for '{nativeConfig.Name}'.\n");
+                        return CmdAction.None;
+                    }
+
+                    GlobalModules.DebugLog($"[NATIVEBOT] Starting native bot '{nativeConfig.Name}'.\n");
+                    gameInstance.NativeBotActivator(nativeConfig, string.Empty);
+                    return CmdAction.None;
+
+                case "STOP":
+                    if (!IsNativeBotRunning(gameInstance, nativeConfig))
+                    {
+                        GlobalModules.DebugLog($"[NATIVEBOT] Stop ignored; native bot '{nativeConfig.Name}' is not running.\n");
+                        return CmdAction.None;
+                    }
+
+                    if (gameInstance.NativeBotStopper == null)
+                    {
+                        GlobalModules.DebugLog($"[NATIVEBOT] Stop ignored; no stopper is registered for '{nativeConfig.Name}'.\n");
+                        return CmdAction.None;
+                    }
+
+                    GlobalModules.DebugLog($"[NATIVEBOT] Stopping native bot '{nativeConfig.Name}'.\n");
+                    gameInstance.NativeBotStopper(nativeConfig.Name);
+                    return CmdAction.None;
+
+                case "REBOOT":
+                    if (gameInstance.NativeBotRebooter != null)
+                    {
+                        GlobalModules.DebugLog($"[NATIVEBOT] Rebooting native bot '{nativeConfig.Name}'.\n");
+                        gameInstance.NativeBotRebooter(nativeConfig.Name);
+                        return CmdAction.None;
+                    }
+
+                    GlobalModules.DebugLog($"[NATIVEBOT] Reboot fallback for '{nativeConfig.Name}'.\n");
+                    if (IsNativeBotRunning(gameInstance, nativeConfig))
+                        gameInstance.NativeBotStopper?.Invoke(nativeConfig.Name);
+                    else
+                        gameInstance.NativeBotActivator?.Invoke(nativeConfig, string.Empty);
+                    return CmdAction.None;
+
+                default:
+                    throw new ScriptException("NATIVEBOT action must be START, STOP, or REBOOT");
+            }
         }
 
         private static CmdAction CmdIsScriptLoaded_Impl(object script, CmdParam[] parameters)

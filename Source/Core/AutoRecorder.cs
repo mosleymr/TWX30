@@ -2365,6 +2365,7 @@ namespace TWXProxy.Core
                 if (idx >= 6) break;
                 sec.Warp[idx++] = (ushort)sn;
             }
+            sec.WarpCount = (byte)Math.Min(idx, 6);
 
             db.SaveSector(sec);
             GlobalModules.DebugLog($"[AutoRecorder] Sector {fromSector} warps from density scan: {string.Join(", ", sectors)}\n");
@@ -2389,6 +2390,7 @@ namespace TWXProxy.Core
                 if (ushort.TryParse(clean, out ushort w))
                     sector.Warp[idx++] = w;
             }
+            sector.WarpCount = (byte)Math.Min(idx, 6);
 
             // Pascal SectorCompleted() sets etHolo (the maximum explored level) whenever
             // a full sector display finishes — this covers both direct visits and holo scans.

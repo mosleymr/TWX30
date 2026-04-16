@@ -207,6 +207,7 @@ public class MainWindow : Window
     private bool _mombotStartupDataGatherRunning;
     private bool _mombotStartupPostInitPending;
     private bool _mombotStartupFinalizeRunning;
+    private bool _nativeBotAutoStartInFlight;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -3411,6 +3412,8 @@ public class MainWindow : Window
             bool hasDensityScanner = !string.IsNullOrEmpty(s.LRSType) && !hasHoloScanner;
             _state.ScannerH     = hasHoloScanner;
             _state.ScannerD     = NormalizeDensityScanner(hasDensityScanner, hasHoloScanner);
+            _state.HasTranswarpDrive1 = s.HasTransWarp1 || s.TransWarp1 > 0;
+            _state.HasTranswarpDrive2 = s.HasTransWarp2 || s.TransWarp2 > 0;
             _state.TranswarpDrive1 = s.TransWarp1;
             _state.TranswarpDrive2 = s.TransWarp2;
 
@@ -3529,17 +3532,17 @@ public class MainWindow : Window
         _deckValCorbo.Text = _valCorbo.Text;
         _valCloak.Text     = _state.Cloak.ToString();
         _deckValCloak.Text = _valCloak.Text;
-        _valTW1.Text       = _state.TranswarpDrive1 > 0 ? _state.TranswarpDrive1.ToString() : "-";
+        _valTW1.Text       = _state.HasTranswarpDrive1 ? _state.TranswarpDrive1.ToString() : "-";
         _deckValTW1.Text   = _valTW1.Text;
-        _valTW2.Text       = _state.TranswarpDrive2 > 0 ? _state.TranswarpDrive2.ToString() : "-";
+        _valTW2.Text       = _state.HasTranswarpDrive2 ? _state.TranswarpDrive2.ToString() : "-";
         _deckValTW2.Text   = _valTW2.Text;
-        UpdateScanInd(_scanIndTW1, _state.TranswarpDrive1 > 0);
-        UpdateScanInd(_scanIndTW2, _state.TranswarpDrive2 > 0);
+        UpdateScanInd(_scanIndTW1, _state.HasTranswarpDrive1);
+        UpdateScanInd(_scanIndTW2, _state.HasTranswarpDrive2);
         UpdateScanInd(_scanIndD, _state.ScannerD);
         UpdateScanInd(_scanIndH, _state.ScannerH);
         UpdateScanInd(_scanIndP, _state.ScannerP);
-        UpdateDeckScanInd(_deckScanIndTW1, _state.TranswarpDrive1 > 0);
-        UpdateDeckScanInd(_deckScanIndTW2, _state.TranswarpDrive2 > 0);
+        UpdateDeckScanInd(_deckScanIndTW1, _state.HasTranswarpDrive1);
+        UpdateDeckScanInd(_deckScanIndTW2, _state.HasTranswarpDrive2);
         UpdateDeckScanInd(_deckScanIndD, _state.ScannerD);
         UpdateDeckScanInd(_deckScanIndH, _state.ScannerH);
         UpdateDeckScanInd(_deckScanIndP, _state.ScannerP);
@@ -3610,8 +3613,7 @@ public class MainWindow : Window
                 "$STARDOCK",
                 "$MAP~STARDOCK",
                 "$MAP~stardock",
-                "$BOT~STARDOCK",
-                "$stardock");
+                "$BOT~STARDOCK");
             if (IsDefinedMombotSectorValue(savedStarDock))
                 starDock = savedStarDock;
         }
@@ -3621,8 +3623,7 @@ public class MainWindow : Window
             string savedRylos = ReadCurrentMombotSectorVar("0",
                 "$MAP~RYLOS",
                 "$MAP~rylos",
-                "$BOT~RYLOS",
-                "$rylos");
+                "$BOT~RYLOS");
             if (IsDefinedMombotSectorValue(savedRylos))
                 rylos = savedRylos;
         }
@@ -3632,8 +3633,7 @@ public class MainWindow : Window
             string savedAlpha = ReadCurrentMombotSectorVar("0",
                 "$MAP~ALPHA_CENTAURI",
                 "$MAP~alpha_centauri",
-                "$BOT~ALPHA_CENTAURI",
-                "$alpha_centauri");
+                "$BOT~ALPHA_CENTAURI");
             if (IsDefinedMombotSectorValue(savedAlpha))
                 alpha = savedAlpha;
         }
@@ -3934,7 +3934,10 @@ public class MainWindow : Window
     {
         if (_state.EmbeddedProxy)
         {
-            if (_gameInstance != null && !_gameInstance.IsRunning)
+            string targetGameName = GetEmbeddedGameName();
+            if (_gameInstance != null &&
+                (!_gameInstance.IsRunning ||
+                 !string.Equals(_gameInstance.GameName, targetGameName, StringComparison.OrdinalIgnoreCase)))
                 await StopEmbeddedAsync();
 
             if (_gameInstance == null)
@@ -4288,6 +4291,8 @@ public class MainWindow : Window
         Atomic          = _state.Atomic,
         Corbomite       = _state.Corbomite,
         Cloak           = _state.Cloak,
+        HasTranswarpDrive1 = _state.HasTranswarpDrive1,
+        HasTranswarpDrive2 = _state.HasTranswarpDrive2,
         TranswarpDrive1 = _state.TranswarpDrive1,
         TranswarpDrive2 = _state.TranswarpDrive2,
         ScannerD        = _state.ScannerD,
@@ -4347,6 +4352,8 @@ public class MainWindow : Window
             Atomic = state.Atomic,
             Corbomite = state.Corbomite,
             Cloak = state.Cloak,
+            HasTranswarpDrive1 = state.HasTranswarpDrive1 || state.TranswarpDrive1 > 0,
+            HasTranswarpDrive2 = state.HasTranswarpDrive2 || state.TranswarpDrive2 > 0,
             TranswarpDrive1 = state.TranswarpDrive1,
             TranswarpDrive2 = state.TranswarpDrive2,
             ScannerD = NormalizeDensityScanner(state.ScannerD, state.ScannerH),
@@ -4386,6 +4393,8 @@ public class MainWindow : Window
             Atomic = _state.Atomic,
             Corbomite = _state.Corbomite,
             Cloak = _state.Cloak,
+            HasTranswarpDrive1 = _state.HasTranswarpDrive1,
+            HasTranswarpDrive2 = _state.HasTranswarpDrive2,
             TranswarpDrive1 = _state.TranswarpDrive1,
             TranswarpDrive2 = _state.TranswarpDrive2,
             ScannerD = NormalizeDensityScanner(_state.ScannerD, _state.ScannerH),
@@ -4447,7 +4456,7 @@ public class MainWindow : Window
 
         return NormalizeScriptDirectoryValue(
             OperatingSystem.IsWindows()
-                ? Core.WindowsInstallInfo.GetDefaultScriptsDirectory()
+                ? Path.Combine(AppPaths.ProgramDir, "scripts")
                 : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
     }
 
@@ -4552,6 +4561,8 @@ public class MainWindow : Window
             Atomic = profile.Atomic,
             Corbomite = profile.Corbomite,
             Cloak = profile.Cloak,
+            HasTranswarpDrive1 = profile.HasTranswarpDrive1 || profile.TranswarpDrive1 > 0,
+            HasTranswarpDrive2 = profile.HasTranswarpDrive2 || profile.TranswarpDrive2 > 0,
             TranswarpDrive1 = profile.TranswarpDrive1,
             TranswarpDrive2 = profile.TranswarpDrive2,
             ScannerD = NormalizeDensityScanner(profile.ScannerD, profile.ScannerH),
@@ -4697,6 +4708,8 @@ public class MainWindow : Window
         _state.Atomic         = p.Atomic;
         _state.Corbomite      = p.Corbomite;
         _state.Cloak          = p.Cloak;
+        _state.HasTranswarpDrive1 = p.HasTranswarpDrive1 || p.TranswarpDrive1 > 0;
+        _state.HasTranswarpDrive2 = p.HasTranswarpDrive2 || p.TranswarpDrive2 > 0;
         _state.TranswarpDrive1 = p.TranswarpDrive1;
         _state.TranswarpDrive2 = p.TranswarpDrive2;
         _state.ScannerD       = NormalizeDensityScanner(p.ScannerD, p.ScannerH);
@@ -4931,11 +4944,24 @@ public class MainWindow : Window
         gi.ShipStatusUpdated += OnShipStatusUpdated;
         gi.NativeBotActivator = (botConfig, requestedBotName) =>
         {
-            Dispatcher.UIThread.Post(() => _ = StartInternalMombotAsync(
-                botConfig,
-                requestedBotName,
-                interactiveOfflinePrompt: false,
-                publishMissingGameMessage: false));
+            Dispatcher.UIThread.Post(async () =>
+            {
+                if (_gameInstance != null &&
+                    !string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName) &&
+                    !_mombot.Enabled)
+                {
+                    StopActiveExternalBotCore(publishStopMessage: false);
+                }
+
+                if (_mombot.Enabled)
+                    return;
+
+                await StartInternalMombotAsync(
+                    botConfig,
+                    requestedBotName,
+                    interactiveOfflinePrompt: false,
+                    publishMissingGameMessage: false);
+            });
             return true;
         };
         gi.NativeBotStopper = _ =>
@@ -4952,6 +4978,60 @@ public class MainWindow : Window
                 finally
                 {
                     _runtimeStopGate.Release();
+                }
+            });
+            return true;
+        };
+        gi.NativeBotRebooter = _ =>
+        {
+            Dispatcher.UIThread.Post(async () =>
+            {
+                Core.BotConfig rebootBotConfig = LoadConfiguredBotSections()
+                    .First(bot => bot.IsNative)
+                    .Config;
+                Core.GlobalModules.DebugLog(
+                    $"[MTC.NativeBotReboot] begin enabled={_mombot.Enabled} connected={(_gameInstance?.IsConnected ?? false)} bot='{rebootBotConfig?.Name ?? string.Empty}'\n");
+                Core.GlobalModules.FlushDebugLog();
+
+                try
+                {
+                    await _runtimeStopGate.WaitAsync();
+                    try
+                    {
+                        if (_mombot.Enabled)
+                        {
+                            await StopInternalMombotCoreAsync(
+                                publishStopMessage: false,
+                                suppressMissingGameMessage: true);
+                        }
+                    }
+                    finally
+                    {
+                        _runtimeStopGate.Release();
+                    }
+
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotReboot] starting bot='{rebootBotConfig?.Name ?? string.Empty}' connected={(_gameInstance?.IsConnected ?? false)}\n");
+                    Core.GlobalModules.FlushDebugLog();
+                    await StartInternalMombotAsync(
+                        rebootBotConfig,
+                        requestedBotName: string.Empty,
+                        interactiveOfflinePrompt: false,
+                        publishMissingGameMessage: false);
+
+                    if (_mombot.Enabled)
+                        PublishMombotLocalMessage("Mombot reboot complete.");
+
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotReboot] complete enabled={_mombot.Enabled}\n");
+                    Core.GlobalModules.FlushDebugLog();
+                }
+                catch (Exception ex)
+                {
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotReboot] failed: {ex}\n");
+                    Core.GlobalModules.FlushDebugLog();
+                    PublishMombotLocalMessage($"Mombot reboot failed: {ex.Message}");
                 }
             });
             return true;
@@ -5163,6 +5243,7 @@ public class MainWindow : Window
                 _state.Connected = true;
                 SetTerminalConnected(true);
                 OnGameConnected();
+                _ = TryAutoStartNativeBotAsync("server-connect");
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
@@ -5291,6 +5372,7 @@ public class MainWindow : Window
         OnGameDisconnected();   // proxy is live, but the game server is not connected yet
         _parser.Feed($"\x1b[1;32m[Embedded proxy ready — type \x1b[1;33m$c\x1b[1;32m to connect to {_state.Host}:{_state.Port}, or start a script]\x1b[0m\r\n");
         _buffer.Dirty = true;
+        await TryAutoStartNativeBotAsync("open-game");
     }
 
     /// <summary>Stops the embedded <see cref="Core.GameInstance"/> and restores normal state.
@@ -6701,6 +6783,47 @@ public class MainWindow : Window
         FocusActiveTerminal();
     }
 
+    private async Task TryAutoStartNativeBotAsync(string trigger)
+    {
+        await Task.Yield();
+
+        if (_nativeBotAutoStartInFlight || _mombot.Enabled)
+            return;
+
+        if (_gameInstance == null || CurrentInterpreter == null)
+            return;
+
+        StoredBotSection? nativeBot = LoadConfiguredBotSections().FirstOrDefault(bot => bot.IsNative);
+        if (nativeBot == null || !nativeBot.Config.AutoStart)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.NativeBotAutoStart] skipping trigger='{trigger}' activeBot='{_gameInstance.ActiveBotName}'\n");
+            Core.GlobalModules.FlushDebugLog();
+            return;
+        }
+
+        _nativeBotAutoStartInFlight = true;
+        try
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.NativeBotAutoStart] starting trigger='{trigger}' connected={_gameInstance.IsConnected} game='{_gameInstance.GameName}'\n");
+            Core.GlobalModules.FlushDebugLog();
+
+            await StartInternalMombotAsync(
+                nativeBot.Config,
+                requestedBotName: string.Empty,
+                interactiveOfflinePrompt: false,
+                publishMissingGameMessage: false);
+        }
+        finally
+        {
+            _nativeBotAutoStartInFlight = false;
+        }
+    }
+
     private async Task StopActiveBotAsync()
     {
         await Task.Yield();
@@ -8099,7 +8222,7 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$surroundAutoCapture");
         MirrorMombotCurrentVars("0", "$pgrid_bot");
         MirrorMombotCurrentVars("0", "$autoattack");
-        MirrorMombotCurrentVars(string.Empty, "$historyString");
+        MirrorMombotCurrentVars(string.Empty, "$BOT~HISTORYSTRING", "$HISTORYSTRING");
         MirrorMombotCurrentVars(string.Empty, "$command_prompt_extras");
         MirrorMombotCurrentVars("5760", "$echoInterval");
         MirrorMombotCurrentVars(hadExistingBotConfig ? "1" : "0", "$BOT~DORELOG", "$doRelog");
@@ -8112,9 +8235,9 @@ public class MainWindow : Window
         PersistMombotVars(shipCapRelative, "$cap_file");
         PersistMombotVars(planetFileRelative, "$planet_file");
 
-        string stardock = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
-        string rylos = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$rylos");
-        string alphaCentauri = ReadCurrentMombotVar(FormatMombotSector(_sessionDb?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$alpha_centauri");
+        string stardock = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK");
+        string rylos = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS");
+        string alphaCentauri = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI");
         MirrorMombotCurrentVars(stardock, "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock");
         MirrorMombotCurrentVars(rylos, "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos");
         MirrorMombotCurrentVars(alphaCentauri, "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
@@ -9836,6 +9959,7 @@ public class MainWindow : Window
         if (_mombotPromptOpen)
             return;
 
+        EnsureMombotCommandHistoryLoaded();
         _mombotPromptOpen = true;
         _mombotPromptBuffer = initialValue;
         _mombotPromptDraft = initialValue;
@@ -9949,7 +10073,6 @@ public class MainWindow : Window
         _parser.Feed(command);
         _parser.Feed("\r\n");
 
-        RememberMombotHistory(command);
         ExecuteMombotLocalInput(command);
     }
 
@@ -10804,6 +10927,11 @@ public class MainWindow : Window
                 ? "Passive"
                 : "Normal";
         string alarmList = ReadCurrentMombotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list");
+        string stardockDisplay = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.StarDock), "$STARDOCK", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK");
+        string backdoorDisplay = ReadCurrentMombotSectorVar("0", "$MAP~BACKDOOR", "$MAP~backdoor");
+        string rylosDisplay = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.Rylos), "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS");
+        string alphaDisplay = ReadCurrentMombotSectorVar(FormatMombotSector(_sessionDb?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI");
+        string homeDisplay = ReadCurrentMombotSectorVar("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR");
 
         int totalWidth = GetMombotPreferencesLayoutWidth();
         int columnGap = totalWidth >= 104 ? 6 : 4;
@@ -10842,11 +10970,11 @@ public class MainWindow : Window
             BuildMombotPreferencesKeyValueCell("K", "Surround HKILL?", FormatMombotBoolDisplay(ReadCurrentMombotVar("0", "$PLAYER~surround_before_hkill"))),
             BuildMombotPreferencesKeyValueCell("J", "Alarm List", string.IsNullOrWhiteSpace(alarmList) ? "None" : "Active"),
             BuildMombotPreferencesSectionCell("Location Variables", columnWidth),
-            BuildMombotPreferencesLocationCell("S", "Stardock", "S", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~STARDOCK", "$MAP~stardock", "$BOT~STARDOCK", "$stardock"))),
-            BuildMombotPreferencesLocationCell("B", "Backdoor", "B", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor"))),
-            BuildMombotPreferencesLocationCell("R", "Rylos", "R", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~RYLOS", "$MAP~rylos", "$BOT~RYLOS", "$rylos"))),
-            BuildMombotPreferencesLocationCell("A", "Alpha", "A", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri"))),
-            BuildMombotPreferencesLocationCell("H", "Home Sector", "H", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$MAP~HOME_SECTOR", "$MAP~home_sector", "$BOT~HOME_SECTOR", "$home_sector"))),
+            BuildMombotPreferencesLocationCell("S", "Stardock", "S", FormatMombotDefinedSectorDisplay(stardockDisplay)),
+            BuildMombotPreferencesLocationCell("B", "Backdoor", "B", FormatMombotDefinedSectorDisplay(backdoorDisplay)),
+            BuildMombotPreferencesLocationCell("R", "Rylos", "R", FormatMombotDefinedSectorDisplay(rylosDisplay)),
+            BuildMombotPreferencesLocationCell("A", "Alpha", "A", FormatMombotDefinedSectorDisplay(alphaDisplay)),
+            BuildMombotPreferencesLocationCell("H", "Home Sector", "H", FormatMombotDefinedSectorDisplay(homeDisplay)),
             BuildMombotPreferencesLocationCell("X", "Safe Ship", "X", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship"))),
             BuildMombotPreferencesLocationCell("L", "Safe Planet", "L", FormatMombotDefinedSectorDisplay(ReadCurrentMombotVar("0", "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet"))),
         ];
@@ -11062,6 +11190,27 @@ public class MainWindow : Window
 
     private void PromptMombotSectorPreference(string prompt, bool allowZeroReset, ResetMombotSpecialSector resetType, params string[] names)
     {
+        string currentValue = resetType switch
+        {
+            ResetMombotSpecialSector.Stardock => ReadCurrentMombotSectorVar(
+                FormatMombotSector(_sessionDb?.DBHeader.StarDock),
+                "$STARDOCK",
+                "$MAP~STARDOCK",
+                "$MAP~stardock",
+                "$BOT~STARDOCK"),
+            ResetMombotSpecialSector.Rylos => ReadCurrentMombotSectorVar(
+                FormatMombotSector(_sessionDb?.DBHeader.Rylos),
+                "$MAP~RYLOS",
+                "$MAP~rylos",
+                "$BOT~RYLOS"),
+            ResetMombotSpecialSector.Alpha => ReadCurrentMombotSectorVar(
+                FormatMombotSector(_sessionDb?.DBHeader.AlphaCentauri),
+                "$MAP~ALPHA_CENTAURI",
+                "$MAP~alpha_centauri",
+                "$BOT~ALPHA_CENTAURI"),
+            _ => ReadCurrentMombotSectorVar("0", names),
+        };
+
         BeginMombotPreferencesInput(
             prompt,
             value =>
@@ -11086,7 +11235,7 @@ public class MainWindow : Window
                 if (sector >= 1 && sector <= maxSector)
                     PersistMombotVars(sector.ToString(), names);
             },
-            ReadCurrentMombotVar("0", names));
+            currentValue);
     }
 
     private void PersistMombotSurroundPlanetAvoidance(bool allPlanets, bool shieldedOnly, bool none)
@@ -12352,12 +12501,50 @@ public class MainWindow : Window
 
     private void ExecuteMombotLocalInput(string input)
     {
+        RecordMombotCommandHistory(input);
+
         (string promptAnsi, string promptPlain) = CaptureCurrentGamePromptSnapshot();
         int promptVersionBefore = _mombotObservedGamePromptVersion;
 
         _mombot.TryExecuteLocalInput(input, out IReadOnlyList<MTC.mombot.mombotDispatchResult> results);
         ApplyMombotExecutionRefresh();
         _ = RestoreCurrentGamePromptAfterMombotCommandAsync(results, promptAnsi, promptPlain, promptVersionBefore);
+    }
+
+    private void RecordMombotCommandHistory(string input)
+    {
+        string trimmed = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return;
+
+        RememberMombotHistory(trimmed);
+        string existing = ReadCurrentMombotVar(
+            string.Empty,
+            "$BOT~HISTORYSTRING",
+            "$HISTORYSTRING");
+
+        string updated = trimmed + "<<|HS|>>" + existing;
+        PersistMombotVars(
+            updated,
+            "$BOT~HISTORYSTRING",
+            "$HISTORYSTRING");
+    }
+
+    private void EnsureMombotCommandHistoryLoaded()
+    {
+        if (_mombotCommandHistory.Count > 0)
+            return;
+
+        string history = ReadCurrentMombotVar(
+            string.Empty,
+            "$BOT~HISTORYSTRING",
+            "$HISTORYSTRING");
+
+        if (string.IsNullOrWhiteSpace(history))
+            return;
+
+        foreach (string entry in history.Split("<<|HS|>>", StringSplitOptions.RemoveEmptyEntries))
+            RememberMombotHistory(entry);
     }
 
     private (string PromptAnsi, string PromptPlain) CaptureCurrentGamePromptSnapshot()
@@ -13551,15 +13738,7 @@ public class MainWindow : Window
             newProfile,
             AppPaths.TwxproxyDatabasePathForGame(gameName));
         await SaveEmbeddedGameConfigAsync(gameName, config);
-
-        _currentProfilePath = path;
-        _embeddedGameConfig = config;
-        _embeddedGameName = gameName;
-        ApplyProfile(BuildProfileFromConfig(config));
-        AddToRecentAndSave(path);
-        OnGameSelected();
-        _parser.Feed($"\x1b[1;36m[Game loaded: {newProfile.Server}:{newProfile.Port}  —  use File \u25b6 Connect to connect]\x1b[0m\r\n");
-        _buffer.Dirty = true;
+        await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
     }
 
     /// <summary>File > Open: open or import a shared game JSON or a TWX database.</summary>
@@ -13632,11 +13811,7 @@ public class MainWindow : Window
             targetDatabasePath,
             _embeddedGameConfig);
         await SaveEmbeddedGameConfigAsync(gameName, config);
-        _currentProfilePath = path;
-        _embeddedGameConfig = config;
-        _embeddedGameName = gameName;
-        ApplyProfile(BuildProfileFromConfig(config));
-        AddToRecentAndSave(path);
+        await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
     }
 
     private async Task<string?> PickProxySavePathAsync(

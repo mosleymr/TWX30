@@ -52,6 +52,8 @@ public class ShipStatus
     public bool PsychProbe    { get; set; }
     public bool PlanetScanner { get; set; }
     public string LRSType     { get; set; } = string.Empty;
+    public bool HasTransWarp1 { get; set; }
+    public bool HasTransWarp2 { get; set; }
     public int  TransWarp1    { get; set; }  // hops
     public int  TransWarp2    { get; set; }  // hops
     public bool Interdictor   { get; set; }

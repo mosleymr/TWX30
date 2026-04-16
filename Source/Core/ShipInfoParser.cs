@@ -38,6 +38,13 @@ public class ShipInfoParser
     /// </summary>
     public event Action<ShipStatus>? Updated;
 
+    /// <summary>
+    /// Returns a clone of the last stable parsed ship status.
+    /// During an in-progress info block this intentionally stays on the
+    /// previously committed snapshot until the block completes.
+    /// </summary>
+    public ShipStatus CurrentStatus => CloneStatus(_s);
+
     // ── Public API ─────────────────────────────────────────────────────────
 
     /// <summary>
@@ -395,12 +402,14 @@ public class ShipInfoParser
             case var k when k.Contains("Type 1 Jump"):
                 _infoBlockSawTransWarpSection = true;
                 _infoBlockSawTransWarp1 = true;
+                target.HasTransWarp1 = true;
                 target.TransWarp1 = ParseInt(val.Split(' ')[0]);
                 break;
 
             case var k when k.Contains("Type 2 Jump"):
                 _infoBlockSawTransWarpSection = true;
                 _infoBlockSawTransWarp2 = true;
+                target.HasTransWarp2 = true;
                 target.TransWarp2 = ParseInt(val.Split(' ')[0]);
                 break;
 
@@ -426,16 +435,24 @@ public class ShipInfoParser
     {
         if (!_infoBlockSawTransWarpSection)
         {
+            target.HasTransWarp1 = false;
+            target.HasTransWarp2 = false;
             target.TransWarp1 = 0;
             target.TransWarp2 = 0;
             return;
         }
 
         if (!_infoBlockSawTransWarp1)
+        {
+            target.HasTransWarp1 = false;
             target.TransWarp1 = 0;
+        }
 
         if (!_infoBlockSawTransWarp2)
+        {
+            target.HasTransWarp2 = false;
             target.TransWarp2 = 0;
+        }
     }
 
     private static void ResetInfoBlockShipSnapshot(ShipStatus target)
@@ -466,6 +483,8 @@ public class ShipInfoParser
         target.PsychProbe = false;
         target.PlanetScanner = false;
         target.LRSType = string.Empty;
+        target.HasTransWarp1 = false;
+        target.HasTransWarp2 = false;
         target.TransWarp1 = 0;
         target.TransWarp2 = 0;
         target.Interdictor = false;
@@ -630,6 +649,8 @@ public class ShipInfoParser
         if (normalized.Equals("No", StringComparison.OrdinalIgnoreCase) ||
             normalized.Equals("0", StringComparison.OrdinalIgnoreCase))
         {
+            _s.HasTransWarp1 = false;
+            _s.HasTransWarp2 = false;
             _s.TransWarp1 = 0;
             _s.TransWarp2 = 0;
             return;
@@ -637,6 +658,8 @@ public class ShipInfoParser
 
         if (normalized.Equals("1", StringComparison.OrdinalIgnoreCase))
         {
+            _s.HasTransWarp1 = true;
+            _s.HasTransWarp2 = false;
             _s.TransWarp1 = Math.Max(_s.TransWarp1, 1);
             _s.TransWarp2 = 0;
             return;
@@ -644,6 +667,8 @@ public class ShipInfoParser
 
         if (normalized.Equals("2", StringComparison.OrdinalIgnoreCase))
         {
+            _s.HasTransWarp1 = true;
+            _s.HasTransWarp2 = true;
             _s.TransWarp1 = Math.Max(_s.TransWarp1, 1);
             _s.TransWarp2 = Math.Max(_s.TransWarp2, 1);
         }
@@ -709,6 +734,8 @@ public class ShipInfoParser
         PsychProbe = status.PsychProbe,
         PlanetScanner = status.PlanetScanner,
         LRSType = status.LRSType,
+        HasTransWarp1 = status.HasTransWarp1,
+        HasTransWarp2 = status.HasTransWarp2,
         TransWarp1 = status.TransWarp1,
         TransWarp2 = status.TransWarp2,
         Interdictor = status.Interdictor,

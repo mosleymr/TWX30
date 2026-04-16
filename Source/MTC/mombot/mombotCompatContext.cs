@@ -167,9 +167,11 @@ internal sealed class mombotCompatContext
         for (int i = 0; i < 8; i++)
         {
             string rawValue = i < context.Parameters.Count ? context.Parameters[i] : string.Empty;
-            string compatValue = string.IsNullOrWhiteSpace(rawValue) ? "0" : rawValue;
             SetVars(vars, rawValue, $"$BOT~PARM{i + 1}", $"$bot~parm{i + 1}");
-            SetVars(vars, compatValue, $"$parm{i + 1}");
+            // Preserve missing params as empty strings. Older scripts often use
+            // isNumber / empty checks to detect omitted arguments, and forcing
+            // "0" here changes that behavior.
+            SetVars(vars, rawValue, $"$parm{i + 1}");
         }
 
         return vars;

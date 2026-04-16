@@ -25,7 +25,8 @@ public enum TacticalMapViewMode
 /// </summary>
 public class TacticalMapControl : Control
 {
-    private const int MaxDepth = 4;
+    private const int ZoomedInDepth = 1;
+    private const int ZoomedOutDepth = 6;
     private const float BubbleGridX = 110f;
     private const float BubbleGridY = 84f;
     private const float NodeRadius = 20f;
@@ -121,10 +122,11 @@ public class TacticalMapControl : Control
             ? (_viewMode == TacticalMapViewMode.Hex ? 156f : 128f)
             : (_viewMode == TacticalMapViewMode.Hex ? 112f : 92f);
         float scale = Math.Min((width - framePadding) / contentWidth, (height - framePadding) / contentHeight);
+        float zoomScale = GetVisualZoomScale();
         scale = Math.Clamp(
-            scale * _zoomFactor,
+            scale * zoomScale,
             _viewMode == TacticalMapViewMode.Hex ? 0.26f : 0.34f,
-            _viewMode == TacticalMapViewMode.Hex ? 1.08f : 1.12f);
+            _viewMode == TacticalMapViewMode.Hex ? 1.18f : 1.38f);
 
         _lastRenderScale = scale;
         _lastRenderWidth = width;
@@ -437,17 +439,17 @@ public class TacticalMapControl : Control
             if (!snapshot.Sectors.TryGetValue(sectorNumber, out Core.SectorData? sector) || sector == null)
                 continue;
 
-            foreach (ushort warpTarget in sector.Warp.Where(w => w > 0 && snapshot.Positions.ContainsKey(w)))
+            foreach (int targetSector in EnumerateLinkedSectors(sector).Where(targetSector => snapshot.Positions.ContainsKey(targetSector)))
             {
-                int targetSector = warpTarget;
-                bool twoWay = snapshot.Sectors.TryGetValue(targetSector, out Core.SectorData? target) &&
-                              target != null &&
-                              target.Warp.Contains((ushort)sectorNumber);
-
                 int a = Math.Min(sectorNumber, targetSector);
                 int b = Math.Max(sectorNumber, targetSector);
-                if (twoWay && !drawnEdges.Add((a, b)))
+                if (!drawnEdges.Add((a, b)))
                     continue;
+
+                snapshot.Sectors.TryGetValue(targetSector, out Core.SectorData? target);
+                bool forward = HasOutgoingWarp(sector, targetSector);
+                bool backward = HasOutgoingWarp(target, sectorNumber);
+                bool twoWay = forward && backward;
 
                 SKPoint start = position;
                 SKPoint end = snapshot.Positions[targetSector];
@@ -665,6 +667,7 @@ public class TacticalMapControl : Control
         Core.ModDatabase? db = _getDb();
         int liveSector = Math.Max(1, _getCurrentSector());
         int centerSector = _centerSectorOverride.GetValueOrDefault(liveSector);
+        int visibleDepth = GetVisibleDepth();
         snapshot.CurrentSector = liveSector;
         snapshot.CenterSector = centerSector;
 
@@ -682,7 +685,7 @@ public class TacticalMapControl : Control
             Core.SectorData? sector = db.GetSector(sectorNumber);
             snapshot.Sectors[sectorNumber] = sector;
 
-            if (sector == null || depth >= MaxDepth)
+            if (sector == null || depth >= visibleDepth)
                 continue;
 
             foreach (int linkedSector in EnumerateLinkedSectors(sector))
@@ -759,7 +762,7 @@ public class TacticalMapControl : Control
                 })
                 .ToList();
 
-            foreach (ushort warpTarget in sector.Warp.Where(w => w > 0 && visited.ContainsKey(w) && !placed.Contains(w)))
+            foreach (int linkedSector in EnumerateLinkedSectors(sector).Where(linkedSector => visited.ContainsKey(linkedSector) && !placed.Contains(linkedSector)))
             {
                 bool assigned = false;
                 for (int ring = 1; ring <= 5 && !assigned; ring++)
@@ -770,10 +773,10 @@ public class TacticalMapControl : Control
                         if (usedCells.Contains(candidate))
                             continue;
 
-                        cellOf[warpTarget] = candidate;
+                        cellOf[linkedSector] = candidate;
                         usedCells.Add(candidate);
-                        placed.Add(warpTarget);
-                        placeQueue.Enqueue(warpTarget);
+                        placed.Add(linkedSector);
+                        placeQueue.Enqueue(linkedSector);
                         assigned = true;
                         break;
                     }
@@ -1098,12 +1101,37 @@ public class TacticalMapControl : Control
             || second.WarpsIn.Contains((ushort)firstSector);
     }
 
+    private static bool HasOutgoingWarp(Core.SectorData? sector, int targetSector)
+        => sector != null && sector.Warp.Contains((ushort)targetSector);
+
     private static int HexDistance(HexCell a, HexCell b)
     {
         int dq = a.Q - b.Q;
         int dr = a.R - b.R;
         int ds = (a.Q + a.R) - (b.Q + b.R);
         return (Math.Abs(dq) + Math.Abs(dr) + Math.Abs(ds)) / 2;
+    }
+
+    private int GetVisibleDepth()
+    {
+        return _zoomFactor switch
+        {
+            >= 1.55f => 1,
+            >= 1.30f => 2,
+            >= 1.05f => 3,
+            >= 0.80f => 4,
+            >= 0.60f => 5,
+            _ => ZoomedOutDepth,
+        };
+    }
+
+    private float GetVisualZoomScale()
+    {
+        float normalized = (_zoomFactor - MinZoomFactor) / (MaxZoomFactor - MinZoomFactor);
+        normalized = Math.Clamp(normalized, 0f, 1f);
+        return _viewMode == TacticalMapViewMode.Hex
+            ? 0.55f + (1.35f * MathF.Pow(normalized, 1.25f))
+            : 0.48f + (1.7f * MathF.Pow(normalized, 1.35f));
     }
 
     private static int ScoreHexCandidate(

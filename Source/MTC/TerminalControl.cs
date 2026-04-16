@@ -51,7 +51,8 @@ public class TerminalControl : Control
     private readonly Dictionary<TermColor, SolidColorBrush> _brushCache = [];
 
     // ── Selection state ────────────────────────────────────────────────────
-    // All coordinates are (row, col) into the buffer cell grid.
+    // All coordinates are absolute document positions: scrollback rows first,
+    // then the currently visible live buffer rows.
     private (int Row, int Col) _selAnchor;
     private (int Row, int Col) _selCurrent;
     private bool _hasSelection;
@@ -59,8 +60,6 @@ public class TerminalControl : Control
     private int    _scrollOffset;
     /// <summary>Fractional scroll accumulator for smooth-scroll trackpads.</summary>
     private double _scrollAccumulator;
-    /// <summary>_scrollOffset captured when the current mouse selection started.</summary>
-    private int    _selScrollOffset;
     private long   _scrollGenerationSeen;
 
     private static readonly SolidColorBrush SelectionBrush =
@@ -157,21 +156,30 @@ public class TerminalControl : Control
     /// </summary>
     private TerminalCell GetDisplayCell(int renderRow, int col, int scrollOff)
     {
-        if (scrollOff == 0) return _buffer[renderRow, col];
+        int abs = GetViewportTopDocumentRow(scrollOff) + renderRow;
+        return GetDocumentCell(abs, col);
+    }
 
-        int sc  = _buffer.ScrollbackCount;
-        int abs = sc - scrollOff + renderRow;
-        if (abs < 0) return TerminalCell.Default;
-        if (abs < sc)
+    private TerminalCell GetDocumentCell(int absRow, int col)
+    {
+        int sc = _buffer.ScrollbackCount;
+        if (absRow < 0)
+            return TerminalCell.Default;
+
+        if (absRow < sc)
         {
-            var line = _buffer.GetScrollbackLine(abs);
+            var line = _buffer.GetScrollbackLine(absRow);
             return col < line.Length ? line[col] : TerminalCell.Default;
         }
-        int liveRow = abs - sc;  // = renderRow - scrollOff
+
+        int liveRow = absRow - sc;
         return (liveRow >= 0 && liveRow < _buffer.Rows)
             ? _buffer[liveRow, col]
             : TerminalCell.Default;
     }
+
+    private int GetViewportTopDocumentRow(int scrollOff)
+        => Math.Max(0, _buffer.ScrollbackCount - scrollOff);
 
     public override void Render(DrawingContext ctx)
     {
@@ -267,8 +275,12 @@ public class TerminalControl : Control
     private void RenderSelection(DrawingContext ctx)
     {
         var (startR, startC, endR, endC) = NormalizedSelection();
+        int topDocumentRow = GetViewportTopDocumentRow(_scrollOffset);
+        int bottomDocumentRow = topDocumentRow + _buffer.Rows - 1;
+        int visibleStart = Math.Max(startR, topDocumentRow);
+        int visibleEnd = Math.Min(endR, bottomDocumentRow);
 
-        for (int row = startR; row <= endR && row < _buffer.Rows; row++)
+        for (int row = visibleStart; row <= visibleEnd; row++)
         {
             int colFrom = row == startR ? startC : 0;
             int colTo   = row == endR   ? endC   : _buffer.Columns - 1;
@@ -276,7 +288,7 @@ public class TerminalControl : Control
             colTo   = Math.Clamp(colTo,   0, _buffer.Columns - 1);
 
             double x = colFrom * _charWidth;
-            double y = row     * _lineHeight;
+            double y = (row - topDocumentRow) * _lineHeight;
             double w = (colTo - colFrom + 1) * _charWidth;
             ctx.FillRectangle(SelectionBrush, new Rect(x, y, w, _lineHeight));
         }
@@ -312,6 +324,16 @@ public class TerminalControl : Control
         {
             _scrollOffset = Math.Clamp(
                 _scrollOffset + delta, 0, _buffer.ScrollbackCount);
+
+            if (e.Pointer.Captured == this)
+            {
+                var pos = PixelToDocumentCell(e.GetPosition(this));
+                if (pos.Row > _selAnchor.Row && pos.Col == 0 && pos.Row > 0)
+                    pos = (pos.Row - 1, _buffer.Columns - 1);
+                _selCurrent = pos;
+                _hasSelection = _selCurrent != _selAnchor;
+            }
+
             InvalidateVisual();
         }
         e.Handled = true;
@@ -499,8 +521,7 @@ public class TerminalControl : Control
         if (props.PointerUpdateKind == PointerUpdateKind.LeftButtonPressed)
         {
             Focus();
-            _selScrollOffset = _scrollOffset;  // snapshot so copy matches what was visible
-            _selAnchor   = _selCurrent = PixelToCell(e.GetPosition(this));
+            _selAnchor   = _selCurrent = PixelToDocumentCell(e.GetPosition(this));
             _hasSelection = false;
             e.Pointer.Capture(this);
             InvalidateVisual();
@@ -514,7 +535,7 @@ public class TerminalControl : Control
     {
         if (e.Pointer.Captured == this)
         {
-            var pos = PixelToCell(e.GetPosition(this));
+            var pos = PixelToDocumentCell(e.GetPosition(this));
             // When dragging downward, snap col=0 of the next row back to the
             // end of the previous row so that dragging down selects whole lines.
             if (pos.Row > _selAnchor.Row && pos.Col == 0 && pos.Row > 0)
@@ -535,7 +556,7 @@ public class TerminalControl : Control
         if (e.Pointer.Captured == this &&
             props.PointerUpdateKind == PointerUpdateKind.LeftButtonReleased)
         {
-            var pos = PixelToCell(e.GetPosition(this));
+            var pos = PixelToDocumentCell(e.GetPosition(this));
             // Same line-end snap as OnPointerMoved
             if (pos.Row > _selAnchor.Row && pos.Col == 0 && pos.Row > 0)
                 pos = (pos.Row - 1, _buffer.Columns - 1);
@@ -643,12 +664,19 @@ public class TerminalControl : Control
 
     // ── Selection helpers ─────────────────────────────────────────────────
 
-    /// <summary>Convert a pixel position to a (row, col) cell coordinate.</summary>
-    private (int Row, int Col) PixelToCell(Point p)
+    /// <summary>Convert a pixel position to a viewport-relative (row, col) cell coordinate.</summary>
+    private (int Row, int Col) PixelToViewportCell(Point p)
     {
         int col = Math.Clamp((int)(p.X / _charWidth),  0, _buffer.Columns - 1);
         int row = Math.Clamp((int)(p.Y / _lineHeight), 0, _buffer.Rows    - 1);
         return (row, col);
+    }
+
+    /// <summary>Convert a pixel position to an absolute document (row, col) coordinate.</summary>
+    private (int Row, int Col) PixelToDocumentCell(Point p)
+    {
+        var (row, col) = PixelToViewportCell(p);
+        return (GetViewportTopDocumentRow(_scrollOffset) + row, col);
     }
 
     /// <summary>Returns (startRow, startCol, endRow, endCol) with start &lt;= end.</summary>
@@ -667,19 +695,16 @@ public class TerminalControl : Control
     private string GetSelectedText()
     {
         var (startR, startC, endR, endC) = NormalizedSelection();
-        // Use the scroll offset captured when the drag started so we read
-        // exactly the cells that were visible at selection time.
-        int offset = _selScrollOffset;
         var sb = new StringBuilder();
 
-        for (int row = startR; row <= endR && row < _buffer.Rows; row++)
+        for (int row = startR; row <= endR; row++)
         {
             int colFrom = row == startR ? startC : 0;
             int colTo   = row == endR   ? endC   : _buffer.Columns - 1;
 
             var line = new StringBuilder();
             for (int c = colFrom; c <= colTo && c < _buffer.Columns; c++)
-                line.Append(GetDisplayCell(row, c, offset).Char);
+                line.Append(GetDocumentCell(row, c).Char);
 
             // Trim trailing spaces from each line (matches typical terminal copy behaviour)
             string lineStr = line.ToString().TrimEnd();
@@ -718,10 +743,6 @@ public class TerminalControl : Control
             return false;
 
         _scrollOffset = nextOffset;
-
-        if (_selScrollOffset > 0 || _hasSelection)
-            _selScrollOffset = (int)Math.Clamp(
-                (long)_selScrollOffset + appliedDelta, 0L, (long)maxOffset);
 
         return true;
     }

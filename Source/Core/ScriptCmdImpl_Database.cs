@@ -352,11 +352,13 @@ namespace TWXProxy.Core
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
                 var path = CalculatePath(fromSector, toSector);
-                parameters[0].Value = Math.Max(0, path.Count - 1).ToString();
+                // TWX getCourse historically exposes the full path length here,
+                // not the distance. Scripts expect course[1]..course[n] to cover
+                // the entire route including start and destination.
+                parameters[0].Value = Math.Max(0, path.Count).ToString();
 
                 if (path.Count > 0)
                 {
-                    path.Reverse(); // Pascal reverses PlotWarpCourse before exposing the array.
                     varParam.SetArrayFromStrings(path.Select(sector => sector.ToString()).ToList());
                 }
                 else

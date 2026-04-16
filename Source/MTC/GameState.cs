@@ -38,6 +38,8 @@ public class GameState
     public int Atomic      { get; set; } = 0;
     public int Corbomite   { get; set; } = 0;
     public int Cloak       { get; set; } = 0;
+    public bool HasTranswarpDrive1 { get; set; } = false;
+    public bool HasTranswarpDrive2 { get; set; } = false;
     public int TranswarpDrive1 { get; set; } = 0;
     public int TranswarpDrive2 { get; set; } = 0;
     public bool ScannerD   { get; set; } = false;

@@ -106,6 +106,7 @@ namespace TWXProxy.Core
         public string ActiveBotName { get; set; } = string.Empty;
         public Func<BotConfig, string, bool>? NativeBotActivator { get; set; }
         public Func<string, bool>? NativeBotStopper { get; set; }
+        public Func<string, bool>? NativeBotRebooter { get; set; }
         public Func<string, string?>? NativeBotScriptRedirector { get; set; }
         
         private TcpClient? _serverClient;
@@ -295,6 +296,8 @@ namespace TWXProxy.Core
                 return;
 
             _shipInfoParser.FeedLine(line);
+            lock (_shipStatusLock)
+                _currentShipStatus = _shipInfoParser.CurrentStatus;
         }
 
         public void AdjustGenesisTorps(int delta)
@@ -363,6 +366,8 @@ namespace TWXProxy.Core
             PsychProbe = status.PsychProbe,
             PlanetScanner = status.PlanetScanner,
             LRSType = status.LRSType,
+            HasTransWarp1 = status.HasTransWarp1,
+            HasTransWarp2 = status.HasTransWarp2,
             TransWarp1 = status.TransWarp1,
             TransWarp2 = status.TransWarp2,
             Interdictor = status.Interdictor,

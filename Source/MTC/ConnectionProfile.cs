@@ -80,6 +80,8 @@ public class ConnectionProfile
     public int        Atomic       { get; set; } = 0;
     public int        Corbomite    { get; set; } = 0;
     public int        Cloak        { get; set; } = 0;
+    public bool       HasTranswarpDrive1 { get; set; } = false;
+    public bool       HasTranswarpDrive2 { get; set; } = false;
     public int        TranswarpDrive1 { get; set; } = 0;
     public int        TranswarpDrive2 { get; set; } = 0;
     public bool       ScannerD     { get; set; } = false;
@@ -139,6 +141,8 @@ public class ConnectionProfile
                 new XElement("Atomic",          Atomic),
                 new XElement("Corbomite",       Corbomite),
                 new XElement("Cloak",           Cloak),
+                new XElement("HasTranswarpDrive1", HasTranswarpDrive1),
+                new XElement("HasTranswarpDrive2", HasTranswarpDrive2),
                 new XElement("TranswarpDrive1", TranswarpDrive1),
                 new XElement("TranswarpDrive2", TranswarpDrive2),
                 new XElement("ScannerD",        ScannerD),
@@ -210,6 +214,8 @@ public class ConnectionProfile
         p.Cloak         = I("Cloak");
         p.TranswarpDrive1 = I("TranswarpDrive1");
         p.TranswarpDrive2 = I("TranswarpDrive2");
+        p.HasTranswarpDrive1 = B("HasTranswarpDrive1", p.TranswarpDrive1 > 0);
+        p.HasTranswarpDrive2 = B("HasTranswarpDrive2", p.TranswarpDrive2 > 0);
         p.ScannerD      = B("ScannerD");
         p.ScannerH      = B("ScannerH");
         p.ScannerP      = B("ScannerP");

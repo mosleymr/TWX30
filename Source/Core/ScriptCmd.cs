@@ -513,6 +513,7 @@ namespace TWXProxy.Core
             AddCommand("DIAGLOG", 1, -1, CmdDiagLog, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("DIAGMODE", 1, 1, CmdDiagMode, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("AUTOHAGGLE", 1, 1, CmdAutoHaggle, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("NATIVEBOT", 1, 1, CmdNativeBot, Array.Empty<ParamKind>(), ParamKind.Value);
         }
 
         private void BuildSysConstList()
@@ -705,11 +706,15 @@ namespace TWXProxy.Core
                 return s?.Update.ToString() ?? string.Empty;
             });
             AddSysConstant("SECTOR.WARPCOUNT", (indexes) => { // 57
-                // Returns count of known warps from Warp[] if visited, else WarpCount from density scan
+                // Prefer the stored total warp count. For fully seen sectors, we can safely
+                // fall back to the known Warp[] list, but for CALC/DENSITY sectors we should
+                // not let a partial warp list masquerade as a complete count.
                 var s = GetSectorByIndex(indexes);
                 if (s == null) { GlobalModules.DebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault("?")} → null sector\n"); return "0"; }
                 var knownWarps = s.Warp.Where(w => w != 0).ToList();
-                int warpCountResult = knownWarps.Count > 0 ? knownWarps.Count : s.WarpCount;
+                int warpCountResult = s.WarpCount > 0
+                    ? Math.Max(s.WarpCount, knownWarps.Count)
+                    : (s.Explored == ExploreType.Yes ? knownWarps.Count : 0);
                 GlobalModules.DebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault()} knownWarps={knownWarps.Count} WarpCount={s.WarpCount} → {warpCountResult} warps=[{string.Join(",",s.Warp)}]\n");
                 return warpCountResult.ToString();
             });
@@ -831,6 +836,8 @@ namespace TWXProxy.Core
             AddSysConstant("ACTIVEBOTDIR", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotDir ?? string.Empty);
             AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotScript ?? string.Empty);
             AddSysConstant("ACTIVEBOTNAME", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotName ?? string.Empty);
+            AddSysConstant("ISNATIVEBOT", (indexes) =>
+                IsAnyNativeBotRunning(GlobalModules.TWXServer as GameInstance) ? "1" : "0");
             AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
             AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
             AddSysConstant("TWGSVER", (indexes) => string.Empty);

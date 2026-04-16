@@ -131,6 +131,8 @@ internal class EmbeddedMtcState
     public int Atomic { get; set; }
     public int Corbomite { get; set; }
     public int Cloak { get; set; }
+    public bool HasTranswarpDrive1 { get; set; }
+    public bool HasTranswarpDrive2 { get; set; }
     public int TranswarpDrive1 { get; set; }
     public int TranswarpDrive2 { get; set; }
     public bool ScannerD { get; set; }
