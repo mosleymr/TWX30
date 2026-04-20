@@ -1,0 +1,111 @@
+name: Standalone MTC Updates to Discord
+
+on:
+  push:
+    paths:
+      - "Source/bin/MTC/osx-arm64/MTC"
+      - "Source/bin/MTC/osx-x64/MTC"
+      - "Source/bin/MTC/win-x64/MTC.exe"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  github-releases-to-discord:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Discord payload
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+
+          watched = [
+              "Source/bin/MTC/osx-arm64/MTC",
+              "Source/bin/MTC/osx-x64/MTC",
+              "Source/bin/MTC/win-x64/MTC.exe",
+          ]
+
+          with open(os.environ["EVENT_PATH"], "r", encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          changed = []
+          for commit in event.get("commits", []):
+              for key in ("added", "modified", "removed"):
+                  for path in commit.get(key, []):
+                      if path in watched and path not in changed:
+                          changed.append(path)
+
+          head_commit = event.get("head_commit") or {}
+          repo = os.environ["REPOSITORY"]
+          sha = os.environ["SHA"]
+          short_sha = sha[:7]
+          branch = os.environ["REF_NAME"]
+          actor = (
+              event.get("pusher", {}).get("name")
+              or event.get("sender", {}).get("login")
+              or "unknown"
+          )
+          compare_url = event.get("compare") or f"https://github.com/{repo}/commit/{sha}"
+          commit_url = f"https://github.com/{repo}/commit/{sha}"
+          commit_message = (head_commit.get("message") or "Standalone MTC binaries updated").strip().splitlines()[0]
+
+          if not changed:
+              changed = watched
+
+          changed_lines = "\n".join(
+              f"- [`{path}`](https://github.com/{repo}/blob/{sha}/{path})"
+              for path in changed
+          )
+
+          payload = {
+              "username": "Github Update",
+              "avatar_url": "https://cdn.discordapp.com/avatars/487431320314576937/bd64361e4ba6313d561d54e78c9e7171.png",
+              "content": "||@everyone||",
+              "embeds": [
+                  {
+                      "title": "Standalone MTC binaries updated",
+                      "description": (
+                          f"**Branch:** `{branch}`\n"
+                          f"**Commit:** [`{short_sha}`]({commit_url})\n"
+                          f"**Author:** `{actor}`\n"
+                          f"**Summary:** {commit_message}\n\n"
+                          f"**Changed binaries:**\n{changed_lines}\n\n"
+                          f"[View changes]({compare_url})"
+                      ),
+                      "color": 2105893,
+                      "footer": {
+                          "text": "Changelog"
+                      },
+                  }
+              ],
+          }
+
+          with open("discord-payload.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle)
+          PY
+
+      - name: Send Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL secret is not set." >&2
+            exit 1
+          fi
+
+          curl --fail \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d @discord-payload.json \
+            "$DISCORD_WEBHOOK_URL"
