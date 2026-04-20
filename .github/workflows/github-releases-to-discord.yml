@@ -6,10 +6,6 @@ on:
       - "Source/bin/MTC/osx-arm64/MTC"
       - "Source/bin/MTC/osx-x64/MTC"
       - "Source/bin/MTC/win-x64/MTC.exe"
-  workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   github-releases-to-discord:
