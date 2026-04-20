@@ -18,7 +18,16 @@ obj/
 /runtimes/
 
 # MTC publish output
-Source/MTC/publish/
+Source/MTC/publish/*
+!Source/MTC/publish/osx-arm64/
+Source/MTC/publish/osx-arm64/*
+!Source/MTC/publish/osx-arm64/MTC
+!Source/MTC/publish/osx-x64/
+Source/MTC/publish/osx-x64/*
+!Source/MTC/publish/osx-x64/MTC
+!Source/MTC/publish/win-x64/
+Source/MTC/publish/win-x64/*
+!Source/MTC/publish/win-x64/MTC.exe
 Source/TWXC/publish/
 Source/TWXD/publish/
 Source/Installer/Windows/artifacts/
@@ -30,7 +39,6 @@ RELOG_LOOP_FIX.md
 CREDENTIAL_CHECK_FIX.md
 
 # Local-only Source items
-Source/.gitignore
 Source/ARRAY_TRIGGER_IMPLEMENTATION.md
 Source/CONVERSION_SUMMARY.md
 Source/NETWORK_INTEGRATION.md

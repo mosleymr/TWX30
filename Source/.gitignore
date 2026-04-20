@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+*/bin/
+*/obj/
+MTC/publish/*
+!MTC/publish/osx-arm64/
+MTC/publish/osx-arm64/*
+!MTC/publish/osx-arm64/MTC
+!MTC/publish/osx-x64/
+MTC/publish/osx-x64/*
+!MTC/publish/osx-x64/MTC
+!MTC/publish/win-x64/
+MTC/publish/win-x64/*
+!MTC/publish/win-x64/MTC.exe
+*.user
+.DS_Store
