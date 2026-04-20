@@ -1,4 +1,17 @@
 bin/
+!Source/bin/
+Source/bin/*
+!Source/bin/MTC/
+Source/bin/MTC/*
+!Source/bin/MTC/osx-arm64/
+Source/bin/MTC/osx-arm64/*
+!Source/bin/MTC/osx-arm64/MTC
+!Source/bin/MTC/osx-x64/
+Source/bin/MTC/osx-x64/*
+!Source/bin/MTC/osx-x64/MTC
+!Source/bin/MTC/win-x64/
+Source/bin/MTC/win-x64/*
+!Source/bin/MTC/win-x64/MTC.exe
 obj/
 */bin/
 */obj/
@@ -18,16 +31,7 @@ obj/
 /runtimes/
 
 # MTC publish output
-Source/MTC/publish/*
-!Source/MTC/publish/osx-arm64/
-Source/MTC/publish/osx-arm64/*
-!Source/MTC/publish/osx-arm64/MTC
-!Source/MTC/publish/osx-x64/
-Source/MTC/publish/osx-x64/*
-!Source/MTC/publish/osx-x64/MTC
-!Source/MTC/publish/win-x64/
-Source/MTC/publish/win-x64/*
-!Source/MTC/publish/win-x64/MTC.exe
+Source/MTC/publish/
 Source/TWXC/publish/
 Source/TWXD/publish/
 Source/Installer/Windows/artifacts/

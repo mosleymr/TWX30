@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build-mtc-win64.sh — clean publish MTC for win-x64
-# Run this after any code change to get a fresh standalone Windows build.
+# Run this after any code change to get a fresh standalone Windows build in Source/bin/MTC/win-x64.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -12,17 +12,12 @@ echo "==> Publishing..."
 AVALONIA_TELEMETRY_OPTOUT=1 dotnet publish MTC/MTC.csproj \
     -c Release \
     -r win-x64 \
-    --self-contained true \
-    -p:PublishSingleFile=true \
-    -p:IncludeNativeLibrariesForSelfExtract=true \
-    -p:EnableCompressionInSingleFile=true \
-    -p:PublishTrimmed=false \
     2>&1 | grep -v "^$"
 
 BIN="MTC/bin/Release/net10.0/win-x64/publish/MTC.exe"
 
-# Also copy to the shortcut path the user runs from
-DEST_DIR="MTC/publish/win-x64"
+# Also copy to the tracked standalone path
+DEST_DIR="bin/MTC/win-x64"
 DEST="$DEST_DIR/MTC.exe"
 rm -rf "$DEST_DIR"
 mkdir -p "$DEST_DIR"
