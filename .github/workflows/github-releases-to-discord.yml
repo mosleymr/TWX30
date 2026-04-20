@@ -110,6 +110,9 @@ jobs:
               print("DISCORD_WEBHOOK_URL secret is not set.", file=sys.stderr)
               sys.exit(1)
 
+          if webhook_url.endswith("/github"):
+              webhook_url = webhook_url[:-7]
+
           with open("discord-payload.json", "rb") as handle:
               payload = handle.read()
 
