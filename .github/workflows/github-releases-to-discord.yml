@@ -99,13 +99,30 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
-            echo "DISCORD_WEBHOOK_URL secret is not set." >&2
-            exit 1
-          fi
+          python <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
 
-          curl --fail \
-            -H "Content-Type: application/json" \
-            -X POST \
-            -d @discord-payload.json \
-            "$DISCORD_WEBHOOK_URL"
+          webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip().strip("\"'")
+          if not webhook_url:
+              print("DISCORD_WEBHOOK_URL secret is not set.", file=sys.stderr)
+              sys.exit(1)
+
+          with open("discord-payload.json", "rb") as handle:
+              payload = handle.read()
+
+          request = urllib.request.Request(
+              webhook_url,
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+
+          with urllib.request.urlopen(request) as response:
+              status = getattr(response, "status", response.getcode())
+              if status >= 300:
+                  print(f"Discord webhook returned HTTP {status}", file=sys.stderr)
+                  sys.exit(1)
+          PY
