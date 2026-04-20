@@ -114,7 +114,11 @@ jobs:
           request = urllib.request.Request(
               webhook_url,
               data=payload,
-              headers={"Content-Type": "application/json"},
+              headers={
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                  "User-Agent": "GitHub-Hookshot/1.0",
+              },
               method="POST",
           )
 
