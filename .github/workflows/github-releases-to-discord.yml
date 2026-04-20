@@ -98,34 +98,48 @@ jobs:
       - name: Send Discord notification
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EVENT_PATH: ${{ github.event_path }}
+          SHA: ${{ github.sha }}
         run: |
           python <<'PY'
           import json
           import os
           import sys
           import urllib.request
+          import urllib.error
 
-          webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip().strip("\"'")
-          if not webhook_url:
+          raw_webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip().strip("\"'")
+          if not raw_webhook_url:
               print("DISCORD_WEBHOOK_URL secret is not set.", file=sys.stderr)
               sys.exit(1)
 
-          if webhook_url.endswith("/github"):
-              webhook_url = webhook_url[:-7]
+          webhook_url = raw_webhook_url.rstrip()
+          is_github_endpoint = webhook_url.rstrip("/").endswith("/github")
 
-          with open("discord-payload.json", "rb") as handle:
-              payload = handle.read()
+          if is_github_endpoint:
+              with open(os.environ["EVENT_PATH"], "rb") as handle:
+                  payload = handle.read()
+              headers = {
+                  "Content-Type": "application/json",
+                  "User-Agent": "GitHub-Hookshot/1.0",
+                  "X-GitHub-Event": "push",
+                  "X-GitHub-Delivery": os.environ["SHA"],
+              }
+          else:
+              with open("discord-payload.json", "rb") as handle:
+                  payload = handle.read()
+              headers = {"Content-Type": "application/json"}
 
-          request = urllib.request.Request(
-              webhook_url,
-              data=payload,
-              headers={"Content-Type": "application/json"},
-              method="POST",
-          )
+          request = urllib.request.Request(webhook_url, data=payload, headers=headers, method="POST")
 
-          with urllib.request.urlopen(request) as response:
-              status = getattr(response, "status", response.getcode())
-              if status >= 300:
-                  print(f"Discord webhook returned HTTP {status}", file=sys.stderr)
-                  sys.exit(1)
+          try:
+              with urllib.request.urlopen(request) as response:
+                  status = getattr(response, "status", response.getcode())
+                  if status >= 300:
+                      print(f"Discord webhook returned HTTP {status}", file=sys.stderr)
+                      sys.exit(1)
+          except urllib.error.HTTPError as exc:
+              body = exc.read().decode("utf-8", "replace")
+              print(f"Discord webhook returned HTTP {exc.code}: {body}", file=sys.stderr)
+              raise
           PY
