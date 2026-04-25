@@ -32,6 +32,15 @@ namespace TWXD
 {
     class Program
     {
+        static string GetDefaultCurrentDirectoryOutputFilename(string inputFile)
+        {
+            string stem = Path.GetFileNameWithoutExtension(inputFile);
+            if (string.IsNullOrWhiteSpace(stem))
+                stem = "decompiled";
+
+            return Path.Combine(Directory.GetCurrentDirectory(), stem + ".ts");
+        }
+
         static string GetUniqueFilename(string baseName)
         {
             // If .ts doesn't exist, use it
@@ -63,13 +72,16 @@ namespace TWXD
                 Console.WriteLine($"TWXD - TWX Proxy decompilation utility v{Constants.ProgramVersion}");
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
-                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--backup-existing] script.cts");
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--in-place] [--output <file.ts> | --output-dir <dir>] [--backup-existing | --overwrite-existing] script.cts");
                 Console.WriteLine();
                 Console.WriteLine("script.cts - Filename of the compiled script to be decompiled.");
                 Console.WriteLine();
-                Console.WriteLine("The decompiler will create a .ts file with the decompiled script.");
-                Console.WriteLine("By default it overwrites the .ts file if it already exists.");
-                Console.WriteLine("--backup-existing - If the .ts file exists, use .ts_1, .ts_2, etc.");
+                Console.WriteLine("By default, TWXD writes decompiled output to the current directory.");
+                Console.WriteLine("--in-place - Write the .ts file next to the .cts input.");
+                Console.WriteLine("--output <file.ts> - Write the main script to an explicit file path.");
+                Console.WriteLine("--output-dir <dir> - Write the main script into an explicit directory.");
+                Console.WriteLine("--backup-existing - If the chosen .ts file exists, use .ts_1, .ts_2, etc.");
+                Console.WriteLine("--overwrite-existing - Overwrite the chosen .ts file if it already exists.");
                 Console.WriteLine("--compact-whitespace - Remove leading blank lines and collapse repeated blank lines.");
                 Console.WriteLine();
                 return;
@@ -77,9 +89,15 @@ namespace TWXD
 
             bool compactWhitespace = false;
             bool backupExisting = false;
+            bool overwriteExisting = false;
+            bool inPlace = false;
+            string? explicitOutputFile = null;
+            string? explicitOutputDirectory = null;
             var positionalArgs = new List<string>();
-            foreach (string arg in args)
+
+            for (int i = 0; i < args.Length; i++)
             {
+                string arg = args[i];
                 if (string.Equals(arg, "--compact-whitespace", StringComparison.OrdinalIgnoreCase))
                 {
                     compactWhitespace = true;
@@ -92,12 +110,61 @@ namespace TWXD
                     continue;
                 }
 
+                if (string.Equals(arg, "--overwrite-existing", StringComparison.OrdinalIgnoreCase))
+                {
+                    overwriteExisting = true;
+                    continue;
+                }
+
+                if (string.Equals(arg, "--in-place", StringComparison.OrdinalIgnoreCase))
+                {
+                    inPlace = true;
+                    continue;
+                }
+
+                if (string.Equals(arg, "--output", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                    {
+                        Console.WriteLine("Error: --output requires a file path.");
+                        return;
+                    }
+
+                    explicitOutputFile = args[++i];
+                    continue;
+                }
+
+                if (string.Equals(arg, "--output-dir", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                    {
+                        Console.WriteLine("Error: --output-dir requires a directory path.");
+                        return;
+                    }
+
+                    explicitOutputDirectory = args[++i];
+                    continue;
+                }
+
                 positionalArgs.Add(arg);
             }
 
             if (positionalArgs.Count != 1)
             {
-                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--backup-existing] script.cts");
+                Console.WriteLine("Usage: TWXD [--compact-whitespace] [--in-place] [--output <file.ts> | --output-dir <dir>] [--backup-existing | --overwrite-existing] script.cts");
+                return;
+            }
+
+            if ((backupExisting ? 1 : 0) + (overwriteExisting ? 1 : 0) > 1)
+            {
+                Console.WriteLine("Error: Choose only one of --backup-existing or --overwrite-existing.");
+                return;
+            }
+
+            int outputModeCount = (inPlace ? 1 : 0) + (explicitOutputFile != null ? 1 : 0) + (explicitOutputDirectory != null ? 1 : 0);
+            if (outputModeCount > 1)
+            {
+                Console.WriteLine("Error: Choose only one of --in-place, --output, or --output-dir.");
                 return;
             }
 
@@ -113,10 +180,39 @@ namespace TWXD
             if (baseName.EndsWith(".cts", StringComparison.OrdinalIgnoreCase))
                 baseName = baseName.Substring(0, baseName.Length - 4);
 
-            string outputFile = backupExisting
-                ? GetUniqueFilename(baseName)
-                : GetDefaultOutputFilename(baseName);
+            string outputFile;
+            if (explicitOutputFile != null)
+            {
+                outputFile = explicitOutputFile;
+            }
+            else if (explicitOutputDirectory != null)
+            {
+                outputFile = Path.Combine(explicitOutputDirectory, Path.GetFileName(GetDefaultOutputFilename(baseName)));
+            }
+            else if (inPlace)
+            {
+                outputFile = GetDefaultOutputFilename(baseName);
+            }
+            else
+            {
+                outputFile = GetDefaultCurrentDirectoryOutputFilename(inputFile);
+            }
+
+            outputFile = Path.GetFullPath(outputFile);
+            string outputBaseName = outputFile.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
+                ? outputFile.Substring(0, outputFile.Length - 3)
+                : outputFile;
+            if (backupExisting)
+                outputFile = GetUniqueFilename(outputBaseName);
+
+            if (File.Exists(outputFile) && !overwriteExisting && !backupExisting)
+            {
+                Console.WriteLine($"Error: Refusing to overwrite existing file '{outputFile}'. Use --overwrite-existing, --backup-existing, --output, or --output-dir.");
+                return;
+            }
+
             string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(outputFile)) ?? Directory.GetCurrentDirectory();
+            Directory.CreateDirectory(outputDirectory);
             string tempOutputFile = Path.Combine(outputDirectory, $".{Path.GetFileName(outputFile)}.{Guid.NewGuid():N}.tmp");
 
             Console.WriteLine($"Decompiling '{inputFile}' to '{outputFile}' ...");
@@ -126,12 +222,23 @@ namespace TWXD
                 var scriptRef = new ScriptRef();
                 var decompiler = new ScriptDecompiler(scriptRef);
                 decompiler.CompactWhitespace = compactWhitespace;
+                decompiler.BackupExisting = backupExisting;
+                decompiler.OverwriteExisting = overwriteExisting;
                 
                 decompiler.LoadFromFile(inputFile);
                 var generatedFiles = decompiler.DecompileToFile(tempOutputFile);
 
                 if (File.Exists(outputFile))
-                    File.Delete(outputFile);
+                {
+                    if (overwriteExisting)
+                    {
+                        File.Delete(outputFile);
+                    }
+                    else if (!backupExisting)
+                    {
+                        throw new IOException($"Refusing to overwrite existing file '{outputFile}'. Use --overwrite-existing, --backup-existing, --output, or --output-dir.");
+                    }
+                }
 
                 File.Move(tempOutputFile, outputFile);
 

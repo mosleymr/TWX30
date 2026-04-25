@@ -158,6 +158,11 @@ public class ShipInfoParser
         // Split on ³ and parse each "Key value" token
         var tokens = line.Split(Sep, StringSplitOptions.RemoveEmptyEntries);
         bool any = false;
+        bool sawSlashHoldsTotal = false;
+        bool sawSlashFuelOre = false;
+        bool sawSlashOrganics = false;
+        bool sawSlashEquipment = false;
+        bool sawSlashColonists = false;
 
         foreach (var raw in tokens)
         {
@@ -169,15 +174,40 @@ public class ShipInfoParser
             any = true;
 
             if      (TrySlash(tok, "Sect ",   out long sect))   _s.CurrentSector  = (int)sect;
-            else if (TrySlash(tok, "Turns ",  out long turns))  _s.Turns          = (int)turns;
+            else if (TrySlash(tok, "Turns ",  out long turns))
+            {
+                _s.Turns = (int)turns;
+                if (turns > 0)
+                    _s.UnlimitedGame = false;
+            }
             else if (TrySlash(tok, "Creds ",  out long creds))  _s.Credits        = creds;
             else if (TrySlash(tok, "Figs ",   out long figs))   _s.Fighters       = (int)figs;
             else if (TrySlash(tok, "Shlds ",  out long shlds))  _s.Shields        = (int)shlds;
-            else if (TrySlash(tok, "Hlds ",   out long hlds))   _s.TotalHolds     = (int)hlds;
-            else if (TrySlash(tok, "Ore ",    out long ore))    _s.FuelOre        = (int)ore;
-            else if (TrySlash(tok, "Org ",    out long org))    _s.Organics       = (int)org;
-            else if (TrySlash(tok, "Equ ",    out long equ))    _s.Equipment      = (int)equ;
-            else if (TrySlash(tok, "Col ",    out long col))    _s.Colonists      = (int)col;
+            else if (TrySlash(tok, "Hlds ",   out long hlds))
+            {
+                _s.TotalHolds = (int)hlds;
+                sawSlashHoldsTotal = true;
+            }
+            else if (TrySlash(tok, "Ore ",    out long ore))
+            {
+                _s.FuelOre = (int)ore;
+                sawSlashFuelOre = true;
+            }
+            else if (TrySlash(tok, "Org ",    out long org))
+            {
+                _s.Organics = (int)org;
+                sawSlashOrganics = true;
+            }
+            else if (TrySlash(tok, "Equ ",    out long equ))
+            {
+                _s.Equipment = (int)equ;
+                sawSlashEquipment = true;
+            }
+            else if (TrySlash(tok, "Col ",    out long col))
+            {
+                _s.Colonists = (int)col;
+                sawSlashColonists = true;
+            }
             else if (TrySlash(tok, "Phot ",   out long phot))   _s.Photons        = (int)phot;
             else if (TrySlash(tok, "Armd ",   out long armd))   _s.ArmidMines     = (int)armd;
             else if (TrySlash(tok, "Lmpt ",   out long lmpt))   _s.LimpetMines    = (int)lmpt;
@@ -203,6 +233,13 @@ public class ShipInfoParser
                 if (shipParts.Length > 1)
                     _s.ShipClass = shipParts[1].Trim();
             }
+        }
+
+        if (_s.TotalHolds > 0 &&
+            (sawSlashHoldsTotal || sawSlashFuelOre || sawSlashOrganics || sawSlashEquipment || sawSlashColonists))
+        {
+            int usedHolds = _s.FuelOre + _s.Organics + _s.Equipment + _s.Colonists;
+            _s.HoldsEmpty = Math.Max(0, _s.TotalHolds - usedHolds);
         }
 
         return any;
@@ -322,7 +359,16 @@ public class ShipInfoParser
                 break;
 
             case "Turns left":
-                target.Turns = ParseInt(val);
+                if (val.Equals("Unlimited", StringComparison.OrdinalIgnoreCase))
+                {
+                    target.Turns = 0;
+                    target.UnlimitedGame = true;
+                }
+                else
+                {
+                    target.Turns = ParseInt(val);
+                    target.UnlimitedGame = false;
+                }
                 break;
 
             case "Total Holds":
@@ -712,6 +758,7 @@ public class ShipInfoParser
         ShipClass = status.ShipClass,
         CurrentSector = status.CurrentSector,
         Turns = status.Turns,
+        UnlimitedGame = status.UnlimitedGame,
         TurnsPerWarp = status.TurnsPerWarp,
         TotalHolds = status.TotalHolds,
         FuelOre = status.FuelOre,

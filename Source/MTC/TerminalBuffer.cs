@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace MTC;
 
 /// <summary>
@@ -139,8 +141,30 @@ public class TerminalBuffer
     public TermColor CurrentBg    { get; set; } = AnsiColor.ToColor(0);
     public bool      CurrentBlink { get; set; } = false;
 
-    // Dirty flag – TerminalView checks this to know when to redraw
-    public bool Dirty { get; set; } = true;
+    // Dirty flag – terminal views use a versioned dirty stamp so redraw requests
+    // are not lost if new output arrives while a frame is being rendered.
+    private long _dirtyVersion = 1;
+    private long _acknowledgedDirtyVersion;
+
+    public event Action? DirtyRaised;
+
+    public long DirtyVersion => Volatile.Read(ref _dirtyVersion);
+
+    public bool Dirty
+    {
+        get => DirtyVersion != Volatile.Read(ref _acknowledgedDirtyVersion);
+        set
+        {
+            if (value)
+            {
+                Interlocked.Increment(ref _dirtyVersion);
+                DirtyRaised?.Invoke();
+                return;
+            }
+
+            AcknowledgeDirty(DirtyVersion);
+        }
+    }
 
     public TerminalBuffer(int columns = 80, int rows = 24)
     {
@@ -150,6 +174,13 @@ public class TerminalBuffer
         ScrollTop    = 0;
         ScrollBottom = rows - 1;
         Reset();
+    }
+
+    public void AcknowledgeDirty(long version)
+    {
+        long dirtyVersion = DirtyVersion;
+        long acknowledgedVersion = Math.Min(version, dirtyVersion);
+        Volatile.Write(ref _acknowledgedDirtyVersion, acknowledgedVersion);
     }
 
     // ── Cell access ────────────────────────────────────────────────────────

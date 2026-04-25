@@ -26,9 +26,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace TWXProxy.Core
 {
@@ -42,7 +44,8 @@ namespace TWXProxy.Core
         // TWX Proxy 2.04 is version 4
         // TWX Proxy 2.05 is version 5
         // TWX Proxy 2.06 is version 6
-        public const int CompiledScriptVersion = 6;
+        // TWX Proxy 3.0.1 native-extension refresh is version 7
+        public const int CompiledScriptVersion = 7;
 
         public const byte PARAM_CMD = 0;
         public const byte PARAM_VAR = 1;        // User variable prefix
@@ -374,8 +377,27 @@ namespace TWXProxy.Core
     /// <summary>
     /// TScriptCmp: Main script compiler class
     /// </summary>
+    public sealed class BytecodePruneReport
+    {
+        public bool Attempted { get; set; }
+        public bool Changed { get; set; }
+        public string Status { get; set; } = "not-run";
+        public string Reason { get; set; } = string.Empty;
+        public int OriginalCodeBytes { get; set; }
+        public int PrunedCodeBytes { get; set; }
+        public int OriginalInstructionCount { get; set; }
+        public int ReachableInstructionCount { get; set; }
+        public int OriginalParamCount { get; set; }
+        public int ReachableParamCount { get; set; }
+        public int OriginalLabelCount { get; set; }
+        public int ReachableLabelCount { get; set; }
+    }
+
     public class ScriptCmp : IDisposable
     {
+        private static readonly Regex DynamicNamespaceRegex =
+            new(@":([A-Za-z0-9_]+)~", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private readonly record struct SourceDependencyStamp(string Path, long LastWriteUtcTicks, long Length);
         private readonly record struct CompiledScriptStamp(string Path, long LastWriteUtcTicks, long Length);
 
@@ -394,6 +416,28 @@ namespace TWXProxy.Core
             public required long Length { get; init; }
             public required byte[] CompiledBytes { get; init; }
             public PreparedScriptProgram? PreparedTemplate { get; set; }
+        }
+
+        private sealed class TrimBlock
+        {
+            public required string Label { get; init; }
+            public required int StartLineIndex { get; init; }
+            public int EndLineIndexExclusive { get; set; }
+            public List<string> References { get; } = new();
+            public bool FallsThrough { get; set; }
+        }
+
+        private sealed class TrimFileInfo
+        {
+            public required string FullPath { get; init; }
+            public required string Namespace { get; init; }
+            public required List<string> Lines { get; init; }
+            public List<string> IncludePaths { get; } = new();
+            public List<TrimBlock> Blocks { get; } = new();
+            public Dictionary<string, TrimBlock> BlocksByLabel { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public bool HasExecutablePreamble { get; set; }
+            public bool TrimDisabled { get; set; }
+            public string TrimDisabledReason { get; set; } = string.Empty;
         }
 
         private static readonly object _sourceCacheLock = new();
@@ -422,6 +466,7 @@ namespace TWXProxy.Core
         private PreparedScriptProgram? _preparedProgram;
         private readonly List<SourceDependencyStamp> _sourceDependencies = new();
         private string? _sourceCacheKey;
+        private Dictionary<string, List<string>>? _trimmedIncludeSources;
         public bool LastSourceCacheHit { get; private set; }
         public bool LastPreparedCacheHit { get; private set; }
         public long LastSourceCacheValidationTicks { get; private set; }
@@ -429,6 +474,9 @@ namespace TWXProxy.Core
         public long LastLoadTicks { get; private set; }
         public long LastPrepareTicks { get; private set; }
         public int LastDependencyCount { get; private set; }
+        public bool TrimIncludes { get; set; }
+        public bool PruneBytecode { get; set; }
+        public BytecodePruneReport? LastBytecodePruneReport { get; private set; }
 
         public ScriptCmp(ScriptRef? scriptRef = null, string scriptDirectory = "")
         {
@@ -466,6 +514,7 @@ namespace TWXProxy.Core
             _code = Array.Empty<byte>();
             _includeScriptList.Clear();
             _preparedProgram = null;
+            _trimmedIncludeSources = null;
         }
 
         #region Properties
@@ -729,6 +778,7 @@ namespace TWXProxy.Core
         {
             ResetLoadMetrics();
             _preparedProgram = null;
+            LastBytecodePruneReport = null;
             string fullPath = Path.GetFullPath(filename);
             string fullDescPath = string.IsNullOrWhiteSpace(descFile) ? string.Empty : Path.GetFullPath(descFile);
             _scriptFile = fullPath;
@@ -740,7 +790,8 @@ namespace TWXProxy.Core
             _cmdCount = 0;
             _includeScriptList.Clear();
             _sourceDependencies.Clear();
-            _sourceCacheKey = BuildSourceCacheKey(fullPath, fullDescPath);
+            _trimmedIncludeSources = null;
+            _sourceCacheKey = BuildSourceCacheKey(fullPath, fullDescPath, TrimIncludes, PruneBytecode);
 
             if (TryLoadFromSourceCache(_sourceCacheKey, fullPath))
                 return;
@@ -748,6 +799,8 @@ namespace TWXProxy.Core
             AddSourceDependency(fullPath);
             if (!string.IsNullOrWhiteSpace(fullDescPath) && File.Exists(fullDescPath))
                 AddSourceDependency(fullDescPath);
+            if (TrimIncludes)
+                _trimmedIncludeSources = BuildTrimmedIncludeSources(fullPath);
 
             long compileStart = Stopwatch.GetTimestamp();
 
@@ -761,6 +814,8 @@ namespace TWXProxy.Core
             }
 
             CompileFromStrings(scriptText, Path.GetFileName(fullPath));
+            if (PruneBytecode)
+                PruneCompiledBytecode();
             LastCompileTicks = Stopwatch.GetTimestamp() - compileStart;
             LastDependencyCount = _sourceDependencies.Count;
             StoreSourceCacheEntry();
@@ -1510,13 +1565,10 @@ namespace TWXProxy.Core
                 // $sector.density  ->  $sector["density"]
                 string convertedParam = ConvertDotNotation(param);
 
-                // Variable - strip array indexes to get base name
-                string varName = convertedParam;
-                
-                // Remove array indexes from variable name
-                int bracketPos = varName.IndexOf('[');
-                if (bracketPos > 0)
-                    varName = varName.Substring(0, bracketPos);
+                // Variable - strip only bracketed index contents while preserving
+                // any suffix outside the brackets, e.g.:
+                //   $port[$ship].multiple -> $port.multiple
+                string varName = ExtractBaseNamePreservingSuffix(convertedParam);
 
                 // Match Pascal: all include-local $vars are namespaced, including
                 // explicit $$-prefixed variables such as $$FILETEST.
@@ -1541,13 +1593,9 @@ namespace TWXProxy.Core
                 // Convert dot notation to bracket index notation
                 string convertedParam = ConvertDotNotation(param);
 
-                // Program variable - strip array indexes to get base name
-                string varName = convertedParam;
-                
-                // Remove array indexes from variable name
-                int bracketPos = varName.IndexOf('[');
-                if (bracketPos > 0)
-                    varName = varName.Substring(0, bracketPos);
+                // Program variable - strip only bracketed index contents while
+                // preserving any suffix outside the brackets.
+                string varName = ExtractBaseNamePreservingSuffix(convertedParam);
 
                 // Extend name for included scripts (skip system variables starting with %%)
                 if (scriptID > 0 && scriptID < _includeScriptList.Count && !varName.Contains('~') && !varName.StartsWith("%%"))
@@ -1637,6 +1685,35 @@ namespace TWXProxy.Core
             return param;
         }
 
+        private static string ExtractBaseNamePreservingSuffix(string param)
+        {
+            if (string.IsNullOrEmpty(param))
+                return param;
+
+            int indexLevel = 0;
+            var baseName = new StringBuilder(param.Length);
+            foreach (char c in param)
+            {
+                if (c == '[')
+                {
+                    indexLevel++;
+                    continue;
+                }
+
+                if (c == ']')
+                {
+                    if (indexLevel > 0)
+                        indexLevel--;
+                    continue;
+                }
+
+                if (indexLevel == 0)
+                    baseName.Append(c);
+            }
+
+            return baseName.ToString();
+        }
+
         private List<string> ExtractArrayIndexes(string param)
         {
             // Extract array indexes from a parameter like VAR[index1][index2]
@@ -1714,10 +1791,7 @@ namespace TWXProxy.Core
                 if (indexType == ScriptConstants.PARAM_VAR || indexType == ScriptConstants.PARAM_PROGVAR)
                 {
                     // Variable index – extend name for include scripts
-                    string indexVarName = compiledIndex;
-                    int idxBracketPos = indexVarName.IndexOf('[');
-                    if (idxBracketPos > 0)
-                        indexVarName = indexVarName.Substring(0, idxBracketPos);
+                    string indexVarName = ExtractBaseNamePreservingSuffix(compiledIndex);
 
                     if (scriptID > 0 && scriptID < _includeScriptList.Count && !indexVarName.Contains('~'))
                     {
@@ -1867,8 +1941,17 @@ namespace TWXProxy.Core
         {
             string fullPath = ResolveIncludePath(filename);
             AddSourceDependency(fullPath);
-
-            var scriptText = LoadSourceLines(fullPath);
+            List<string> scriptText;
+            if (TrimIncludes &&
+                _trimmedIncludeSources != null &&
+                _trimmedIncludeSources.TryGetValue(fullPath, out List<string>? trimmedSource))
+            {
+                scriptText = trimmedSource;
+            }
+            else
+            {
+                scriptText = LoadSourceLines(fullPath);
+            }
             
             // Get the actual filename from the filesystem (preserves correct case)
             // This is important because include statements may use different case than the actual file
@@ -1914,6 +1997,1143 @@ namespace TWXProxy.Core
             }
         }
 
+        private string ResolveIncludePathForPlanning(string filename, string currentDirectory)
+        {
+            string previousScriptDirectory = _scriptDirectory;
+            _scriptDirectory = currentDirectory;
+            try
+            {
+                return ResolveIncludePath(filename);
+            }
+            finally
+            {
+                _scriptDirectory = previousScriptDirectory;
+            }
+        }
+
+        private static List<string> TokenizeSourceLine(string line)
+        {
+            var tokens = new List<string>();
+            if (string.IsNullOrWhiteSpace(line))
+                return tokens;
+
+            var token = new StringBuilder();
+            bool inQuote = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+
+                if (!inQuote && c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+                    break;
+
+                if (!inQuote && char.IsWhiteSpace(c))
+                {
+                    if (token.Length > 0)
+                    {
+                        tokens.Add(token.ToString());
+                        token.Clear();
+                    }
+                    continue;
+                }
+
+                token.Append(c);
+                if (c == '"')
+                    inQuote = !inQuote;
+            }
+
+            if (token.Length > 0)
+                tokens.Add(token.ToString());
+
+            return tokens;
+        }
+
+        private static bool IsSubstantiveSourceLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return false;
+
+            string trimmed = line.TrimStart();
+            return !(trimmed.StartsWith("#", StringComparison.Ordinal) ||
+                     trimmed.StartsWith("//", StringComparison.Ordinal));
+        }
+
+        private static bool IsLabelDeclarationLine(string line, out string labelToken)
+        {
+            labelToken = string.Empty;
+            var tokens = TokenizeSourceLine(line.TrimStart());
+            if (tokens.Count != 1)
+                return false;
+
+            if (!tokens[0].StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            labelToken = tokens[0];
+            return true;
+        }
+
+        private static bool IsUnconditionalTransferLine(string line)
+        {
+            var tokens = TokenizeSourceLine(line.TrimStart());
+            if (tokens.Count == 0)
+                return false;
+
+            string cmd = tokens[0].ToUpperInvariant();
+            if (cmd == "RETURN" || cmd == "HALT" || cmd == "STOP")
+                return true;
+
+            return cmd == "GOTO" && tokens.Count >= 2 && tokens[1].StartsWith(":", StringComparison.Ordinal);
+        }
+
+        private static string NormalizeTrimLabelToken(string token, string currentNamespace)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return string.Empty;
+
+            token = token.Trim();
+            if (token.StartsWith('"') && token.EndsWith('"') && token.Length >= 2)
+                token = token.Substring(1, token.Length - 2);
+
+            if (!token.StartsWith(":", StringComparison.Ordinal))
+                return string.Empty;
+
+            string label = token.Substring(1);
+            if (string.IsNullOrWhiteSpace(label))
+                return string.Empty;
+
+            if (label.StartsWith(":", StringComparison.Ordinal))
+                return string.Empty;
+
+            if (label.Contains('~'))
+                return label.ToUpperInvariant();
+
+            if (string.IsNullOrEmpty(currentNamespace))
+                return string.Empty;
+
+            return (currentNamespace + "~" + label).ToUpperInvariant();
+        }
+
+        private List<string> ExtractQualifiedLabelReferences(IEnumerable<string> lines, string currentNamespace, out bool dynamicTargets)
+        {
+            var references = new List<string>();
+            dynamicTargets = false;
+
+            foreach (string rawLine in lines)
+            {
+                if (!IsSubstantiveSourceLine(rawLine))
+                    continue;
+
+                string line = rawLine.TrimStart();
+                var tokens = TokenizeSourceLine(line);
+                if (tokens.Count == 0)
+                    continue;
+
+                if (tokens[0].StartsWith(":", StringComparison.Ordinal))
+                    continue;
+
+                string cmd = tokens[0].ToUpperInvariant();
+                string target = string.Empty;
+
+                switch (cmd)
+                {
+                    case "GOTO":
+                    case "GOSUB":
+                        if (tokens.Count >= 2)
+                            target = tokens[1];
+                        break;
+
+                    case "BRANCH":
+                        if (tokens.Count >= 3)
+                            target = tokens[2];
+                        break;
+
+                    case "SETTEXTTRIGGER":
+                    case "SETTEXTLINETRIGGER":
+                    case "SETTEXTOUTTRIGGER":
+                    case "SETDELAYTRIGGER":
+                    case "SETEVENTTRIGGER":
+                        if (tokens.Count >= 3)
+                            target = tokens[2];
+                        break;
+
+                    case "ADDMENU":
+                        if (tokens.Count >= 6)
+                            target = tokens[5];
+                        break;
+                }
+
+                if (string.IsNullOrEmpty(target) || target == "\"\"")
+                    continue;
+
+                string normalized = NormalizeTrimLabelToken(target, currentNamespace);
+                if (!string.IsNullOrEmpty(normalized))
+                {
+                    references.Add(normalized);
+                }
+                else
+                {
+                    dynamicTargets = true;
+                }
+            }
+
+            return references;
+        }
+
+        private void CollectTrimFileRecursive(string fullPath, Dictionary<string, TrimFileInfo> files)
+        {
+            fullPath = Path.GetFullPath(fullPath);
+            if (files.ContainsKey(fullPath))
+                return;
+
+            List<string> lines = LoadSourceLines(fullPath);
+            var info = new TrimFileInfo
+            {
+                FullPath = fullPath,
+                Namespace = Path.GetFileNameWithoutExtension(fullPath).ToUpperInvariant(),
+                Lines = lines
+            };
+            files[fullPath] = info;
+
+            string currentDirectory = Path.GetDirectoryName(fullPath) ?? string.Empty;
+            foreach (string rawLine in lines)
+            {
+                if (!IsSubstantiveSourceLine(rawLine))
+                    continue;
+
+                var tokens = TokenizeSourceLine(rawLine.TrimStart());
+                if (tokens.Count < 2)
+                    continue;
+
+                if (!string.Equals(tokens[0], "INCLUDE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string includeRef = tokens[1];
+                if (includeRef.StartsWith('"') && includeRef.EndsWith('"') && includeRef.Length >= 2)
+                    includeRef = includeRef.Substring(1, includeRef.Length - 2);
+
+                string includeFullPath = ResolveIncludePathForPlanning(includeRef, currentDirectory);
+                info.IncludePaths.Add(includeFullPath);
+                CollectTrimFileRecursive(includeFullPath, files);
+            }
+        }
+
+        private void AnalyzeTrimFile(TrimFileInfo info)
+        {
+            info.Blocks.Clear();
+            info.BlocksByLabel.Clear();
+            info.HasExecutablePreamble = false;
+            info.TrimDisabled = false;
+            info.TrimDisabledReason = string.Empty;
+
+            TrimBlock? currentBlock = null;
+            int firstLabelIndex = -1;
+            int macroDepth = 0;
+
+            for (int i = 0; i < info.Lines.Count; i++)
+            {
+                string line = info.Lines[i];
+                if (IsLabelDeclarationLine(line, out string labelToken))
+                {
+                    if (macroDepth > 0)
+                    {
+                        info.TrimDisabled = true;
+                        info.TrimDisabledReason = "Label appears inside active IF/WHILE macro block";
+                        return;
+                    }
+
+                    string labelName = NormalizeTrimLabelToken(labelToken, info.Namespace);
+                    if (string.IsNullOrEmpty(labelName))
+                    {
+                        info.TrimDisabled = true;
+                        info.TrimDisabledReason = "Unsupported local or compiler-generated label";
+                        return;
+                    }
+
+                    if (currentBlock != null)
+                    {
+                        currentBlock.EndLineIndexExclusive = i;
+                        info.Blocks.Add(currentBlock);
+                        info.BlocksByLabel[currentBlock.Label] = currentBlock;
+                    }
+
+                    if (firstLabelIndex < 0)
+                        firstLabelIndex = i;
+
+                    currentBlock = new TrimBlock
+                    {
+                        Label = labelName,
+                        StartLineIndex = i,
+                        EndLineIndexExclusive = info.Lines.Count
+                    };
+                }
+                else if (firstLabelIndex < 0 && IsSubstantiveSourceLine(line))
+                {
+                    info.HasExecutablePreamble = true;
+                }
+
+                var tokens = TokenizeSourceLine(line.TrimStart());
+                if (tokens.Count == 0 || tokens[0].StartsWith(":", StringComparison.Ordinal))
+                    continue;
+
+                string cmd = tokens[0].ToUpperInvariant();
+                if (cmd == "IF" || cmd == "WHILE")
+                {
+                    macroDepth++;
+                }
+                else if (cmd == "END")
+                {
+                    if (macroDepth > 0)
+                        macroDepth--;
+                }
+            }
+
+            if (currentBlock != null)
+            {
+                currentBlock.EndLineIndexExclusive = info.Lines.Count;
+                info.Blocks.Add(currentBlock);
+                info.BlocksByLabel[currentBlock.Label] = currentBlock;
+            }
+
+            if (info.HasExecutablePreamble)
+            {
+                info.TrimDisabled = true;
+                info.TrimDisabledReason = "Executable preamble before first label";
+                return;
+            }
+
+            if (info.Blocks.Count == 0)
+            {
+                info.TrimDisabled = true;
+                info.TrimDisabledReason = "No labels found";
+                return;
+            }
+
+            foreach (TrimBlock block in info.Blocks)
+            {
+                List<string> blockLines = info.Lines
+                    .GetRange(block.StartLineIndex, block.EndLineIndexExclusive - block.StartLineIndex);
+
+                List<string> refs = ExtractQualifiedLabelReferences(blockLines, info.Namespace, out bool dynamicTargets);
+                block.References.AddRange(refs);
+
+                if (dynamicTargets)
+                {
+                    info.TrimDisabled = true;
+                    info.TrimDisabledReason = "Dynamic or unsupported label targets";
+                    return;
+                }
+
+                bool fallsThrough = true;
+                for (int i = block.EndLineIndexExclusive - 1; i >= block.StartLineIndex; i--)
+                {
+                    string candidate = info.Lines[i];
+                    if (!IsSubstantiveSourceLine(candidate))
+                        continue;
+
+                    if (IsLabelDeclarationLine(candidate, out _))
+                    {
+                        fallsThrough = true;
+                    }
+                    else
+                    {
+                        fallsThrough = !IsUnconditionalTransferLine(candidate);
+                    }
+                    break;
+                }
+
+                block.FallsThrough = fallsThrough;
+            }
+        }
+
+        private Dictionary<string, List<string>> BuildTrimmedIncludeSources(string rootFullPath)
+        {
+            var files = new Dictionary<string, TrimFileInfo>(StringComparer.OrdinalIgnoreCase);
+            CollectTrimFileRecursive(rootFullPath, files);
+
+            foreach (string path in files.Keys)
+                AddSourceDependency(path);
+
+            string rootFull = Path.GetFullPath(rootFullPath);
+            var includeFiles = files.Values
+                .Where(f => !string.Equals(f.FullPath, rootFull, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            bool duplicateNamespaces = includeFiles
+                .GroupBy(f => f.Namespace, StringComparer.OrdinalIgnoreCase)
+                .Any(g => g.Select(x => x.FullPath).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1);
+            if (duplicateNamespaces)
+                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (TrimFileInfo info in includeFiles)
+                AnalyzeTrimFile(info);
+
+            var namespaceMap = includeFiles.ToDictionary(f => f.Namespace, f => f, StringComparer.OrdinalIgnoreCase);
+            var reachableLabelsByFile = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var expandedFullFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var workQueue = new Queue<(TrimFileInfo File, string Label)>();
+
+            void EnqueueLabel(string qualifiedLabel)
+            {
+                int tilde = qualifiedLabel.IndexOf('~');
+                if (tilde <= 0)
+                    return;
+
+                string ns = qualifiedLabel.Substring(0, tilde);
+                if (!namespaceMap.TryGetValue(ns, out TrimFileInfo? file))
+                    return;
+
+                if (file.TrimDisabled)
+                {
+                    if (!expandedFullFiles.Add(file.FullPath))
+                        return;
+
+                    List<string> fullRefs = ExtractQualifiedLabelReferences(file.Lines, file.Namespace, out _);
+                    foreach (string nextRef in fullRefs)
+                        EnqueueLabel(nextRef);
+                    return;
+                }
+
+                if (!reachableLabelsByFile.TryGetValue(file.FullPath, out HashSet<string>? labels))
+                {
+                    labels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    reachableLabelsByFile[file.FullPath] = labels;
+                }
+
+                if (labels.Add(qualifiedLabel))
+                    workQueue.Enqueue((file, qualifiedLabel));
+            }
+
+            List<string> rootRefs = ExtractQualifiedLabelReferences(files[rootFull].Lines, string.Empty, out bool rootDynamicTargets);
+            if (rootDynamicTargets)
+                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string rootRef in rootRefs)
+                EnqueueLabel(rootRef);
+
+            while (workQueue.Count > 0)
+            {
+                (TrimFileInfo file, string label) = workQueue.Dequeue();
+                if (!file.BlocksByLabel.TryGetValue(label, out TrimBlock? block))
+                    continue;
+
+                foreach (string nextRef in block.References)
+                    EnqueueLabel(nextRef);
+
+                if (!block.FallsThrough)
+                    continue;
+
+                int blockIndex = file.Blocks.FindIndex(b => string.Equals(b.Label, block.Label, StringComparison.OrdinalIgnoreCase));
+                if (blockIndex >= 0 && blockIndex + 1 < file.Blocks.Count)
+                    EnqueueLabel(file.Blocks[blockIndex + 1].Label);
+            }
+
+            var trimmed = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (TrimFileInfo info in includeFiles)
+            {
+                if (info.TrimDisabled)
+                    continue;
+
+                if (!reachableLabelsByFile.TryGetValue(info.FullPath, out HashSet<string>? reachableLabels))
+                {
+                    trimmed[info.FullPath] = new List<string>();
+                    continue;
+                }
+
+                var keptLines = new List<string>();
+                foreach (TrimBlock block in info.Blocks)
+                {
+                    if (!reachableLabels.Contains(block.Label))
+                        continue;
+
+                    keptLines.AddRange(info.Lines.GetRange(block.StartLineIndex, block.EndLineIndexExclusive - block.StartLineIndex));
+                }
+
+                trimmed[info.FullPath] = keptLines;
+            }
+
+            return trimmed;
+        }
+
+        private void PruneCompiledBytecode()
+        {
+            var report = new BytecodePruneReport
+            {
+                Attempted = true,
+                OriginalCodeBytes = _codeSize,
+                OriginalParamCount = _paramList.Count,
+                OriginalLabelCount = _labelList.Count
+            };
+            LastBytecodePruneReport = report;
+
+            if (_code.Length == 0)
+            {
+                report.Status = "empty";
+                report.Reason = "No compiled code";
+                return;
+            }
+
+            try
+            {
+                PreparedScriptProgram prepared = PreparedScriptDecoder.Decode(this);
+                PreparedInstruction[] instructions = prepared.Instructions;
+                HashSet<string> pinnedNamespaces = BuildPinnedDynamicNamespaces(out bool pinRootLabels);
+                report.OriginalInstructionCount = instructions.Length;
+                if (instructions.Length == 0)
+                {
+                    report.Status = "empty";
+                    report.Reason = "No decoded instructions";
+                    return;
+                }
+
+                var reachable = new bool[instructions.Length];
+                var workQueue = new Queue<int>();
+                bool unsupportedFlow = false;
+
+                void EnqueueInstruction(int instructionIndex)
+                {
+                    if (instructionIndex < 0 || instructionIndex >= instructions.Length)
+                        return;
+
+                    if (reachable[instructionIndex])
+                        return;
+
+                    reachable[instructionIndex] = true;
+                    workQueue.Enqueue(instructionIndex);
+                }
+
+                bool IsPinnedNamespace(byte scriptId)
+                {
+                    string scriptNamespace = GetScriptNamespace(scriptId);
+                    if (string.IsNullOrEmpty(scriptNamespace))
+                        return pinRootLabels;
+
+                    return pinnedNamespaces.Contains(scriptNamespace);
+                }
+
+                void EnqueuePinnedLabelSets()
+                {
+                    foreach (ScriptLabel label in _labelList)
+                    {
+                        if (label.Location == _codeSize)
+                            continue;
+
+                        string labelName = label.Name;
+                        int tildeIndex = labelName.IndexOf('~');
+                        bool keepLabel = tildeIndex > 0
+                            ? pinnedNamespaces.Contains(labelName.Substring(0, tildeIndex))
+                            : pinRootLabels;
+
+                        if (!keepLabel)
+                            continue;
+
+                        if (prepared.TryGetInstructionIndex(label.Location, out int instructionIndex))
+                            EnqueueInstruction(instructionIndex);
+                    }
+                }
+
+                bool TryEnqueueLabelTarget(PreparedInstruction instruction, int paramIndex)
+                {
+                    if (paramIndex < 0 || paramIndex >= instruction.Params.Length)
+                        return false;
+
+                    if (!TryResolveReachabilityLabel(instruction, instruction.Params[paramIndex], out string qualifiedLabel))
+                        return false;
+
+                    int targetOffset = FindLabel(qualifiedLabel);
+                    if (targetOffset < 0)
+                        return false;
+
+                    if (targetOffset == _codeSize)
+                        return true;
+
+                    if (!prepared.TryGetInstructionIndex(targetOffset, out int instructionIndex))
+                        return false;
+
+                    EnqueueInstruction(instructionIndex);
+                    return true;
+                }
+
+                bool IsExplicitEmptyTarget(PreparedInstruction instruction, int paramIndex)
+                {
+                    if (paramIndex < 0 || paramIndex >= instruction.Params.Length)
+                        return false;
+
+                    PreparedParam param = instruction.Params[paramIndex];
+                    if (param.ParamType == ScriptConstants.PARAM_CONST)
+                        return string.IsNullOrWhiteSpace(param.LiteralValue);
+
+                    if (param.ParamType == ScriptConstants.PARAM_CHAR)
+                        return param.CharCode == 0;
+
+                    return false;
+                }
+
+                void EnqueueNamespaceFallback(PreparedInstruction instruction, int paramIndex)
+                {
+                    string? preferredNamespace = null;
+
+                    if (paramIndex >= 0 &&
+                        paramIndex < instruction.Params.Length &&
+                        TryResolveReachabilityLabel(instruction, instruction.Params[paramIndex], out string qualifiedLabel))
+                    {
+                        int tildeIndex = qualifiedLabel.IndexOf('~');
+                        if (tildeIndex > 0)
+                            preferredNamespace = qualifiedLabel.Substring(0, tildeIndex);
+                    }
+
+                    string scriptNamespace = !string.IsNullOrEmpty(preferredNamespace)
+                        ? preferredNamespace
+                        : GetScriptNamespace(instruction.ScriptId);
+
+                    foreach (ScriptLabel label in _labelList)
+                    {
+                        string labelName = label.Name;
+                        bool keepLabel;
+                        if (!string.IsNullOrEmpty(scriptNamespace))
+                        {
+                            keepLabel = labelName.StartsWith(scriptNamespace + "~", StringComparison.OrdinalIgnoreCase);
+                        }
+                        else
+                        {
+                            keepLabel = labelName.IndexOf('~') < 0;
+                        }
+
+                        if (!keepLabel || label.Location == _codeSize)
+                            continue;
+
+                        if (prepared.TryGetInstructionIndex(label.Location, out int labelInstructionIndex))
+                            EnqueueInstruction(labelInstructionIndex);
+                    }
+                }
+
+                EnqueueInstruction(0);
+                EnqueuePinnedLabelSets();
+
+                while (workQueue.Count > 0)
+                {
+                    int instructionIndex = workQueue.Dequeue();
+                    PreparedInstruction instruction = instructions[instructionIndex];
+                    if (instruction.IsLabel)
+                    {
+                        EnqueueInstruction(instruction.NextInstructionIndex);
+                        continue;
+                    }
+
+                    string commandName = instruction.CommandName.ToUpperInvariant();
+                    bool fallThrough = true;
+
+                    switch (commandName)
+                    {
+                        case "GOTO":
+                            if (!TryEnqueueLabelTarget(instruction, 0))
+                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                            fallThrough = false;
+                            break;
+
+                        case "GOSUB":
+                            if (!TryEnqueueLabelTarget(instruction, 0))
+                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                            break;
+
+                        case "BRANCH":
+                            if (!TryEnqueueLabelTarget(instruction, 1))
+                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                            break;
+
+                        case "SETTEXTTRIGGER":
+                        case "SETTEXTLINETRIGGER":
+                        case "SETTEXTOUTTRIGGER":
+                        case "SETDELAYTRIGGER":
+                        case "SETEVENTTRIGGER":
+                            if (!TryEnqueueLabelTarget(instruction, 1))
+                                EnqueueNamespaceFallback(instruction, 1);
+                            break;
+
+                        case "ADDMENU":
+                            if (!IsExplicitEmptyTarget(instruction, 4) &&
+                                !TryEnqueueLabelTarget(instruction, 4))
+                            {
+                                EnqueueNamespaceFallback(instruction, 4);
+                            }
+                            break;
+
+                        case "RETURN":
+                        case "HALT":
+                        case "STOP":
+                            fallThrough = false;
+                            break;
+                    }
+
+                    if (unsupportedFlow)
+                    {
+                        report.Status = "skipped";
+                        report.Reason = $"Unsupported dynamic or unresolved target in {instruction.CommandName}";
+                        return;
+                    }
+
+                    if (fallThrough)
+                        EnqueueInstruction(instruction.NextInstructionIndex);
+                }
+
+                report.ReachableInstructionCount = reachable.Count(isReachable => isReachable);
+
+                var usedParamIds = new HashSet<int>();
+                for (int i = 0; i < instructions.Length; i++)
+                {
+                    if (!reachable[i] || instructions[i].IsLabel)
+                        continue;
+
+                    foreach (PreparedParam param in instructions[i].Params)
+                        CollectUsedParamIds(param, usedParamIds);
+                }
+
+                bool addedBaseVar;
+                do
+                {
+                    addedBaseVar = false;
+                    foreach (int paramId in usedParamIds.ToArray())
+                    {
+                        if (paramId < 0 || paramId >= _paramList.Count)
+                            continue;
+
+                        if (_paramList[paramId] is not VarParam varParam)
+                            continue;
+
+                        if (!TryFindArithmeticBaseParamId(varParam.Name, out int baseParamId))
+                            continue;
+
+                        if (usedParamIds.Add(baseParamId))
+                            addedBaseVar = true;
+                    }
+                } while (addedBaseVar);
+
+                List<int> sortedParamIds = usedParamIds.OrderBy(id => id).ToList();
+                var oldToNewParamIds = new Dictionary<int, int>();
+                for (int i = 0; i < sortedParamIds.Count; i++)
+                    oldToNewParamIds[sortedParamIds[i]] = i;
+                report.ReachableParamCount = sortedParamIds.Count;
+
+                var newCode = new List<byte>(_code.Length);
+                var oldToNewOffsets = new Dictionary<int, int>();
+                int reachableCommandCount = 0;
+
+                for (int i = 0; i < instructions.Length; i++)
+                {
+                    if (!reachable[i])
+                        continue;
+
+                    PreparedInstruction instruction = instructions[i];
+                    oldToNewOffsets[instruction.RawOffset] = newCode.Count;
+                    EncodePreparedInstruction(newCode, instruction, oldToNewParamIds);
+                    if (!instruction.IsLabel)
+                        reachableCommandCount++;
+                }
+
+                int oldCodeSize = _codeSize;
+                int newCodeSize = newCode.Count;
+                var newLabels = new List<ScriptLabel>();
+                var newLabelDict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (ScriptLabel label in _labelList)
+                {
+                    int newLocation;
+                    if (label.Location == oldCodeSize)
+                    {
+                        newLocation = newCodeSize;
+                    }
+                    else if (!oldToNewOffsets.TryGetValue(label.Location, out newLocation))
+                    {
+                        continue;
+                    }
+
+                    var newLabel = new ScriptLabel
+                    {
+                        Name = label.Name,
+                        Location = newLocation
+                    };
+                    newLabels.Add(newLabel);
+                    if (!newLabelDict.ContainsKey(newLabel.Name))
+                        newLabelDict[newLabel.Name] = newLocation;
+                }
+
+                bool codeChanged = newCodeSize != oldCodeSize;
+                bool paramsChanged = sortedParamIds.Count != _paramList.Count;
+                bool labelsChanged = newLabels.Count != _labelList.Count;
+                if (!labelsChanged)
+                {
+                    for (int i = 0; i < newLabels.Count; i++)
+                    {
+                        if (newLabels[i].Location != _labelList[i].Location ||
+                            !string.Equals(newLabels[i].Name, _labelList[i].Name, StringComparison.Ordinal))
+                        {
+                            labelsChanged = true;
+                            break;
+                        }
+                    }
+                }
+                report.ReachableLabelCount = newLabels.Count;
+                report.PrunedCodeBytes = newCodeSize;
+
+                if (!codeChanged && !paramsChanged && !labelsChanged)
+                {
+                    report.Status = "unchanged";
+                    report.Reason = "All decoded instructions remained reachable";
+                    return;
+                }
+
+                _code = newCode.ToArray();
+                _codeSize = newCodeSize;
+                _paramList = sortedParamIds.Select(id => _paramList[id]).ToList();
+                _labelList = newLabels;
+                _labelDict = newLabelDict;
+                _cmdCount = reachableCommandCount;
+                _preparedProgram = null;
+                report.Changed = true;
+                report.Status = "pruned";
+                report.Reason = "Removed unreachable instructions";
+            }
+            catch (Exception ex)
+            {
+                report.Status = "error";
+                report.Reason = ex.Message;
+                GlobalModules.DebugLog($"[ScriptCmp.PruneCompiledBytecode] Skipped for '{_scriptFile}': {ex.Message}\n");
+            }
+        }
+
+        private static void CollectUsedParamIds(PreparedParam param, HashSet<int> usedParamIds)
+        {
+            if (param.ParamId >= 0)
+                usedParamIds.Add(param.ParamId);
+
+            foreach (PreparedParam index in param.Indexes)
+                CollectUsedParamIds(index, usedParamIds);
+        }
+
+        private bool TryResolveReachabilityLabel(PreparedInstruction instruction, PreparedParam param, out string qualifiedLabel)
+        {
+            qualifiedLabel = string.Empty;
+
+            if (param.ParamType != ScriptConstants.PARAM_CONST && param.ParamType != ScriptConstants.PARAM_CHAR)
+                return false;
+
+            return TryQualifyCompiledLabelToken(instruction.ScriptId, param.LiteralValue, out qualifiedLabel);
+        }
+
+        private HashSet<string> BuildPinnedDynamicNamespaces(out bool pinRootLabels)
+        {
+            pinRootLabels = false;
+            var pinned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var dynamicTargetVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string rootPath = Path.GetFullPath(_scriptFile);
+
+            foreach (SourceDependencyStamp dependency in _sourceDependencies)
+            {
+                if (!dependency.Path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                List<string> lines = LoadSourceLines(dependency.Path);
+                string currentNamespace = dependency.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : Path.GetFileNameWithoutExtension(dependency.Path).ToUpperInvariant();
+
+                foreach (string rawLine in lines)
+                {
+                    string line = rawLine.TrimStart();
+                    if (string.IsNullOrEmpty(line) || line[0] == '\'')
+                        continue;
+
+                    List<string> tokens = TokenizeSourceLine(line);
+                    if (!TryGetDynamicControlTarget(tokens, currentNamespace, out string targetToken))
+                        continue;
+
+                    if (string.IsNullOrEmpty(currentNamespace))
+                        pinRootLabels = true;
+                    else
+                        pinned.Add(currentNamespace);
+
+                    foreach (Match match in DynamicNamespaceRegex.Matches(targetToken))
+                    {
+                        if (match.Groups.Count > 1 && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                            pinned.Add(match.Groups[1].Value.ToUpperInvariant());
+                    }
+
+                    if (TryNormalizeSourceVariableToken(targetToken, currentNamespace, out string normalizedVariable))
+                        dynamicTargetVariables.Add(normalizedVariable);
+                }
+            }
+
+            if (dynamicTargetVariables.Count == 0)
+                return pinned;
+
+            foreach (SourceDependencyStamp dependency in _sourceDependencies)
+            {
+                if (!dependency.Path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                List<string> lines = LoadSourceLines(dependency.Path);
+                string currentNamespace = dependency.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : Path.GetFileNameWithoutExtension(dependency.Path).ToUpperInvariant();
+
+                foreach (string rawLine in lines)
+                {
+                    string line = rawLine.TrimStart();
+                    if (string.IsNullOrEmpty(line) || line[0] == '\'')
+                        continue;
+
+                    List<string> tokens = TokenizeSourceLine(line);
+                    if (!TryGetLiteralLabelAssignment(tokens, currentNamespace, out string normalizedVariable, out string qualifiedLabel))
+                        continue;
+
+                    if (!dynamicTargetVariables.Contains(normalizedVariable))
+                        continue;
+
+                    int tildeIndex = qualifiedLabel.IndexOf('~');
+                    if (tildeIndex > 0)
+                    {
+                        pinned.Add(qualifiedLabel.Substring(0, tildeIndex));
+                    }
+                    else
+                    {
+                        pinRootLabels = true;
+                    }
+                }
+            }
+
+            return pinned;
+        }
+
+        private static bool TryGetDynamicControlTarget(List<string> tokens, string currentNamespace, out string targetToken)
+        {
+            targetToken = string.Empty;
+            if (tokens.Count == 0 || tokens[0].StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            string cmd = tokens[0].ToUpperInvariant();
+            switch (cmd)
+            {
+                case "GOTO":
+                case "GOSUB":
+                    if (tokens.Count >= 2)
+                        targetToken = tokens[1];
+                    break;
+
+                case "BRANCH":
+                    if (tokens.Count >= 3)
+                        targetToken = tokens[2];
+                    break;
+
+                case "SETTEXTTRIGGER":
+                case "SETTEXTLINETRIGGER":
+                case "SETTEXTOUTTRIGGER":
+                case "SETDELAYTRIGGER":
+                case "SETEVENTTRIGGER":
+                    if (tokens.Count >= 3)
+                        targetToken = tokens[2];
+                    break;
+
+                case "ADDMENU":
+                    if (tokens.Count >= 6)
+                        targetToken = tokens[5];
+                    break;
+            }
+
+            if (string.IsNullOrEmpty(targetToken) || targetToken == "\"\"")
+                return false;
+
+            return string.IsNullOrEmpty(NormalizeTrimLabelToken(targetToken, currentNamespace));
+        }
+
+        private static bool TryNormalizeSourceVariableToken(string token, string currentNamespace, out string normalizedVariable)
+        {
+            normalizedVariable = string.Empty;
+            if (string.IsNullOrWhiteSpace(token))
+                return false;
+
+            string value = token.Trim();
+            if (value.Length == 0)
+                return false;
+
+            char sigil = value[0];
+            if (sigil != '$' && sigil != '%')
+                return false;
+
+            string baseName = ExtractBaseNamePreservingSuffix(value);
+            if (string.IsNullOrWhiteSpace(baseName))
+                return false;
+
+            bool isProgramVar = baseName[0] == '%';
+            if (!baseName.Contains('~'))
+            {
+                if (!string.IsNullOrEmpty(currentNamespace) &&
+                    !(isProgramVar && baseName.StartsWith("%%", StringComparison.Ordinal)))
+                {
+                    baseName = baseName.Length > 1 && char.IsDigit(baseName[1])
+                        ? baseName[0] + currentNamespace + "~" + baseName
+                        : baseName[0] + currentNamespace + "~" + baseName.Substring(1);
+                }
+            }
+            else if (baseName.StartsWith("~", StringComparison.Ordinal) && baseName.Length > 1)
+            {
+                baseName = baseName.Substring(1);
+            }
+
+            normalizedVariable = baseName.ToUpperInvariant();
+            return true;
+        }
+
+        private static bool TryGetLiteralLabelAssignment(List<string> tokens, string currentNamespace, out string normalizedVariable, out string qualifiedLabel)
+        {
+            normalizedVariable = string.Empty;
+            qualifiedLabel = string.Empty;
+
+            if (tokens.Count < 3 || tokens[0].StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            if (!string.Equals(tokens[0], "SETVAR", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!TryNormalizeSourceVariableToken(tokens[1], currentNamespace, out normalizedVariable))
+                return false;
+
+            qualifiedLabel = NormalizeTrimLabelToken(tokens[2], currentNamespace);
+            return !string.IsNullOrEmpty(qualifiedLabel);
+        }
+
+        private bool TryQualifyCompiledLabelToken(byte scriptId, string token, out string qualifiedLabel)
+        {
+            qualifiedLabel = string.Empty;
+            if (string.IsNullOrWhiteSpace(token))
+                return false;
+
+            string value = token.Trim();
+            if (!value.StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            string labelName = value.Substring(1);
+            if (string.IsNullOrWhiteSpace(labelName))
+                return false;
+
+            if (labelName.Contains('~'))
+            {
+                qualifiedLabel = labelName.ToUpperInvariant();
+                return true;
+            }
+
+            string scriptNamespace = GetScriptNamespace(scriptId);
+            qualifiedLabel = !string.IsNullOrEmpty(scriptNamespace)
+                ? (scriptNamespace + "~" + labelName).ToUpperInvariant()
+                : labelName.ToUpperInvariant();
+            return true;
+        }
+
+        private bool TryFindArithmeticBaseParamId(string varName, out int baseParamId)
+        {
+            baseParamId = -1;
+
+            if (!TryExtractArithmeticBaseName(varName, out string baseVarName))
+                return false;
+
+            for (int i = 0; i < _paramList.Count; i++)
+            {
+                if (_paramList[i] is VarParam varParam &&
+                    string.Equals(varParam.Name, baseVarName, StringComparison.OrdinalIgnoreCase))
+                {
+                    baseParamId = i;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryExtractArithmeticBaseName(string varName, out string baseVarName)
+        {
+            baseVarName = string.Empty;
+            if (string.IsNullOrEmpty(varName) || varName[0] != '$')
+                return false;
+
+            int opIndex = -1;
+            for (int i = 2; i < varName.Length; i++)
+            {
+                char c = varName[i];
+                if (c == '+' || c == '-' || c == '*' || c == '/')
+                {
+                    opIndex = i;
+                    break;
+                }
+
+                if (!(char.IsLetterOrDigit(c) || c == '_'))
+                    return false;
+            }
+
+            if (opIndex < 0 || opIndex + 1 >= varName.Length)
+                return false;
+
+            if (!double.TryParse(varName.Substring(opIndex + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                return false;
+
+            baseVarName = varName.Substring(0, opIndex);
+            return true;
+        }
+
+        private static void EncodePreparedInstruction(List<byte> code, PreparedInstruction instruction, Dictionary<int, int> oldToNewParamIds)
+        {
+            code.Add(instruction.ScriptId);
+            code.AddRange(BitConverter.GetBytes(instruction.LineNumber));
+            code.AddRange(BitConverter.GetBytes(instruction.CommandId));
+
+            if (instruction.IsLabel)
+            {
+                code.AddRange(BitConverter.GetBytes(0));
+                return;
+            }
+
+            foreach (PreparedParam param in instruction.Params)
+                EncodePreparedParam(code, param, oldToNewParamIds);
+
+            code.Add(0);
+        }
+
+        private static void EncodePreparedParam(List<byte> code, PreparedParam param, Dictionary<int, int> oldToNewParamIds)
+        {
+            code.Add(param.ParamType);
+
+            switch (param.ParamType)
+            {
+                case ScriptConstants.PARAM_CONST:
+                case ScriptConstants.PARAM_VAR:
+                case ScriptConstants.PARAM_PROGVAR:
+                    if (!oldToNewParamIds.TryGetValue(param.ParamId, out int mappedParamId))
+                        throw new Exception($"Parameter ID {param.ParamId} was pruned but is still referenced");
+
+                    code.AddRange(BitConverter.GetBytes(mappedParamId));
+                    if (param.ParamType != ScriptConstants.PARAM_CONST)
+                        EncodePreparedIndexes(code, param.Indexes, oldToNewParamIds);
+                    break;
+
+                case ScriptConstants.PARAM_SYSCONST:
+                    code.AddRange(BitConverter.GetBytes(param.SysConstId));
+                    EncodePreparedIndexes(code, param.Indexes, oldToNewParamIds);
+                    break;
+
+                case ScriptConstants.PARAM_CHAR:
+                    code.Add(param.CharCode);
+                    break;
+
+                default:
+                    throw new Exception($"Unsupported parameter type {param.ParamType} during bytecode pruning");
+            }
+        }
+
+        private static void EncodePreparedIndexes(List<byte> code, PreparedParam[] indexes, Dictionary<int, int> oldToNewParamIds)
+        {
+            if (indexes.Length > byte.MaxValue)
+                throw new Exception("Too many array indexes to encode");
+
+            code.Add((byte)indexes.Length);
+            foreach (PreparedParam index in indexes)
+                EncodePreparedParam(code, index, oldToNewParamIds);
+        }
+
         #endregion
 
         #region File I/O Methods
@@ -1934,12 +3154,14 @@ namespace TWXProxy.Core
             return ticks * 1000.0 / Stopwatch.Frequency;
         }
 
-        private static string BuildSourceCacheKey(string fullPath, string descFile)
+        private static string BuildSourceCacheKey(string fullPath, string descFile, bool trimIncludes, bool pruneBytecode)
         {
             string descPart = string.IsNullOrWhiteSpace(descFile)
                 ? string.Empty
                 : Path.GetFullPath(descFile);
-            return fullPath + "|" + descPart;
+            return fullPath + "|" + descPart +
+                   "|trim=" + (trimIncludes ? "1" : "0") +
+                   "|prune=" + (pruneBytecode ? "1" : "0");
         }
 
         private static SourceDependencyStamp CaptureDependencyStamp(string path)

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Diagnostics;
+using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -36,6 +37,8 @@ public class TerminalControl : Control
     private readonly TerminalBuffer _buffer;
     private readonly DispatcherTimer _cursorTimer;
     private bool _cursorOn = true;
+    private bool _dirtySubscriptionActive;
+    private int _redrawQueued;
 
     // Monospace font metrics – measured once at construction time (or on font change)
     private double _charWidth;
@@ -44,7 +47,8 @@ public class TerminalControl : Control
     private FontFamily _fontFamily =
         new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
-    private const double FontPt = 14.0;
+    public const double DefaultFontSize = 14.0;
+    private double _fontSize = DefaultFontSize;
     private Typeface _typeFace;
 
     // Brush cache – one SolidColorBrush per unique TermColor
@@ -97,6 +101,9 @@ public class TerminalControl : Control
         _cursorTimer.Tick += (_, _) => { _cursorOn = !_cursorOn; InvalidateVisual(); };
         _cursorTimer.Start();
 
+        AttachedToVisualTree += (_, _) => EnsureDirtySubscription();
+        DetachedFromVisualTree += (_, _) => RemoveDirtySubscription();
+
         // ── Right-click context menu ─────────────────────────────────────
         var copyItem  = new MenuItem { Header = "Copy" };
         var pasteItem = new MenuItem { Header = "Paste" };
@@ -110,6 +117,26 @@ public class TerminalControl : Control
         ContextMenu = ctxMenu;
     }
 
+    private void EnsureDirtySubscription()
+    {
+        if (_dirtySubscriptionActive)
+            return;
+
+        _buffer.DirtyRaised += OnBufferDirtyRaised;
+        _dirtySubscriptionActive = true;
+    }
+
+    private void RemoveDirtySubscription()
+    {
+        if (!_dirtySubscriptionActive)
+            return;
+
+        _buffer.DirtyRaised -= OnBufferDirtyRaised;
+        _dirtySubscriptionActive = false;
+    }
+
+    private void OnBufferDirtyRaised() => RequestRedraw();
+
     // ── Layout ─────────────────────────────────────────────────────────────
 
     private void MeasureFont()
@@ -119,10 +146,10 @@ public class TerminalControl : Control
             CultureInfo.InvariantCulture,
             FlowDirection.LeftToRight,
             _typeFace,
-            FontPt,
+            _fontSize,
             Brushes.White);
         _charWidth  = probe.Width;
-        _lineHeight = probe.Height > 0 ? probe.Height : FontPt * 1.3;
+        _lineHeight = probe.Height > 0 ? probe.Height : _fontSize * 1.3;
     }
 
     /// <summary>Change the terminal font. Can be called from the UI thread at any time.</summary>
@@ -132,6 +159,19 @@ public class TerminalControl : Control
         _typeFace   = new Typeface(_fontFamily);
         MeasureFont();
         // Force a buffer resize on the next arrange pass
+        _buffer.Resize(_buffer.Columns, _buffer.Rows);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    public void SetFontSize(double fontSize)
+    {
+        double normalized = Math.Clamp(fontSize, 8.0, 40.0);
+        if (Math.Abs(_fontSize - normalized) < 0.01)
+            return;
+
+        _fontSize = normalized;
+        MeasureFont();
         _buffer.Resize(_buffer.Columns, _buffer.Rows);
         InvalidateMeasure();
         InvalidateVisual();
@@ -184,6 +224,8 @@ public class TerminalControl : Control
     public override void Render(DrawingContext ctx)
     {
         SyncScrollAnchorToLatest();
+        long renderedDirtyVersion = _buffer.DirtyVersion;
+        var runBuilder = new StringBuilder(_buffer.Columns);
 
         // Solid black background
         ctx.FillRectangle(Brushes.Black, new Rect(Bounds.Size));
@@ -220,19 +262,27 @@ public class TerminalControl : Control
                 // Text run – skip when cell is blinking and in the "off" phase
                 if (!blink || _cursorOn)
                 {
-                    var sb = new StringBuilder(end - col);
+                    runBuilder.Clear();
+                    bool hasVisibleGlyph = false;
                     for (int i = col; i < end; i++)
-                        sb.Append(GetDisplayCell(row, i, scrollOff).Char);
+                    {
+                        char ch = GetDisplayCell(row, i, scrollOff).Char;
+                        runBuilder.Append(ch);
+                        hasVisibleGlyph |= ch != ' ';
+                    }
 
-                    var ft = new FormattedText(
-                        sb.ToString(),
-                        CultureInfo.InvariantCulture,
-                        FlowDirection.LeftToRight,
-                        _typeFace,
-                        FontPt,
-                        GetBrush(fg));
+                    if (hasVisibleGlyph)
+                    {
+                        var ft = new FormattedText(
+                            runBuilder.ToString(),
+                            CultureInfo.InvariantCulture,
+                            FlowDirection.LeftToRight,
+                            _typeFace,
+                            _fontSize,
+                            GetBrush(fg));
 
-                    ctx.DrawText(ft, new Point(x, y));
+                        ctx.DrawText(ft, new Point(x, y));
+                    }
                 }
                 col = end;
             }
@@ -264,12 +314,15 @@ public class TerminalControl : Control
                 CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight,
                 _typeFace,
-                FontPt * 0.85,
+                _fontSize * 0.85,
                 GetBrush(new TermColor(0, 200, 200)));
             ctx.DrawText(indFt, new Point(4, (_lineHeight - indFt.Height) / 2));
         }
 
-        _buffer.Dirty = false;
+        _buffer.AcknowledgeDirty(renderedDirtyVersion);
+        Interlocked.Exchange(ref _redrawQueued, 0);
+        if (_buffer.Dirty)
+            RequestRedraw();
     }
 
     private void RenderSelection(DrawingContext ctx)
@@ -297,15 +350,20 @@ public class TerminalControl : Control
     /// <summary>Call from any thread to schedule a repaint.</summary>
     public void RequestRedraw()
     {
-        if (_buffer.Dirty)
+        if (!_buffer.Dirty || Interlocked.Exchange(ref _redrawQueued, 1) != 0)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
         {
-            Dispatcher.UIThread.Post(() =>
+            bool scrollAdjusted = SyncScrollAnchorToLatest();
+            if (_buffer.Dirty || scrollAdjusted)
             {
-                bool scrollAdjusted = SyncScrollAnchorToLatest();
-                if (_buffer.Dirty || scrollAdjusted)
-                    InvalidateVisual();
-            }, DispatcherPriority.Render);
-        }
+                InvalidateVisual();
+                return;
+            }
+
+            Interlocked.Exchange(ref _redrawQueued, 0);
+        }, DispatcherPriority.Render);
     }
 
     // ── Mouse wheel scrollback ─────────────────────────────────────────────

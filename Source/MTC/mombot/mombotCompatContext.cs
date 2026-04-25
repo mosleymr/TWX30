@@ -11,7 +11,8 @@ internal sealed record mombotCommandContext(
     IReadOnlyList<string> Parameters,
     bool SelfCommand = false,
     string Route = "",
-    string UserName = "");
+    string UserName = "",
+    string TypedCommandName = "");
 
 internal sealed class mombotCompatContext
 {
@@ -54,7 +55,7 @@ internal sealed class mombotCompatContext
         string cappingAliens = ReadCurrentAny("0", "$PLAYER~cappingAliens", "$cappingAliens");
         string photonDuration = ReadCurrentAny("0", "$GAME~PHOTON_DURATION", "$GAME~photon_duration");
         string portMax = ReadCurrentAny("0", "$GAME~PORT_MAX", "$GAME~port_max");
-        string settingsOverride = ReadCurrentAny("0", "$SETTINGS~OVERRIDE", "$settings~override");
+        string settingsOverride = CommandHasOverride(context) ? "1" : "0";
         string dropOffensive = ReadCurrentAny("0", "$PLAYER~DROPOFFENSIVE", "$PLAYER~dropOffensive");
         string dropToll = ReadCurrentAny("0", "$PLAYER~DROPTOLL", "$PLAYER~dropToll");
         string currentSector = ReadCurrentAny(FormatSector((ushort)Core.ScriptRef.GetCurrentSector()), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
@@ -94,6 +95,14 @@ internal sealed class mombotCompatContext
         };
 
         SetVars(vars, context.CommandName, "$BOT~COMMAND", "$bot~command", "$command");
+        SetVars(
+            vars,
+            string.Equals(context.TypedCommandName, context.CommandName, StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : context.TypedCommandName,
+            "$BOT~COMMAND_TYPED",
+            "$bot~command_typed",
+            "$command_typed");
         string userCommandLine = userCommandLineOverride ?? (context.Parameters.Count == 0
             ? string.Empty
             : string.Join(" ", context.Parameters));
@@ -255,6 +264,20 @@ internal sealed class mombotCompatContext
         }
 
         return fallback;
+    }
+
+    private static bool CommandHasOverride(mombotCommandContext context)
+    {
+        foreach (string parameter in context.Parameters)
+        {
+            if (string.Equals(parameter, "override", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(parameter, "overide", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string ReadCurrentSectorAny(string fallback, params string[] names)

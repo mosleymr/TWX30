@@ -67,6 +67,8 @@ Usage:
 ```bash
 twxd myscript.cts
 twxd --compact-whitespace myscript.cts
+twxd --in-place --backup-existing myscript.cts
+twxd --output-dir /tmp/twxd-out myscript.cts
 ```
 
 ### MTC
@@ -115,14 +117,32 @@ dotnet build MTC/MTC.csproj
 dotnet build TWXP/TWXP.csproj -f net10.0-maccatalyst
 ```
 
+### Publish Standalone Tool Binaries
+
+From `Source/`:
+
+```bash
+# Compiler: osx-arm64, osx-x64, win-x64
+./build-twxc.sh
+
+# Decompiler: osx-arm64, osx-x64, win-x64
+./build-twxd.sh
+
+# Avalonia client release binaries: Source/bin/MTC/<rid>
+./build-mtc.sh
+```
+
 ### Run
 
 ```bash
 # Compile a script
 dotnet run --project TWXC/TWXC.csproj -- myscript.ts
 
-# Decompile a script
+# Decompile a script into the current directory (default)
 dotnet run --project TWXD/TWXD.csproj -- myscript.cts
+
+# Decompile in place intentionally
+dotnet run --project TWXD/TWXD.csproj -- --in-place --backup-existing myscript.cts
 
 # Run MTC
 dotnet run --project MTC/MTC.csproj

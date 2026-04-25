@@ -66,7 +66,7 @@ internal sealed class mombotRelogDialog : Window
 
     public mombotRelogDialog(mombotRelogDialogResult defaults)
     {
-        Title = "Mombot Relog";
+        Title = "Mombot Configuration";
         Width = 560;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -126,14 +126,14 @@ internal sealed class mombotRelogDialog : Window
             {
                 new TextBlock
                 {
-                    Text = "Shown because the embedded proxy is not currently connected. Fill in relog details, then Mombot will arm relog and start.",
+                    Text = "Configure login details for this game. These settings are saved per game and used to start native Mombot when the embedded proxy is offline.",
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = FgNormal,
                     Margin = new Thickness(0, 0, 0, 8),
                 },
                 BuildRow("Type of login:", cboLoginType),
                 BuildRow("Bot Name:", txtBotName),
-                BuildRow("Server Name:", txtServerName),
+                BuildRow("Server Login:", txtServerName),
                 BuildRow("Login Name:", txtLoginName),
                 BuildRow("Password:", txtPassword),
                 BuildRow("Game Letter:", txtGameLetter),
@@ -146,7 +146,7 @@ internal sealed class mombotRelogDialog : Window
 
         var btnStart = new Button
         {
-            Content = "Start",
+            Content = "Save and Start",
             MinWidth = 80,
             Background = BgButton,
             Foreground = FgNormal,

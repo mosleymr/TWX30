@@ -1,9 +1,12 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Avalonia;
 using Avalonia.Platform;
@@ -30,6 +33,7 @@ namespace MTC;
 public class MainWindow : Window
 {
     private sealed record CommEntry(Core.CommMessageChannel Channel, string Sender, string Message, bool IsLocal);
+    private readonly record struct PendingDisplayChunk(byte[] Bytes, int LineCount, bool RewrotePromptOverwrite);
 
     private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
     private const int MaxCommEntries = 500;
@@ -43,6 +47,7 @@ public class MainWindow : Window
     private const double DeckPanelGridSize = 18;
     private const int TemporaryMacroMaxCharacters = 200;
     private const int EmbeddedLocalClientIndex = 0;
+    private static readonly double[] TerminalFontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
 
     // ── Core components ────────────────────────────────────────────────────
     private readonly GameState       _state;
@@ -51,7 +56,9 @@ public class MainWindow : Window
     private readonly TelnetClient    _telnet;
     private TerminalControl _termCtrl = null!;
     private TerminalControl _deckTermCtrl = null!;
-    private readonly DispatcherTimer _refreshTimer;    private readonly Core.ShipInfoParser _shipParser = new();
+    private readonly DispatcherTimer _performanceTimer;
+    private readonly DispatcherTimer _statusRefreshTimer;
+    private readonly Core.ShipInfoParser _shipParser = new();
     private readonly DispatcherTimer _mombotKeepaliveTimer;
     // ── Current saved profile path (null = not yet saved) ──────────────────
     private string?         _currentProfilePath;
@@ -67,6 +74,7 @@ public class MainWindow : Window
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
     private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
+    private ScriptDebuggerWindow?          _scriptDebuggerWindow;
     private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
     {
         WriteIndented             = true,
@@ -79,6 +87,7 @@ public class MainWindow : Window
     private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
+    private readonly MenuItem _viewClearRecents = new() { Header = "Clear _Recents" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };
     private MenuItem        _fileDisconnect = new() { Header = "_Disconnect", IsEnabled = false };
@@ -86,13 +95,18 @@ public class MainWindow : Window
     private readonly MenuItem _viewClassicSkin = new() { Header = "_Classic Console" };
     private readonly MenuItem _viewCommandDeckSkin = new() { Header = "_Command Deck" };
     private readonly MenuItem _viewCommWindow = new() { Header = "_Comm Window" };
+    private readonly List<(MenuItem Item, double Size)> _viewFontSizeItems = [];
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
     private readonly MTC.mombot.mombotService _mombot = new();
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
     private readonly Border _menuBarHost = new();
+    private readonly Border _menuFontSizeFrame = new();
+    private readonly Button _menuFontSizeDecreaseButton = new() { Content = "-" };
+    private readonly Button _menuFontSizeIncreaseButton = new() { Content = "+" };
     private readonly Border _statusMacroHost = new();
+    private readonly TextBlock _statusPerfText = new();
     private readonly StackPanel _statusBarContent = new()
     {
         Orientation = Orientation.Horizontal,
@@ -126,15 +140,30 @@ public class MainWindow : Window
     private readonly List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
+    private readonly Button _statusStopAllButton = new();
+    private readonly Button _statusCommButton = new();
     private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
     private readonly Button _statusLivePausedButton = new() { Content = "LIVE" };
+    private readonly Border _statusStopAllFrame = new();
+    private readonly Border _statusCommFrame = new();
     private readonly Border _statusHaggleFrame = new();
     private readonly Border _statusLivePausedFrame = new();
     private readonly object _pausedTerminalSync = new();
+    private readonly object _terminalDisplayArtifactSync = new();
     private readonly List<byte[]> _pausedTerminalChunks = [];
+    private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
+    private readonly ThroughputMeter _proxyThroughput = new();
     private bool _terminalLivePaused;
+    private int _displayDrainScheduled;
+    private bool _statusStopAllHovered;
+    private bool _statusCommHovered;
     private bool _statusHaggleHovered;
     private bool _statusLivePausedHovered;
+    private Avalonia.Controls.Shapes.Path? _statusStopAllSign;
+    private TextBlock? _statusStopAllLabel;
+    private Border? _statusCommFlap;
+    private Border? _statusCommBody;
+    private Border? _statusCommIndicator;
     private Border? _commPanelBorder;
     private Button? _commFedTabButton;
     private Button? _commSubspaceTabButton;
@@ -170,6 +199,7 @@ public class MainWindow : Window
     private readonly List<CommEntry> _commEntries = [];
     private Action<byte[]>? _terminalInputHandler;
     private string? _terminalFontFamilyName;
+    private double _terminalFontSize = TerminalControl.DefaultFontSize;
     private bool _mombotPromptOpen;
     private bool _mombotHotkeyPromptOpen;
     private bool _mombotScriptPromptOpen;
@@ -199,9 +229,16 @@ public class MainWindow : Window
     private string _mombotLastKeepaliveLine = string.Empty;
     private int _mombotObservedGamePromptVersion;
     private int _mombotPromptRestoreTicket;
+    private int _mombotMacroPromptRedrawTicket;
+    private int _serverOverwritePromptRestoreTicket;
     private string _mombotLastObservedGamePromptAnsi = string.Empty;
     private string _mombotLastObservedGamePromptPlain = string.Empty;
     private long _mombotLastServerOutputUtcTicks;
+    private int _pendingNativeMombotEscapeEchoSuppressions;
+    private long _nativeMombotEscapeEchoSuppressUntilUtcTicks;
+    private bool _suppressingPendingNativeMombotEscapeSequence;
+    private bool _suppressingPendingNativeMombotEscapeCsiBody;
+    private bool _pendingTerminalSyncMarkerLeadByte;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;
@@ -230,6 +267,7 @@ public class MainWindow : Window
     // ── Sidebar value TextBlocks (updated when GameState fires Changed) ────
     private TextBlock _valName     = new();
     private TextBlock _valSector    = new();
+    private Border    _sectorBustIndicator = new();
     private TextBlock _valTurns     = new();
     private TextBlock _valExper     = new();
     private TextBlock _valAlignm    = new();
@@ -240,6 +278,11 @@ public class MainWindow : Window
     private TextBlock _valEquipment = new();
     private TextBlock _valColonists = new();
     private TextBlock _valEmpty     = new();
+    private Border    _holdsFuelOreFill = new();
+    private Border    _holdsOrganicsFill = new();
+    private Border    _holdsEquipmentFill = new();
+    private Border    _holdsColonistsFill = new();
+    private Border    _holdsEmptyFill = new();
     private TextBlock _valFighters  = new();
     private TextBlock _valShields   = new();
     private TextBlock _valTrnWarp   = new();
@@ -367,9 +410,14 @@ public class MainWindow : Window
     private static readonly IBrush HudAccentHot = new SolidColorBrush(Color.FromRgb(255, 193, 74));
     private static readonly IBrush HudAccentOk  = new SolidColorBrush(Color.FromRgb(118, 255, 141));
     private static readonly IBrush HudAccentWarn= new SolidColorBrush(Color.FromRgb(255, 112, 112));
+    private static readonly IBrush HudBustBg    = new SolidColorBrush(Color.FromRgb(196, 48, 48));
     private static readonly IBrush HudStatus    = new SolidColorBrush(Color.FromRgb(11,  20, 28));
     private static readonly FontFamily HudTitleFont = new("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif");
+    private static readonly Bitmap AboutLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc.png")));
     private static readonly Bitmap HudLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
+    private const double HoldsMeterLabelWidth = 44;
+    private const double HoldsMeterBarWidth = 74;
+    private const double HoldsMeterValueWidth = 42;
 
     private sealed class DeckPanelState
     {
@@ -421,7 +469,12 @@ public class MainWindow : Window
 
         // Session logging for direct telnet mode is handled through the shared Core logger.
         RefreshSessionLogTarget();
-        _telnet.AppDataDecoded   += text  => _sessionLog.RecordServerText(text);
+        _telnet.AppDataDecoded += text =>
+        {
+            _sessionLog.RecordServerText(text);
+            int lineCount = CountTransportLines(text);
+            RecordProxyTraffic(text.Length, lineCount);
+        };
 
         // Update current sector from the command prompt — fires on every "Command [TL=...]:[N]"
         Core.GlobalModules.GlobalAutoRecorder.CurrentSectorChanged += sn =>
@@ -429,6 +482,14 @@ public class MainWindow : Window
             {
                 Core.ScriptRef.SetCurrentSector(sn);
                 SetMombotCurrentVars(sn.ToString(), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
+                var sectorDelta = new Core.ShipStatusDelta
+                {
+                    CurrentSector = sn
+                };
+                if (_gameInstance != null)
+                    _gameInstance.ApplyShipStatusDelta(sectorDelta);
+                else
+                    _shipParser.ApplyDelta(sectorDelta);
                 if (_state.Sector != sn)
                 {
                     _state.Sector = sn;
@@ -480,6 +541,16 @@ public class MainWindow : Window
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
 
+        _performanceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _performanceTimer.Tick += (_, _) => RefreshPerformanceCounters();
+
+        _statusRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _statusRefreshTimer.Tick += (_, _) =>
+        {
+            _statusRefreshTimer.Stop();
+            RefreshStatusBar();
+        };
+
         Content = BuildLayout();
 
         ApplyDebugLoggingPreferences();
@@ -492,14 +563,7 @@ public class MainWindow : Window
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
         _buffer.Dirty = true;
 
-        // 50 ms refresh – pushes buffer changes to UI
-        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
-        _refreshTimer.Tick += (_, _) =>
-        {
-            _termCtrl.RequestRedraw();
-            _deckTermCtrl.RequestRedraw();
-        };
-        _refreshTimer.Start();
+        UpdatePerformanceStatusVisibility();
 
         _mombotKeepaliveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _mombotKeepaliveTimer.Tick += (_, _) =>
@@ -528,7 +592,6 @@ public class MainWindow : Window
             _nativeAppMenuReady = false;
             _nativeAppMenuAttached = false;
             _nativeDockMenuAttached = false;
-            _refreshTimer.Stop();
             _mombotKeepaliveTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
@@ -539,6 +602,8 @@ public class MainWindow : Window
             _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
+            _performanceTimer.Stop();
+            _statusRefreshTimer.Stop();
         };
     }
 
@@ -548,6 +613,7 @@ public class MainWindow : Window
         if (_terminalInputHandler != null)
             control.SendInput = _terminalInputHandler;
         control.IsConnected = _state.Connected;
+        control.SetFontSize(_terminalFontSize);
         if (!string.IsNullOrWhiteSpace(_terminalFontFamilyName))
             control.SetFont(_terminalFontFamilyName);
         return control;
@@ -585,6 +651,11 @@ public class MainWindow : Window
         _valEquipment = new();
         _valColonists = new();
         _valEmpty = new();
+        _holdsFuelOreFill = new();
+        _holdsOrganicsFill = new();
+        _holdsEquipmentFill = new();
+        _holdsColonistsFill = new();
+        _holdsEmptyFill = new();
         _valFighters = new();
         _valShields = new();
         _valTrnWarp = new();
@@ -691,6 +762,12 @@ public class MainWindow : Window
         _statusText.Margin             = new Thickness(6, 0, 0, 0);
         _statusText.FontSize           = 13;
 
+        _statusPerfText.Foreground = HudAccent;
+        _statusPerfText.VerticalAlignment = VerticalAlignment.Center;
+        _statusPerfText.Margin = new Thickness(10, 0, 0, 0);
+        _statusPerfText.FontSize = 12;
+        _statusPerfText.IsVisible = false;
+
         _statusBar.Background = BgStatus;
         _statusBar.Height = 34;
         _statusBarContent.Children.Clear();
@@ -698,6 +775,7 @@ public class MainWindow : Window
         _statusBarContent.Children.Add(BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent));
         _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
         _statusBarContent.Children.Add(_statusText);
+        _statusBarContent.Children.Add(_statusPerfText);
         _statusBar.Child = _statusBarContent;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         dock.Children.Add(_statusBar);
@@ -1483,11 +1561,19 @@ public class MainWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
+        _deckValName.Foreground = HudText;
+        _deckValName.FontSize = 17;
+        _deckValName.FontWeight = FontWeight.SemiBold;
+        _deckValName.TextAlignment = TextAlignment.Right;
+        _deckValName.TextTrimming = TextTrimming.CharacterEllipsis;
+        _deckValName.TextWrapping = TextWrapping.NoWrap;
+        _deckValName.MinWidth = 0;
+
         var commander = BuildDeckMetricCard(
             "Commander Link",
-            ("Pilot", _deckValName),
-            ("Sector", _deckValSector),
-            ("Turns", _deckValTurns));
+            BuildDeckMetricStretchRow("Trader", _deckValName),
+            BuildDeckMetricRow("Sector", _deckValSector),
+            BuildDeckMetricRow("Turns", _deckValTurns));
         Grid.SetRow(commander, 0);
         Grid.SetColumn(commander, 0);
         grid.Children.Add(commander);
@@ -1896,9 +1982,18 @@ public class MainWindow : Window
 
     private Control BuildDeckMetricCard(string title, params (string Label, TextBlock Value)[] rows)
     {
-        var stack = new StackPanel { Spacing = 8 };
+        var builtRows = new List<Control>(rows.Length);
         foreach ((string label, TextBlock value) in rows)
-            stack.Children.Add(BuildDeckMetricRow(label, value));
+            builtRows.Add(BuildDeckMetricRow(label, value));
+
+        return BuildDeckMetricCard(title, builtRows.ToArray());
+    }
+
+    private Control BuildDeckMetricCard(string title, params Control[] rows)
+    {
+        var stack = new StackPanel { Spacing = 8 };
+        foreach (Control row in rows)
+            stack.Children.Add(row);
 
         return new Border
         {
@@ -1939,6 +2034,34 @@ public class MainWindow : Window
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         Grid.SetColumn(value, 1);
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = HudMuted,
+            FontSize = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(value);
+        return row;
+    }
+
+    private Control BuildDeckMetricStretchRow(string label, TextBlock value)
+    {
+        value.Foreground = HudText;
+        value.FontSize = 17;
+        value.FontWeight = FontWeight.SemiBold;
+        value.TextAlignment = TextAlignment.Right;
+        value.TextTrimming = TextTrimming.CharacterEllipsis;
+        value.TextWrapping = TextWrapping.NoWrap;
+        value.MinWidth = 0;
+        value.HorizontalAlignment = HorizontalAlignment.Stretch;
+
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        Grid.SetColumn(value, 2);
         row.Children.Add(new TextBlock
         {
             Text = label,
@@ -2042,6 +2165,208 @@ public class MainWindow : Window
         _terminalFontFamilyName = familyName;
         _termCtrl.SetFont(familyName);
         _deckTermCtrl.SetFont(familyName);
+        FocusActiveTerminal();
+    }
+
+    private void SetTerminalFontSize(double size)
+    {
+        double normalized = GetNearestTerminalFontSize(size);
+        if (Math.Abs(_terminalFontSize - normalized) < 0.01)
+        {
+            RefreshTerminalFontSizeUi();
+            FocusActiveTerminal();
+            return;
+        }
+
+        _terminalFontSize = normalized;
+        _termCtrl.SetFontSize(normalized);
+        _deckTermCtrl.SetFontSize(normalized);
+        RefreshTerminalFontSizeUi();
+        FocusActiveTerminal();
+    }
+
+    private void StepTerminalFontSize(int direction)
+    {
+        int currentIndex = Array.FindIndex(
+            TerminalFontSizeOptions,
+            size => Math.Abs(size - _terminalFontSize) < 0.01);
+
+        if (currentIndex < 0)
+        {
+            currentIndex = 0;
+            double smallestDistance = double.MaxValue;
+            for (int i = 0; i < TerminalFontSizeOptions.Length; i++)
+            {
+                double distance = Math.Abs(TerminalFontSizeOptions[i] - _terminalFontSize);
+                if (distance >= smallestDistance)
+                    continue;
+
+                smallestDistance = distance;
+                currentIndex = i;
+            }
+        }
+
+        int targetIndex = Math.Clamp(currentIndex + direction, 0, TerminalFontSizeOptions.Length - 1);
+        SetTerminalFontSize(TerminalFontSizeOptions[targetIndex]);
+    }
+
+    private void RefreshTerminalFontSizeUi()
+    {
+        _menuFontSizeDecreaseButton.IsEnabled = _terminalFontSize > TerminalFontSizeOptions[0];
+        _menuFontSizeIncreaseButton.IsEnabled = _terminalFontSize < TerminalFontSizeOptions[^1];
+        _menuFontSizeDecreaseButton.Opacity = _menuFontSizeDecreaseButton.IsEnabled ? 1.0 : 0.45;
+        _menuFontSizeIncreaseButton.Opacity = _menuFontSizeIncreaseButton.IsEnabled ? 1.0 : 0.45;
+
+        foreach ((MenuItem item, double size) in _viewFontSizeItems)
+        {
+            item.Icon = Math.Abs(size - _terminalFontSize) < 0.01
+                ? new TextBlock { Text = "●", Foreground = HudAccentOk }
+                : null;
+        }
+    }
+
+    private static double GetNearestTerminalFontSize(double requested)
+    {
+        double nearest = TerminalFontSizeOptions[0];
+        double bestDistance = Math.Abs(nearest - requested);
+        for (int i = 1; i < TerminalFontSizeOptions.Length; i++)
+        {
+            double candidate = TerminalFontSizeOptions[i];
+            double distance = Math.Abs(candidate - requested);
+            if (distance >= bestDistance)
+                continue;
+
+            bestDistance = distance;
+            nearest = candidate;
+        }
+
+        return nearest;
+    }
+
+    private static string FormatTerminalFontSize(double size)
+        => size.ToString(size % 1 == 0 ? "0" : "0.0", CultureInfo.InvariantCulture);
+
+    private Control BuildMenuFontSizeBox()
+    {
+        _menuFontSizeDecreaseButton.MinWidth = 0;
+        _menuFontSizeDecreaseButton.Width = 22;
+        _menuFontSizeDecreaseButton.Height = 22;
+        _menuFontSizeDecreaseButton.Padding = new Thickness(1);
+        _menuFontSizeDecreaseButton.VerticalAlignment = VerticalAlignment.Center;
+        _menuFontSizeDecreaseButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _menuFontSizeDecreaseButton.Background = Brushes.Transparent;
+        _menuFontSizeDecreaseButton.BorderBrush = Brushes.Transparent;
+        _menuFontSizeDecreaseButton.BorderThickness = new Thickness(0);
+        _menuFontSizeDecreaseButton.Content = BuildMenuFontSizeIcon(increase: false);
+        _menuFontSizeDecreaseButton.Click += (_, _) => StepTerminalFontSize(-1);
+        ToolTip.SetTip(_menuFontSizeDecreaseButton, "Decrease terminal font size");
+
+        _menuFontSizeIncreaseButton.MinWidth = 0;
+        _menuFontSizeIncreaseButton.Width = 22;
+        _menuFontSizeIncreaseButton.Height = 22;
+        _menuFontSizeIncreaseButton.Padding = new Thickness(1);
+        _menuFontSizeIncreaseButton.VerticalAlignment = VerticalAlignment.Center;
+        _menuFontSizeIncreaseButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _menuFontSizeIncreaseButton.Background = Brushes.Transparent;
+        _menuFontSizeIncreaseButton.BorderBrush = Brushes.Transparent;
+        _menuFontSizeIncreaseButton.BorderThickness = new Thickness(0);
+        _menuFontSizeIncreaseButton.Content = BuildMenuFontSizeIcon(increase: true);
+        _menuFontSizeIncreaseButton.Click += (_, _) => StepTerminalFontSize(1);
+        ToolTip.SetTip(_menuFontSizeIncreaseButton, "Increase terminal font size");
+
+        _menuFontSizeFrame.Padding = new Thickness(5, 2);
+        _menuFontSizeFrame.Background = HudHeaderAlt;
+        _menuFontSizeFrame.BorderBrush = HudInnerEdge;
+        _menuFontSizeFrame.BorderThickness = new Thickness(1);
+        _menuFontSizeFrame.CornerRadius = new CornerRadius(8);
+        _menuFontSizeFrame.Child = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _menuFontSizeDecreaseButton,
+                _menuFontSizeIncreaseButton,
+            },
+        };
+
+        RefreshTerminalFontSizeUi();
+        return _menuFontSizeFrame;
+    }
+
+    private static Control BuildMenuFontSizeIcon(bool increase)
+    {
+        Color accentColor = increase
+            ? Color.FromRgb(118, 255, 141)
+            : Color.FromRgb(0, 212, 201);
+
+        var accentBrush = new SolidColorBrush(accentColor);
+        var haloBrush = new SolidColorBrush(Color.FromArgb(36, accentColor.R, accentColor.G, accentColor.B));
+        var sheenBrush = new SolidColorBrush(Color.FromArgb(140, 255, 255, 255));
+
+        var ring = new Border
+        {
+            Width = 14,
+            Height = 14,
+            CornerRadius = new CornerRadius(7),
+            BorderThickness = new Thickness(1.15),
+            BorderBrush = accentBrush,
+            Background = haloBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var sheen = new Border
+        {
+            Width = 6,
+            Height = 1,
+            CornerRadius = new CornerRadius(1),
+            Background = sheenBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 2, 0, 0),
+            Opacity = 0.9,
+        };
+
+        var horizontalStroke = new Border
+        {
+            Width = 7,
+            Height = 1.8,
+            CornerRadius = new CornerRadius(1),
+            Background = accentBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var verticalStroke = new Border
+        {
+            Width = 1.8,
+            Height = 7,
+            CornerRadius = new CornerRadius(1),
+            Background = accentBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var icon = new Grid
+        {
+            Width = 16,
+            Height = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ring,
+                sheen,
+                horizontalStroke,
+            },
+        };
+
+        if (increase)
+            icon.Children.Add(verticalStroke);
+
+        return icon;
     }
 
     private void FocusActiveTerminal()
@@ -2119,9 +2444,6 @@ public class MainWindow : Window
                        new Separator(), fileQuit },
         };
 
-        var viewClear    = new MenuItem { Header = "_Clear Screen" };
-        viewClear.Click += (_, _) => { _buffer.Reset(); _buffer.Dirty = true; };
-
         // Font submenu – enumerate system font families, let user pick one
         var fontSubItems = new List<MenuItem>();
         try
@@ -2143,11 +2465,35 @@ public class MainWindow : Window
         else
             viewFont.IsEnabled = false;
 
+        _viewFontSizeItems.Clear();
+        var fontSizeSubItems = new List<MenuItem>();
+        foreach (double size in TerminalFontSizeOptions)
+        {
+            double selectedSize = size;
+            var item = new MenuItem { Header = FormatTerminalFontSize(selectedSize) };
+            item.Click += (_, _) => SetTerminalFontSize(selectedSize);
+            _viewFontSizeItems.Add((item, selectedSize));
+            fontSizeSubItems.Add(item);
+        }
+
+        var viewFontSize = new MenuItem
+        {
+            Header = "Font Si_ze",
+            ItemsSource = fontSizeSubItems,
+        };
+        RefreshTerminalFontSizeUi();
+
         var viewDbItem = new MenuItem { Header = "_Database..." };
         viewDbItem.Click += (_, _) => OnViewDatabase();
 
         var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
         viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
+
+        var viewBubblesItem = new MenuItem { Header = "_Bubbles..." };
+        viewBubblesItem.Click += (_, _) => OnViewBubbles();
+        var viewScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
+        viewScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
+        _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
@@ -2161,7 +2507,7 @@ public class MainWindow : Window
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewClear, viewFont, new Separator(), skinMenu, _viewCommWindow, new Separator(), viewGameInfoItem, viewDbItem },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, new Separator(), viewBubblesItem, viewGameInfoItem, viewDbItem, viewScriptDebuggerItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2213,6 +2559,14 @@ public class MainWindow : Window
         _statusMacroHost.VerticalAlignment = VerticalAlignment.Center;
         _statusMacroHost.Child = BuildStatusMacroBox();
 
+        _menuFontSizeFrame.Margin = new Thickness(0, 4, 0, 4);
+        _menuFontSizeFrame.VerticalAlignment = VerticalAlignment.Center;
+        BuildMenuFontSizeBox();
+
+        _statusStopAllFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusStopAllFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusCommFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusCommFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusHaggleFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusHaggleFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusLivePausedFrame.Margin = new Thickness(0, 4, 8, 4);
@@ -2226,6 +2580,9 @@ public class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
+                _menuFontSizeFrame,
+                _statusStopAllFrame,
+                _statusCommFrame,
                 _statusMacroHost,
                 _statusHaggleFrame,
                 _statusLivePausedFrame,
@@ -2245,6 +2602,27 @@ public class MainWindow : Window
         win.Show();
     }
 
+    private void OnViewBubbles()
+    {
+        var win = new BubblesWindow(
+            () => _sessionDb,
+            () => _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize,
+            size =>
+            {
+                _embeddedGameConfig ??= new EmbeddedGameConfig();
+                _embeddedGameConfig.BubbleSize = Math.Max(1, size);
+                _ = SaveCurrentGameConfigAsync();
+            });
+        win.Show();
+    }
+
+    private void OnViewClearRecents()
+    {
+        _appPrefs.RecentFiles.Clear();
+        _appPrefs.Save();
+        RebuildRecentMenu();
+    }
+
     private void OnViewDatabase()
     {
         var win = new SectorInfoWindow(
@@ -2255,8 +2633,25 @@ public class MainWindow : Window
 
     private void OnViewGameInfo()
     {
-        var win = new GameInfoWindow(() => _sessionDb);
+        var win = new GameInfoWindow(() => _sessionDb, () => _state);
         win.Show();
+    }
+
+    private void OnViewScriptDebugger()
+    {
+        if (_scriptDebuggerWindow is { IsVisible: true })
+        {
+            _scriptDebuggerWindow.Activate();
+            return;
+        }
+
+        _scriptDebuggerWindow = new ScriptDebuggerWindow(
+            () => CurrentInterpreter,
+            () => DeriveGameName(),
+            scriptId => Core.ProxyGameOperations.PauseScriptById(CurrentInterpreter, scriptId),
+            scriptId => Core.ProxyGameOperations.ResumeScriptById(CurrentInterpreter, scriptId));
+        _scriptDebuggerWindow.Closed += (_, _) => _scriptDebuggerWindow = null;
+        _scriptDebuggerWindow.Show(this);
     }
 
     // ── Sidebar ────────────────────────────────────────────────────────────
@@ -2271,27 +2666,9 @@ public class MainWindow : Window
         };
 
         // Trader Info
-        var traderRows = new (string, TextBlock)[]
-        {
-            ("Name",    _valName),
-            ("Sector",  _valSector),
-            ("Turns",   _valTurns),
-            ("Exper.",  _valExper),
-            ("Alignm.", _valAlignm),
-            ("Cred.",   _valCred),
-        };
-        stack.Children.Add(BuildPanel("Trader Info", traderRows));
+        stack.Children.Add(BuildTraderInfoPanel());
 
-        // Holds – total shown in section header, sub-items below
-        var holdsRows = new (string, TextBlock)[]
-        {
-            ("Fuel Ore", _valFuelOre),
-            ("Organics", _valOrganics),
-            ("Equipmnt", _valEquipment),
-            ("Colonsts", _valColonists),
-            ("Empty",    _valEmpty),
-        };
-        stack.Children.Add(BuildPanel("Holds", holdsRows, _valHTotal));
+        stack.Children.Add(BuildHoldsPanel());
 
         stack.Children.Add(BuildShipInfoPanel());
 
@@ -2323,6 +2700,185 @@ public class MainWindow : Window
         return outer;
     }
 
+    private Control BuildTraderInfoPanel()
+    {
+        var panel = new StackPanel
+        {
+            Background = Brushes.Transparent,
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(0, 0, 0, 3),
+        };
+
+        _valName.Foreground = HudText;
+        _valName.FontSize = 14;
+        _valName.FontWeight = FontWeight.SemiBold;
+        _valName.TextAlignment = TextAlignment.Right;
+        _valName.TextTrimming = TextTrimming.CharacterEllipsis;
+        _valName.TextWrapping = TextWrapping.NoWrap;
+        _valName.MinWidth = 0;
+        _valName.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _valName.VerticalAlignment = VerticalAlignment.Center;
+        _valName.Margin = new Thickness(0, 0, 10, 0);
+
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var headerTitle = new TextBlock
+        {
+            Text = "Trader",
+            Foreground = HudAccent,
+            FontFamily = HudTitleFont,
+            FontSize = 14,
+            FontWeight = Avalonia.Media.FontWeight.SemiBold,
+            Margin = new Thickness(10, 6, 0, 6),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        Grid.SetColumn(headerTitle, 0);
+        Grid.SetColumn(_valName, 2);
+        headerGrid.Children.Add(headerTitle);
+        headerGrid.Children.Add(_valName);
+
+        panel.Children.Add(new Border
+        {
+            Background = HudHeader,
+            Child = headerGrid,
+        });
+
+        panel.Children.Add(new Border
+        {
+            Background = HudInnerEdge,
+            Height = 1,
+            Margin = new Thickness(0),
+        });
+
+        _sectorBustIndicator = new Border
+        {
+            Background = HudBustBg,
+            BorderBrush = HudAccentWarn,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(6, 1),
+            Margin = new Thickness(0, 0, 6, 0),
+            IsVisible = false,
+            Child = new TextBlock
+            {
+                Text = "BUST",
+                Foreground = Brushes.White,
+                FontSize = 10,
+                FontWeight = FontWeight.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+
+        var sectorValueHost = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { _sectorBustIndicator, _valSector },
+        };
+        panel.Children.Add(BuildPanelRow("Sector", sectorValueHost, _valSector));
+        panel.Children.Add(BuildPanelRow("Turns", _valTurns));
+        panel.Children.Add(BuildPanelRow("Exper.", _valExper));
+        panel.Children.Add(BuildPanelRow("Alignm.", _valAlignm));
+        panel.Children.Add(BuildPanelRow("Cred.", _valCred));
+
+        panel.Children.Add(new Border { Height = 8 });
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Margin = new Thickness(0, 0, 0, 3),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = panel,
+            },
+        };
+    }
+
+    private Control BuildHoldsPanel()
+    {
+        _valHTotal.Foreground = HudText;
+        _valHTotal.FontSize = 14;
+        _valHTotal.FontWeight = FontWeight.SemiBold;
+        _valHTotal.VerticalAlignment = VerticalAlignment.Center;
+        _valHTotal.Margin = new Thickness(0, 0, 6, 0);
+
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var headerTitle = new TextBlock
+        {
+            Text = "Holds",
+            Foreground = HudAccent,
+            FontFamily = HudTitleFont,
+            FontSize = 14,
+            FontWeight = FontWeight.SemiBold,
+            Margin = new Thickness(10, 6, 8, 6),
+        };
+
+        Grid.SetColumn(headerTitle, 0);
+        Grid.SetColumn(_valHTotal, 1);
+        headerGrid.Children.Add(headerTitle);
+        headerGrid.Children.Add(_valHTotal);
+
+        var panel = new StackPanel
+        {
+            Background = Brushes.Transparent,
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(0, 0, 0, 3),
+            Children =
+            {
+                new Border
+                {
+                    Background = HudHeader,
+                    Child = headerGrid,
+                },
+                new Border
+                {
+                    Background = HudInnerEdge,
+                    Height = 1,
+                    Margin = new Thickness(0),
+                },
+                BuildHoldsMeterRow("Ore", _valFuelOre, _holdsFuelOreFill),
+                BuildHoldsMeterRow("Org", _valOrganics, _holdsOrganicsFill),
+                BuildHoldsMeterRow("Eq", _valEquipment, _holdsEquipmentFill),
+                BuildHoldsMeterRow("Cols", _valColonists, _holdsColonistsFill),
+                BuildHoldsMeterRow("Empty", _valEmpty, _holdsEmptyFill, HudMuted),
+                new Border { Height = 8 },
+            },
+        };
+
+        return new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1.4),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(2),
+            Margin = new Thickness(0, 0, 0, 3),
+            Child = new Border
+            {
+                Background = HudFrameAlt,
+                BorderBrush = HudInnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(16),
+                Child = panel,
+            },
+        };
+    }
+
     // ── Expanded Ship Info panel ───────────────────────────────────────────
 
     private Control BuildShipInfoPanel()
@@ -2337,11 +2893,10 @@ public class MainWindow : Window
         });
         panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1 });
 
-        // Full-width rows: Fighters, Shields, Turns/Warp
+        // Full-width rows: Fighters, Shields
         foreach (var (key, tb) in new (string, TextBlock)[] {
             ("Fighters",   _valFighters),
             ("Shields",    _valShields),
-            ("Turns/Warp", _valTrnWarp),
         })
         {
             tb.Text = "-"; tb.Foreground = HudText; tb.FontSize = 13;
@@ -2418,6 +2973,64 @@ public class MainWindow : Window
         return row;
     }
 
+    private Control BuildHoldsMeterRow(string label, TextBlock value, Border fill, IBrush? fillBrush = null)
+    {
+        value.Text = "0";
+        value.Foreground = HudText;
+        value.FontSize = 12;
+        value.FontWeight = FontWeight.SemiBold;
+        value.TextAlignment = TextAlignment.Right;
+        value.MinWidth = 34;
+        value.VerticalAlignment = VerticalAlignment.Center;
+
+        fill.Background = fillBrush ?? HudAccent;
+        fill.CornerRadius = new CornerRadius(4);
+        fill.HorizontalAlignment = HorizontalAlignment.Left;
+        fill.VerticalAlignment = VerticalAlignment.Stretch;
+        fill.Width = 0;
+        fill.Margin = new Thickness(1);
+
+        var track = new Border
+        {
+            Width = HoldsMeterBarWidth,
+            Height = 12,
+            Background = HudStatus,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(5),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new Grid
+            {
+                ClipToBounds = true,
+                Children = { fill },
+            },
+        };
+
+        var labelTb = new TextBlock
+        {
+            Text = label,
+            Foreground = HudMuted,
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Width = HoldsMeterLabelWidth,
+        };
+
+        var row = new Grid { Margin = new Thickness(8, 3, 8, 3) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterLabelWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterBarWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterValueWidth) });
+        Grid.SetColumn(labelTb, 0);
+        Grid.SetColumn(track, 2);
+        Grid.SetColumn(value, 4);
+        row.Children.Add(labelTb);
+        row.Children.Add(track);
+        row.Children.Add(value);
+        return row;
+    }
+
     private Control BuildScannerRow()
     {
         static Border MakeScanInd(string label, double width) => new Border
@@ -2458,7 +3071,7 @@ public class MainWindow : Window
         };
     }
 
-    private Button CreateMacroControlButton(string glyph, bool deckSkin, Action onClick, bool compact = false)
+    private Button CreateMacroControlButton(string glyph, string toolTip, bool deckSkin, Action onClick, bool compact = false)
     {
         var button = new Button
         {
@@ -2481,15 +3094,16 @@ public class MainWindow : Window
             CornerRadius = new CornerRadius(999),
         };
 
+        ToolTip.SetTip(button, toolTip);
         button.Click += (_, _) => onClick();
         return button;
     }
 
     private Control BuildStatusMacroBox()
     {
-        Button recordButton = CreateMacroControlButton("●", deckSkin: false, StartTemporaryMacroRecording, compact: true);
-        Button stopButton = CreateMacroControlButton("■", deckSkin: false, StopTemporaryMacroRecording, compact: true);
-        Button playButton = CreateMacroControlButton("▶", deckSkin: false, () => _ = PlayTemporaryMacroAsync(), compact: true);
+        Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin: false, StartTemporaryMacroRecording, compact: true);
+        Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin: false, StopTemporaryMacroRecording, compact: true);
+        Button playButton = CreateMacroControlButton("▶", "Play Quick Macro", deckSkin: false, () => _ = PlayTemporaryMacroAsync(), compact: true);
 
         _macroRecordButton = recordButton;
         _macroStopButton = stopButton;
@@ -2503,25 +3117,6 @@ public class MainWindow : Window
             Children = { recordButton, stopButton, playButton },
         };
 
-        var row = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 5,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = "Macro",
-                    Foreground = HudMuted,
-                    FontSize = 10,
-                    FontWeight = FontWeight.SemiBold,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                buttons,
-            },
-        };
-
         UpdateTemporaryMacroControls();
 
         return new Border
@@ -2532,15 +3127,15 @@ public class MainWindow : Window
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(6, 2),
             VerticalAlignment = VerticalAlignment.Center,
-            Child = row,
+            Child = buttons,
         };
     }
 
     private Control BuildMacroRow(bool deckSkin)
     {
-        Button recordButton = CreateMacroControlButton("●", deckSkin, StartTemporaryMacroRecording);
-        Button stopButton = CreateMacroControlButton("■", deckSkin, StopTemporaryMacroRecording);
-        Button playButton = CreateMacroControlButton("▶", deckSkin, () => _ = PlayTemporaryMacroAsync());
+        Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin, StartTemporaryMacroRecording);
+        Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin, StopTemporaryMacroRecording);
+        Button playButton = CreateMacroControlButton("▶", "Play Quick Macro", deckSkin, () => _ = PlayTemporaryMacroAsync());
 
         if (deckSkin)
         {
@@ -2560,28 +3155,12 @@ public class MainWindow : Window
             Orientation = Orientation.Horizontal,
             Spacing = deckSkin ? 6 : 5,
             VerticalAlignment = VerticalAlignment.Center,
+            Margin = deckSkin ? new Thickness(0, 2, 0, 3) : new Thickness(6, 2, 6, 3),
             Children = { recordButton, stopButton, playButton },
         };
 
-        var row = new Grid { Margin = deckSkin ? new Thickness(0, 2, 0, 3) : new Thickness(6, 2, 6, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var label = new TextBlock
-        {
-            Text = "Macro",
-            Foreground = deckSkin ? HudMuted : FgKey,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        Grid.SetColumn(label, 0);
-        Grid.SetColumn(buttons, 1);
-        row.Children.Add(label);
-        row.Children.Add(buttons);
-
         UpdateTemporaryMacroControls();
-        return row;
+        return buttons;
     }
 
     private Control BuildDeckScannerRow()
@@ -2698,6 +3277,15 @@ public class MainWindow : Window
             tb.Foreground = active ? Brushes.Black : HudMuted;
     }
 
+    private static void UpdateHoldsMeterFill(Border fill, int value, int total)
+    {
+        double ratio = total > 0
+            ? Math.Clamp((double)value / total, 0d, 1d)
+            : 0d;
+        fill.Width = Math.Round((HoldsMeterBarWidth - 2) * ratio);
+        fill.IsVisible = fill.Width > 0;
+    }
+
     /// <summary>Builds a titled info panel containing key/value rows.</summary>
     private Control BuildPanel(string title, (string Key, TextBlock Value)[] rows, TextBlock? headerValue = null)
     {
@@ -2762,30 +3350,7 @@ public class MainWindow : Window
 
         // Rows
         foreach (var (key, valTb) in rows)
-        {
-            valTb.Text          = "-";
-            valTb.Foreground    = HudText;
-            valTb.FontSize      = 13;
-            valTb.TextAlignment = TextAlignment.Right;
-            valTb.MinWidth      = 70;
-
-            var keyTb = new TextBlock
-            {
-                Text              = key,
-                Foreground        = HudMuted,
-                FontSize          = 13,
-                VerticalAlignment = VerticalAlignment.Center,
-            };
-
-            var row = new Grid { Margin = new Thickness(6, 2, 6, 2) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Grid.SetColumn(keyTb, 0);
-            Grid.SetColumn(valTb, 1);
-            row.Children.Add(keyTb);
-            row.Children.Add(valTb);
-            panel.Children.Add(row);
-        }
+            panel.Children.Add(BuildPanelRow(key, valTb));
 
         panel.Children.Add(new Border { Height = 8 }); // bottom padding
         return new Border
@@ -2805,6 +3370,45 @@ public class MainWindow : Window
                 Child = panel,
             },
         };
+    }
+
+    private static void StylePanelValueText(TextBlock valTb)
+    {
+        valTb.Text = "-";
+        valTb.Foreground = HudText;
+        valTb.FontSize = 13;
+        valTb.TextAlignment = TextAlignment.Right;
+        valTb.MinWidth = 70;
+        valTb.VerticalAlignment = VerticalAlignment.Center;
+    }
+
+    private Control BuildPanelRow(string key, TextBlock value)
+    {
+        StylePanelValueText(value);
+        return BuildPanelRow(key, value, value);
+    }
+
+    private static Control BuildPanelRow(string key, Control valueControl, TextBlock? alignReference = null)
+    {
+        var keyTb = new TextBlock
+        {
+            Text = key,
+            Foreground = HudMuted,
+            FontSize = 13,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        if (alignReference != null)
+            alignReference.VerticalAlignment = VerticalAlignment.Center;
+
+        var row = new Grid { Margin = new Thickness(6, 2, 6, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(keyTb, 0);
+        Grid.SetColumn(valueControl, 1);
+        row.Children.Add(keyTb);
+        row.Children.Add(valueControl);
+        return row;
     }
 
     // ── Terminal area ──────────────────────────────────────────────────────
@@ -3116,6 +3720,7 @@ public class MainWindow : Window
         RefreshCommComposerState();
         RefreshCommWindowText();
         RefreshCommWindowMenuState();
+        UpdateTerminalLiveSelector();
     }
 
     private void CaptureCommWindowHeights()
@@ -3474,10 +4079,12 @@ public class MainWindow : Window
     {
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
         string turnsDisplay = GetTurnsDisplayText();
+        bool currentSectorBusted = IsCurrentSectorBusted();
         _valName.Text      = traderName;
         _deckValName.Text  = traderName;
         _valSector.Text    = _state.Sector.ToString();
         _deckValSector.Text = _valSector.Text;
+        _sectorBustIndicator.IsVisible = currentSectorBusted;
         _valTurns.Text     = turnsDisplay;
         _deckValTurns.Text = _valTurns.Text;
         _valExper.Text     = _state.Experience.ToString("N0");
@@ -3494,8 +4101,10 @@ public class MainWindow : Window
         _deckValAlignm.Foreground = alignBrush;
         _valCred.Text      = _state.Credits.ToString("N0");
         _deckValCred.Text  = _valCred.Text;
-        _valHTotal.Text    = _state.HoldsTotal.ToString();
-        _deckValHTotal.Text = _valHTotal.Text;
+        int holdsTotal = Math.Max(0, _state.HoldsTotal);
+        int usedHolds = Math.Max(0, holdsTotal - Math.Max(0, _state.HoldsEmpty));
+        _valHTotal.Text    = $"{usedHolds} / {holdsTotal}";
+        _deckValHTotal.Text = holdsTotal.ToString();
         _valFuelOre.Text   = _state.FuelOre.ToString();
         _deckValFuelOre.Text = _valFuelOre.Text;
         _valOrganics.Text  = _state.Organics.ToString();
@@ -3506,6 +4115,11 @@ public class MainWindow : Window
         _deckValColonists.Text = _valColonists.Text;
         _valEmpty.Text     = _state.HoldsEmpty.ToString();
         _deckValEmpty.Text = _valEmpty.Text;
+        UpdateHoldsMeterFill(_holdsFuelOreFill, _state.FuelOre, holdsTotal);
+        UpdateHoldsMeterFill(_holdsOrganicsFill, _state.Organics, holdsTotal);
+        UpdateHoldsMeterFill(_holdsEquipmentFill, _state.Equipment, holdsTotal);
+        UpdateHoldsMeterFill(_holdsColonistsFill, _state.Colonists, holdsTotal);
+        UpdateHoldsMeterFill(_holdsEmptyFill, _state.HoldsEmpty, holdsTotal);
         _valFighters.Text  = _state.Fighters.ToString("N0");
         _deckValFighters.Text = _valFighters.Text;
         _valShields.Text   = _state.Shields.ToString("N0");
@@ -3558,8 +4172,18 @@ public class MainWindow : Window
         else
             _deckHudShipSubtitle.Text = $"{captainText}  //  {corpText}";
 
-        RefreshStatusBar();
+        RequestStatusBarRefresh();
         _tacticalMap?.InvalidateVisual();
+    }
+
+    private bool IsCurrentSectorBusted()
+    {
+        if (_sessionDb == null || _state.Sector <= 0)
+            return false;
+
+        string value = _sessionDb.GetSectorVar(_state.Sector, "BUSTED");
+        return !string.IsNullOrWhiteSpace(value) &&
+            !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetTurnsDisplayText()
@@ -3642,6 +4266,11 @@ public class MainWindow : Window
         _statusRylosValue.Text = rylos;
         _statusAlphaValue.Text = alpha;
 
+        bool hasRunningNonSystemScripts = Core.ProxyGameOperations
+            .GetRunningScripts(CurrentInterpreter)
+            .Any(script => !script.IsSystemScript);
+        ApplyStatusToggleFrameStyle(_statusStopAllFrame, hasRunningNonSystemScripts);
+        ApplyStatusStopAllButtonStyle(_statusStopAllButton, hasRunningNonSystemScripts);
         string? haggleText = showHagglePct
             ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : null;
@@ -3861,7 +4490,7 @@ public class MainWindow : Window
         {
             UpdateHaggleToggleState();
             RefreshMombotUi();
-            RefreshStatusBar();
+            RequestStatusBarRefresh();
             _buffer.Dirty = true;
         });
     }
@@ -3871,7 +4500,7 @@ public class MainWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             RefreshMombotUi();
-            RefreshStatusBar();
+            RequestStatusBarRefresh();
             _buffer.Dirty = true;
         });
     }
@@ -3990,6 +4619,7 @@ public class MainWindow : Window
         EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         config.Name = gameName;
         config.DatabasePath = ResolveResetDatabasePath(gameName, config);
+        ResetEmbeddedGameIdentity(config);
 
         Core.DataHeader sourceHeader = ResolveResetSourceHeader(config.DatabasePath);
         Core.DataHeader resetHeader = BuildResetDatabaseHeader(config, sourceHeader);
@@ -4010,13 +4640,14 @@ public class MainWindow : Window
             Core.ScriptRef.SetActiveDatabase(null);
             Core.ScriptRef.OnVariableSaved = null;
             Core.ScriptRef.ClearCurrentGameVars();
+            ClearMombotRelogState();
+            ResetMombotGameStorage(gameName);
 
             Directory.CreateDirectory(Path.GetDirectoryName(config.DatabasePath)!);
             var db = new Core.ModDatabase();
             db.CreateDatabase(config.DatabasePath, resetHeader);
             db.CloseDatabase();
 
-            config.Variables.Clear();
             config.Mtc ??= new EmbeddedMtcConfig();
             config.Mtc.State = new EmbeddedMtcState();
             await SaveEmbeddedGameConfigAsync(gameName, config);
@@ -4036,6 +4667,58 @@ public class MainWindow : Window
         catch (Exception ex)
         {
             await ShowMessageAsync("Reset Game Error", ex.Message);
+        }
+    }
+
+    private void ResetEmbeddedGameIdentity(EmbeddedGameConfig config)
+    {
+        config.UseLogin = false;
+        config.UseRLogin = false;
+        config.LoginScript = "0_Login.cts";
+        config.LoginName = string.Empty;
+        config.Password = string.Empty;
+        config.GameLetter = string.Empty;
+        config.Variables.Clear();
+
+        if (config.Extra != null)
+        {
+            config.Extra.Remove("CharacterName");
+            config.Extra.Remove("LastConnected");
+        }
+    }
+
+    private void ResetMombotGameStorage(string gameName)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        if (string.IsNullOrWhiteSpace(normalizedGameName))
+            return;
+
+        string scriptDirectory = CurrentInterpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
+        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
+        string folderPath = Path.Combine(programDir, "games", normalizedGameName);
+
+        DeleteDirectoryIfPresent(folderPath);
+
+        string nativeScriptRoot = GetMombotScriptRootRelative(GetNativeMombotScriptRoot(BuildCurrentGameNativeBotConfig()));
+        string legacyFolderPath = Path.Combine(
+            programDir,
+            nativeScriptRoot.Replace('/', Path.DirectorySeparatorChar),
+            "games",
+            normalizedGameName);
+        DeleteDirectoryIfPresent(legacyFolderPath);
+    }
+
+    private static void DeleteDirectoryIfPresent(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            return;
+
+        try
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
         }
     }
 
@@ -4127,27 +4810,86 @@ public class MainWindow : Window
 
     private async Task ShowAboutAsync()
     {
-        await ShowMessageAsync(
-            "About MTC",
-            "Mayhem Tradewars Client (MTC)\n" +
-            "Version 1.0.0\n\n" +
-            "Cross-platform Trade Wars 2002 client\n" +
-            "built on TWXProxy Core.\n\n" +
-            "Copyright (C) 2026 Matt Mosley\n" +
-            "Licensed under GPL v2+");
+        const double aboutImageSize = 330;
+
+        var okBtn = new Button
+        {
+            Content = "OK",
+            MinWidth = 110,
+        };
+
+        var aboutText = new TextBlock
+        {
+            Width = aboutImageSize,
+            Text =
+                "Mayhem Tradewars Client (MTC)\n" +
+                "Version 1.0.0\n\n" +
+                "Cross-platform Trade Wars 2002 client\n" +
+                "built on TWXProxy Core.\n\n" +
+                "Copyright (C) 2026 Matt Mosley\n" +
+                "Licensed under GPL v2+",
+            Foreground = FgKey,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        var dlg = new Window
+        {
+            Title = "About MTC",
+            SizeToContent = SizeToContent.WidthAndHeight,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = BgPanel,
+            Content = new Border
+            {
+                Padding = new Thickness(18),
+                Child = new StackPanel
+                {
+                    Width = aboutImageSize,
+                    Spacing = 14,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Children =
+                    {
+                        new Image
+                        {
+                            Source = AboutLogo,
+                            Width = aboutImageSize,
+                            Height = aboutImageSize,
+                            Stretch = Stretch.Uniform,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                        },
+                        aboutText,
+                        new StackPanel
+                        {
+                            Margin = new Thickness(0, 4, 0, 0),
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            Children = { okBtn },
+                        },
+                    },
+                },
+            },
+        };
+
+        okBtn.Click += (_, _) => dlg.Close();
+        await dlg.ShowDialog(this);
     }
 
     private async Task OnPreferencesAsync()
     {
         bool saved = await new PreferencesDialog(_appPrefs).ShowDialog<bool>(this);
         if (!saved)
+        {
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
             return;
+        }
 
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
         ApplyDebugLoggingPreferences();
         RebuildScriptsMenu();
+        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private async Task OnMacrosAsync()
@@ -4181,18 +4923,17 @@ public class MainWindow : Window
 
     private void ApplyDebugLoggingPreferences()
     {
-        string? debugScriptDirectory = CurrentInterpreter?.ScriptDirectory;
-        if (string.IsNullOrWhiteSpace(debugScriptDirectory) && !string.IsNullOrWhiteSpace(_appPrefs.ScriptsDirectory))
-            debugScriptDirectory = _appPrefs.ScriptsDirectory;
-
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         string programDir = AppPaths.ProgramDir;
         Core.GlobalModules.ProgramDir = programDir;
         Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
         Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
         AppPaths.EnsureDebugLogDir();
+        string debugGameName = GetDebugLogGameName();
         Core.GlobalModules.ConfigureDebugLogging(
-            AppPaths.GetDebugLogPathForGame(GetDebugLogGameName()),
+            string.IsNullOrWhiteSpace(debugGameName)
+                ? AppPaths.GetDebugLogPath()
+                : AppPaths.GetDebugLogPathForGame(debugGameName),
             _appPrefs.DebugLoggingEnabled,
             _appPrefs.VerboseDebugLogging);
         Core.GlobalModules.ConfigureHaggleDebugLogging(
@@ -4203,14 +4944,96 @@ public class MainWindow : Window
         RefreshSessionLogTarget();
         if (_gameInstance != null)
             _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
+        Dispatcher.UIThread.Post(UpdatePerformanceStatusVisibility, DispatcherPriority.Background);
+    }
+
+    private void UpdatePerformanceStatusVisibility()
+    {
+        bool visible = _appPrefs.DebugLoggingEnabled;
+        _statusPerfText.IsVisible = visible;
+
+        if (visible)
+        {
+            RefreshPerformanceCounters();
+            if (!_performanceTimer.IsEnabled)
+                _performanceTimer.Start();
+            return;
+        }
+
+        _performanceTimer.Stop();
+        _statusPerfText.Text = string.Empty;
+    }
+
+    private void RequestStatusBarRefresh()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(RequestStatusBarRefresh, DispatcherPriority.Background);
+            return;
+        }
+
+        DispatcherTimer? statusRefreshTimer = _statusRefreshTimer;
+        if (statusRefreshTimer == null)
+        {
+            RefreshStatusBar();
+            return;
+        }
+
+        if (statusRefreshTimer.IsEnabled)
+            return;
+
+        statusRefreshTimer.Start();
+    }
+
+    private void RefreshPerformanceCounters()
+    {
+        ThroughputSample proxy = _proxyThroughput.SampleAndReset();
+        _statusPerfText.Text = FormatByteRate(proxy.BytesPerSecond);
+    }
+
+    private void RecordProxyTraffic(int bytes, int lines) => _proxyThroughput.Add(bytes, lines);
+
+    private static int CountTransportLines(string text)
+    {
+        int count = 0;
+        foreach (char ch in text)
+        {
+            if (ch == '\r')
+                count++;
+        }
+
+        return count;
+    }
+
+    private static int CountTransportLines(byte[] bytes)
+    {
+        int count = 0;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] == 0x0D)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static string FormatByteRate(long bytesPerSecond)
+    {
+        return $"{bytesPerSecond:N0} B/s";
     }
 
     private string GetDebugLogGameName()
     {
-        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
-            return _embeddedGameName;
+        if (_gameInstance != null && !string.IsNullOrWhiteSpace(_gameInstance.GameName))
+            return NormalizeGameName(_gameInstance.GameName);
 
-        if (!string.IsNullOrWhiteSpace(_state.GameName) || !string.IsNullOrEmpty(_currentProfilePath))
+        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
+            return NormalizeGameName(_embeddedGameName);
+
+        if (!string.IsNullOrWhiteSpace(_embeddedGameConfig?.Name))
+            return NormalizeGameName(_embeddedGameConfig.Name);
+
+        if (!string.IsNullOrWhiteSpace(_currentProfilePath) || !string.IsNullOrWhiteSpace(_state.GameName))
             return DeriveGameName();
 
         return string.Empty;
@@ -4222,6 +5045,7 @@ public class MainWindow : Window
         _sessionLog.ProgramDir = programDir;
         _sessionLog.LogDirectory = AppPaths.GetDebugLogDir();
         _sessionLog.SetLogIdentity(DeriveGameName());
+        _sessionLog.ScriptLoggingScope = CurrentInterpreter;
     }
 
     private void ApplySessionLogSettings(EmbeddedGameConfig? gameConfig)
@@ -4513,12 +5337,6 @@ public class MainWindow : Window
         config.ScriptDirectory = ResolvePersistedGameScriptDirectory(config.ScriptDirectory);
         config.NativeHaggleMode = null;
         config.AutoReconnect = _state.AutoReconnect;
-        config.UseLogin = _state.UseLogin;
-        config.UseRLogin = _state.UseRLogin;
-        config.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
-        config.LoginName = _state.LoginName;
-        config.Password = _state.Password;
-        config.GameLetter = _state.GameLetter;
         config.Mtc ??= new EmbeddedMtcConfig();
         config.Mtc.Protocol = _state.Protocol.ToString();
         config.Mtc.LocalTwxProxy = _state.LocalTwxProxy;
@@ -4741,6 +5559,23 @@ public class MainWindow : Window
         return config;
     }
 
+    // Native mombot enablement is live runtime state. Persist these flags as disabled so
+    // a crash or forced shutdown cannot poison the next startup.
+    private static EmbeddedGameConfig BuildPersistedEmbeddedGameConfig(EmbeddedGameConfig source)
+    {
+        string snapshotJson = System.Text.Json.JsonSerializer.Serialize(source, _jsonOpts);
+        EmbeddedGameConfig persisted =
+            System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(snapshotJson, _jsonOpts) ??
+            new EmbeddedGameConfig();
+
+        NormalizeEmbeddedMombotConfig(persisted);
+        MTC.mombot.mombotConfig persistedMombot = GetOrCreateEmbeddedMombotConfig(persisted);
+        persistedMombot.Enabled = false;
+        persistedMombot.WatcherEnabled = false;
+        persisted.Variables = NormalizeEmbeddedVariables(persisted.Variables);
+        return persisted;
+    }
+
     private static MTC.mombot.mombotConfig GetOrCreateEmbeddedMombotConfig(EmbeddedGameConfig config)
     {
         config.Mtc ??= new EmbeddedMtcConfig();
@@ -4855,18 +5690,15 @@ public class MainWindow : Window
             gameConfig.Port != _state.Port ||
             gameConfig.Sectors != _state.Sectors ||
             !string.Equals(gameConfig.DatabasePath, AppPaths.TwxproxyDatabasePathForGame(gameName), StringComparison.OrdinalIgnoreCase) ||
-            gameConfig.UseLogin != _state.UseLogin ||
-            gameConfig.UseRLogin != _state.UseRLogin ||
-            !string.Equals(gameConfig.LoginScript, string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.LoginName, _state.LoginName, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.Password, _state.Password, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.GameLetter, _state.GameLetter, StringComparison.Ordinal);
+            gameConfig.AutoReconnect != _state.AutoReconnect;
         gameConfig = BuildEmbeddedGameConfigFromState(gameName, gameConfig);
         gameConfig.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
         if (configChanged)
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         _embeddedGameConfig = gameConfig;
         _embeddedGameName = gameName;
+        _currentProfilePath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        AddToRecentAndSave(_currentProfilePath);
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         ApplySessionLogSettings(gameConfig);
 
@@ -4906,6 +5738,8 @@ public class MainWindow : Window
             gameConfig.Variables[varName] = value;
             _ = SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         };
+
+        BackfillScriptMombotBootstrapState(gameConfig, gameName, programDir);
 
         // Create GameInstance. listenPort=0: we never call StartAsync, so no TCP listener.
         var gi = new Core.GameInstance(
@@ -4973,7 +5807,8 @@ public class MainWindow : Window
                 {
                     await StopInternalMombotCoreAsync(
                         publishStopMessage: false,
-                        suppressMissingGameMessage: true);
+                        suppressMissingGameMessage: true,
+                        disconnectServerAfterStop: true);
                 }
                 finally
                 {
@@ -5072,14 +5907,10 @@ public class MainWindow : Window
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
-                    Dispatcher.UIThread.Post(() =>
-                    {
-                        _sessionLog.RecordServerData(chunk);
-                        _parser.Feed(chunk, chunk.Length);
-                        if (_mombotPromptOpen)
-                            RedrawMombotPrompt();
-                        _buffer.Dirty = true;
-                    });
+                    RecordProxyTraffic(chunk.Length, CountTransportLines(chunk));
+                    _sessionLog.RecordServerData(chunk);
+                    byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk, out bool rewrotePromptOverwrite);
+                    EnqueueDisplayChunk(displayChunk, CountTransportLines(displayChunk), rewrotePromptOverwrite);
                 }
             }
             catch (OperationCanceledException) { }
@@ -5089,7 +5920,7 @@ public class MainWindow : Window
         // Wire ServerDataReceived → trigger engine + ShipInfoParser + AutoRecorder.
         // Mirrors ProxyService.ServerDataReceived: splits on \r (TW2002 line terminator),
         // fires TextLineEvent / TextEvent / ActivateTriggers for each complete line,
-        // and fires TextEvent (only) for partial lines / prompts.
+        // and uses Pascal prompt semantics for partial prompts.
         var serverLineBuf = new System.Text.StringBuilder();
         var serverAnsiLineBuf = new System.Text.StringBuilder();
         bool serverScriptInAnsi = false;
@@ -5101,6 +5932,7 @@ public class MainWindow : Window
             if (_terminalLivePaused)
             {
                 _sessionLog.RecordServerData(e.Data);
+                RecordProxyTraffic(e.Data.Length, CountTransportLines(e.Data));
                 QueuePausedTerminalChunk(e.Data);
             }
 
@@ -5138,35 +5970,25 @@ public class MainWindow : Window
                         Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                        if (!gi.IsProxyMenuActive)
+                        bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                        // Server prompts and partial lines must keep flowing to the interpreter
+                        // even while a proxy menu is open, otherwise waitfor/text triggers stall.
+                        // Match Pascal TWX here: partial prompts go through AutoTextEvent and
+                        // then TextEvent only. They do not fire TextLineEvent and do not
+                        // re-activate triggers until a full CR-terminated line is processed.
+                        interpreter.AutoTextEvent(scriptRemainder, false);
+                        interpreter.TextEvent(scriptRemainder, false);
+                        if (!string.IsNullOrWhiteSpace(strippedRemainder))
                         {
-                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
-                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                            // Partial line / prompt: fire TextEvent only (no TextLineEvent, no ActivateTriggers).
-                            interpreter.TextEvent(scriptRemainder, false);
-                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
-                            {
-                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                                _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
-                            }
-                            if (nativeHaggleResponded)
-                            {
-                                serverLineBuf.Clear();
-                            }
+                            SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
+                            _ = HandleEmbeddedKeepaliveWatchLineAsync(strippedRemainder);
+                            _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
                         }
-                        else
+                        if (nativeHaggleResponded)
                         {
-                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
-                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
-                            {
-                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                                _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
-                            }
-                            if (nativeHaggleResponded)
-                            {
-                                serverLineBuf.Clear();
-                            }
+                            serverLineBuf.Clear();
                         }
                     }
                     break;
@@ -5192,20 +6014,19 @@ public class MainWindow : Window
                 gi.History.ProcessLine(lineStripped);
                 gi.ProcessNativeHaggleLine(lineStripped);
                 HandlePotentialCommLine(lineRaw);
-                if (!gi.IsProxyMenuActive)
-                {
-                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                    Core.ScriptRef.SetCurrentLine(lineForScript);
+                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                Core.ScriptRef.SetCurrentLine(lineForScript);
 
-                    // Fire trigger pipeline (all lines including blank — matches Pascal ProcessLine).
-                    interpreter.TextLineEvent(lineForScript, false);
-                    interpreter.TextEvent(lineForScript, false);
-                    interpreter.ActivateTriggers();
-                }
+                // Real server lines must continue to advance script waits/triggers even if a
+                // proxy menu is open locally.
+                interpreter.TextLineEvent(lineForScript, false);
+                interpreter.TextEvent(lineForScript, false);
+                interpreter.ActivateTriggers();
 
                 if (!string.IsNullOrWhiteSpace(lineStripped))
                 {
                     SyncMombotPromptStateFromLine(lineStripped, lineRaw);
+                    _ = HandleEmbeddedKeepaliveWatchLineAsync(lineStripped);
                     _ = HandleNativeMombotWatchLineAsync(lineStripped);
                 }
 
@@ -5214,7 +6035,7 @@ public class MainWindow : Window
                     Dispatcher.UIThread.Post(() =>
                     {
                         RefreshMombotUi();
-                        RefreshStatusBar();
+                        RequestStatusBarRefresh();
                         RebuildProxyMenu();
                         _buffer.Dirty = true;
                     });
@@ -5337,6 +6158,23 @@ public class MainWindow : Window
             }
         };
 
+        gi.ScriptStopped += (_, _) =>
+        {
+            _mombot.HandleObservedScriptStop();
+
+            string promptAnsi = _mombotLastObservedGamePromptAnsi;
+            string promptPlain = _mombotLastObservedGamePromptPlain;
+            int promptVersion = _mombotObservedGamePromptVersion;
+            if (string.IsNullOrWhiteSpace(promptPlain))
+                return;
+
+            _ = RestoreCurrentGamePromptAfterMombotCommandAsync(
+                Array.Empty<MTC.mombot.mombotDispatchResult>(),
+                promptAnsi,
+                promptPlain,
+                promptVersion);
+        };
+
         _gameInstance = gi;
         ApplyEmbeddedTerminalOutputMode();
         ReloadRegisteredBotConfigs();
@@ -5446,6 +6284,7 @@ public class MainWindow : Window
         Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game
         _embeddedGameConfig = null;
         _embeddedGameName = null;
+        ApplyDebugLoggingPreferences();
 
         try { _sessionDb?.CloseDatabase(); } catch { }
         _sessionDb = null;
@@ -5466,8 +6305,18 @@ public class MainWindow : Window
 
     private void ConfigureStatusModeSelector()
     {
+        ConfigureStatusStopAllButton();
+        ConfigureStatusCommButton();
         ConfigureStatusHaggleButton();
         ConfigureStatusToggleButton();
+
+        _statusStopAllFrame.Padding = new Thickness(3, 2);
+        _statusStopAllFrame.CornerRadius = new CornerRadius(8);
+        _statusStopAllFrame.Child = _statusStopAllButton;
+
+        _statusCommFrame.Padding = new Thickness(3, 2);
+        _statusCommFrame.CornerRadius = new CornerRadius(8);
+        _statusCommFrame.Child = _statusCommButton;
 
         _statusHaggleFrame.Padding = new Thickness(4, 2);
         _statusHaggleFrame.CornerRadius = new CornerRadius(8);
@@ -5478,6 +6327,164 @@ public class MainWindow : Window
         _statusLivePausedFrame.Child = _statusLivePausedButton;
 
         UpdateTerminalLiveSelector();
+    }
+
+    private void ConfigureStatusStopAllButton()
+    {
+        _statusStopAllButton.MinWidth = 0;
+        _statusStopAllButton.Width = 28;
+        _statusStopAllButton.Height = 20;
+        _statusStopAllButton.Padding = new Thickness(2, 1);
+        _statusStopAllButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusStopAllButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusStopAllButton.Content = BuildStatusStopAllIcon();
+        ToolTip.SetTip(_statusStopAllButton, "Force stop all non-system scripts");
+        _statusStopAllButton.Click += (_, _) =>
+        {
+            _ = OnProxyForceStopAllScriptsAsync(includeSystemScripts: false);
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusStopAllButton.PointerEntered += (_, _) =>
+        {
+            _statusStopAllHovered = true;
+            RefreshStatusBar();
+        };
+        _statusStopAllButton.PointerExited += (_, _) =>
+        {
+            _statusStopAllHovered = false;
+            RefreshStatusBar();
+        };
+    }
+
+    private Control BuildStatusStopAllIcon()
+    {
+        _statusStopAllSign = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 15,
+            Height = 15,
+            Stretch = Stretch.Fill,
+            StrokeThickness = 1.1,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Data = Geometry.Parse("M 5,0 L 10,0 L 15,5 L 15,10 L 10,15 L 5,15 L 0,10 L 0,5 Z"),
+        };
+
+        _statusStopAllLabel = new TextBlock
+        {
+            Text = "STOP",
+            FontSize = 4.8,
+            FontWeight = FontWeight.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, -0.5, 0, 0),
+        };
+
+        return new Grid
+        {
+            Width = 18,
+            Height = 18,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _statusStopAllSign,
+                _statusStopAllLabel,
+            },
+        };
+    }
+
+    private void ConfigureStatusCommButton()
+    {
+        _statusCommButton.MinWidth = 0;
+        _statusCommButton.Width = 28;
+        _statusCommButton.Height = 20;
+        _statusCommButton.Padding = new Thickness(2, 1);
+        _statusCommButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusCommButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusCommButton.Content = BuildStatusCommIcon();
+        ToolTip.SetTip(_statusCommButton, "Toggle Comm Window");
+        _statusCommButton.Click += (_, _) =>
+        {
+            ToggleCommWindow();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusCommButton.PointerEntered += (_, _) =>
+        {
+            _statusCommHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusCommButton.PointerExited += (_, _) =>
+        {
+            _statusCommHovered = false;
+            UpdateTerminalLiveSelector();
+        };
+    }
+
+    private Control BuildStatusCommIcon()
+    {
+        _statusCommFlap = new Border
+        {
+            Width = 10,
+            Height = 5,
+            CornerRadius = new CornerRadius(4, 4, 2, 2),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, -1),
+        };
+
+        _statusCommIndicator = new Border
+        {
+            Width = 4,
+            Height = 4,
+            CornerRadius = new CornerRadius(2),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 1),
+        };
+
+        _statusCommBody = new Border
+        {
+            Width = 16,
+            Height = 11,
+            CornerRadius = new CornerRadius(3),
+            BorderThickness = new Thickness(1),
+            Child = new StackPanel
+            {
+                Spacing = 1,
+                Margin = new Thickness(2, 1, 2, 1),
+                Children =
+                {
+                    _statusCommIndicator,
+                    BuildStatusCommGrilleLine(9),
+                    BuildStatusCommGrilleLine(9),
+                    BuildStatusCommGrilleLine(8),
+                },
+            },
+        };
+
+        return new StackPanel
+        {
+            Spacing = 0,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _statusCommFlap,
+                _statusCommBody,
+            },
+        };
+    }
+
+    private static Border BuildStatusCommGrilleLine(double width)
+    {
+        return new Border
+        {
+            Width = width,
+            Height = 1,
+            CornerRadius = new CornerRadius(1),
+            Background = new SolidColorBrush(Color.Parse("#B7D5DF")),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Opacity = 0.9,
+        };
     }
 
     private void ConfigureStatusHaggleButton()
@@ -5533,9 +6540,11 @@ public class MainWindow : Window
     private void UpdateTerminalLiveSelector()
     {
         bool enabled = _gameInstance != null;
+        ApplyStatusToggleFrameStyle(_statusCommFrame, true);
         ApplyStatusToggleFrameStyle(_statusHaggleFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
 
+        ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: enabled && _gameInstance?.NativeHaggleEnabled == true, enabled);
         _statusHaggleButton.Content = enabled && _statusHaggleHovered
             ? (_gameInstance?.NativeHaggleEnabled == true ? "OFF" : "ON")
@@ -5554,6 +6563,35 @@ public class MainWindow : Window
         frame.Opacity = enabled ? 1.0 : 0.55;
     }
 
+    private void ApplyStatusStopAllButtonStyle(Button button, bool enabled)
+    {
+        button.IsEnabled = enabled;
+        button.Background = enabled
+            ? (_statusStopAllHovered ? new SolidColorBrush(Color.Parse("#291617")) : HudFrame)
+            : HudFrame;
+        button.BorderBrush = enabled
+            ? (_statusStopAllHovered ? new SolidColorBrush(Color.Parse("#8D3B3B")) : HudInnerEdge)
+            : HudInnerEdge;
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = Brushes.Transparent;
+
+        if (_statusStopAllSign != null)
+        {
+            _statusStopAllSign.Fill = enabled
+                ? (_statusStopAllHovered ? new SolidColorBrush(Color.Parse("#F04438")) : new SolidColorBrush(Color.Parse("#C81E1E")))
+                : new SolidColorBrush(Color.Parse("#5D3030"));
+            _statusStopAllSign.Stroke = enabled
+                ? (_statusStopAllHovered ? new SolidColorBrush(Color.Parse("#FFE0DB")) : new SolidColorBrush(Color.Parse("#FFD0C7")))
+                : HudInnerEdge;
+        }
+
+        if (_statusStopAllLabel != null)
+        {
+            _statusStopAllLabel.Foreground = enabled ? Brushes.White : HudMuted;
+            _statusStopAllLabel.Opacity = enabled ? 1.0 : 0.72;
+        }
+    }
+
     private void ApplyStatusHaggleButtonStyle(Button button, bool selected, bool enabled)
     {
         button.IsEnabled = enabled;
@@ -5561,6 +6599,45 @@ public class MainWindow : Window
         button.BorderBrush = selected ? HudAccentHot : HudInnerEdge;
         button.BorderThickness = new Thickness(1);
         button.Foreground = selected ? HudAccentInk : HudMuted;
+    }
+
+    private void ApplyStatusCommButtonStyle(Button button, bool selected)
+    {
+        button.IsEnabled = true;
+        button.Background = selected
+            ? new SolidColorBrush(Color.Parse("#5CD5FF"))
+            : (_statusCommHovered ? HudHeaderAlt : HudFrame);
+        button.BorderBrush = selected
+            ? HudAccentHot
+            : (_statusCommHovered ? HudAccent : HudInnerEdge);
+        button.BorderThickness = new Thickness(1);
+
+        if (_statusCommFlap != null)
+        {
+            _statusCommFlap.Background = new SolidColorBrush(selected
+                ? Color.Parse("#F7E4A5")
+                : (_statusCommHovered ? Color.Parse("#E4C57B") : Color.Parse("#BE9952")));
+            _statusCommFlap.BorderBrush = new SolidColorBrush(selected
+                ? Color.Parse("#FFF4D0")
+                : Color.Parse("#7D6031"));
+        }
+
+        if (_statusCommBody != null)
+        {
+            _statusCommBody.Background = new SolidColorBrush(selected
+                ? Color.Parse("#1B3A54")
+                : (_statusCommHovered ? Color.Parse("#253644") : Color.Parse("#1A232C")));
+            _statusCommBody.BorderBrush = new SolidColorBrush(selected
+                ? Color.Parse("#8CE6FF")
+                : Color.Parse("#6E8794"));
+        }
+
+        if (_statusCommIndicator != null)
+        {
+            _statusCommIndicator.Background = selected
+                ? HudAccentOk
+                : new SolidColorBrush(Color.Parse("#3A5360"));
+        }
     }
 
     private void ApplyStatusModeButtonStyle(Button button, bool paused, bool enabled)
@@ -5604,13 +6681,57 @@ public class MainWindow : Window
             _terminalLivePaused ? Core.ClientType.Deaf : Core.ClientType.Standard);
     }
 
-    private void QueuePausedTerminalChunk(byte[] chunk)
+    private void EnqueueDisplayChunk(byte[] chunk, int lineCount, bool rewrotePromptOverwrite)
     {
-        if (chunk.Length == 0)
+        if (chunk.Length == 0 && !rewrotePromptOverwrite)
             return;
 
-        var copy = new byte[chunk.Length];
-        Buffer.BlockCopy(chunk, 0, copy, 0, chunk.Length);
+        _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk, lineCount, rewrotePromptOverwrite));
+        if (Interlocked.Exchange(ref _displayDrainScheduled, 1) != 0)
+            return;
+
+        Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Render);
+    }
+
+    private void DrainPendingDisplayChunks()
+    {
+        bool replayed = false;
+        bool rewrotePromptOverwrite = false;
+
+        while (_pendingDisplayChunks.TryDequeue(out PendingDisplayChunk chunk))
+        {
+            if (chunk.Bytes.Length > 0)
+            {
+                _parser.Feed(chunk.Bytes, chunk.Bytes.Length);
+                replayed = true;
+            }
+
+            rewrotePromptOverwrite |= chunk.RewrotePromptOverwrite;
+        }
+
+        Interlocked.Exchange(ref _displayDrainScheduled, 0);
+
+        if (!_pendingDisplayChunks.IsEmpty &&
+            Interlocked.Exchange(ref _displayDrainScheduled, 1) == 0)
+        {
+            Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Render);
+        }
+
+        if (rewrotePromptOverwrite)
+            ScheduleLatestObservedGamePromptRestoreAfterQuiet();
+
+        if (replayed)
+            _buffer.Dirty = true;
+    }
+
+    private void QueuePausedTerminalChunk(byte[] chunk)
+    {
+        byte[] filteredChunk = FilterTerminalDisplayArtifacts(chunk, out _);
+        if (filteredChunk.Length == 0)
+            return;
+
+        var copy = new byte[filteredChunk.Length];
+        Buffer.BlockCopy(filteredChunk, 0, copy, 0, filteredChunk.Length);
 
         lock (_pausedTerminalSync)
             _pausedTerminalChunks.Add(copy);
@@ -5712,12 +6833,12 @@ public class MainWindow : Window
             ScriptDirectory = null,
             NativeHaggleEnabled = true,
             NativeHaggleMode = null,
-            UseLogin = _state.UseLogin,
-            UseRLogin = _state.UseRLogin,
-            LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
-            LoginName = _state.LoginName,
-            Password = _state.Password,
-            GameLetter = _state.GameLetter,
+            UseLogin = false,
+            UseRLogin = false,
+            LoginScript = "0_Login.cts",
+            LoginName = string.Empty,
+            Password = string.Empty,
+            GameLetter = string.Empty,
             mombot = new MTC.mombot.mombotConfig(),
             Mtc = new EmbeddedMtcConfig
             {
@@ -5739,14 +6860,10 @@ public class MainWindow : Window
     {
         try
         {
-            NormalizeEmbeddedMombotConfig(cfg);
             AppPaths.EnsureTwxproxyGamesDir();
             string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
-            string? runtimeNativeHaggleMode = cfg.NativeHaggleMode;
-            cfg.NativeHaggleMode = null;
-            cfg.Variables = NormalizeEmbeddedVariables(cfg.Variables);
-            var json = System.Text.Json.JsonSerializer.Serialize(cfg, _jsonOpts);
-            cfg.NativeHaggleMode = runtimeNativeHaggleMode;
+            EmbeddedGameConfig persisted = BuildPersistedEmbeddedGameConfig(cfg);
+            var json = System.Text.Json.JsonSerializer.Serialize(persisted, _jsonOpts);
             await File.WriteAllTextAsync(path, json);
         }
         catch { }
@@ -5766,6 +6883,8 @@ public class MainWindow : Window
         _embeddedGameConfig = config;
         _embeddedGameName = gameName;
         _currentProfilePath ??= AppPaths.TwxproxyGameConfigFileFor(gameName);
+        if (!string.IsNullOrWhiteSpace(_currentProfilePath))
+            AddToRecentAndSave(_currentProfilePath);
     }
 
     private async Task OpenPathAsync(string path, bool addToRecent)
@@ -5875,10 +6994,17 @@ public class MainWindow : Window
             await StopEmbeddedAsync();
         }
 
+        if (switchingProfile || switchingEmbeddedGame)
+            Core.ScriptRef.ClearCurrentGameVars();
+
+        if (NormalizeEmbeddedRelogFlagsIfEstablished(config))
+            await SaveEmbeddedGameConfigAsync(targetGameName, config);
+
         _currentProfilePath = configPath;
         _embeddedGameConfig = config;
         _embeddedGameName = targetGameName;
         ApplyProfile(BuildProfileFromConfig(config));
+        ApplyDebugLoggingPreferences();
         if (addToRecent)
             AddToRecentAndSave(configPath);
         OnGameSelected();
@@ -6111,6 +7237,10 @@ public class MainWindow : Window
                     headerDirty |= header.Sectors != sectors;
                     header.Sectors = sectors;
                 }
+                string configLoginScript = string.IsNullOrWhiteSpace(_embeddedGameConfig?.LoginScript) ? "0_Login.cts" : _embeddedGameConfig.LoginScript;
+                string configLoginName = _embeddedGameConfig?.LoginName ?? string.Empty;
+                string configPassword = _embeddedGameConfig?.Password ?? string.Empty;
+                char configGameChar = string.IsNullOrWhiteSpace(_embeddedGameConfig?.GameLetter) ? '\0' : char.ToUpperInvariant(_embeddedGameConfig.GameLetter[0]);
                 headerDirty |= header.Address != _state.Host;
                 header.Address = _state.Host;
                 headerDirty |= header.ServerPort != (ushort)_state.Port;
@@ -6119,19 +7249,18 @@ public class MainWindow : Window
                 header.ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300);
                 headerDirty |= header.CommandChar != (_embeddedGameConfig?.CommandChar ?? '$');
                 header.CommandChar = _embeddedGameConfig?.CommandChar ?? '$';
-                headerDirty |= header.UseLogin != _state.UseLogin;
-                header.UseLogin = _state.UseLogin;
-                headerDirty |= header.UseRLogin != _state.UseRLogin;
-                header.UseRLogin = _state.UseRLogin;
-                headerDirty |= header.LoginScript != (string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript);
-                header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
-                headerDirty |= header.LoginName != _state.LoginName;
-                header.LoginName = _state.LoginName;
-                headerDirty |= header.Password != _state.Password;
-                header.Password = _state.Password;
-                char gameChar = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
-                headerDirty |= header.Game != gameChar;
-                header.Game = gameChar;
+                headerDirty |= header.UseLogin != (_embeddedGameConfig?.UseLogin ?? false);
+                header.UseLogin = _embeddedGameConfig?.UseLogin ?? false;
+                headerDirty |= header.UseRLogin != (_embeddedGameConfig?.UseRLogin ?? false);
+                header.UseRLogin = _embeddedGameConfig?.UseRLogin ?? false;
+                headerDirty |= header.LoginScript != configLoginScript;
+                header.LoginScript = configLoginScript;
+                headerDirty |= header.LoginName != configLoginName;
+                header.LoginName = configLoginName;
+                headerDirty |= header.Password != configPassword;
+                header.Password = configPassword;
+                headerDirty |= header.Game != configGameChar;
+                header.Game = configGameChar;
                 db.ReplaceHeader(header);
                 if (headerDirty)
                     db.SaveDatabase();
@@ -6145,12 +7274,12 @@ public class MainWindow : Window
                     ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300),
                     CommandChar = _embeddedGameConfig?.CommandChar ?? '$',
                     Sectors    = sectors,
-                    UseLogin   = _state.UseLogin,
-                    UseRLogin  = _state.UseRLogin,
-                    LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
-                    LoginName  = _state.LoginName,
-                    Password   = _state.Password,
-                    Game       = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]),
+                    UseLogin   = _embeddedGameConfig?.UseLogin ?? false,
+                    UseRLogin  = _embeddedGameConfig?.UseRLogin ?? false,
+                    LoginScript = string.IsNullOrWhiteSpace(_embeddedGameConfig?.LoginScript) ? "0_Login.cts" : _embeddedGameConfig.LoginScript,
+                    LoginName  = _embeddedGameConfig?.LoginName ?? string.Empty,
+                    Password   = _embeddedGameConfig?.Password ?? string.Empty,
+                    Game       = string.IsNullOrWhiteSpace(_embeddedGameConfig?.GameLetter) ? '\0' : char.ToUpperInvariant(_embeddedGameConfig.GameLetter[0]),
                 });
             }
 
@@ -6279,7 +7408,7 @@ public class MainWindow : Window
         }
 
         var stopAll = new MenuItem { Header = "_All Scripts" };
-        stopAll.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: true);
+        stopAll.Click += (_, _) => _ = OnProxyForceStopAllScriptsAsync(includeSystemScripts: false);
         items.Add(stopAll);
 
         var stopNonSystem = new MenuItem { Header = "All _Non-System Scripts" };
@@ -6624,38 +7753,50 @@ public class MainWindow : Window
     {
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
-        IReadOnlyList<Core.TwxpConfigSection> sections = EnsureNativeBotSectionInTwxpCfg(programDir);
-        var storedBots = new List<StoredBotSection>();
-        bool foundNative = false;
+        IReadOnlyList<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir);
+        var storedBots = new List<StoredBotSection>
+        {
+            CreateNativeStoredBotSection(programDir, scriptDirectory)
+        };
 
         foreach (Core.TwxpConfigSection section in sections)
         {
-            if (!section.Name.StartsWith("bot:", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            StoredBotSection bot = CreateStoredBotSection(section, programDir, scriptDirectory);
-            if (bot.IsNative)
+            if (!section.Name.StartsWith("bot:", StringComparison.OrdinalIgnoreCase) ||
+                Core.ProxyMenuCatalog.IsNativeBotSection(section))
             {
-                if (foundNative)
-                    continue;
-
-                foundNative = true;
+                continue;
             }
 
-            storedBots.Add(bot);
-        }
-
-        if (!foundNative)
-        {
-            storedBots.Insert(0, CreateStoredBotSection(
-                new Core.TwxpConfigSection(
-                    Core.ProxyMenuCatalog.NativeMombotSectionName,
-                    BuildDefaultNativeBotValues()),
-                programDir,
-                scriptDirectory));
+            storedBots.Add(CreateStoredBotSection(section, programDir, scriptDirectory));
         }
 
         return storedBots;
+    }
+
+    private StoredBotSection CreateNativeStoredBotSection(string programDir, string scriptDirectory)
+    {
+        Core.BotConfig config = BuildCurrentGameNativeBotConfig();
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Native"] = "1",
+            ["Name"] = config.Name,
+            ["Script"] = config.ScriptFile,
+            ["Description"] = config.Description,
+            ["AutoStart"] = config.AutoStart ? "1" : "0",
+            ["NameVar"] = config.NameVar,
+            ["CommsVar"] = config.CommsVar,
+            ["LoginScript"] = config.LoginScript,
+            ["Theme"] = config.Theme,
+        };
+
+        return new StoredBotSection(
+            Core.ProxyMenuCatalog.NativeMombotSectionName,
+            Core.ProxyMenuCatalog.GetBotAlias(Core.ProxyMenuCatalog.NativeMombotSectionName),
+            NativeMombotMenuLabel,
+            true,
+            BotScriptsExist(config, programDir, scriptDirectory),
+            config,
+            values);
     }
 
     private IReadOnlyList<Core.TwxpConfigSection> EnsureNativeBotSectionInTwxpCfg(string programDir)
@@ -7037,13 +8178,17 @@ public class MainWindow : Window
 
         SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         _mombotStartupDataGatherRunning = true;
-        _mombotStartupDataGatherPending = false;
 
         if (ShouldRunNativeMombotStartupRefresh() && !IsNativeMombotRefreshScriptLoaded())
         {
             if (!TryStartNativeMombotStartupRefresh())
+            {
                 _mombotStartupDataGatherRunning = false;
+                return;
+            }
         }
+        
+        _mombotStartupDataGatherPending = false;
 
         await FinalizeNativeMombotStartupAsync();
     }
@@ -7059,6 +8204,7 @@ public class MainWindow : Window
             await Task.Yield();
 
             if (!_mombotStartupPostInitPending ||
+                _mombotStartupDataGatherPending ||
                 !_mombot.Enabled ||
                 _gameInstance == null ||
                 !_gameInstance.IsConnected ||
@@ -7324,6 +8470,41 @@ public class MainWindow : Window
         BotConfigDialogResult? result;
         if (bot.IsNative)
         {
+            MTC.mombot.mombotRelogDialogResult relogDefaults = BuildMombotRelogDefaults();
+            bool needsRelogSetup = ShouldPromptForMombotRelogSettings(relogDefaults);
+
+            if (needsRelogSetup)
+            {
+                var relogDialog = new MTC.mombot.mombotRelogDialog(relogDefaults);
+                if (!await relogDialog.ShowDialog<bool>(this) || relogDialog.Result == null)
+                {
+                    FocusActiveTerminal();
+                    return;
+                }
+
+                ApplyMombotRelogDialogResult(relogDialog.Result);
+                await SaveCurrentGameConfigAsync();
+                ReloadRegisteredBotConfigs();
+                SyncMombotRuntimeConfigFromTwxpCfg();
+                if (_mombot.IsAttached)
+                    _mombot.ApplyConfig(_embeddedGameConfig != null ? GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig) : null);
+                RefreshActiveBotContextFromConfig(bot);
+                RefreshStatusBar();
+                RebuildProxyMenu();
+                StoredBotSection? refreshedNativeBot = LoadConfiguredBotSections().FirstOrDefault(section => section.IsNative);
+                if (refreshedNativeBot != null)
+                {
+                    StopActiveExternalBot();
+                    await StartInternalMombotAsync(
+                        refreshedNativeBot.Config,
+                        requestedBotName: string.Empty,
+                        interactiveOfflinePrompt: false,
+                        publishMissingGameMessage: true);
+                }
+                FocusActiveTerminal();
+                return;
+            }
+
             var dialog = new MTC.mombot.mombotNativeConfigDialog("Configure MomBot (native)", defaults);
             if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
             {
@@ -7352,6 +8533,7 @@ public class MainWindow : Window
         }
 
         SaveBotSection(bot, normalized);
+
         ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg();
         if (_mombot.IsAttached)
@@ -7375,6 +8557,9 @@ public class MainWindow : Window
                 AutoStart: false,
                 NameVar: "BotName",
                 CommsVar: "BotComms",
+                ServerName: string.Empty,
+                LoginName: string.Empty,
+                GameLetter: string.Empty,
                 LoginScript: "0_Login.cts",
                 Theme: "5|[BOT]|~D|~G"),
             isNative: false);
@@ -7398,6 +8583,44 @@ public class MainWindow : Window
 
     private BotConfigDialogResult BuildBotDialogDefaults(StoredBotSection bot)
     {
+        string dialogNameValue = bot.IsNative
+            ? ReadCurrentMombotVar(
+                bot.Config.Name,
+                "$BOT~BOT_NAME",
+                "$SWITCHBOARD~BOT_NAME",
+                "$SWITCHBOARD~bot_name",
+                "$bot~bot_name",
+                "$bot_name",
+                "$bot~name")
+            : bot.Config.NameVar;
+        string dialogCommsValue = bot.IsNative
+            ? ReadCurrentMombotVar(
+                dialogNameValue,
+                "$BOT~BOT_TEAM_NAME",
+                "$BOT~bot_team_name",
+                "$bot~bot_team_name",
+                "$bot_team_name")
+            : bot.Config.CommsVar;
+        string dialogServerName = bot.IsNative
+            ? ReadCurrentMombotVar(
+                NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true),
+                "$BOT~SERVERNAME",
+                "$servername")
+            : string.Empty;
+        string dialogLoginName = bot.IsNative
+            ? ReadCurrentMombotVar(
+                NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true),
+                "$BOT~USERNAME",
+                "$username")
+            : string.Empty;
+        string dialogGameLetter = bot.IsNative
+            ? ReadCurrentMombotVar(
+                NormalizeGameLetter(_embeddedGameConfig?.GameLetter),
+                "$BOT~LETTER",
+                "$letter",
+                "$LETTER")
+            : string.Empty;
+
         return new BotConfigDialogResult(
             Alias: bot.Alias,
             Name: bot.Config.Name,
@@ -7406,8 +8629,11 @@ public class MainWindow : Window
                 : bot.Config.ScriptFile,
             Description: bot.Config.Description,
             AutoStart: bot.Config.AutoStart,
-            NameVar: bot.Config.NameVar,
-            CommsVar: bot.Config.CommsVar,
+            NameVar: dialogNameValue,
+            CommsVar: dialogCommsValue,
+            ServerName: dialogServerName,
+            LoginName: dialogLoginName,
+            GameLetter: dialogGameLetter,
             LoginScript: bot.Config.LoginScript,
             Theme: bot.Config.Theme);
     }
@@ -7471,6 +8697,87 @@ public class MainWindow : Window
     {
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
+
+        if (existing?.IsNative == true)
+        {
+            _embeddedGameConfig ??= new EmbeddedGameConfig
+            {
+                Name = NormalizeGameName(DeriveGameName()),
+                DatabasePath = AppPaths.TwxproxyDatabasePathForGame(DeriveGameName()),
+            };
+
+            MTC.mombot.mombotConfig nativeConfig = GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig);
+            NormalizeNativeMombotRuntimeConfig(nativeConfig);
+            nativeConfig.Name = string.IsNullOrWhiteSpace(result.Name) ? nativeConfig.Name : result.Name.Trim();
+            nativeConfig.Description = string.IsNullOrWhiteSpace(result.Description) ? nativeConfig.Description : result.Description.Trim();
+            nativeConfig.AutoStart = result.AutoStart;
+            nativeConfig.LoginScript = string.IsNullOrWhiteSpace(result.LoginScript) ? "disabled" : result.LoginScript.Trim();
+            nativeConfig.Theme = string.IsNullOrWhiteSpace(result.Theme) ? nativeConfig.Theme : result.Theme.Trim();
+
+            string currentBotName = FirstMeaningfulMombotValue(
+                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot~name", string.Empty),
+                nativeConfig.Name,
+                "MomBot");
+            string currentCommsName = FirstMeaningfulMombotValue(
+                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$BOT~bot_team_name", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot~bot_team_name", string.Empty),
+                Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+                currentBotName);
+            string botName = FirstMeaningfulMombotValue(result.NameVar, nativeConfig.Name, "MomBot");
+            string submittedCommsName = NormalizeMombotValue(result.CommsVar);
+            bool botNameChanged = !string.Equals(botName, currentBotName, StringComparison.OrdinalIgnoreCase);
+            bool commsFollowedBotName = string.IsNullOrWhiteSpace(currentCommsName) ||
+                                        string.Equals(currentCommsName, currentBotName, StringComparison.OrdinalIgnoreCase);
+            bool commsWasLeftOnPriorName = string.IsNullOrWhiteSpace(submittedCommsName) ||
+                                           string.Equals(submittedCommsName, currentCommsName, StringComparison.OrdinalIgnoreCase) ||
+                                           string.Equals(submittedCommsName, currentBotName, StringComparison.OrdinalIgnoreCase);
+            string commsName = botNameChanged && commsFollowedBotName && commsWasLeftOnPriorName
+                ? botName
+                : FirstMeaningfulMombotValue(result.CommsVar, botName);
+            PersistMombotVars(
+                botName,
+                "$BOT~BOT_NAME",
+                "$SWITCHBOARD~BOT_NAME",
+                "$SWITCHBOARD~bot_name",
+                "$bot~bot_name",
+                "$bot_name",
+                "$bot~name");
+            PersistMombotVars(
+                commsName,
+                "$BOT~BOT_TEAM_NAME",
+                "$BOT~bot_team_name",
+                "$bot~bot_team_name",
+                "$bot_team_name");
+            string loginName = NormalizeMombotValue(result.LoginName, treatSelfAsEmpty: true);
+            string serverName = NormalizeMombotValue(result.ServerName, treatSelfAsEmpty: true);
+            string gameLetter = NormalizeGameLetter(result.GameLetter);
+            PersistMombotVars(loginName, "$BOT~USERNAME", "$username");
+            PersistMombotVars(serverName, "$BOT~SERVERNAME", "$servername");
+            PersistMombotVars(gameLetter, "$BOT~LETTER", "$letter", "$LETTER");
+            if (_embeddedGameConfig != null)
+            {
+                _embeddedGameConfig.LoginName = loginName;
+                _embeddedGameConfig.GameLetter = gameLetter;
+            }
+
+            ReloadRegisteredBotConfigs();
+            SyncMombotRuntimeConfigFromTwxpCfg();
+            if (_mombot.IsAttached)
+                _mombot.ApplyConfig(_embeddedGameConfig != null ? GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig) : null);
+            RefreshActiveBotContextFromConfig(CreateNativeStoredBotSection(programDir, scriptDirectory));
+
+            RefreshStatusBar();
+            RebuildProxyMenu();
+            _ = SaveCurrentGameConfigAsync();
+            return;
+        }
+
         List<Core.TwxpConfigSection> sections = Core.TwxpConfigStore.LoadSections(programDir).ToList();
         string sectionName = existing?.IsNative == true
             ? Core.ProxyMenuCatalog.NativeMombotSectionName
@@ -7509,7 +8816,8 @@ public class MainWindow : Window
 
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
-        _gameInstance.ReloadBotConfigs(programDir, scriptDirectory, includeNative: true);
+        _gameInstance.ReloadBotConfigs(programDir, scriptDirectory, includeNative: false);
+        _gameInstance.RegisterOrUpdateBotConfig(BuildCurrentGameNativeBotConfig());
     }
 
     private void RefreshActiveBotContextFromConfig(StoredBotSection updatedBot)
@@ -7534,11 +8842,66 @@ public class MainWindow : Window
         if (targetConfig == null)
             return;
 
-        StoredBotSection nativeBot = LoadConfiguredBotSections().First(bot => bot.IsNative);
         MTC.mombot.mombotConfig runtimeConfig = GetOrCreateEmbeddedMombotConfig(targetConfig);
-        runtimeConfig.AutoStart = nativeBot.Config.AutoStart;
-        runtimeConfig.ScriptRoot = GetNativeMombotScriptRoot(nativeBot.Config);
+        NormalizeNativeMombotRuntimeConfig(runtimeConfig);
         runtimeConfig.WatcherEnabled = runtimeConfig.Enabled;
+    }
+
+    private Core.BotConfig BuildCurrentGameNativeBotConfig()
+    {
+        MTC.mombot.mombotConfig runtimeConfig = BuildCurrentGameNativeMombotConfig();
+        string scriptFile = "mombot/mombot.cts";
+        return new Core.BotConfig
+        {
+            Alias = Core.ProxyMenuCatalog.GetBotAlias(Core.ProxyMenuCatalog.NativeMombotSectionName),
+            Name = runtimeConfig.Name,
+            ScriptFile = scriptFile,
+            ScriptFiles = new List<string> { scriptFile },
+            Description = runtimeConfig.Description,
+            AutoStart = runtimeConfig.AutoStart,
+            NameVar = runtimeConfig.NameVar,
+            CommsVar = runtimeConfig.CommsVar,
+            LoginScript = runtimeConfig.LoginScript,
+            Theme = runtimeConfig.Theme,
+            Properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Native"] = "1",
+                ["Name"] = runtimeConfig.Name,
+                ["Script"] = scriptFile,
+                ["Description"] = runtimeConfig.Description,
+                ["AutoStart"] = runtimeConfig.AutoStart ? "1" : "0",
+                ["NameVar"] = runtimeConfig.NameVar,
+                ["CommsVar"] = runtimeConfig.CommsVar,
+                ["LoginScript"] = runtimeConfig.LoginScript,
+                ["Theme"] = runtimeConfig.Theme,
+            },
+        };
+    }
+
+    private MTC.mombot.mombotConfig BuildCurrentGameNativeMombotConfig()
+    {
+        EmbeddedGameConfig config = _embeddedGameConfig ?? new EmbeddedGameConfig();
+        MTC.mombot.mombotConfig runtimeConfig = GetOrCreateEmbeddedMombotConfig(config);
+        NormalizeNativeMombotRuntimeConfig(runtimeConfig);
+        return runtimeConfig;
+    }
+
+    private static void NormalizeNativeMombotRuntimeConfig(MTC.mombot.mombotConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(config.Name))
+            config.Name = "MomBot";
+        if (string.IsNullOrWhiteSpace(config.Description))
+            config.Description = "Built-in native Mombot runtime";
+        if (string.IsNullOrWhiteSpace(config.NameVar))
+            config.NameVar = "BotName";
+        if (string.IsNullOrWhiteSpace(config.CommsVar))
+            config.CommsVar = "BotComms";
+        if (string.IsNullOrWhiteSpace(config.LoginScript))
+            config.LoginScript = "disabled";
+        if (string.IsNullOrWhiteSpace(config.Theme))
+            config.Theme = "7|[MOMBOT]|~D|~G|~B|~C";
+        if (string.IsNullOrWhiteSpace(config.ScriptRoot))
+            config.ScriptRoot = "scripts/mombot";
     }
 
     private static Dictionary<string, string> MergeBotValues(
@@ -7688,6 +9051,28 @@ public class MainWindow : Window
             return;
         }
 
+        if (!_gameInstance.IsConnected && !interactiveOfflinePrompt)
+        {
+            MTC.mombot.mombotRelogDialogResult offlineDefaults = BuildMombotRelogDefaults();
+            if (!CanStartNativeMombotOfflineWithoutPrompt(
+                    offlineDefaults,
+                    repairInvalidRelogState: true,
+                    out string offlineSkipReason))
+            {
+                string dorelog = ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog");
+                string loginName = FirstMeaningfulMombotValue(
+                    Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
+                    Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+                string gameLetter = FirstMeaningfulMombotValue(
+                    Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
+                    Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+                Core.GlobalModules.DebugLog(
+                    $"[MTC.NativeBotStart] skipping offline noninteractive start game='{_gameInstance.GameName}' reason='{offlineSkipReason}' dorelog='{dorelog}' login='{loginName}' letter='{gameLetter}'\n");
+                Core.GlobalModules.FlushDebugLog();
+                return;
+            }
+        }
+
         Core.BotConfig botConfig = nativeBotConfig ?? LoadConfiguredBotSections().First(bot => bot.IsNative).Config;
         PrimeMombotBootstrapState(botConfig);
         CurrentInterpreter?.ActivateBotContext(botConfig, requestedBotName);
@@ -7718,9 +9103,42 @@ public class MainWindow : Window
             }
 
             ApplyMombotRelogDialogResult(relogSettings);
+            await SaveCurrentGameConfigAsync();
+            SeedMombotRelogVarsFromCurrentState();
+            NormalizeOptionalMombotCorpVars();
+            SetMombotCurrentVars("1", "$relogging", "$connectivity~relogging");
             ApplyMombotConfigChange(config => config.Enabled = true);
             LoadMombotStartupScripts();
-            await ExecuteMombotUiCommandAsync("relog");
+            bool launchedConnectivityRelog = false;
+            if (relogSettings.LoginType != MTC.mombot.mombotRelogLoginType.NormalRelog)
+            {
+                var initialVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["$CONNECTIVITY~NEWGAME"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.NewGameAccountCreation ? "1" : "0",
+                };
+
+                if (_mombot.TryLoadInstalledScriptAtLabel(
+                        "mombot.cts",
+                        ":NATIVE~ENTER_NEW_GAME",
+                        initialVars,
+                        out string? connectivityScriptReference,
+                        out string? connectivityError))
+                {
+                    launchedConnectivityRelog = true;
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotStart] launched connectivity relog path script='{connectivityScriptReference}' loginType='{relogSettings.LoginType}'\n");
+                    Core.GlobalModules.FlushDebugLog();
+                }
+                else
+                {
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotStart] connectivity relog path failed loginType='{relogSettings.LoginType}' error='{connectivityError}'\n");
+                    Core.GlobalModules.FlushDebugLog();
+                }
+            }
+
+            if (!launchedConnectivityRelog)
+                await ExecuteMombotUiCommandAsync("relog");
         }
 
         FocusActiveTerminal();
@@ -7735,7 +9153,8 @@ public class MainWindow : Window
         {
             await StopInternalMombotCoreAsync(
                 publishStopMessage: true,
-                suppressMissingGameMessage: false);
+                suppressMissingGameMessage: false,
+                disconnectServerAfterStop: false);
         }
         finally
         {
@@ -7743,7 +9162,10 @@ public class MainWindow : Window
         }
     }
 
-    private async Task StopInternalMombotCoreAsync(bool publishStopMessage, bool suppressMissingGameMessage)
+    private async Task StopInternalMombotCoreAsync(
+        bool publishStopMessage,
+        bool suppressMissingGameMessage,
+        bool disconnectServerAfterStop = false)
     {
         await Task.Yield();
 
@@ -7769,18 +9191,31 @@ public class MainWindow : Window
         TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}'");
         ClearMombotRelogState();
         ClearNativeMombotStartupDataGather();
-        string nativeBotName = LoadConfiguredBotSections().First(bot => bot.IsNative).Config.Name;
+        StoredBotSection nativeBotSection = LoadConfiguredBotSections().First(bot => bot.IsNative);
+        Core.BotConfig nativeBotConfig = nativeBotSection.Config;
+        string nativeBotName = nativeBotConfig.Name;
         CurrentInterpreter?.ClearActiveBotContext(nativeBotName);
 
         ApplyMombotConfigChange(config => config.Enabled = false);
         _gameInstance.ActiveBotName = string.Empty;
+        var nativeScriptReferences = GetConfiguredBotScriptPaths(nativeBotConfig, scriptDirectory)
+            .Concat(_mombot.GetStartupScriptReferences())
+            .Where(reference => !string.IsNullOrWhiteSpace(reference))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         int drainedScripts = StopScriptsMatchingTree(
             origin: "native-mombot",
-            directScriptPaths: Array.Empty<string>(),
+            directScriptPaths: nativeScriptReferences,
             scriptRootPath: scriptRootPath,
             lastLoadedModule: lastLoadedModule,
             scriptDirectory: scriptDirectory,
             programDir: programDir);
+
+        foreach (string scriptReference in nativeScriptReferences)
+            _mombot.StopScriptByName(scriptReference);
+
+        if (disconnectServerAfterStop && _gameInstance.IsConnected)
+            await _gameInstance.DisconnectFromServerAsync();
 
         if (publishStopMessage)
             PublishMombotLocalMessage("Mombot stopped.");
@@ -7790,29 +9225,35 @@ public class MainWindow : Window
 
     private MTC.mombot.mombotRelogDialogResult BuildMombotRelogDefaults()
     {
-        string stateLogin = NormalizeMombotValue(_state.LoginName, treatSelfAsEmpty: true);
+        string configLogin = NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true);
+        string configPassword = NormalizeMombotValue(_embeddedGameConfig?.Password);
+        string configGameLetter = NormalizeMombotValue(_embeddedGameConfig?.GameLetter);
+        string configuredNativeBotName = NormalizeMombotValue(
+            _embeddedGameConfig?.mombot?.Name ??
+            _embeddedGameConfig?.Mtc?.mombot?.Name);
         string botName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            configuredNativeBotName,
             _mombot.Settings.BotName,
             "mombot");
         string serverName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
-            stateLogin);
+            configLogin);
         string loginName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
-            stateLogin);
+            configLogin);
         string password = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
-            _state.Password);
+            configPassword);
         string gameLetter = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
-            _state.GameLetter);
+            configGameLetter);
         string delayValue = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~STARTGAMEDELAY", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$startGameDelay", string.Empty),
@@ -7829,11 +9270,38 @@ public class MainWindow : Window
         bool newGameOlder = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "false"), "true", StringComparison.OrdinalIgnoreCase);
 
-        MTC.mombot.mombotRelogLoginType loginType = newGameDay1
+        bool establishedGameEvidence = LooksLikeEstablishedRelogProfile(
+            loginName,
+            password,
+            NormalizeGameLetter(gameLetter),
+            Core.ScriptRef.GetCurrentGameVar("$PLAYER~TRADER_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$GAME~GAMESTATS", "0"),
+            Core.ScriptRef.GetCurrentGameVar("$PLAYER~CURRENT_SECTOR", "0"));
+
+        if (establishedGameEvidence && (newGameDay1 || !newGameOlder))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.RelogDefaults] overriding stale new-game flags for loaded game='{_embeddedGameName ?? _embeddedGameConfig?.Name ?? "-"}' newGameDay1={newGameDay1} newGameOlder={newGameOlder}\n");
+            PersistMombotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
+            PersistMombotVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
+            newGameDay1 = false;
+            newGameOlder = true;
+        }
+
+        bool missingRelogSetup =
+            string.IsNullOrWhiteSpace(botName) ||
+            string.IsNullOrWhiteSpace(serverName) ||
+            string.IsNullOrWhiteSpace(loginName) ||
+            string.IsNullOrWhiteSpace(password) ||
+            string.IsNullOrWhiteSpace(gameLetter);
+
+        MTC.mombot.mombotRelogLoginType loginType = missingRelogSetup
             ? MTC.mombot.mombotRelogLoginType.NewGameAccountCreation
-            : newGameOlder
-                ? MTC.mombot.mombotRelogLoginType.NormalRelog
-                : MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed;
+            : newGameDay1
+                ? MTC.mombot.mombotRelogLoginType.NewGameAccountCreation
+                : newGameOlder
+                    ? MTC.mombot.mombotRelogLoginType.NormalRelog
+                    : MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed;
 
         return new MTC.mombot.mombotRelogDialogResult(
             loginType,
@@ -7857,8 +9325,40 @@ public class MainWindow : Window
             string.IsNullOrWhiteSpace(defaults.GameLetter);
     }
 
+    private bool CanStartNativeMombotOfflineWithoutPrompt(
+        MTC.mombot.mombotRelogDialogResult defaults,
+        bool repairInvalidRelogState,
+        out string reason)
+    {
+        bool dorelogEnabled = IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog"));
+        if (!dorelogEnabled)
+        {
+            reason = "relog-disabled";
+            return false;
+        }
+
+        if (ShouldPromptForMombotRelogSettings(defaults))
+        {
+            if (repairInvalidRelogState)
+                PersistMombotVars("0", "$BOT~DORELOG", "$doRelog");
+
+            reason = "missing-relog-settings";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
     private void ApplyMombotRelogDialogResult(MTC.mombot.mombotRelogDialogResult result)
     {
+        if (_embeddedGameConfig != null)
+        {
+            _embeddedGameConfig.LoginName = result.LoginName;
+            _embeddedGameConfig.Password = result.Password;
+            _embeddedGameConfig.GameLetter = NormalizeGameLetter(result.GameLetter);
+        }
+
         PersistMombotVars(result.BotName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
         PersistMombotVars(
             FirstMeaningfulMombotValue(
@@ -7903,41 +9403,112 @@ public class MainWindow : Window
 
     private void SeedMombotRelogVarsFromCurrentState()
     {
-        string stateLogin = NormalizeMombotValue(_state.LoginName, treatSelfAsEmpty: true);
+        string configLogin = NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true);
+        string configPassword = NormalizeMombotValue(_embeddedGameConfig?.Password);
+        string configGameLetter = NormalizeMombotValue(_embeddedGameConfig?.GameLetter);
+        string configuredNativeBotName = NormalizeMombotValue(
+            _embeddedGameConfig?.mombot?.Name ??
+            _embeddedGameConfig?.Mtc?.mombot?.Name);
         string botName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            configuredNativeBotName,
             _mombot.Settings.BotName,
             "mombot");
         string serverName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
-            stateLogin);
+            configLogin);
         string loginName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
-            stateLogin);
+            configLogin);
         string password = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
-            _state.Password);
+            configPassword);
         string gameLetter = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
-            _state.GameLetter);
+            configGameLetter);
+        string doRelog = IsMombotTruthy(FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
+            "1")) ? "1" : "0";
+        string newGameOlder = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0")) ? "1" : "0";
+        string newGameDay1 = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0")) ? "1" : "0";
+        string isShipDestroyed = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISSHIPDESTROYED", "0")) ? "1" : "0";
 
         SetMombotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
         SetMombotCurrentVars(serverName, "$BOT~SERVERNAME", "$servername");
         SetMombotCurrentVars(loginName, "$BOT~USERNAME", "$username");
         SetMombotCurrentVars(password, "$BOT~PASSWORD", "$password");
         SetMombotCurrentVars(NormalizeGameLetter(gameLetter), "$BOT~LETTER", "$letter");
-        SetMombotCurrentVars("1", "$BOT~DORELOG", "$doRelog");
-        SetMombotCurrentVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-        SetMombotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
-        SetMombotCurrentVars("0", "$BOT~ISSHIPDESTROYED");
+        SetMombotCurrentVars(doRelog, "$BOT~DORELOG", "$doRelog");
+        SetMombotCurrentVars(newGameOlder, "$BOT~NEWGAMEOLDER", "$newGameOlder");
+        SetMombotCurrentVars(newGameDay1, "$BOT~NEWGAMEDAY1", "$newGameDay1");
+        SetMombotCurrentVars(isShipDestroyed, "$BOT~ISSHIPDESTROYED");
         SetMombotCurrentVars("General", "$BOT~MODE", "$mode");
         SetMombotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
+    }
+
+    private void BackfillScriptMombotBootstrapState(EmbeddedGameConfig gameConfig, string gameName, string programDir)
+    {
+        string configuredNativeBotName = NormalizeMombotValue(
+            gameConfig?.mombot?.Name ??
+            gameConfig?.Mtc?.mombot?.Name);
+        string botName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~name", string.Empty),
+            configuredNativeBotName);
+        if (string.IsNullOrWhiteSpace(botName))
+            return;
+
+        PersistMombotVars(
+            botName,
+            "$BOT~BOT_NAME",
+            "$SWITCHBOARD~BOT_NAME",
+            "$SWITCHBOARD~bot_name",
+            "$bot~bot_name",
+            "$bot_name",
+            "$bot~name");
+
+        string gconfigPath = Path.Combine(programDir, "games", gameName, "bot.cfg");
+        try
+        {
+            string? directory = Path.GetDirectoryName(gconfigPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            string existingBotName = File.Exists(gconfigPath)
+                ? (File.ReadLines(gconfigPath).FirstOrDefault()?.Trim() ?? string.Empty)
+                : string.Empty;
+            if (!string.Equals(existingBotName, botName, StringComparison.OrdinalIgnoreCase))
+                File.WriteAllText(gconfigPath, botName + Environment.NewLine);
+        }
+        catch
+        {
+        }
+    }
+
+    private void NormalizeOptionalMombotCorpVars()
+    {
+        string corpName = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPNAME", string.Empty));
+        string corpPassword = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPPASSWORD", string.Empty));
+        string isCeo = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISCEO", "0")) ? "1" : "0";
+
+        PersistMombotVars(corpName, "$BOT~CORPNAME");
+        PersistMombotVars(corpPassword, "$BOT~CORPPASSWORD");
+        PersistMombotVars(isCeo, "$BOT~ISCEO");
+
+        SetMombotCurrentVars(corpName, "$BOT~CORPNAME");
+        SetMombotCurrentVars(corpPassword, "$BOT~CORPPASSWORD");
+        SetMombotCurrentVars(isCeo, "$BOT~ISCEO");
     }
 
     private void LoadMombotStartupScripts()
@@ -7950,6 +9521,27 @@ public class MainWindow : Window
             if (!_mombot.TryLoadScript(startupScript, out string? error))
                 PublishMombotLocalMessage($"mombot: failed to load startup '{startupScript}': {error}");
         }
+    }
+
+    private string ReadEmbeddedPersistedMombotVar(string fallback, params string[] names)
+    {
+        if (_embeddedGameConfig?.Variables != null)
+        {
+            foreach (string name in names)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                if (_embeddedGameConfig.Variables.TryGetValue(name, out string? value))
+                {
+                    string normalized = NormalizeMombotValue(value);
+                    if (!string.IsNullOrEmpty(normalized))
+                        return normalized;
+                }
+            }
+        }
+
+        return fallback;
     }
 
     private void ShowMombotStartupBanner(bool connected)
@@ -8146,6 +9738,23 @@ public class MainWindow : Window
         string botPassword = ReadCurrentMombotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
         if (string.IsNullOrWhiteSpace(botPassword) && subspace != "0")
             botPassword = subspace;
+        string loginName = ReadEmbeddedPersistedMombotVar(
+            NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true),
+            "$BOT~USERNAME",
+            "$username");
+        string serverName = ReadEmbeddedPersistedMombotVar(
+            loginName,
+            "$BOT~SERVERNAME",
+            "$servername");
+        string loginPassword = ReadEmbeddedPersistedMombotVar(
+            NormalizeMombotValue(_embeddedGameConfig?.Password),
+            "$BOT~PASSWORD",
+            "$password");
+        string gameLetter = ReadEmbeddedPersistedMombotVar(
+            NormalizeGameLetter(_embeddedGameConfig?.GameLetter),
+            "$BOT~LETTER",
+            "$letter",
+            "$LETTER");
         string currentSector = Core.ScriptRef.GetCurrentSector() > 0 ? Core.ScriptRef.GetCurrentSector().ToString() : FormatMombotSector((ushort)_state.Sector);
         string currentPrompt = GetInitialMombotPromptName();
 
@@ -8185,10 +9794,10 @@ public class MainWindow : Window
         SetMombotCurrentVars(currentPrompt, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         SetMombotCurrentVars(string.Empty, "$BOT~COMMAND", "$bot~command", "$command");
         SetMombotCurrentVars(string.Empty, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
-        MirrorMombotCurrentVars(string.Empty, "$BOT~PASSWORD", "$password");
-        MirrorMombotCurrentVars(string.Empty, "$BOT~USERNAME", "$username");
-        MirrorMombotCurrentVars(string.Empty, "$BOT~SERVERNAME", "$servername");
-        MirrorMombotCurrentVars(string.Empty, "$BOT~LETTER", "$letter", "$LETTER");
+        SetMombotCurrentVars(loginPassword, "$BOT~PASSWORD", "$password");
+        SetMombotCurrentVars(loginName, "$BOT~USERNAME", "$username");
+        SetMombotCurrentVars(serverName, "$BOT~SERVERNAME", "$servername");
+        SetMombotCurrentVars(gameLetter, "$BOT~LETTER", "$letter", "$LETTER");
         MirrorMombotCurrentVars(subspace, "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
         MirrorMombotCurrentVars("General", "$BOT~MODE", "$bot~mode", "$mode");
         MirrorMombotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
@@ -8366,14 +9975,12 @@ public class MainWindow : Window
 
     private static IReadOnlyList<string> BuildDefaultMombotAliasConfigFileLines()
     {
-        var lines = new List<string>
+        return new[]
         {
             "# mombot command aliases",
-            "# format: alias=real command",
+            "# format: alias[,alias...]=real command",
             string.Empty,
         };
-        lines.AddRange(MTC.mombot.mombotCatalog.BuildDefaultAliasConfigLines());
-        return lines;
     }
 
     private static void EnsureMombotGameFolderMigrated(string legacyFolderPath, string folderPath)
@@ -8677,7 +10284,14 @@ public class MainWindow : Window
         if (line.Contains("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
             SetMombotCurrentVars("1", "$BOT~ISSHIPDESTROYED");
 
-        if (TryGetMombotPromptNameFromLine(line, out string promptName))
+        bool isGamePromptLine = TryGetMombotPromptNameFromLine(line, out string promptName);
+        if (!isGamePromptLine)
+        {
+            CancelPendingMombotInteractivePromptRedraw();
+            return;
+        }
+
+        if (isGamePromptLine)
         {
             _mombotObservedGamePromptVersion++;
             _mombotLastObservedGamePromptPlain = Core.AnsiCodes.NormalizeTerminalText(line).TrimEnd();
@@ -8686,7 +10300,52 @@ public class MainWindow : Window
                 : ansiLine;
             SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
             SetMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
+
+            // When a native Mombot interactive prompt is open, reclaim the bottom line
+            // after the server returns to a stable command/citadel prompt. We debounce
+            // the redraw so echoed game prompts do not repaint over report/scan output.
+            if (HasMombotInteractiveState() &&
+                (string.Equals(promptName, "Command", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(promptName, "Citadel", StringComparison.OrdinalIgnoreCase)))
+            {
+                ScheduleMombotInteractivePromptRedraw(_mombotObservedGamePromptVersion);
+            }
         }
+    }
+
+    private void CancelPendingMombotInteractivePromptRedraw()
+    {
+        unchecked
+        {
+            _mombotMacroPromptRedrawTicket++;
+        }
+    }
+
+    private void ScheduleMombotInteractivePromptRedraw(int promptVersion)
+    {
+        int ticket;
+        unchecked
+        {
+            ticket = ++_mombotMacroPromptRedrawTicket;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(120).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (ticket != _mombotMacroPromptRedrawTicket)
+                    return;
+
+                if (!HasMombotInteractiveState())
+                    return;
+
+                if (_mombotObservedGamePromptVersion != promptVersion)
+                    return;
+
+                RedrawMombotPrompt();
+            }, DispatcherPriority.Background);
+        });
     }
 
     private async Task RunNativeMombotKeepaliveTickAsync()
@@ -8702,7 +10361,7 @@ public class MainWindow : Window
             }
 
             if (_gameInstance.IsConnected)
-                await SendNativeMombotEscapeAsync();
+                await SendKeepaliveEscapeAsync();
 
             if (ShouldStopNativeMombotAfterDisconnect() || !ShouldNativeMombotAutoRelog())
             {
@@ -8745,6 +10404,21 @@ public class MainWindow : Window
         }
     }
 
+    private async Task HandleEmbeddedKeepaliveWatchLineAsync(string line)
+    {
+        await Task.Yield();
+
+        if (_gameInstance == null || !_gameInstance.IsConnected || string.IsNullOrWhiteSpace(line))
+            return;
+
+        if (line.Contains("Your session will be terminated in ", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("You now have Thirty seconds until termination.", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("Only TEN seconds remain.  Session termination is imminent.", StringComparison.OrdinalIgnoreCase))
+        {
+            await SendKeepaliveEscapeAsync();
+        }
+    }
+
     private async Task HandleNativeMombotWatchLineAsync(string line)
     {
         await Task.Yield();
@@ -8755,25 +10429,217 @@ public class MainWindow : Window
         if (_gameInstance.IsConnected &&
             line.Contains("Your session will be terminated in ", StringComparison.OrdinalIgnoreCase))
         {
-            await SendNativeMombotEscapeAsync();
+            await SendKeepaliveEscapeAsync();
         }
 
         await TryRunNativeMombotInitialSettingsAsync();
         await FinalizeNativeMombotStartupAsync();
     }
 
-    private async Task SendNativeMombotEscapeAsync()
+    private async Task SendKeepaliveEscapeAsync()
     {
         if (_gameInstance == null || !_gameInstance.IsConnected)
             return;
 
         await _gameInstance.SendToServerAsync(new byte[] { 0x1B });
+        RegisterNativeMombotEscapeEchoSuppression();
+    }
+
+    private void RegisterNativeMombotEscapeEchoSuppression()
+    {
+        Interlocked.Increment(ref _pendingNativeMombotEscapeEchoSuppressions);
+        Interlocked.Exchange(
+            ref _nativeMombotEscapeEchoSuppressUntilUtcTicks,
+            DateTime.UtcNow.AddSeconds(2).Ticks);
+    }
+
+    private byte[] FilterTerminalDisplayArtifacts(byte[] chunk, out bool rewrotePromptOverwrite)
+    {
+        rewrotePromptOverwrite = false;
+        if (chunk.Length == 0)
+            return chunk;
+
+        lock (_terminalDisplayArtifactSync)
+        {
+            List<byte>? filtered = null;
+            int index = 0;
+
+            if (_pendingTerminalSyncMarkerLeadByte)
+            {
+                _pendingTerminalSyncMarkerLeadByte = false;
+
+                if (chunk[0] == 0x08)
+                {
+                    filtered = new List<byte>(Math.Max(0, chunk.Length - 1));
+                    index = 1;
+                }
+                else
+                {
+                    filtered = new List<byte>(chunk.Length + 1) { 0x91 };
+                }
+            }
+
+            for (; index < chunk.Length; index++)
+            {
+                byte value = chunk[index];
+
+                if (_suppressingPendingNativeMombotEscapeSequence)
+                {
+                    filtered ??= new List<byte>(chunk.Length);
+
+                    if (!_suppressingPendingNativeMombotEscapeCsiBody)
+                    {
+                        if (value == (byte)'[')
+                        {
+                            _suppressingPendingNativeMombotEscapeCsiBody = true;
+                            continue;
+                        }
+
+                        _suppressingPendingNativeMombotEscapeSequence = false;
+                        _suppressingPendingNativeMombotEscapeCsiBody = false;
+                        continue;
+                    }
+
+                    if (value >= 0x40 && value <= 0x7E)
+                    {
+                        _suppressingPendingNativeMombotEscapeSequence = false;
+                        _suppressingPendingNativeMombotEscapeCsiBody = false;
+                    }
+
+                    continue;
+                }
+
+                if (ShouldSuppressPendingNativeMombotEscapeEcho(value))
+                {
+                    filtered ??= new List<byte>(chunk.Length);
+                    _suppressingPendingNativeMombotEscapeSequence = true;
+                    _suppressingPendingNativeMombotEscapeCsiBody = false;
+                    continue;
+                }
+
+                if (value == 0x91)
+                {
+                    if (index + 1 < chunk.Length)
+                    {
+                        if (chunk[index + 1] == 0x08)
+                        {
+                            filtered ??= new List<byte>(chunk.Length);
+                            index++;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        filtered ??= new List<byte>(chunk.Length);
+                        _pendingTerminalSyncMarkerLeadByte = true;
+                        continue;
+                    }
+                }
+
+                if (value == 0x1B &&
+                    index + 6 < chunk.Length &&
+                    chunk[index + 1] == (byte)'[' &&
+                    chunk[index + 2] == (byte)'K' &&
+                    chunk[index + 3] == 0x1B &&
+                    chunk[index + 4] == (byte)'[' &&
+                    chunk[index + 5] == (byte)'1' &&
+                    chunk[index + 6] == (byte)'A')
+                {
+                    filtered ??= new List<byte>(chunk.Length + 8);
+                    filtered.Add(0x0D);
+                    filtered.Add(0x1B);
+                    filtered.Add((byte)'[');
+                    filtered.Add((byte)'K');
+                    filtered.Add(0x1B);
+                    filtered.Add((byte)'[');
+                    filtered.Add((byte)'1');
+                    filtered.Add((byte)'A');
+                    filtered.Add(0x0D);
+                    filtered.Add(0x1B);
+                    filtered.Add((byte)'[');
+                    filtered.Add((byte)'K');
+                    rewrotePromptOverwrite = true;
+                    index += 6;
+                    continue;
+                }
+
+                filtered?.Add(value);
+            }
+
+            return filtered == null ? chunk : filtered.ToArray();
+        }
+    }
+
+    private bool ShouldSuppressPendingNativeMombotEscapeEcho(byte value)
+    {
+        if (value != 0x1B)
+            return false;
+
+        int pending = Interlocked.CompareExchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0, 0);
+        if (pending <= 0)
+            return false;
+
+        long suppressUntilTicks = Interlocked.Read(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks);
+        if (suppressUntilTicks <= 0 || DateTime.UtcNow.Ticks > suppressUntilTicks)
+        {
+            Interlocked.Exchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0);
+            Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
+            return false;
+        }
+
+        if (Interlocked.Decrement(ref _pendingNativeMombotEscapeEchoSuppressions) <= 0)
+            Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
+
+        return true;
+    }
+
+    private void ScheduleLatestObservedGamePromptRestoreAfterQuiet()
+    {
+        int ticket = ++_serverOverwritePromptRestoreTicket;
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+
+                if (ticket != _serverOverwritePromptRestoreTicket)
+                    return;
+
+                long lastServerOutputUtcTicks = Interlocked.Read(ref _mombotLastServerOutputUtcTicks);
+                if (lastServerOutputUtcTicks > 0)
+                {
+                    DateTime lastServerOutputUtc = new(lastServerOutputUtcTicks, DateTimeKind.Utc);
+                    if ((DateTime.UtcNow - lastServerOutputUtc) < TimeSpan.FromMilliseconds(250))
+                        continue;
+                }
+
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (ticket != _serverOverwritePromptRestoreTicket)
+                        return;
+
+                    if (HasNonBotScriptsRunning())
+                        return;
+
+                    if (HasMombotInteractiveState())
+                        return;
+
+                    TryRestoreLatestObservedGamePrompt();
+                }, DispatcherPriority.Background);
+                return;
+            }
+        });
     }
 
     private bool ShouldNativeMombotAutoRelog()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog")) &&
-               !IsNativeMombotShipDestroyed();
+        if (!IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog")) ||
+            IsNativeMombotShipDestroyed())
+        {
+            return false;
+        }
+
+        return !ShouldPromptForMombotRelogSettings(BuildMombotRelogDefaults());
     }
 
     private bool IsNativeMombotRelogInProgress()
@@ -8839,6 +10705,7 @@ public class MainWindow : Window
         {
             MombotPromptSurface.Command => "Command",
             MombotPromptSurface.Citadel => "Citadel",
+            MombotPromptSurface.Planet => "Planet",
             _ => "Undefined",
         };
     }
@@ -8855,12 +10722,29 @@ public class MainWindow : Window
             return true;
         }
 
+        if (line.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase))
+        {
+            promptName = "Computer";
+            return true;
+        }
+
         if (line.StartsWith("Citadel command (", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("<Enter Citadel>", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("Citadel treasury contains", StringComparison.OrdinalIgnoreCase))
         {
             promptName = "Citadel";
             return true;
+        }
+
+        int commandIndex = line.IndexOf(" command (", StringComparison.OrdinalIgnoreCase);
+        if (commandIndex > 0)
+        {
+            string candidate = line[..commandIndex].Trim();
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                promptName = candidate;
+                return true;
+            }
         }
 
         return false;
@@ -8958,6 +10842,62 @@ public class MainWindow : Window
     {
         string normalized = NormalizeMombotValue(value);
         return string.IsNullOrEmpty(normalized) ? string.Empty : normalized[..1].ToUpperInvariant();
+    }
+
+    private static bool LooksLikeEstablishedRelogProfile(
+        string loginName,
+        string password,
+        string gameLetter,
+        string? traderName,
+        string? gameStats,
+        string? currentSector)
+    {
+        bool hasCredentials =
+            !string.IsNullOrWhiteSpace(NormalizeMombotValue(loginName, treatSelfAsEmpty: true)) &&
+            !string.IsNullOrWhiteSpace(NormalizeMombotValue(password)) &&
+            !string.IsNullOrWhiteSpace(NormalizeGameLetter(gameLetter));
+
+        bool hasTrader = !string.IsNullOrWhiteSpace(NormalizeMombotValue(traderName));
+        bool hasGameStats = IsMombotTruthy(gameStats ?? string.Empty);
+        bool hasCurrentSector = ParseGameVarInt(currentSector ?? "0") > 0;
+
+        return hasCredentials && (hasTrader || hasGameStats || hasCurrentSector);
+    }
+
+    private static bool NormalizeEmbeddedRelogFlagsIfEstablished(EmbeddedGameConfig config)
+    {
+        config.Variables = NormalizeEmbeddedVariables(config.Variables);
+
+        string loginName = NormalizeMombotValue(config.LoginName, treatSelfAsEmpty: true);
+        string password = NormalizeMombotValue(config.Password);
+        string gameLetter = NormalizeGameLetter(config.GameLetter);
+        string traderName = config.Variables.TryGetValue("$PLAYER~TRADER_NAME", out string? trader) ? trader : string.Empty;
+        string gameStats = config.Variables.TryGetValue("$GAME~GAMESTATS", out string? stats) ? stats : "0";
+        string currentSector = config.Variables.TryGetValue("$PLAYER~CURRENT_SECTOR", out string? sector) ? sector : "0";
+
+        if (!LooksLikeEstablishedRelogProfile(loginName, password, gameLetter, traderName, gameStats, currentSector))
+            return false;
+
+        bool changed = false;
+        changed |= SetNormalizedEmbeddedVar(config.Variables, "$BOT~NEWGAMEDAY1", "0");
+        changed |= SetNormalizedEmbeddedVar(config.Variables, "$BOT~NEWGAMEOLDER", "1");
+
+        if (changed)
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.RelogDefaults] normalized stale relog flags in config for game='{config.Name}'\n");
+        }
+
+        return changed;
+    }
+
+    private static bool SetNormalizedEmbeddedVar(IDictionary<string, string> vars, string name, string value)
+    {
+        if (vars.TryGetValue(name, out string? existing) && string.Equals(existing, value, StringComparison.Ordinal))
+            return false;
+
+        vars[name] = value;
+        return true;
     }
 
     private async Task OpenAiAssistantAsync(string moduleId)
@@ -9163,6 +11103,7 @@ public class MainWindow : Window
         Unknown,
         Command,
         Citadel,
+        Planet,
         Computer,
     }
 
@@ -9384,17 +11325,17 @@ public class MainWindow : Window
         if (send == null)
             return Task.FromResult<string?>("Temporary macros need an active game connection.");
 
+        byte[] macroPayload = GetCombinedMacroPayload(macroChunks);
+        if (macroPayload.Length == 0)
+            return Task.FromResult<string?>("Temporary macro is empty.");
+
+        if (!TryBuildRepeatedMacroPayload(macroPayload, count, out byte[] burstPayload, out string? burstError))
+            return Task.FromResult<string?>(burstError ?? "Temporary macro burst is invalid.");
+
         _suppressTemporaryMacroRecording = true;
         try
         {
-            for (int iteration = 0; iteration < count; iteration++)
-            {
-                foreach (byte[] chunk in macroChunks)
-                {
-                    if (chunk.Length > 0)
-                        send(chunk);
-                }
-            }
+            send(burstPayload);
         }
         finally
         {
@@ -9409,25 +11350,7 @@ public class MainWindow : Window
 
     private byte[] GetTemporaryMacroBytes()
     {
-        int totalLength = 0;
-        foreach (byte[] chunk in _temporaryMacroChunks)
-            totalLength += chunk.Length;
-
-        if (totalLength == 0)
-            return [];
-
-        byte[] bytes = new byte[totalLength];
-        int offset = 0;
-        foreach (byte[] chunk in _temporaryMacroChunks)
-        {
-            if (chunk.Length == 0)
-                continue;
-
-            Buffer.BlockCopy(chunk, 0, bytes, offset, chunk.Length);
-            offset += chunk.Length;
-        }
-
-        return bytes;
+        return GetCombinedMacroPayload(_temporaryMacroChunks);
     }
 
     private static string EncodeTemporaryMacroBytes(IEnumerable<byte> bytes)
@@ -9622,10 +11545,67 @@ public class MainWindow : Window
         if (payload.Length == 0)
             return Task.FromResult<string?>(null);
 
-        for (int i = 0; i < count; i++)
-            send(payload);
+        if (!TryBuildRepeatedMacroPayload(payload, count, out byte[] burstPayload, out string? burstError))
+            return Task.FromResult<string?>(burstError ?? "Macro burst is invalid.");
+
+        send(burstPayload);
 
         return Task.FromResult<string?>(null);
+    }
+
+    private static byte[] GetCombinedMacroPayload(IEnumerable<byte[]> chunks)
+    {
+        int totalLength = 0;
+        foreach (byte[] chunk in chunks)
+            totalLength += chunk.Length;
+
+        if (totalLength == 0)
+            return [];
+
+        byte[] payload = new byte[totalLength];
+        int offset = 0;
+        foreach (byte[] chunk in chunks)
+        {
+            if (chunk.Length == 0)
+                continue;
+
+            Buffer.BlockCopy(chunk, 0, payload, offset, chunk.Length);
+            offset += chunk.Length;
+        }
+
+        return payload;
+    }
+
+    private static bool TryBuildRepeatedMacroPayload(byte[] payload, int count, out byte[] burstPayload, out string? error)
+    {
+        burstPayload = [];
+        error = null;
+
+        if (payload.Length == 0 || count <= 0)
+            return true;
+
+        long totalLength = (long)payload.Length * count;
+        if (totalLength > int.MaxValue)
+        {
+            error = "Macro burst is too large to send in one pass.";
+            return false;
+        }
+
+        if (count == 1)
+        {
+            burstPayload = payload;
+            return true;
+        }
+
+        burstPayload = new byte[(int)totalLength];
+        int offset = 0;
+        for (int i = 0; i < count; i++)
+        {
+            Buffer.BlockCopy(payload, 0, burstPayload, offset, payload.Length);
+            offset += payload.Length;
+        }
+
+        return true;
     }
 
     private bool TryHandleMombotPromptInput(byte[] bytes)
@@ -9702,6 +11682,12 @@ public class MainWindow : Window
                 default:
                     if (value >= 0x20)
                     {
+                        if (value == (byte)'$')
+                        {
+                            CancelMombotPrompt();
+                            return true;
+                        }
+
                         if (value == (byte)'>' && _mombotPromptBuffer.Length == 0)
                         {
                             BeginMombotMacroPrompt();
@@ -11995,18 +13981,38 @@ public class MainWindow : Window
     private async Task ExecuteMombotMacroActionAsync(Func<MombotGridContext, Task> action)
     {
         MombotGridContext? context = _mombotMacroContext;
-        _mombotMacroPromptOpen = false;
-        _mombotMacroContext = null;
-
         if (context == null)
         {
+            _mombotMacroPromptOpen = false;
+            _mombotMacroContext = null;
             RedrawMombotPrompt();
             return;
         }
 
         await action(context);
-        if (_mombotPromptOpen)
+        if (!_mombotPromptOpen)
+            return;
+
+        if (_gameInstance == null || !_gameInstance.IsConnected)
+        {
+            _mombotMacroPromptOpen = false;
+            _mombotMacroContext = null;
             RedrawMombotPrompt();
+            return;
+        }
+
+        MombotGridContext refreshedContext = BuildMombotGridContext();
+        if (refreshedContext.Surface != MombotPromptSurface.Command &&
+            refreshedContext.Surface != MombotPromptSurface.Citadel)
+        {
+            _mombotMacroPromptOpen = false;
+            _mombotMacroContext = null;
+            RedrawMombotPrompt();
+            return;
+        }
+
+        _mombotMacroPromptOpen = true;
+        _mombotMacroContext = refreshedContext;
     }
 
     private void PublishMombotLocalMessage(string message)
@@ -12088,6 +14094,8 @@ public class MainWindow : Window
             return MombotPromptSurface.Command;
         if (string.Equals(promptVar, "Citadel", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Citadel;
+        if (string.Equals(promptVar, "Planet", StringComparison.OrdinalIgnoreCase))
+            return MombotPromptSurface.Planet;
         if (string.Equals(promptVar, "Computer", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Computer;
 
@@ -12095,6 +14103,8 @@ public class MainWindow : Window
         string currentAnsi = Core.ScriptRef.GetCurrentAnsiLine();
         if (currentLine.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Command;
+        if (currentLine.StartsWith("Planet command (", StringComparison.OrdinalIgnoreCase))
+            return MombotPromptSurface.Planet;
         if (currentLine.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Computer;
         if (currentLine.Contains("Citadel", StringComparison.OrdinalIgnoreCase) ||
@@ -12619,6 +14629,9 @@ public class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(candidatePromptPlain))
                     return;
 
+                if (HasNonBotScriptsRunning())
+                    return;
+
                 if (IsTerminalCurrentLineEquivalentTo(candidatePromptPlain))
                     return;
 
@@ -12652,6 +14665,17 @@ public class MainWindow : Window
             });
     }
 
+    private bool HasNonBotScriptsRunning()
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return false;
+
+        return Core.ProxyGameOperations
+            .GetRunningScripts(interpreter)
+            .Any(script => !script.IsBot);
+    }
+
     private bool IsTerminalCurrentLineEquivalentTo(string promptPlain)
     {
         if (string.IsNullOrWhiteSpace(promptPlain))
@@ -12671,12 +14695,40 @@ public class MainWindow : Window
             Core.AnsiCodes.NormalizeTerminalText(currentRowText).Trim());
     }
 
+    private bool HasActiveServerInputPromptOnCurrentLine()
+    {
+        string currentRowText = Core.AnsiCodes.NormalizeTerminalText(ReadTerminalRowText(_buffer.CursorRow)).TrimEnd();
+        if (string.IsNullOrWhiteSpace(currentRowText))
+            return false;
+
+        if (TryGetMombotPromptNameFromLine(currentRowText, out _))
+            return true;
+
+        string lower = currentRowText.ToLowerInvariant();
+        if (lower.Contains("selection (? for menu):", StringComparison.Ordinal) ||
+            lower.Contains("enter your choice", StringComparison.Ordinal) ||
+            lower.Contains("land on which planet <q to abort>", StringComparison.Ordinal) ||
+            lower.Contains("choose which ship to beam to", StringComparison.Ordinal) ||
+            lower.Contains("how many holds of ", StringComparison.Ordinal) ||
+            lower.Contains("how many fighters do you want", StringComparison.Ordinal) ||
+            lower.Contains("to which sector [", StringComparison.Ordinal) ||
+            lower.Contains("do you want to ", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return lower.EndsWith("?") ||
+               lower.EndsWith("]") ||
+               lower.EndsWith(":");
+    }
+
     private bool TryRestoreLatestObservedGamePrompt()
     {
         if (_gameInstance == null ||
             !_gameInstance.IsConnected ||
             _gameInstance.IsProxyMenuActive ||
-            string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain))
+            string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain) ||
+            HasNonBotScriptsRunning())
         {
             return false;
         }
@@ -12686,6 +14738,9 @@ public class MainWindow : Window
             FocusActiveTerminal();
             return true;
         }
+
+        if (HasActiveServerInputPromptOnCurrentLine())
+            return false;
 
         AppendCurrentGamePrompt(_mombotLastObservedGamePromptAnsi, _mombotLastObservedGamePromptPlain);
         return true;
@@ -12950,6 +15005,24 @@ public class MainWindow : Window
         FocusActiveTerminal();
     }
 
+    private async Task OnProxyForceStopAllScriptsAsync(bool includeSystemScripts)
+    {
+        await Task.Yield();
+
+        try
+        {
+            Core.ProxyGameOperations.ForceStopAllScripts(CurrentInterpreter, includeSystemScripts);
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("STOPALL Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+        RefreshStatusBar();
+        FocusActiveTerminal();
+    }
+
     private async Task OnProxyStopScriptAsync(int scriptId)
     {
         await Task.Yield();
@@ -13008,7 +15081,7 @@ public class MainWindow : Window
 
         try
         {
-            int bubbleSize = _embeddedGameConfig?.BubbleSize ?? 25;
+            int bubbleSize = _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize;
             Core.ProxyGameOperations.ExportBubbles(_sessionDb, path, bubbleSize);
             await ShowMessageAsync("Export Complete", $"Bubble data exported to:\n{path}");
         }
@@ -13360,7 +15433,9 @@ public class MainWindow : Window
         foreach (var path in _appPrefs.RecentFiles)
         {
             var p    = path;  // capture
-            var name = Path.GetFileName(p);
+            var name = Path.GetFileNameWithoutExtension(p);
+            if (string.IsNullOrWhiteSpace(name))
+                name = Path.GetFileName(p);
             var item = new MenuItem { Header = EscapeMenuHeaderText(name) };
             ToolTip.SetTip(item, p);
             item.Click += (_, _) => _ = OpenRecentAsync(p);
@@ -13370,6 +15445,7 @@ public class MainWindow : Window
             items.Add(new MenuItem { Header = "(none)", IsEnabled = false });
 
         _recentMenu.ItemsSource = items;
+        _viewClearRecents.IsEnabled = _appPrefs.RecentFiles.Count > 0;
         RefreshNativeAppMenu();
     }
 
@@ -13602,6 +15678,7 @@ public class MainWindow : Window
         _embeddedGameConfig = config;
         _embeddedGameName = resolvedGameName;
         ApplyProfile(BuildProfileFromConfig(config));
+        ApplyDebugLoggingPreferences();
         AddToRecentAndSave(newConfigPath);
         await SyncEmbeddedProxySettingsAsync();
 
@@ -13630,24 +15707,12 @@ public class MainWindow : Window
             !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
             gameConfig.Host != _state.Host ||
             gameConfig.Port != _state.Port ||
-            gameConfig.Sectors != _state.Sectors ||
-            gameConfig.UseLogin != _state.UseLogin ||
-            gameConfig.UseRLogin != _state.UseRLogin ||
-            !string.Equals(gameConfig.LoginScript, string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.LoginName, _state.LoginName, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.Password, _state.Password, StringComparison.Ordinal) ||
-            !string.Equals(gameConfig.GameLetter, _state.GameLetter, StringComparison.Ordinal);
+            gameConfig.Sectors != _state.Sectors;
 
         gameConfig.Name = gameName;
         gameConfig.Host = _state.Host;
         gameConfig.Port = _state.Port;
         gameConfig.Sectors = _state.Sectors;
-        gameConfig.UseLogin = _state.UseLogin;
-        gameConfig.UseRLogin = _state.UseRLogin;
-        gameConfig.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
-        gameConfig.LoginName = _state.LoginName;
-        gameConfig.Password = _state.Password;
-        gameConfig.GameLetter = _state.GameLetter;
 
         if (configChanged)
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
@@ -13672,19 +15737,22 @@ public class MainWindow : Window
             header.ListenPort = (ushort)gameConfig.ListenPort;
             headerDirty |= header.CommandChar != (gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar);
             header.CommandChar = gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar;
-            headerDirty |= header.UseLogin != _state.UseLogin;
-            header.UseLogin = _state.UseLogin;
-            headerDirty |= header.UseRLogin != _state.UseRLogin;
-            header.UseRLogin = _state.UseRLogin;
-            headerDirty |= header.LoginScript != (string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript);
-            header.LoginScript = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript;
-            headerDirty |= header.LoginName != _state.LoginName;
-            header.LoginName = _state.LoginName;
-            headerDirty |= header.Password != _state.Password;
-            header.Password = _state.Password;
-            char gameChar = string.IsNullOrWhiteSpace(_state.GameLetter) ? '\0' : char.ToUpperInvariant(_state.GameLetter[0]);
-            headerDirty |= header.Game != gameChar;
-            header.Game = gameChar;
+            string configLoginScript = string.IsNullOrWhiteSpace(gameConfig.LoginScript) ? "0_Login.cts" : gameConfig.LoginScript;
+            string configLoginName = gameConfig.LoginName ?? string.Empty;
+            string configPassword = gameConfig.Password ?? string.Empty;
+            char configGameChar = string.IsNullOrWhiteSpace(gameConfig.GameLetter) ? '\0' : char.ToUpperInvariant(gameConfig.GameLetter[0]);
+            headerDirty |= header.UseLogin != gameConfig.UseLogin;
+            header.UseLogin = gameConfig.UseLogin;
+            headerDirty |= header.UseRLogin != gameConfig.UseRLogin;
+            header.UseRLogin = gameConfig.UseRLogin;
+            headerDirty |= header.LoginScript != configLoginScript;
+            header.LoginScript = configLoginScript;
+            headerDirty |= header.LoginName != configLoginName;
+            header.LoginName = configLoginName;
+            headerDirty |= header.Password != configPassword;
+            header.Password = configPassword;
+            headerDirty |= header.Game != configGameChar;
+            header.Game = configGameChar;
             _sessionDb.ReplaceHeader(header);
             if (headerDirty)
                 _sessionDb.SaveDatabase();
@@ -13747,11 +15815,13 @@ public class MainWindow : Window
         var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
         if (storage == null) return;
 
-        var home  = await GetHomeFolderAsync(storage);
+        AppPaths.EnsureTwxproxyGamesDir();
+        var games = await storage.TryGetFolderFromPathAsync(AppPaths.TwxproxyGamesDir)
+            ?? await GetHomeFolderAsync(storage);
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title                  = "Open Game",
-            SuggestedStartLocation = home,
+            SuggestedStartLocation = games,
             AllowMultiple          = false,
             FileTypeFilter         =
             [

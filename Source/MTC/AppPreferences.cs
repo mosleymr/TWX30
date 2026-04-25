@@ -46,7 +46,7 @@ public class AppPreferences
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
     public bool PreparedVmEnabled { get; set; } = true;
-    public bool VmMetricsEnabled { get; set; } = true;
+    public bool VmMetricsEnabled { get; set; }
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }

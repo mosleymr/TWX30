@@ -48,7 +48,10 @@ namespace TWXC
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
                 Console.WriteLine("Usage: TWXC script [descfile]");
+                Console.WriteLine("   or: TWXC -compat script [descfile]");
                 Console.WriteLine("   or: TWXC --precompile script [outfile]");
+                Console.WriteLine("   or: TWXC --trim-includes script [descfile]");
+                Console.WriteLine("   or: TWXC --prune-bytecode script [descfile]");
                 Console.WriteLine();
                 Console.WriteLine("script     - Filename of the script to be compiled, this is usually a .ts file.");
                 Console.WriteLine("[descfile] - Optional filename of a description text file to be included in the");
@@ -56,7 +59,10 @@ namespace TWXC
                 Console.WriteLine("             Description files have no effect on the operation of the script,");
                 Console.WriteLine("             but may provide useful information to users.");
                 Console.WriteLine("[outfile]  - Optional output filename for --precompile. Defaults to .inc.");
+                Console.WriteLine("-compat / --compat - Compile with legacy non-pruned bytecode for parity/debugging.");
                 Console.WriteLine("--precompile - Produce a Pascal-compatible encrypted .inc include file.");
+                Console.WriteLine("--trim-includes - Experimentally compile only reachable labels from includes.");
+                Console.WriteLine("--prune-bytecode - Force post-compile unreachable-bytecode pruning (default behavior).");
                 Console.WriteLine();
                 Console.WriteLine("If the target .cts file already exists and compilation succeeds,");
                 Console.WriteLine("TWXC replaces the existing file with the newly compiled output.");
@@ -65,6 +71,9 @@ namespace TWXC
             }
 
             bool precompileMode = false;
+            bool trimIncludes = false;
+            bool compatMode = false;
+            bool pruneBytecode = true;
             var positionalArgs = new System.Collections.Generic.List<string>();
             foreach (string arg in args)
             {
@@ -72,6 +81,29 @@ namespace TWXC
                     || string.Equals(arg, "--encrypt-include", StringComparison.OrdinalIgnoreCase))
                 {
                     precompileMode = true;
+                    continue;
+                }
+
+                if (string.Equals(arg, "--trim-includes", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--tree-shake-includes", StringComparison.OrdinalIgnoreCase))
+                {
+                    trimIncludes = true;
+                    continue;
+                }
+
+                if (string.Equals(arg, "-compat", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--compat", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--legacy-bytecode", StringComparison.OrdinalIgnoreCase))
+                {
+                    compatMode = true;
+                    pruneBytecode = false;
+                    continue;
+                }
+
+                if (string.Equals(arg, "--prune-bytecode", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--trim-bytecode", StringComparison.OrdinalIgnoreCase))
+                {
+                    pruneBytecode = true;
                     continue;
                 }
 
@@ -116,10 +148,12 @@ namespace TWXC
 
             var scriptRef = new ScriptRef();
             var scriptCmp = new ScriptCmp(scriptRef);
+            scriptCmp.TrimIncludes = trimIncludes;
+            scriptCmp.PruneBytecode = pruneBytecode;
             bool compileOk = false;
             string fileOut = StripFileExtension(positionalArgs[0]);
             
-            Console.WriteLine($"Compiling script '{fileOut}' ...");
+            Console.WriteLine($"Compiling script '{fileOut}' ({(compatMode ? "compat" : "default-pruned")}) ...");
 
             try
             {

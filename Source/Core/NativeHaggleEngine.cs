@@ -1436,6 +1436,7 @@ public sealed class NativeHaggleEngine
         AlignText = status.AlignText,
         CurrentSector = status.CurrentSector,
         Turns = status.Turns,
+        UnlimitedGame = status.UnlimitedGame,
         Credits = status.Credits,
         Corp = status.Corp,
         ShipName = status.ShipName,

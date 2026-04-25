@@ -74,7 +74,7 @@ internal sealed class GameConfigWindow : Window
         _nativeHaggleCheck = CreateCheckBox(config.NativeHaggleEnabled, "Enable native haggle by default");
         _useCacheCheck = CreateCheckBox(config.UseCache, "Use database cache");
         _localEchoCheck = CreateCheckBox(config.LocalEcho, "Enable local echo");
-        _bubbleSizeBox = CreateTextBox(config.BubbleSize.ToString(), "25");
+        _bubbleSizeBox = CreateTextBox(config.BubbleSize.ToString(), TWXProxy.Core.ModBubble.DefaultMaxBubbleSize.ToString());
         _useLoginCheck = CreateCheckBox(config.UseLogin, "Run login script after connect");
         _useRLoginCheck = CreateCheckBox(config.UseRLogin, "Use RLogin handshake");
         _loginScriptBox = CreateTextBox(config.LoginScript, "0_Login.cts");
@@ -248,7 +248,7 @@ internal sealed class GameConfigWindow : Window
         next.NativeHaggleEnabled = _nativeHaggleCheck.IsChecked == true;
         next.UseCache = _useCacheCheck.IsChecked != false;
         next.LocalEcho = _localEchoCheck.IsChecked != false;
-        next.BubbleSize = ParseInt(_bubbleSizeBox.Text, 25, 1);
+        next.BubbleSize = ParseInt(_bubbleSizeBox.Text, TWXProxy.Core.ModBubble.DefaultMaxBubbleSize, 1);
         next.UseLogin = _useLoginCheck.IsChecked == true;
         next.UseRLogin = _useRLoginCheck.IsChecked == true;
         next.LoginScript = NormalizeText(_loginScriptBox.Text, "0_Login.cts");

@@ -58,6 +58,35 @@ namespace TWXProxy.Core
     /// </summary>
     public delegate string ScriptConstHandler(string[] indexes);
 
+    internal static class ScriptOwnerNormalizer
+    {
+        public static string Normalize(string? rawOwner)
+        {
+            if (string.IsNullOrWhiteSpace(rawOwner))
+                return string.Empty;
+
+            string owner = rawOwner.Trim();
+            if (owner.StartsWith("(") && owner.EndsWith(")") && owner.Length > 1)
+                owner = owner[1..^1].Trim();
+
+            const string ownedByPrefix = "owned by ";
+            if (owner.StartsWith(ownedByPrefix, StringComparison.OrdinalIgnoreCase))
+                owner = owner[ownedByPrefix.Length..].Trim();
+
+            return owner;
+        }
+    }
+
+    internal static class ScriptTimeFormatter
+    {
+        private const string CanonicalTimeFormat = "h:mm:ss tt";
+
+        public static string Format(DateTime value)
+        {
+            return value.ToString(CanonicalTimeFormat, CultureInfo.InvariantCulture).ToUpperInvariant();
+        }
+    }
+
     /// <summary>
     /// Base class for all command parameters processed within a script.
     /// These parameters are identified during script compilation and stored in a list within the
@@ -313,6 +342,7 @@ namespace TWXProxy.Core
             return upperName switch
             {
                 "SILENCECLIENTS" => "SETDEAFCLIENTS",
+                "QUICKSTATS" => "QUIKSTATS",
                 _ => upperName
             };
         }
@@ -514,6 +544,8 @@ namespace TWXProxy.Core
             AddCommand("DIAGMODE", 1, 1, CmdDiagMode, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("AUTOHAGGLE", 1, 1, CmdAutoHaggle, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("NATIVEBOT", 1, 1, CmdNativeBot, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("QUIKSTATS", 0, 0, CmdQuikStats, Array.Empty<ParamKind>(), ParamKind.Value);
+            AddCommand("GETCOURSEDIJKSTRA", 3, 3, CmdGetCourseDijkstra, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
         }
 
         private void BuildSysConstList()
@@ -645,7 +677,7 @@ namespace TWXProxy.Core
             });
             AddSysConstant("SECTOR.LIMPETS.OWNER", (indexes) => { // 45
                 var s = GetSectorByIndex(indexes);
-                return s?.MinesLimpet.Owner ?? string.Empty;
+                return ScriptOwnerNormalizer.Normalize(s?.MinesLimpet.Owner);
             });
             AddSysConstant("SECTOR.LIMPETS.QUANTITY", (indexes) => { // 46
                 var s = GetSectorByIndex(indexes);
@@ -654,7 +686,7 @@ namespace TWXProxy.Core
             AddSysConstant("SECTOR.MINES.OWNER", (indexes) => { // 47
                 // Armid mines (Type 1) owner
                 var s = GetSectorByIndex(indexes);
-                return s?.MinesArmid.Owner ?? string.Empty;
+                return ScriptOwnerNormalizer.Normalize(s?.MinesArmid.Owner);
             });
             AddSysConstant("SECTOR.MINES.QUANTITY", (indexes) => { // 48
                 // Pascal: Mines_Armid.Quantity only (limpets are separate via SECTOR.LIMPETS.QUANTITY)
@@ -749,7 +781,7 @@ namespace TWXProxy.Core
             // 61-64: Universe info
             AddSysConstant("SECTORS", (indexes) => GetSectors()); // 61
             AddSysConstant("STARDOCK", (indexes) => GetStarDock()); // 62
-            AddSysConstant("TIME", (indexes) => DateTime.Now.ToString("HH:mm:ss")); // 63
+            AddSysConstant("TIME", (indexes) => ScriptTimeFormatter.Format(DateTime.Now)); // 63
             AddSysConstant("TRUE", (indexes) => "1"); // 64
             
             // 65-67: Added in 2.04
@@ -787,6 +819,7 @@ namespace TWXProxy.Core
             });
             
             AddSysConstant("TURNS", (indexes) => GetCurrentTurns());
+            AddSysConstant("UNLIMITEDGAME", (indexes) => GetCurrentUnlimitedGame());
             AddSysConstant("CREDITS", (indexes) => GetCurrentCredits());
             AddSysConstant("FIGHTERS", (indexes) => GetCurrentFighters());
             AddSysConstant("SHIELDS", (indexes) => GetCurrentShields());
@@ -836,8 +869,6 @@ namespace TWXProxy.Core
             AddSysConstant("ACTIVEBOTDIR", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotDir ?? string.Empty);
             AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotScript ?? string.Empty);
             AddSysConstant("ACTIVEBOTNAME", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotName ?? string.Empty);
-            AddSysConstant("ISNATIVEBOT", (indexes) =>
-                IsAnyNativeBotRunning(GlobalModules.TWXServer as GameInstance) ? "1" : "0");
             AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
             AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
             AddSysConstant("TWGSVER", (indexes) => string.Empty);
@@ -850,6 +881,7 @@ namespace TWXProxy.Core
                 return warpCount == 1 ? "1" : "0";
             });
             AddSysConstant("CURRENTTURNS", (indexes) => GetCurrentTurns());
+            AddSysConstant("CURRENTUNLIMITEDGAME", (indexes) => GetCurrentUnlimitedGame());
             AddSysConstant("CURRENTCREDITS", (indexes) => GetCurrentCredits());
             AddSysConstant("CURRENTFIGHTERS", (indexes) => GetCurrentFighters());
             AddSysConstant("CURRENTSHIELDS", (indexes) => GetCurrentShields());
@@ -882,6 +914,7 @@ namespace TWXProxy.Core
             AddSysConstant("CURRENTQUICKSTATS", (indexes) => GetCurrentQuickStats());
             AddSysConstant("CURRENTQS", (indexes) => GetCurrentQs());
             AddSysConstant("CURRENTQSTAT", (indexes) => GetCurrentQStat());
+            AddSysConstant("CURRENTPROMPT", (indexes) => GetCurrentPrompt());
             AddSysConstant("LIBPARM", (indexes) => string.Empty);
             AddSysConstant("LIBPARMS", (indexes) => string.Empty);
             AddSysConstant("LIBPARMCOUNT", (indexes) => "0");
@@ -889,6 +922,9 @@ namespace TWXProxy.Core
             AddSysConstant("LIBSILENT", (indexes) => "0");
             AddSysConstant("LIBMULTILINE", (indexes) => "0");
             AddSysConstant("LIBMSG", (indexes) => string.Empty);
+            AddSysConstant("ISNATIVEBOT", (indexes) =>
+                IsAnyNativeBotRunning(GlobalModules.TWXServer as GameInstance) ? "1" : "0");
+            AddSysConstant("CURRENTHOLDS", (indexes) => GetCurrentTotalHolds());
             AddSysConstant("HAGGLE", (indexes) => GetNativeHaggle());
         }
         
@@ -988,6 +1024,8 @@ namespace TWXProxy.Core
         }
 
         private static string GetCurrentTurns() => GetCurrentShipStatus().Turns.ToString(CultureInfo.InvariantCulture);
+        private static string GetCurrentUnlimitedGame() => GetCurrentShipStatus().UnlimitedGame ? "1" : "0";
+        private static string GetCurrentPrompt() => GetCurrentGameVar("$PLAYER~CURRENT_PROMPT", "Undefined");
         private static string GetCurrentCredits() => GetCurrentShipStatus().Credits.ToString(CultureInfo.InvariantCulture);
         private static string GetCurrentFighters() => GetCurrentShipStatus().Fighters.ToString(CultureInfo.InvariantCulture);
         private static string GetCurrentShields() => GetCurrentShipStatus().Shields.ToString(CultureInfo.InvariantCulture);

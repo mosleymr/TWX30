@@ -340,7 +340,25 @@ namespace TWXProxy.Core
         private static CmdAction CmdGetCourse_Impl(object script, CmdParam[] parameters)
         {
             // CMD: getcourse var <from> <to>
-            // Calculate shortest path between two sectors
+            // Match TWX27 Pascal semantics exactly:
+            //   - return a path array that includes both start and destination
+            //   - choose ties using breadth-first discovery order / warp order
+            //   - return the scalar value as hop count (array length - 1)
+            return CmdGetCourseCore(parameters, scalarIsHopCount: true);
+        }
+
+        private static CmdAction CmdGetCourseDijkstra_Impl(object script, CmdParam[] parameters)
+        {
+            // CMD: getcoursedijkstra var <from> <to>
+            // Enhanced shortest-path variant:
+            //   - uses the generic Dijkstra pathfinder
+            //   - returns a path array that includes both start and destination
+            //   - returns the scalar value as the full array length
+            return CmdGetCourseDijkstraCore(parameters);
+        }
+
+        private static CmdAction CmdGetCourseCore(CmdParam[] parameters, bool scalarIsHopCount)
+        {
             
             int fromSector, toSector;
             ConvertToNumber(parameters[1].Value, out fromSector);
@@ -351,11 +369,10 @@ namespace TWXProxy.Core
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
-                var path = CalculatePath(fromSector, toSector);
-                // TWX getCourse historically exposes the full path length here,
-                // not the distance. Scripts expect course[1]..course[n] to cover
-                // the entire route including start and destination.
-                parameters[0].Value = Math.Max(0, path.Count).ToString();
+                var path = CalculatePascalCourse(fromSector, toSector);
+                parameters[0].Value = scalarIsHopCount
+                    ? (path.Count - 1).ToString()
+                    : path.Count.ToString();
 
                 if (path.Count > 0)
                 {
@@ -373,6 +390,35 @@ namespace TWXProxy.Core
                     emptyVarParam.SetArrayFromStrings(new List<string>());
             }
             
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdGetCourseDijkstraCore(CmdParam[] parameters)
+        {
+            int fromSector, toSector;
+            ConvertToNumber(parameters[1].Value, out fromSector);
+            ConvertToNumber(parameters[2].Value, out toSector);
+
+            if (parameters[0] is VarParam varParam &&
+                _activeDatabase != null &&
+                fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
+                toSector > 0 && toSector <= _activeDatabase.SectorCount)
+            {
+                var path = CalculatePath(fromSector, toSector);
+                parameters[0].Value = path.Count.ToString();
+
+                if (path.Count > 0)
+                    varParam.SetArrayFromStrings(path.Select(sector => sector.ToString()).ToList());
+                else
+                    varParam.SetArrayFromStrings(new List<string>());
+            }
+            else
+            {
+                parameters[0].Value = "0";
+                if (parameters[0] is VarParam emptyVarParam)
+                    emptyVarParam.SetArrayFromStrings(new List<string>());
+            }
+
             return CmdAction.None;
         }
 
@@ -542,6 +588,63 @@ namespace TWXProxy.Core
             
             // Use Dijkstra pathfinding with avoided sectors
             return _activeDatabase.CalculateShortestPath(fromSector, toSector, _avoidedSectors);
+        }
+
+        private static List<int> CalculatePascalCourse(int fromSector, int toSector)
+        {
+            if (_activeDatabase == null)
+                return new List<int>();
+
+            int sectorCount = _activeDatabase.SectorCount;
+            if (fromSector < 1 || fromSector > sectorCount || toSector < 1 || toSector > sectorCount)
+                return new List<int>();
+
+            // Match TWX27 PlotWarpCourse():
+            // - start sector is always allowed even if voided
+            // - search is breadth-first using the stored warp order
+            // - return path includes start and destination after reversal
+            var visited = new bool[sectorCount + 1];
+            var previous = new int[sectorCount + 1];
+            var queue = new Queue<int>();
+
+            visited[fromSector] = true;
+            queue.Enqueue(fromSector);
+
+            while (queue.Count > 0)
+            {
+                int focus = queue.Dequeue();
+                var sector = _activeDatabase.GetSector(focus);
+                if (sector == null)
+                    continue;
+
+                foreach (var warp in sector.Warp.Where(w => w > 0 && w <= sectorCount))
+                {
+                    int adjacent = warp;
+                    if (_avoidedSectors.Contains(adjacent) || visited[adjacent])
+                        continue;
+
+                    previous[adjacent] = focus;
+
+                    if (adjacent == toSector)
+                    {
+                        var result = new List<int>();
+                        int current = adjacent;
+                        while (current > 0)
+                        {
+                            result.Add(current);
+                            current = previous[current];
+                        }
+
+                        result.Reverse();
+                        return result;
+                    }
+
+                    visited[adjacent] = true;
+                    queue.Enqueue(adjacent);
+                }
+            }
+
+            return new List<int>();
         }
 
         #endregion

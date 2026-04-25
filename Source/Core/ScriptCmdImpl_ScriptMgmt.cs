@@ -141,8 +141,8 @@ namespace TWXProxy.Core
                         return CmdAction.None;
                     }
 
-                    GlobalModules.DebugLog($"[LOAD] Redirecting '{filename}' to native bot '{nativeConfig.Name}'\n");
-                    gameInstance.NativeBotActivator(nativeConfig, string.Empty);
+                    GlobalModules.DebugLog(
+                        $"[LOAD] Ignoring implicit native bot start for '{filename}'. Use Bot -> Start or NATIVEBOT START instead.\n");
                     return CmdAction.None;
                 }
 

@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'MTC' or '$(MSBuildProjectName)' == 'TWXC' or '$(MSBuildProjectName)' == 'TWXD'">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'TWXC' or '$(MSBuildProjectName)' == 'TWXD'">
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+</Project>

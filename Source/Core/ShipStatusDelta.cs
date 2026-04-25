@@ -6,6 +6,8 @@ namespace TWXProxy.Core;
 /// </summary>
 public sealed class ShipStatusDelta
 {
+    public int? CurrentSector { get; set; }
+
     public long? Credits { get; set; }
 
     public int? Fighters { get; set; }
@@ -45,6 +47,7 @@ public sealed class ShipStatusDelta
     public bool HasChanges()
     {
         return Credits.HasValue ||
+               CurrentSector.HasValue ||
                Fighters.HasValue || FightersDelta != 0 ||
                Shields.HasValue || ShieldsDelta != 0 ||
                TotalHolds.HasValue || TotalHoldsDelta != 0 ||
@@ -72,6 +75,9 @@ public sealed class ShipStatusDelta
 
     public void ApplyTo(ShipStatus status)
     {
+        if (CurrentSector.HasValue)
+            status.CurrentSector = ClampNonNegative(CurrentSector.Value);
+
         if (Credits.HasValue)
             status.Credits = Credits.Value;
 

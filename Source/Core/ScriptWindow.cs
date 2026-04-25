@@ -167,9 +167,9 @@ namespace TWXProxy.Core
         public object? Script { get; set; }
 
         // Menu options (Q, ?, +)
-        public bool OptionQ { get; set; }
-        public bool OptionHelp { get; set; }
-        public bool OptionPlus { get; set; }
+        public bool OptionQ { get; set; } = true;
+        public bool OptionHelp { get; set; } = true;
+        public bool OptionPlus { get; set; } = true;
 
         public void SetOptions(bool q, bool help, bool plus)
         {
@@ -202,6 +202,7 @@ namespace TWXProxy.Core
     public class MenuManager : ITWXMenu
     {
         private readonly Dictionary<string, MenuItem> _menus = new Dictionary<string, MenuItem>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<MenuItem> _menuItems = new();
         private Stack<MenuItem> _menuStack = new Stack<MenuItem>();
         private List<MenuItem>? _suspendedMenuStack;
         private readonly HashSet<int> _autoDeafClientIndices = new();
@@ -225,7 +226,9 @@ namespace TWXProxy.Core
                 Script = script
             };
 
-            _menus[name.ToUpper()] = menuItem;
+            _menuItems.Add(menuItem);
+            if (!_menus.ContainsKey(menuItem.Name))
+                _menus[menuItem.Name] = menuItem;
             return menuItem;
         }
 
@@ -304,12 +307,11 @@ namespace TWXProxy.Core
             bool stackChanged = false;
             bool suspendedChanged = false;
 
-            var removedMenus = _menus.Values
+            var removedMenuItems = _menuItems
                 .Where(menu => ReferenceEquals(menu.Script, script))
-                .Select(menu => menu.Name)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                .ToList();
 
-            if (removedMenus.Count == 0)
+            if (removedMenuItems.Count == 0)
             {
                 if (ReferenceEquals(_inputScript, script))
                 {
@@ -320,15 +322,21 @@ namespace TWXProxy.Core
                 return;
             }
 
-            foreach (string menuName in removedMenus)
-                _menus.Remove(menuName);
+            foreach (MenuItem removedMenu in removedMenuItems)
+                _menuItems.Remove(removedMenu);
+
+            _menus.Clear();
+            foreach (MenuItem menuItem in _menuItems)
+            {
+                if (!_menus.ContainsKey(menuItem.Name))
+                    _menus[menuItem.Name] = menuItem;
+            }
 
             if (_menuStack.Count > 0)
             {
                 var retainedStack = _menuStack
                     .Reverse()
-                    .Where(menu => !ReferenceEquals(menu.Script, script) &&
-                                   !removedMenus.Contains(menu.Name))
+                    .Where(menu => !ReferenceEquals(menu.Script, script))
                     .ToList();
 
                 stackChanged = retainedStack.Count != _menuStack.Count;
@@ -343,8 +351,7 @@ namespace TWXProxy.Core
             if (_suspendedMenuStack is { Count: > 0 })
             {
                 var retainedSuspended = _suspendedMenuStack
-                    .Where(menu => !ReferenceEquals(menu.Script, script) &&
-                                   !removedMenus.Contains(menu.Name))
+                    .Where(menu => !ReferenceEquals(menu.Script, script))
                     .ToList();
 
                 suspendedChanged = retainedSuspended.Count != _suspendedMenuStack.Count;
@@ -359,7 +366,7 @@ namespace TWXProxy.Core
             }
 
             GlobalModules.DebugLog(
-                $"[Menu] Removed {removedMenus.Count} menu item(s) for disposed script; " +
+                $"[Menu] Removed {removedMenuItems.Count} menu item(s) for disposed script; " +
                 $"stackChanged={stackChanged} suspendedChanged={suspendedChanged}\n");
 
             if (stackChanged)
@@ -504,17 +511,18 @@ namespace TWXProxy.Core
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
             
-            // Match Pascal menu behavior more closely: redraw the current line
-            // before showing the menu header instead of forcing a leading blank line.
-            string title = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
-            SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + "\r\n");
+            string title = menu.Description.Replace("\r", string.Empty).Replace("\n", string.Empty);
+            if (!string.IsNullOrWhiteSpace(title))
+                SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + ":\r\n");
+            else
+                SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r\n");
             
             // Get all menu items that have this menu as their parent
             // Note: Parent '0' means display in all menus (like root-level items)
             if (GlobalModules.DebugMode)
             {
                 GlobalModules.DebugLog($"[DEBUG] Checking children for menu '{menu.Name}' (parent='{menu.Parent}'):\n");
-                foreach (var m in _menus.Values)
+                foreach (var m in _menuItems)
                 {
                     bool parentMatch = m.Parent == menu.Name;
                     bool zeroMatch = m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN");
@@ -522,10 +530,10 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[DEBUG]   Item '{m.Name}' parent='{m.Parent}' hotkey='{m.Hotkey}': parentMatch={parentMatch}, zeroMatch={zeroMatch}, included={included}\n");
                 }
             }
-            var childItems = _menus.Values.Where(m => 
+            var childItems = _menuItems.Where(m => 
                 m.Parent == menu.Name || 
                 (m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN"))
-            ).ToList();
+            ).OrderBy(m => m.Hotkey).ToList();
             
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Found {childItems.Count} child items\n");
@@ -548,7 +556,7 @@ namespace TWXProxy.Core
             
             // Display standard menu options
             if (menu.OptionQ)
-                SendMenuMessage("Q - Terminate script\r\n");
+                SendMenuMessage((string.IsNullOrEmpty(menu.Parent) ? "Q - Terminate script" : "Q - Exit menu") + "\r\n");
             if (menu.OptionHelp)
                 SendMenuMessage("? - Command list\r\n");
             if (menu.OptionPlus)
@@ -612,7 +620,7 @@ namespace TWXProxy.Core
             
             // Find matching menu item
             // Include items with parent matching current menu, or parent '0' (global items)
-            var matchingItem = _menus.Values.FirstOrDefault(m => 
+            var matchingItem = _menuItems.FirstOrDefault(m => 
                 (m.Parent == currentMenu.Name || (m.Parent == "0" && (string.IsNullOrEmpty(currentMenu.Parent) || currentMenu.Name == "MAIN"))) && 
                 char.ToUpper(m.Hotkey) == upperKey);
             
@@ -623,7 +631,7 @@ namespace TWXProxy.Core
                 {
                     try
                     {
-                        bool hasChildMenu = _menus.Values.Any(m =>
+                        bool hasChildMenu = _menuItems.Any(m =>
                             string.Equals(m.Parent, matchingItem.Name, StringComparison.OrdinalIgnoreCase));
                         EchoMenuKey(upperKey);
 

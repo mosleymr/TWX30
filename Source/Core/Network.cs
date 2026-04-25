@@ -121,7 +121,7 @@ namespace TWXProxy.Core
         private readonly object _stateLock = new();
         private readonly MenuHandler _directMenuHandler;
         private readonly NativeHaggleEngine _nativeHaggle = new();
-        private readonly SemaphoreSlim _nativeHaggleSendLock = new(1, 1);
+        private readonly SemaphoreSlim _serverSendLock = new(1, 1);
         private readonly ModLog _log = new();
         private readonly ShipInfoParser _shipInfoParser = new();
         private readonly object _shipStatusLock = new();
@@ -176,6 +176,7 @@ namespace TWXProxy.Core
         public event EventHandler<CommandEventArgs>? CommandReceived;
         public event EventHandler? Connected;
         public event EventHandler<DisconnectEventArgs>? Disconnected;
+        public event EventHandler? ScriptStopped;
         public event EventHandler? ClearInputBufferRequested;
         public event Action<bool>? NativeHaggleChanged;
         public event Action? NativeHaggleStatsChanged;
@@ -252,6 +253,7 @@ namespace TWXProxy.Core
             _nativeHaggle.StatsChanged += () => NativeHaggleStatsChanged?.Invoke();
             _log.ProgramDir = GlobalModules.ProgramDir;
             _log.SetLogIdentity(gameName);
+            _log.ScriptLoggingScope = _interpreter;
             _log.SetPlaybackTargets(
                 (payload, token) => SendPlaybackToLocalAsync(payload, token),
                 message => SendMessageAsync(message).GetAwaiter().GetResult());
@@ -344,6 +346,7 @@ namespace TWXProxy.Core
             ShipClass = status.ShipClass,
             CurrentSector = status.CurrentSector,
             Turns = status.Turns,
+            UnlimitedGame = status.UnlimitedGame,
             TurnsPerWarp = status.TurnsPerWarp,
             TotalHolds = status.TotalHolds,
             FuelOre = status.FuelOre,
@@ -388,6 +391,7 @@ namespace TWXProxy.Core
         public void NotifyScriptStop()
         {
             _ = SendEchoMarkAsync(3);
+            ScriptStopped?.Invoke(this, EventArgs.Empty);
             if (_interpreter != null && _interpreter.Count == 0)
             {
                 lock (_clientLock)
@@ -1134,6 +1138,14 @@ namespace TWXProxy.Core
                         }
                         else
                         {
+                            if (session.MenuHandler.IsActive)
+                            {
+                                bool handled = await session.MenuHandler.HandleInputCharAsync(c);
+                                if (!handled)
+                                    await session.MenuHandler.HandleMenuCommandAsync(c);
+                                continue;
+                            }
+
                             bool scriptWaitingForInput = _interpreter?.IsAnyScriptWaitingForInput() ?? false;
                             bool handledByScriptMenu = false;
 
@@ -1144,7 +1156,7 @@ namespace TWXProxy.Core
                             {
                                 bool handled = await session.MenuHandler.HandleInputCharAsync(c);
 
-                                if (!handled && session.MenuHandler.CurrentMenu != MenuState.None && !scriptWaitingForInput)
+                                if (!handled && session.MenuHandler.CurrentMenu != MenuState.None)
                                 {
                                     await session.MenuHandler.HandleMenuCommandAsync(c);
                                 }
@@ -1405,8 +1417,19 @@ namespace TWXProxy.Core
         {
             if (_serverStream != null && _serverClient?.Connected == true)
             {
-                await _serverStream.WriteAsync(data, 0, data.Length);
-                await _serverStream.FlushAsync();
+                await _serverSendLock.WaitAsync();
+                try
+                {
+                    if (_serverStream != null && _serverClient?.Connected == true)
+                    {
+                        await _serverStream.WriteAsync(data, 0, data.Length);
+                        await _serverStream.FlushAsync();
+                    }
+                }
+                finally
+                {
+                    _serverSendLock.Release();
+                }
             }
         }
 
@@ -1584,6 +1607,11 @@ namespace TWXProxy.Core
             }
         }
 
+        public void RegisterOrUpdateBotConfig(BotConfig config)
+        {
+            RegisterBotConfig(config);
+        }
+
         public bool ToggleNativeHaggle()
         {
             return _nativeHaggle.Toggle();
@@ -1696,7 +1724,7 @@ namespace TWXProxy.Core
 
         private void SendNativeHaggleResponse(string response)
         {
-            _nativeHaggleSendLock.Wait();
+            _serverSendLock.Wait();
             try
             {
                 if (_serverStream == null || _serverClient?.Connected != true)
@@ -1716,7 +1744,7 @@ namespace TWXProxy.Core
             }
             finally
             {
-                _nativeHaggleSendLock.Release();
+                _serverSendLock.Release();
             }
         }
 
@@ -1940,7 +1968,7 @@ namespace TWXProxy.Core
             
             StopAsync().Wait();
             _cancellationSource?.Dispose();
-            _nativeHaggleSendLock.Dispose();
+            _serverSendLock.Dispose();
             _log.Dispose();
         }
     }

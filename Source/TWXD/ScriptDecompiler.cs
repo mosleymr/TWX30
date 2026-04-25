@@ -34,6 +34,8 @@ namespace TWXD
     public class ScriptDecompiler
     {
         public bool CompactWhitespace { get; set; }
+        public bool BackupExisting { get; set; }
+        public bool OverwriteExisting { get; set; }
 
         private sealed class ScriptSegment
         {
@@ -112,6 +114,29 @@ namespace TWXD
             return result.ToString();
         }
 
+        private static string GetUniqueFilePath(string fullPath)
+        {
+            if (!File.Exists(fullPath))
+                return fullPath;
+
+            string directory = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
+            string ext = Path.GetExtension(fullPath);
+            string baseName = Path.GetFileNameWithoutExtension(fullPath);
+
+            int counter = 1;
+            while (true)
+            {
+                string candidate = ext.Equals(".ts", StringComparison.OrdinalIgnoreCase)
+                    ? Path.Combine(directory, $"{baseName}{ext}_{counter}")
+                    : Path.Combine(directory, $"{baseName}_{counter}{ext}");
+
+                if (!File.Exists(candidate))
+                    return candidate;
+
+                counter++;
+            }
+        }
+
         public IReadOnlyList<string> DecompileToFile(string filename)
         {
             var generatedFiles = new List<string>();
@@ -186,12 +211,28 @@ namespace TWXD
                                 ? BuildIncludeRelativePath(group.Key)
                                 : BuildDuplicateIncludeRelativePath(baseName, variants.Count + 1);
                             fullPath = Path.Combine(outputDirectory, relativePath);
+                            if (File.Exists(fullPath))
+                            {
+                                if (OverwriteExisting)
+                                {
+                                    File.Delete(fullPath);
+                                }
+                                else if (BackupExisting)
+                                {
+                                    fullPath = GetUniqueFilePath(fullPath);
+                                    relativePath = Path.GetRelativePath(outputDirectory, fullPath)
+                                        .Replace(Path.DirectorySeparatorChar, '/')
+                                        .Replace(Path.AltDirectorySeparatorChar, '/');
+                                }
+                                else
+                                {
+                                    throw new IOException($"Refusing to overwrite existing include file '{fullPath}'. Use --overwrite-existing, --backup-existing, or a safe temp/default output.");
+                                }
+                            }
+
                             string? includeDirectory = Path.GetDirectoryName(fullPath);
                             if (!string.IsNullOrEmpty(includeDirectory))
                                 Directory.CreateDirectory(includeDirectory);
-
-                            if (File.Exists(fullPath))
-                                File.Delete(fullPath);
 
                             File.Move(tempPath, fullPath);
                             generatedFiles.Add(fullPath);

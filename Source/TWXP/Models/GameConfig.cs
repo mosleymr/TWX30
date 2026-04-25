@@ -22,7 +22,8 @@ public class GameConfig
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NativeHaggleMode { get; set; }
     public bool UseCache { get; set; } = true;
-    public int BubbleSize { get; set; } = 25;
+    public int BubbleSize { get; set; } = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
+    public bool BubbleSizeCustomized { get; set; }
     public bool LocalEcho { get; set; } = true;
     public bool LogEnabled { get; set; } = true;
     public bool LogAnsi { get; set; }

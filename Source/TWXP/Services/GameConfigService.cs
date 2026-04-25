@@ -114,8 +114,9 @@ public class GameConfigService : IGameConfigService
             config.ListenPort = 2300;
         if (config.Sectors <= 0)
             config.Sectors = 1000;
-        if (config.BubbleSize <= 0)
-            config.BubbleSize = 25;
+        if (config.BubbleSize <= 0 ||
+            (!config.BubbleSizeCustomized && config.BubbleSize == TWXProxy.Core.ModBubble.LegacyDefaultMaxBubbleSize))
+            config.BubbleSize = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
         if (config.ReconnectDelaySeconds <= 0)
             config.ReconnectDelaySeconds = 5;
         if (config.MaxPlayDelay <= 0)

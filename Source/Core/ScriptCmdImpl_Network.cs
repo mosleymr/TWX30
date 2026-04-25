@@ -9,6 +9,7 @@ the Free Software Foundation; either version 2 of the License, or
 
 using System;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace TWXProxy.Core
@@ -273,6 +274,138 @@ namespace TWXProxy.Core
 
             _activeGameInstance.SetNativeHaggleEnabled(enabled.Value);
             GlobalModules.DebugLog($"[AUTOHAGGLE] Script set native haggle {(enabled.Value ? "ON" : "OFF")}\n");
+            return CmdAction.None;
+        }
+
+        private static CmdAction CmdQuikStats_Impl(object script, CmdParam[] parameters)
+        {
+            if (_activeGameInstance == null)
+            {
+                Console.WriteLine("[Script] QUIKSTATS: No active game instance");
+                return CmdAction.None;
+            }
+
+            if (!_activeGameInstance.IsConnected)
+            {
+                Console.WriteLine("[Script] QUIKSTATS: Not connected to server");
+                return CmdAction.None;
+            }
+
+            using var updateReceived = new ManualResetEventSlim(false);
+            Action<ShipStatus>? statusHandler = null;
+            statusHandler = _ =>
+            {
+                updateReceived.Set();
+            };
+            static bool IsSlashTerminalLine(string line)
+            {
+                if (string.IsNullOrEmpty(line) || !line.Contains('\u00B3'))
+                    return false;
+
+                return (line.Contains("Aln ", StringComparison.Ordinal) && line.Contains("Exp ", StringComparison.Ordinal)) ||
+                       line.Contains("Ship ", StringComparison.Ordinal) ||
+                       (line.Contains("Exp ", StringComparison.Ordinal) && line.Contains("Corp ", StringComparison.Ordinal));
+            }
+            EventHandler<DataReceivedEventArgs>? serverHandler = null;
+            var serverLineBuf = new StringBuilder();
+            var serverAnsiLineBuf = new StringBuilder();
+            bool serverScriptInAnsi = false;
+
+            serverHandler = (_, e) =>
+            {
+                if (_activeGameInstance == null || updateReceived.IsSet)
+                    return;
+
+                string ansiChunk = AnsiCodes.PrepareScriptAnsiText(e.Text);
+                string plainChunk = AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
+
+                if (ansiChunk.Length == 0 && plainChunk.Length == 0)
+                    return;
+
+                serverLineBuf.Append(plainChunk);
+                serverAnsiLineBuf.Append(ansiChunk);
+
+                string buffered = serverLineBuf.ToString();
+                string bufferedAnsi = serverAnsiLineBuf.ToString();
+                int searchPos = 0;
+                int lastProcessedPos = 0;
+                int ansiSearchPos = 0;
+                int lastAnsiProcessedPos = 0;
+
+                while (searchPos < buffered.Length)
+                {
+                    int crPos = buffered.IndexOf('\r', searchPos);
+                    if (crPos == -1)
+                    {
+                        string remainder = buffered[lastProcessedPos..];
+                        string remainderAnsi = bufferedAnsi[lastAnsiProcessedPos..];
+
+                        serverLineBuf.Clear();
+                        serverLineBuf.Append(remainder);
+                        serverAnsiLineBuf.Clear();
+                        serverAnsiLineBuf.Append(remainderAnsi);
+
+                        if (!string.IsNullOrWhiteSpace(remainder))
+                        {
+                            string strippedRemainder = AnsiCodes.NormalizeTerminalText(remainder.TrimEnd('\r'));
+                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                            {
+                                _activeGameInstance.FeedShipStatusLine(strippedRemainder);
+                                if (IsSlashTerminalLine(strippedRemainder))
+                                    updateReceived.Set();
+                            }
+                        }
+
+                        return;
+                    }
+
+                    int ansiCrPos = bufferedAnsi.IndexOf('\r', ansiSearchPos);
+                    if (ansiCrPos == -1)
+                        break;
+
+                    string lineForScript = buffered[lastProcessedPos..crPos];
+                    string lineStripped = AnsiCodes.NormalizeTerminalText(lineForScript);
+                    if (!string.IsNullOrWhiteSpace(lineStripped))
+                    {
+                        _activeGameInstance.FeedShipStatusLine(lineStripped);
+                        if (IsSlashTerminalLine(lineStripped))
+                            updateReceived.Set();
+                    }
+
+                    searchPos = crPos + 1;
+                    lastProcessedPos = searchPos;
+                    ansiSearchPos = ansiCrPos + 1;
+                    lastAnsiProcessedPos = ansiSearchPos;
+                }
+
+                if (lastProcessedPos >= buffered.Length)
+                {
+                    serverLineBuf.Clear();
+                    serverAnsiLineBuf.Clear();
+                }
+            };
+
+            try
+            {
+                _activeGameInstance.ShipStatusUpdated += statusHandler;
+                _activeGameInstance.ServerDataReceived += serverHandler;
+                _activeGameInstance.SendToServerAsync(Encoding.ASCII.GetBytes("/")).GetAwaiter().GetResult();
+
+                if (!updateReceived.Wait(3000))
+                    GlobalModules.DebugLog("[QUIKSTATS] Timed out waiting for ship status refresh after '/'\n");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Script] QUIKSTATS error: {ex.Message}");
+            }
+            finally
+            {
+                if (statusHandler != null)
+                    _activeGameInstance.ShipStatusUpdated -= statusHandler;
+                if (serverHandler != null)
+                    _activeGameInstance.ServerDataReceived -= serverHandler;
+            }
+
             return CmdAction.None;
         }
 

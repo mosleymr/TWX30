@@ -49,6 +49,38 @@ public static class ProxyGameOperations
         return scripts;
     }
 
+    public static ScriptDebuggerSnapshot? GetScriptDebuggerSnapshot(ModInterpreter? interpreter, int scriptId)
+    {
+        if (interpreter == null)
+            return null;
+
+        var script = interpreter.GetScript(scriptId);
+        if (script == null)
+            return null;
+
+        return new ScriptDebuggerSnapshot(
+            scriptId,
+            script.ScriptName,
+            script.Compiler?.ScriptFile ?? script.LoadEventName ?? script.ScriptName,
+            script.System,
+            script.IsBot,
+            script.Paused,
+            script.PausedReason,
+            script.WaitingForInput,
+            script.WaitingForAuth,
+            script.WaitForActive,
+            script.KeypressMode,
+            script.SubStackDepth,
+            script.WaitText,
+            script.LastExecutionTicks,
+            script.LastExecutionCommandCount,
+            script.LastExecutionResolvedParamCount,
+            script.LastExecutionUsedPrepared,
+            script.LastExecutionCompleted,
+            script.GetVariableSnapshot(),
+            script.GetTriggerSnapshot());
+    }
+
     public static void LoadScript(ModInterpreter interpreter, string scriptPath)
     {
         if (interpreter == null)
@@ -96,9 +128,40 @@ public static class ProxyGameOperations
         return false;
     }
 
+    public static bool PauseScriptById(ModInterpreter? interpreter, int scriptId)
+    {
+        if (interpreter == null)
+            return false;
+
+        var script = interpreter.GetScript(scriptId);
+        if (script == null)
+            return false;
+
+        script.Pause();
+        return true;
+    }
+
+    public static bool ResumeScriptById(ModInterpreter? interpreter, int scriptId)
+    {
+        if (interpreter == null)
+            return false;
+
+        var script = interpreter.GetScript(scriptId);
+        if (script == null)
+            return false;
+
+        script.Resume();
+        return true;
+    }
+
     public static void StopAllScripts(ModInterpreter? interpreter, bool includeSystemScripts)
     {
         interpreter?.StopAll(includeSystemScripts);
+    }
+
+    public static void ForceStopAllScripts(ModInterpreter? interpreter, bool includeSystemScripts)
+    {
+        interpreter?.ForceStopAll(includeSystemScripts);
     }
 
     public static void ExportWarps(ModDatabase database, string outputPath)
@@ -210,7 +273,7 @@ public static class ProxyGameOperations
 
         var bubble = new ModBubble
         {
-            MaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : 25
+            MaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : ModBubble.DefaultMaxBubbleSize
         };
 
         var previousDatabase = GlobalModules.TWXDatabase;
@@ -221,6 +284,30 @@ public static class ProxyGameOperations
             GlobalModules.TWXBubble = bubble;
             using var writer = new StreamWriter(outputPath, false, Encoding.ASCII);
             bubble.ExportBubbles(writer);
+        }
+        finally
+        {
+            GlobalModules.TWXBubble = previousBubble;
+            GlobalModules.TWXDatabase = previousDatabase;
+        }
+    }
+
+    public static IReadOnlyList<BubbleInfo> GetBubbles(ModDatabase database, int maxBubbleSize)
+    {
+        EnsureOpenDatabase(database);
+
+        var bubble = new ModBubble
+        {
+            MaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : ModBubble.DefaultMaxBubbleSize
+        };
+
+        var previousDatabase = GlobalModules.TWXDatabase;
+        var previousBubble = GlobalModules.TWXBubble;
+        try
+        {
+            GlobalModules.TWXDatabase = database;
+            GlobalModules.TWXBubble = bubble;
+            return bubble.GetBubbles();
         }
         finally
         {

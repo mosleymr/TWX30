@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace TWXProxy.Core
@@ -58,15 +59,24 @@ namespace TWXProxy.Core
         private string _pendingPlanetProductName = string.Empty;
         private int _pendingPlanetProductQuantity;
 
+        private int _pendingSectorDefenseSector;
+        private int _pendingSectorDefenseQuantity;
+        private string _pendingSectorDefenseOwner = string.Empty;
+        private FighterType _pendingSectorDefenseType = FighterType.None;
+
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
         private int  _landListSector; // Sector the land list belongs to (_lastSector at entry)
+        private int  _lastLandListPlanetId;
+        private int  _activePlanetDetailId;
+        private int  _landListPlanetIndex;
+        private readonly List<bool> _pendingLandListShielded = new();
 
         // Warp-lane (Frontier Map) parsing state
         // Pascal: TModExtractor.ProcessWarpLine / FCurrentDisplay = dWarpLane
         // Activated by "The shortest path (" or "  TO > " lines from the f command.
         private bool _inWarpLane;        // Currently inside an FM path response
-        private int  _lastWarpLaneSect;  // Last sector parsed in the current path (0 = none yet)
+        private readonly StringBuilder _warpLaneBuffer = new();
         private bool _inNavPointDisplay; // Inside "<Set Course to NavPoint>" preview output
 
         // Commerce / port report parsing state
@@ -87,6 +97,10 @@ namespace TWXProxy.Core
         private bool _inPortCIM;          // Processing port CIM lines
         private bool _inWarpCIM;          // Processing warp CIM lines
         private bool _inFigScan;          // Processing deployed fighter scan lines
+        private readonly HashSet<int> _currentFigScanSectors = new();
+        private enum MineScanKind { None, Armid, Limpet }
+        private MineScanKind _inMineScanKind;
+        private readonly Dictionary<int, (int Quantity, string Owner)> _currentMineScanSectors = new();
         private bool _portCimBatchActive; // Tracking sectors observed in the current port CIM pass
         private readonly HashSet<int> _currentPortCimSectors = new();
 
@@ -162,9 +176,13 @@ namespace TWXProxy.Core
             _currentShip.Fighters = 0;
             _inLandList = false;
             _landListSector = 0;
+            _lastLandListPlanetId = 0;
+            _activePlanetDetailId = 0;
+            _landListPlanetIndex = 0;
+            _pendingLandListShielded.Clear();
             _dockArea = DockArea.None;
             _inWarpLane = false;
-            _lastWarpLaneSect = 0;
+            _warpLaneBuffer.Clear();
             _inNavPointDisplay = false;
             _inPortReport = false;
             _portReportSector = 0;
@@ -243,7 +261,7 @@ namespace TWXProxy.Core
         // "Sector   4497  ==>              0  Warps : 3    NavHaz :     0%    Anom : No"
         // "Sector ( 5528) ==>              0  Warps : 4    NavHaz :     0%    Anom : No"
         private static readonly Regex _rxDensityLine = new(
-            @"^\s*Sector\s+(?:\(\s*)?(\d+)(?:\s*\))?\s+==>\s+(\d+)\s+Warps\s*:\s*(\d+)\s+NavHaz\s*:\s*(\d+)%\s+Anom\s*:\s*(Yes|No)",
+            @"^\s*Sector\s+(?:\(\s*)?(\d+)(?:\s*\))?\s+==>\s+([\d,]+)\s+Warps\s*:\s*(\d+)\s+NavHaz\s*:\s*(\d+)%\s+Anom\s*:\s*(Yes|No)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // "Fighters: 2,316,238 (belong to your Corp) [Defensive]"
@@ -286,10 +304,34 @@ namespace TWXProxy.Core
         private static readonly Regex _rxLandEntry = new(
             @"^\s+<\s*(\d+)>\s+(\S[^<]*?)\s{3,}", RegexOptions.Compiled);
 
+        private static readonly Regex _rxLandEntryDetail = new(
+            @"^\s+<\s*(\d+)>\s+(\S.*?\S?)\s{2,}(?:Level\s+(\d+)|None)\s+\S+\s+(\S+)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetOwnedBy = new(
+            @"^\s*Owned by:\s+(.+?)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // Planet detail header (inside a planet):
         // "Planet #55 in sector 12545: ."
         private static readonly Regex _rxPlanetDetail = new(
             @"^Planet\s+#(\d+)\s+in\s+sector\s+(\d+)\s*:\s*(.*)", RegexOptions.Compiled);
+
+        private static readonly Regex _rxPlanetClaimedBy = new(
+            @"^Claimed by:\s+(.+?)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetCitadelLevel = new(
+            @"^Planet has a level\s+(\d+)\s+Citadel",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetInventoryLine = new(
+            @"^(Fuel Ore|Organics|Equipment)\s+[\d,]+\s+\d+\s+[\d,]+\s+([\d,]+)\s+[\d,]+\s+[\d,]+$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxPlanetInventoryFighters = new(
+            @"^Fighters\s+N/A\s+\d+\s+[\d,]+\s+([\d,]+)\s+[\d,]+\s+[\d,]+$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxTraderLine = new(
             @"^\s*Traders\s+:\s+(.+?),\s+w/\s+([\d,]+)\s+ftrs",
@@ -375,8 +417,28 @@ namespace TWXProxy.Core
             @"^\s*(\d+)\s+(\S+)\s+(Personal|Corp(?:orate)?|Corporate)\s+(Defensive|Toll|Offensive)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxMineScanSector = new(
+            @"^\s*(\d+)\s+([\d,]+)\s+(Personal|Corp(?:orate)?|Corporate)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxScanTotal = new(
+            @"^\s*[\d,]+\s+Total\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Regex _rxSectorDefenderPrompt = new(
             @"^How many fighters do you want defending this sector\?\s+([\d,]+)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxSectorDefenderOwnerPrompt = new(
+            @"^Should these be \(C\)orporate fighters or \(P\)ersonal fighters\?\s*([CP])\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxSectorDefenderTypePrompt = new(
+            @"^Should they be \(D\)efensive, \(O\)ffensive or Charge a \(T\)oll \?\s*([DOT])\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxSectorDefenderSuccess = new(
+            @"^Done\.\s+You have\s+[\d,]+\s+fighter\(s\)\s+in close support\.\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxFighterHitReport = new(
@@ -478,6 +540,9 @@ namespace TWXProxy.Core
                 }
             }
 
+            if (TryProcessSectorDefenseStatus(db, trimmedLine))
+                return;
+
             if (TryProcessWatcherState(db, rawLine, trimmedLine))
                 return;
 
@@ -487,9 +552,12 @@ namespace TWXProxy.Core
             // before calling Trim() or the spaces are lost and the match always fails.
             if (rawLine.StartsWith("The shortest path (") || rawLine.StartsWith("  TO > "))
             {
+                if (_inWarpLane && _warpLaneBuffer.Length > 0)
+                    FinalizeWarpLane(db);
+
                 GlobalModules.DebugLog($"[AutoRecorder] WarpLane STARTED: '{rawLine}'\n");
-                _inWarpLane       = true;
-                _lastWarpLaneSect = 0;
+                _inWarpLane = true;
+                _warpLaneBuffer.Clear();
                 return;
             }
 
@@ -499,11 +567,24 @@ namespace TWXProxy.Core
                 // ': ' is the ZTM re-query prompt — it signals end of the current route.
                 if (trimmedLine == ":")
                 {
-                    _inWarpLane       = false;
-                    _lastWarpLaneSect = 0;
+                    FinalizeWarpLane(db);
                     return;
                 }
-                ProcessWarpLaneLine(db, rawLine);
+
+                if (trimmedLine.StartsWith("*** Error - No route", StringComparison.OrdinalIgnoreCase))
+                {
+                    ResetWarpLane();
+                    return;
+                }
+
+                if (rawLine.Contains('>') &&
+                    trimmedLine.Length > 0 &&
+                    (char.IsDigit(trimmedLine[0]) || trimmedLine[0] == '('))
+                {
+                    if (_warpLaneBuffer.Length > 0)
+                        _warpLaneBuffer.Append(' ');
+                    _warpLaneBuffer.Append(rawLine.Trim());
+                }
                 return;
             }
 
@@ -547,9 +628,14 @@ namespace TWXProxy.Core
             {
                 _inLandList   = true;
                 _landListSector = _currentSector;
+                _lastLandListPlanetId = 0;
+                _landListPlanetIndex = 0;
+                _pendingLandListShielded.Clear();
                 var sector = GetOrCreate(db, _landListSector);
                 if (sector != null)
                 {
+                    foreach (string planetName in sector.PlanetNames)
+                        _pendingLandListShielded.Add(planetName.Contains("(Shielded)", StringComparison.OrdinalIgnoreCase));
                     sector.PlanetNames.Clear();
                     db.SaveSector(sector);
                 }
@@ -561,8 +647,35 @@ namespace TWXProxy.Core
                 var le = _rxLandEntry.Match(rawLine);
                 if (le.Success && int.TryParse(le.Groups[1].Value, out int planetId))
                 {
+                    _landListPlanetIndex++;
                     string pname = le.Groups[2].Value.Trim();
-                    db.SavePlanet(new Planet { Id = planetId, Name = pname, LastSector = _landListSector });
+                    var planet = new Planet
+                    {
+                        Id = planetId,
+                        Name = pname,
+                        LastSector = _landListSector,
+                        ObservedOrder = _landListPlanetIndex,
+                        Shielded = _landListPlanetIndex <= _pendingLandListShielded.Count
+                            ? _pendingLandListShielded[_landListPlanetIndex - 1]
+                            : null
+                    };
+
+                    var details = _rxLandEntryDetail.Match(rawLine);
+                    if (details.Success)
+                    {
+                        if (details.Groups[3].Success &&
+                            int.TryParse(details.Groups[3].Value, out int level) &&
+                            level > 0)
+                        {
+                            planet.Level = level;
+                        }
+
+                        if (details.Groups[4].Success)
+                            planet.Fighters = ParseDisplayedFighterCount(details.Groups[4].Value, 0);
+                    }
+
+                    db.SaveOrAttachPlanetByOrder(planet);
+                    _lastLandListPlanetId = planetId;
                     var sector = GetOrCreate(db, _landListSector);
                     if (sector != null && !string.IsNullOrEmpty(pname))
                     {
@@ -572,13 +685,27 @@ namespace TWXProxy.Core
                     return;
                 }
                 // Owned-by continuation lines belong to the active land list.
-                if (trimmedLine.StartsWith("Owned by:", StringComparison.OrdinalIgnoreCase))
+                var ownedBy = _rxPlanetOwnedBy.Match(trimmedLine);
+                if (ownedBy.Success)
+                {
+                    if (_lastLandListPlanetId > 0)
+                    {
+                        db.SavePlanet(new Planet
+                        {
+                            Id = _lastLandListPlanetId,
+                            Owner = ownedBy.Groups[1].Value.Trim()
+                        });
+                    }
                     return;
+                }
 
                 // Any other line ends the list; fall through so the new display/prompt
                 // can be parsed normally instead of being swallowed by stale list state.
                 _inLandList = false;
                 _landListSector = 0;
+                _lastLandListPlanetId = 0;
+                _landListPlanetIndex = 0;
+                _pendingLandListShielded.Clear();
                 if (string.IsNullOrWhiteSpace(trimmedLine))
                     return;
 
@@ -594,7 +721,66 @@ namespace TWXProxy.Core
                     && int.TryParse(pd.Groups[2].Value, out int psector))
                 {
                     string pname = pd.Groups[3].Value.Trim();
-                    db.SavePlanet(new Planet { Id = pid, Name = pname, LastSector = psector });
+                    _activePlanetDetailId = pid;
+                    db.SaveOrAttachPlanetByDetail(new Planet { Id = pid, Name = pname, LastSector = psector });
+                    return;
+                }
+            }
+
+            if (_activePlanetDetailId > 0)
+            {
+                var claimedBy = _rxPlanetClaimedBy.Match(trimmedLine);
+                if (claimedBy.Success)
+                {
+                    db.SavePlanet(new Planet
+                    {
+                        Id = _activePlanetDetailId,
+                        Owner = claimedBy.Groups[1].Value.Trim()
+                    });
+                    return;
+                }
+
+                var citadel = _rxPlanetCitadelLevel.Match(trimmedLine);
+                if (citadel.Success)
+                {
+                    db.SavePlanet(new Planet
+                    {
+                        Id = _activePlanetDetailId,
+                        Level = ParseCommaInt(citadel.Groups[1].Value)
+                    });
+                    return;
+                }
+
+                var product = _rxPlanetInventoryLine.Match(trimmedLine);
+                if (product.Success)
+                {
+                    int amount = ParseCommaInt(product.Groups[2].Value);
+                    var planet = new Planet { Id = _activePlanetDetailId };
+                    switch (product.Groups[1].Value.Trim().ToLowerInvariant())
+                    {
+                        case "fuel ore":
+                            planet.FuelOre = amount;
+                            break;
+                        case "organics":
+                            planet.Organics = amount;
+                            break;
+                        case "equipment":
+                            planet.Equipment = amount;
+                            break;
+                    }
+
+                    db.SavePlanet(planet);
+                    return;
+                }
+
+                var fighters = _rxPlanetInventoryFighters.Match(trimmedLine);
+                if (fighters.Success)
+                {
+                    db.SavePlanet(new Planet
+                    {
+                        Id = _activePlanetDetailId,
+                        Fighters = ParseCommaInt(fighters.Groups[1].Value)
+                    });
                     return;
                 }
             }
@@ -603,7 +789,7 @@ namespace TWXProxy.Core
             if (trimmedLine.StartsWith("Relative Density Scan", StringComparison.OrdinalIgnoreCase) ||
                 rawLine.StartsWith("                          Relative Density Scan", StringComparison.OrdinalIgnoreCase))
             {
-                _inWarpLane    = false;
+                FinalizeWarpLane(db);
                 _inDensityScan = true;
                 _inHoloScan    = false;
                 _densityFromSector = _currentSector;
@@ -617,7 +803,7 @@ namespace TWXProxy.Core
                 // the "Sector  : NNNN" lines in the scan body do NOT update
                 // _currentSector (those sectors are neighbors, NOT the player's
                 // current position).
-                _inWarpLane    = false;
+                FinalizeWarpLane(db);
                 _inHoloScan    = true;
                 _inDensityScan = false;
                 GlobalModules.DebugLog($"[AutoRecorder] HoloScan started, currentSector={_currentSector}\n");
@@ -649,7 +835,7 @@ namespace TWXProxy.Core
                 var m = _rxSector.Match(rawLine);
                 if (m.Success && int.TryParse(m.Groups[1].Value, out int sn))
                 {
-                    if (_inHoloScan)
+                    if (_activeSectorDisplaySector > 0 && _activeSectorDisplaySector != sn)
                         FinalizeActiveSectorDisplay(db);
 
                     GlobalModules.DebugLog($"[AutoRecorder] lastSector {_lastSector}→{sn} inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport}\n");
@@ -659,8 +845,7 @@ namespace TWXProxy.Core
                     if (_inWarpLane)
                     {
                         GlobalModules.DebugLog($"[AutoRecorder] WarpLane cleared by Sector display\n");
-                        _inWarpLane       = false;
-                        _lastWarpLaneSect = 0;
+                        FinalizeWarpLane(db);
                     }
                     _lastSector = sn;
                     _sectorPos  = SectorPos.None;
@@ -820,9 +1005,37 @@ namespace TWXProxy.Core
                 return;
             }
 
+            if (trimmedLine.Contains("Deployed  Mine  Scan", StringComparison.OrdinalIgnoreCase))
+            {
+                BeginMineScan(db, MineScanKind.Armid);
+                return;
+            }
+
+            if (trimmedLine.Contains("Deployed  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
+            {
+                BeginMineScan(db, MineScanKind.Limpet);
+                return;
+            }
+
+            if (trimmedLine.Contains("Activated  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_inMineScanKind != MineScanKind.None)
+                    CompleteMineScan(db, "activated limpet scan");
+                _inMineScanKind = MineScanKind.None;
+                _currentMineScanSectors.Clear();
+                return;
+            }
+
+            if (_inMineScanKind != MineScanKind.None)
+            {
+                ProcessMineScanLine(db, trimmedLine);
+                return;
+            }
+
             if (trimmedLine.Contains("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
             {
                 _inFigScan = true;
+                _currentFigScanSectors.Clear();
                 return;
             }
 
@@ -865,7 +1078,7 @@ namespace TWXProxy.Core
                 var m = _rxPort.Match(rawLine);
                 if (m.Success)
                 {
-                    ParsePortLine(db, _lastSector, m);
+                    ParsePortLine(db, _lastSector, rawLine, m);
                     _sectorPos = SectorPos.Ports;
                     return;
                 }
@@ -940,7 +1153,11 @@ namespace TWXProxy.Core
                 }
             }
 
-            // Planets (first line): record name in PlanetNames on the sector
+            // Planets (first line): replace the sector's last visible planet list
+            // with the newest sighting. This keeps repeated previews from appending
+            // stale entries forever while still preserving legitimate duplicate names
+            // when the current display itself shows multiple planets with the same
+            // visible name.
             {
                 var m = _rxPlanets.Match(trimmedLine);
                 if (m.Success)
@@ -948,6 +1165,7 @@ namespace TWXProxy.Core
                     var sector = GetOrCreate(db, _lastSector);
                     if (sector != null)
                     {
+                        sector.PlanetNames.Clear();
                         string name = m.Groups[1].Value.Trim();
                         if (!string.IsNullOrEmpty(name))
                             sector.PlanetNames.Add(name);
@@ -1040,8 +1258,7 @@ namespace TWXProxy.Core
                  trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal)))
             {
                 GlobalModules.DebugLog("[AutoRecorder] WarpLane cleared by prompt\n");
-                _inWarpLane = false;
-                _lastWarpLaneSect = 0;
+                FinalizeWarpLane(db);
             }
 
             if (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal))
@@ -1063,6 +1280,7 @@ namespace TWXProxy.Core
 
             if (trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal))
             {
+                FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db, preservePortReport: _inPortReport || _pendingPortReportSectorOverride > 0);
 
                 var mc = _rxComputerSector.Match(trimmedLine);
@@ -1116,10 +1334,7 @@ namespace TWXProxy.Core
             if (trimmedLine == ":")
             {
                 if (_inWarpLane)
-                {
-                    _inWarpLane = false;
-                    _lastWarpLaneSect = 0;
-                }
+                    FinalizeWarpLane(db);
 
                 _inCIM = true;
                 _inPortCIM = false;
@@ -1587,29 +1802,84 @@ namespace TWXProxy.Core
             return normalized.Count == 0 ? string.Empty : new string(normalized.ToArray());
         }
 
-        private void FinalizeActiveSectorDisplay(ModDatabase? db)
+        private void SyncSectorPlanetSightings(ModDatabase db, SectorData sector)
         {
-            if (db == null || !_inHoloScan || _lastSector <= 0)
+            if (sector.Number <= 0)
                 return;
 
-            var sector = GetOrCreate(db, _lastSector);
+            db.SyncSectorPlanetSightings(
+                sector.Number,
+                sector.PlanetNames.Select(name => ParseSectorPlanetSighting(sector, name)).ToList());
+        }
+
+        private static Planet ParseSectorPlanetSighting(SectorData sector, string raw)
+        {
+            return new Planet
+            {
+                Name = NormalizeSectorPlanetName(raw),
+                Shielded = raw.Contains("(Shielded)", StringComparison.OrdinalIgnoreCase),
+                Owner = GetInferredPlanetOwner(sector)
+            };
+        }
+
+        private static string GetInferredPlanetOwner(SectorData sector)
+        {
+            if (sector.Fighters == null || sector.Fighters.Quantity <= 0)
+                return string.Empty;
+
+            string owner = sector.Fighters.Owner?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(owner))
+                return string.Empty;
+
+            if (owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase) ||
+                owner.Equals("yours", StringComparison.OrdinalIgnoreCase) ||
+                owner.Contains("your Corp", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            return $"{owner} [inferred]";
+        }
+
+        private static string NormalizeSectorPlanetName(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return ".";
+
+            string normalized = raw.Trim();
+            normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
+            normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+            normalized = Regex.Replace(normalized, @"\s*\(Shielded\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+            normalized = Regex.Replace(normalized, @"^\([A-Z]\)\s*", string.Empty, RegexOptions.IgnoreCase);
+            normalized = normalized.Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;
+        }
+
+        private void FinalizeActiveSectorDisplay(ModDatabase? db)
+        {
+            if (db == null || _activeSectorDisplaySector <= 0)
+                return;
+
+            int sectorNumber = _activeSectorDisplaySector;
+            var sector = GetOrCreate(db, sectorNumber);
             if (sector == null)
                 return;
 
-            if (_activeSectorDisplaySector == _lastSector &&
-                !_activeSectorDisplaySawPort &&
+            if (!_activeSectorDisplaySawPort &&
                 _activeSectorDisplayHadCachedPort)
             {
                 sector.SectorPort = null;
-                GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {_lastSector} after live sector display showed no port\n");
+                GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {sectorNumber} after live sector display showed no port\n");
             }
+
+            SyncSectorPlanetSightings(db, sector);
 
             // TWX27 SectorCompleted() promotes any completed sector display,
             // including probe displays that only emitted a header, to etHolo.
             sector.Explored = ExploreType.Yes;
             sector.Update = DateTime.Now;
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] SectorCompleted sector={_lastSector}\n");
+            GlobalModules.DebugLog($"[AutoRecorder] SectorCompleted sector={sectorNumber}\n");
             _activeSectorDisplaySector = 0;
             _activeSectorDisplaySawPort = false;
             _activeSectorDisplayHadCachedPort = false;
@@ -1617,8 +1887,10 @@ namespace TWXProxy.Core
 
         private void ResetPromptDisplays(ModDatabase? db, bool preservePortReport = false)
         {
-            _inWarpLane = false;
-            _lastWarpLaneSect = 0;
+            if (db != null)
+                FinalizeWarpLane(db);
+            else
+                ResetWarpLane();
 
             if (db != null && _densityFromSector > 0 && _densityScanSectors.Count > 0)
                 CommitDensityWarps(db, _densityFromSector, _densityScanSectors);
@@ -1638,13 +1910,25 @@ namespace TWXProxy.Core
             _inCIM = false;
             _inPortCIM = false;
             _inWarpCIM = false;
+            if (_inFigScan && db != null)
+                CompleteFigScan(db, "prompt");
             _inFigScan = false;
+            _currentFigScanSectors.Clear();
+            if (_inMineScanKind != MineScanKind.None && db != null)
+                CompleteMineScan(db, "prompt");
+            _inMineScanKind = MineScanKind.None;
+            _currentMineScanSectors.Clear();
             ResetPendingPlanetFighterTransfer();
+            ResetPendingSectorDefense();
             _portCimBatchActive = false;
             _currentPortCimSectors.Clear();
             _inNavPointDisplay = false;
             _inLandList = false;
             _landListSector = 0;
+            _lastLandListPlanetId = 0;
+            _activePlanetDetailId = 0;
+            _landListPlanetIndex = 0;
+            _pendingLandListShielded.Clear();
             _activeSectorDisplaySector = 0;
             _activeSectorDisplaySawPort = false;
             _activeSectorDisplayHadCachedPort = false;
@@ -1758,6 +2042,7 @@ namespace TWXProxy.Core
             if (line.StartsWith("No fighters deployed", StringComparison.OrdinalIgnoreCase))
             {
                 ResetFigDatabase(db);
+                _currentFigScanSectors.Clear();
                 _inFigScan = false;
                 return;
             }
@@ -1772,6 +2057,8 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
 
+            _currentFigScanSectors.Add(sectorNum);
+
             sector.Fighters.Owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
                 ? "yours"
                 : "belong to your Corp";
@@ -1785,30 +2072,181 @@ namespace TWXProxy.Core
                     : FighterType.Offensive;
 
             db.SaveSector(sector);
+            AddFigMarker(db, sectorNum);
             GlobalModules.DebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={sector.Fighters.Quantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+        }
+
+        private void CompleteFigScan(ModDatabase db, string reason)
+        {
+            ReconcileFriendlyFightersFromScan(db, _currentFigScanSectors, reason);
         }
 
         private static void ResetFigDatabase(ModDatabase db)
         {
+            ReconcileFriendlyFightersFromScan(db, new HashSet<int>(), "no fighters deployed");
+        }
+
+        private static void ReconcileFriendlyFightersFromScan(ModDatabase db, IReadOnlySet<int> scannedSectors, string reason)
+        {
             int maxSector = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
-            for (int i = 11; i <= maxSector; i++)
+            int clearedFriendlyFighters = 0;
+            int removedFigMarkers = 0;
+
+            for (int i = 1; i <= maxSector; i++)
             {
-                if (i == db.DBHeader.StarDock)
+                if (scannedSectors.Contains(i))
                     continue;
 
                 var sector = db.GetSector(i);
                 if (sector == null)
                     continue;
 
-                if (sector.Fighters.Owner.Equals("yours", StringComparison.OrdinalIgnoreCase) ||
-                    sector.Fighters.Owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase))
+                bool hadFriendlyFighters = sector.Fighters.Quantity > 0 && IsFriendlyFighterOwner(sector.Fighters.Owner);
+                bool hadFigMarker = IsSectorVarTrue(db, i, "FIGSEC");
+
+                if (hadFriendlyFighters)
                 {
                     sector.Fighters.Owner = string.Empty;
                     sector.Fighters.FigType = FighterType.None;
                     sector.Fighters.Quantity = 0;
                     db.SaveSector(sector);
+                    clearedFriendlyFighters++;
+                }
+
+                if (hadFigMarker)
+                {
+                    RemoveFigMarker(db, i);
+                    removedFigMarkers++;
                 }
             }
+
+            db.SetSectorVar(2, "FIG_COUNT", scannedSectors.Count.ToString());
+            GlobalModules.DebugLog(
+                $"[AutoRecorder] Fig scan complete: seen={scannedSectors.Count} clearedFriendlyFigSectors={clearedFriendlyFighters} removedFigMarkers={removedFigMarkers} reason={reason}\n");
+        }
+
+        private void BeginMineScan(ModDatabase db, MineScanKind kind)
+        {
+            if (_inMineScanKind != MineScanKind.None)
+                CompleteMineScan(db, "new mine scan");
+
+            _inMineScanKind = kind;
+            _currentMineScanSectors.Clear();
+            GlobalModules.DebugLog($"[AutoRecorder] Mine scan begin kind={kind}\n");
+        }
+
+        private void ProcessMineScanLine(ModDatabase db, string line)
+        {
+            if (line.StartsWith("No ", StringComparison.OrdinalIgnoreCase) &&
+                line.Contains("mines deployed", StringComparison.OrdinalIgnoreCase))
+            {
+                CompleteMineScan(db, "none deployed");
+                return;
+            }
+
+            if (_rxScanTotal.IsMatch(line))
+            {
+                CompleteMineScan(db, "total");
+                return;
+            }
+
+            var m = _rxMineScanSector.Match(line);
+            if (!m.Success)
+                return;
+
+            if (!int.TryParse(m.Groups[1].Value, out int sectorNum) || sectorNum <= 0)
+                return;
+
+            int quantity = ParseCommaInt(m.Groups[2].Value);
+            string owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
+                ? "yours"
+                : "belong to your Corp";
+
+            _currentMineScanSectors[sectorNum] = (quantity, owner);
+
+            var sector = GetOrCreate(db, sectorNum);
+            if (sector == null) return;
+
+            ApplyMineScanToSector(sector, _inMineScanKind, quantity, owner);
+            db.SaveSector(sector);
+            GlobalModules.DebugLog($"[AutoRecorder] Mine scan sector={sectorNum} kind={_inMineScanKind} qty={quantity} owner={owner}\n");
+        }
+
+        private void CompleteMineScan(ModDatabase db, string reason)
+        {
+            MineScanKind kind = _inMineScanKind;
+            if (kind == MineScanKind.None)
+                return;
+
+            ReconcileFriendlyMinesFromScan(db, kind, _currentMineScanSectors, reason);
+            _inMineScanKind = MineScanKind.None;
+            _currentMineScanSectors.Clear();
+        }
+
+        private static void ReconcileFriendlyMinesFromScan(
+            ModDatabase db,
+            MineScanKind kind,
+            IReadOnlyDictionary<int, (int Quantity, string Owner)> scannedSectors,
+            string reason)
+        {
+            int maxSector = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
+            int clearedFriendlyMineSectors = 0;
+
+            foreach (var pair in scannedSectors)
+            {
+                int sectorNum = pair.Key;
+                var entry = pair.Value;
+                var sector = GetOrCreate(db, sectorNum);
+                if (sector == null)
+                    continue;
+
+                ApplyMineScanToSector(sector, kind, entry.Quantity, entry.Owner);
+                db.SaveSector(sector);
+            }
+
+            for (int i = 1; i <= maxSector; i++)
+            {
+                if (scannedSectors.ContainsKey(i))
+                    continue;
+
+                var sector = db.GetSector(i);
+                if (sector == null)
+                    continue;
+
+                SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
+                if (mines.Quantity <= 0 || !IsFriendlyDeploymentOwner(mines.Owner))
+                    continue;
+
+                mines.Quantity = 0;
+                mines.Owner = string.Empty;
+                db.SaveSector(sector);
+                clearedFriendlyMineSectors++;
+            }
+
+            GlobalModules.DebugLog(
+                $"[AutoRecorder] Mine scan complete: kind={kind} seen={scannedSectors.Count} clearedFriendlyMineSectors={clearedFriendlyMineSectors} reason={reason}\n");
+        }
+
+        private static void ApplyMineScanToSector(SectorData sector, MineScanKind kind, int quantity, string owner)
+        {
+            SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
+            mines.Quantity = quantity;
+            mines.Owner = owner;
+        }
+
+        private static bool IsFriendlyFighterOwner(string owner)
+        {
+            return IsFriendlyDeploymentOwner(owner);
+        }
+
+        private static bool IsFriendlyDeploymentOwner(string owner)
+        {
+            if (string.IsNullOrWhiteSpace(owner))
+                return false;
+
+            return owner.Equals("yours", StringComparison.OrdinalIgnoreCase) ||
+                   owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase) ||
+                   owner.Contains("your Corp", StringComparison.OrdinalIgnoreCase);
         }
 
         private static int ParseDisplayedFighterCount(string text, int existingValue)
@@ -1846,16 +2284,76 @@ namespace TWXProxy.Core
         {
             int sectorNum = _currentSector > 0 ? _currentSector : _lastSector;
             if (sectorNum <= 0)
+            {
+                ResetPendingSectorDefense();
                 return;
+            }
 
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null)
+            {
+                ResetPendingSectorDefense();
                 return;
+            }
 
             int quantity = ParseCommaInt(m.Groups[1].Value);
-            sector.Fighters.Quantity = quantity;
-            db.SaveSector(sector);
+            _pendingSectorDefenseSector = sectorNum;
+            _pendingSectorDefenseQuantity = Math.Max(0, quantity);
+            _pendingSectorDefenseOwner = string.Empty;
+            _pendingSectorDefenseType = FighterType.None;
+
+            if (_pendingSectorDefenseQuantity <= 0)
+                ResetPendingSectorDefense();
+
             GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={quantity}\n");
+        }
+
+        private bool TryProcessSectorDefenseStatus(ModDatabase db, string trimmedLine)
+        {
+            var owner = _rxSectorDefenderOwnerPrompt.Match(trimmedLine);
+            if (owner.Success)
+            {
+                _pendingSectorDefenseOwner = owner.Groups[1].Value.Equals("P", StringComparison.OrdinalIgnoreCase)
+                    ? "yours"
+                    : "belong to your Corp";
+                return true;
+            }
+
+            var figType = _rxSectorDefenderTypePrompt.Match(trimmedLine);
+            if (figType.Success)
+            {
+                _pendingSectorDefenseType = figType.Groups[1].Value.ToUpperInvariant() switch
+                {
+                    "D" => FighterType.Defensive,
+                    "T" => FighterType.Toll,
+                    _ => FighterType.Offensive,
+                };
+                return true;
+            }
+
+            if (_rxSectorDefenderSuccess.IsMatch(trimmedLine))
+            {
+                if (_pendingSectorDefenseSector > 0 && _pendingSectorDefenseQuantity > 0)
+                {
+                    var sector = GetOrCreate(db, _pendingSectorDefenseSector);
+                    if (sector != null)
+                    {
+                        sector.Fighters.Quantity = _pendingSectorDefenseQuantity;
+                        if (!string.IsNullOrWhiteSpace(_pendingSectorDefenseOwner))
+                            sector.Fighters.Owner = _pendingSectorDefenseOwner;
+                        if (_pendingSectorDefenseType != FighterType.None)
+                            sector.Fighters.FigType = _pendingSectorDefenseType;
+                        db.SaveSector(sector);
+                        AddFigMarker(db, _pendingSectorDefenseSector);
+                        GlobalModules.DebugLog($"[AutoRecorder] Sector {_pendingSectorDefenseSector} defense drop committed qty={_pendingSectorDefenseQuantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+                    }
+                }
+
+                ResetPendingSectorDefense();
+                return true;
+            }
+
+            return false;
         }
 
         private static int ParseCommaInt(string text)
@@ -2036,6 +2534,14 @@ namespace TWXProxy.Core
             _pendingPlanetProductTransferKind = PlanetProductTransferKind.None;
             _pendingPlanetProductName = string.Empty;
             _pendingPlanetProductQuantity = 0;
+        }
+
+        private void ResetPendingSectorDefense()
+        {
+            _pendingSectorDefenseSector = 0;
+            _pendingSectorDefenseQuantity = 0;
+            _pendingSectorDefenseOwner = string.Empty;
+            _pendingSectorDefenseType = FighterType.None;
         }
 
         private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
@@ -2323,8 +2829,7 @@ namespace TWXProxy.Core
             if (sector == null) return 0;
 
             // Density value (Pascal: GetParameter(X,4))
-            if (int.TryParse(m.Groups[2].Value, out int density))
-                sector.Density = density;
+            sector.Density = ParseCommaInt(m.Groups[2].Value);
 
             // Warp count (Pascal: GetParameter(X,7)) — count only, not the Warp[] array
             if (byte.TryParse(m.Groups[3].Value, out byte wc))
@@ -2405,13 +2910,18 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");
         }
 
-        private void ParsePortLine(ModDatabase db, int sectorNum, Match m)
+        private void ParsePortLine(ModDatabase db, int sectorNum, string rawLine, Match m)
         {
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
 
             if (_activeSectorDisplaySector == sectorNum)
                 _activeSectorDisplaySawPort = true;
+
+            bool navPointPreview = _inNavPointDisplay;
+            ushort previousDock = db.DBHeader.StarDock;
+            ushort previousAlpha = db.DBHeader.AlphaCentauri;
+            ushort previousRylos = db.DBHeader.Rylos;
 
             sector.SectorPort ??= new Port();
             sector.SectorPort.Name = m.Groups[1].Value.Trim();
@@ -2445,6 +2955,39 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
+
+            if (navPointPreview)
+            {
+                bool navShowsStarDock =
+                    sector.SectorPort.ClassIndex == 9 &&
+                    rawLine.IndexOf("(StarDock)", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool navShowsAlpha =
+                    sector.SectorPort.ClassIndex == 0 &&
+                    string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase);
+                bool navShowsRylos =
+                    sector.SectorPort.ClassIndex == 0 &&
+                    string.Equals(sector.SectorPort.Name, "Rylos", StringComparison.OrdinalIgnoreCase);
+
+                if (!navShowsStarDock)
+                    db.DBHeader.StarDock = previousDock;
+                if (!navShowsAlpha)
+                    db.DBHeader.AlphaCentauri = previousAlpha;
+                if (!navShowsRylos)
+                    db.DBHeader.Rylos = previousRylos;
+
+                if (navShowsStarDock)
+                {
+                    string dockSector = sectorNum.ToString();
+                    ScriptRef.SetCurrentGameVar("$STARDOCK", dockSector);
+                    ScriptRef.SetCurrentGameVar("$MAP~STARDOCK", dockSector);
+                    ScriptRef.SetCurrentGameVar("$MAP~stardock", dockSector);
+                    ScriptRef.SetCurrentGameVar("$BOT~STARDOCK", dockSector);
+                    ScriptRef.SetCurrentGameVar("$stardock", dockSector);
+                    ScriptRef.OnVariableSaved?.Invoke("$STARDOCK", dockSector);
+                    GlobalModules.DebugLog($"[AutoRecorder] NavPoint confirmed Stardock in sector {sectorNum}\n");
+                }
+            }
+
             if (sector.SectorPort.ClassIndex == 9 ||
                 (sector.SectorPort.ClassIndex == 0 &&
                  (string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase) ||
@@ -2575,7 +3118,7 @@ namespace TWXProxy.Core
 
             if (!int.TryParse(m.Groups[1].Value, out int qty)) return;
             string mineType = m.Groups[2].Value;
-            string owner    = m.Groups[3].Value.Trim();
+            string owner    = NormalizeOwnerText(m.Groups[3].Value);
 
             if (mineType.Equals("Armid", StringComparison.OrdinalIgnoreCase))
             {
@@ -2592,6 +3135,22 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} mines {mineType}={qty} owner={owner}\n");
         }
 
+        private static string NormalizeOwnerText(string? rawOwner)
+        {
+            if (string.IsNullOrWhiteSpace(rawOwner))
+                return string.Empty;
+
+            string owner = rawOwner.Trim();
+            if (owner.StartsWith("(") && owner.EndsWith(")") && owner.Length > 1)
+                owner = owner[1..^1].Trim();
+
+            const string ownedByPrefix = "owned by ";
+            if (owner.StartsWith(ownedByPrefix, StringComparison.OrdinalIgnoreCase))
+                owner = owner[ownedByPrefix.Length..].Trim();
+
+            return owner;
+        }
+
         // ── Warp-lane helpers ──────────────────────────────────────────────────
 
         /// <summary>
@@ -2599,13 +3158,33 @@ namespace TWXProxy.Core
         /// Parses a line of sector numbers separated by " >" and writes each
         /// consecutive pair as a warp connection (one direction only, matching Pascal).
         /// </summary>
-        private void ProcessWarpLaneLine(ModDatabase db, string line)
+        private void FinalizeWarpLane(ModDatabase? db)
+        {
+            if (db != null && _warpLaneBuffer.Length > 0)
+            {
+                string route = _warpLaneBuffer.ToString();
+                ProcessWarpLaneRoute(db, route);
+                GlobalModules.DebugLog($"[AutoRecorder] WarpLane finalized: '{route}'\n");
+            }
+
+            ResetWarpLane();
+        }
+
+        private void ResetWarpLane()
+        {
+            _inWarpLane = false;
+            _warpLaneBuffer.Clear();
+        }
+
+        private static void ProcessWarpLaneRoute(ModDatabase db, string line)
         {
             // Pascal: StripChar(Line, ')'); StripChar(Line, '(');
             string stripped = line.Replace("(", "").Replace(")", "");
 
             // Pascal: Split(Line, Sectors, ' >') — split on the two-char delimiter " >"
             string[] tokens = stripped.Split(new[] { " >" }, StringSplitOptions.RemoveEmptyEntries);
+
+            int lastWarpLaneSect = 0;
 
             foreach (string token in tokens)
             {
@@ -2617,10 +3196,10 @@ namespace TWXProxy.Core
                 if (!int.TryParse(token.Trim(), out int curSect)) return;
                 if (curSect < 1 || (db.SectorCount > 0 && curSect > db.SectorCount)) return;
 
-                if (_lastWarpLaneSect > 0)
-                    AddWarpToSector(db, _lastWarpLaneSect, curSect);
+                if (lastWarpLaneSect > 0)
+                    AddWarpToSector(db, lastWarpLaneSect, curSect);
 
-                _lastWarpLaneSect = curSect;
+                lastWarpLaneSect = curSect;
             }
         }
 

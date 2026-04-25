@@ -32,11 +32,6 @@ internal sealed record mombotCommandSpec(
     IReadOnlyList<string>? Aliases = null,
     bool ServerInteractive = false);
 
-internal sealed record mombotAliasSpec(
-    string Alias,
-    string Canonical,
-    string Reason);
-
 internal static class mombotCatalog
 {
     private static readonly ReadOnlyCollection<string> _categories = Array.AsReadOnly(new[]
@@ -170,37 +165,6 @@ internal static class mombotCatalog
             new mombotCommandSpec("htorp", mombotCommandKind.Module, "commands/offense/htorp.cts", "Holotorp command surface.", new[] { "holotorp" }, ServerInteractive: true),
         });
 
-    private static readonly ReadOnlyCollection<mombotAliasSpec> _initialAliases =
-        Array.AsReadOnly(new[]
-        {
-            new mombotAliasSpec("?", "help", "Compatibility alias for help."),
-            new mombotAliasSpec("l", "land", "Short-form alias for land."),
-            new mombotAliasSpec("x", "xport", "Short-form alias for xport."),
-            new mombotAliasSpec("qss", "status", "USER_INTERFACE normalizes qss to status."),
-            new mombotAliasSpec("d", "dep", "Short-form alias for dep."),
-            new mombotAliasSpec("w", "with", "Short-form alias for with."),
-            new mombotAliasSpec("k", "keep", "Short-form alias for keep."),
-            new mombotAliasSpec("sec", "sector", "Short-form sector alias."),
-            new mombotAliasSpec("sect", "sector", "Short-form sector alias."),
-            new mombotAliasSpec("secto", "sector", "Short-form sector alias."),
-            new mombotAliasSpec("exit", "xenter", "Compatibility alias for xenter."),
-            new mombotAliasSpec("cn", "cn9", "USER_INTERFACE normalizes cn to cn9."),
-            new mombotAliasSpec("emx", "reset", "USER_INTERFACE normalizes emx to reset."),
-            new mombotAliasSpec("finder", "find", "Compatibility alias for find."),
-            new mombotAliasSpec("pinfo", "pscan", "USER_INTERFACE normalizes pinfo to pscan."),
-            new mombotAliasSpec("parm", "param", "Short-form alias for param."),
-            new mombotAliasSpec("params", "param", "Plural alias for param."),
-            new mombotAliasSpec("parms", "param", "Plural alias for param."),
-            new mombotAliasSpec("shipstore", "storeship", "USER_INTERFACE normalizes shipstore to storeship."),
-            new mombotAliasSpec("holotorp", "htorp", "Compatibility alias for htorp."),
-            new mombotAliasSpec("logout", "logoff", "Compatibility alias for logoff/logout surface."),
-            new mombotAliasSpec("loguo", "logoff", "Tolerate the shorthand typo from planning notes."),
-            new mombotAliasSpec("m", "mow", "Travel alias for mow."),
-            new mombotAliasSpec("p", "pwarp", "Travel alias for pwarp."),
-            new mombotAliasSpec("t", "twarp", "Travel alias for twarp."),
-            new mombotAliasSpec("b", "bwarp", "Travel alias for bwarp."),
-        });
-
     public static IReadOnlyList<string> Categories => _categories;
     public static IReadOnlyList<string> Types => _types;
     public static IReadOnlyList<mombotInternalCommandGroup> InternalCommandGroups => _internalCommandGroups;
@@ -208,24 +172,6 @@ internal static class mombotCatalog
     public static IReadOnlyList<mombotHotkeyBinding> DefaultHotkeys => _defaultHotkeys;
     public static IReadOnlyList<mombotMenuSurface> MenuSurfaces => _menuSurfaces;
     public static IReadOnlyList<mombotCommandSpec> InitialCommands => _initialCommands;
-    public static IReadOnlyList<mombotAliasSpec> InitialAliases => _initialAliases;
-
-    public static IReadOnlyList<string> BuildDefaultAliasConfigLines()
-    {
-        return _initialAliases
-            .Select(item => $"{item.Alias}={item.Canonical}")
-            .ToArray();
-    }
-
-    public static IReadOnlyDictionary<string, string> BuildDefaultAliasMap()
-    {
-        return _initialAliases
-            .GroupBy(item => item.Alias, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Last().Canonical,
-                StringComparer.OrdinalIgnoreCase);
-    }
 
     public static IReadOnlyList<string> AllInternalCommands =>
         _internalCommandGroups

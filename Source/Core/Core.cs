@@ -169,6 +169,9 @@ namespace TWXProxy.Core
         bool NotifyPlayCuts { get; set; }
         int MaxPlayDelay { get; set; }
         bool PlayingLog { get; }
+        object? ScriptLoggingScope { get; set; }
+        void SetScriptLoggingEnabled(object source, bool enabled);
+        void ClearScriptLoggingOverride(object source);
     }
 
     public interface IModAuth

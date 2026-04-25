@@ -19,7 +19,7 @@ namespace MTC;
 internal class ScriptPopupWindow : Window
 {
     private readonly ScrollViewer _scroll;
-    private readonly StackPanel   _lines;
+    private readonly TextBlock    _content;
 
     private static readonly IBrush BgWin  = new SolidColorBrush(Color.FromRgb(0x08, 0x0c, 0x18));
     private static readonly IBrush FgText = new SolidColorBrush(Color.FromRgb(0xd8, 0xe8, 0xff));
@@ -43,10 +43,17 @@ internal class ScriptPopupWindow : Window
         FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
         FontSize   = 12;
 
-        _lines = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(6, 4, 6, 4) };
+        _content = new TextBlock
+        {
+            Foreground = FgText,
+            TextWrapping = TextWrapping.NoWrap,
+            Margin = new Thickness(6, 4, 6, 4),
+            FontFamily = FontFamily,
+            FontSize = FontSize,
+        };
         _scroll = new ScrollViewer
         {
-            Content            = _lines,
+            Content            = _content,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
         };
@@ -65,27 +72,7 @@ internal class ScriptPopupWindow : Window
     {
         // Strip ANSI escape sequences the script may have embedded
         var clean = AnsiEscape.Replace(rawContent, string.Empty);
-        var parts = clean.Split('*');
-
-        _lines.Children.Clear();
-        foreach (var part in parts)
-        {
-            if (string.IsNullOrEmpty(part))
-            {
-                // Blank separator — render as a small spacer, not a full line-height gap
-                _lines.Children.Add(new Border { Height = 4 });
-            }
-            else
-            {
-                _lines.Children.Add(new TextBlock
-                {
-                    Text         = part,
-                    Foreground   = FgText,
-                    TextWrapping = TextWrapping.NoWrap,
-                    Margin       = new Thickness(0, 0, 0, 0),
-                });
-            }
-        }
+        _content.Text = clean.Replace("*", Environment.NewLine);
         _scroll.ScrollToEnd();
     }
 }

@@ -29,6 +29,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -53,7 +54,7 @@ namespace TWXProxy.Core
 
     public static class DatabaseConstants
     {
-        public const int DatabaseVersion = 11;
+        public const int DatabaseVersion = 14;
         public static readonly string[] DayNames = { "Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat" };
     }
 
@@ -134,6 +135,14 @@ namespace TWXProxy.Core
         public string Name { get; set; } = string.Empty;
         /// <summary>Sector number where this planet was last seen (0 = unknown).</summary>
         public int LastSector { get; set; }
+        public int ObservedOrder { get; set; }
+        public string Owner { get; set; } = string.Empty;
+        public int Level { get; set; }
+        public bool? Shielded { get; set; }
+        public int Fighters { get; set; } = -1;
+        public int FuelOre { get; set; } = -1;
+        public int Organics { get; set; } = -1;
+        public int Equipment { get; set; } = -1;
     }
 
     /// <summary>
@@ -223,6 +232,7 @@ namespace TWXProxy.Core
         private readonly ReaderWriterLockSlim _headerLock;
         private Timer? _autoSaveTimer;
         private readonly object _saveLock = new();
+        private int _nextProvisionalPlanetId = -1;
         private NetworkManager? _networkManager;
         private GameInstance? _gameInstance;
 
@@ -384,6 +394,7 @@ namespace TWXProxy.Core
             _databaseName = Path.GetFileNameWithoutExtension(filename);
             _sectors.Clear();
             _planets.Clear();
+            ResetNextProvisionalPlanetId();
             for (int i = 1; i <= header.Sectors; i++)
             {
                 var sector = new SectorData
@@ -434,6 +445,8 @@ namespace TWXProxy.Core
                 StopAutoSave();
                 SaveDatabase();
                 _sectors.Clear();
+                _planets.Clear();
+                ResetNextProvisionalPlanetId();
                 _isOpen = false;
             }
         }
@@ -449,6 +462,7 @@ namespace TWXProxy.Core
 
             _sectors.Clear();
             _planets.Clear();
+            ResetNextProvisionalPlanetId();
             _maxSectorSeen = 0;
 
             int count = _header.Sectors;
@@ -494,6 +508,15 @@ namespace TWXProxy.Core
                             writer.Write(planet.Id);
                             writer.Write(planet.Name);
                             writer.Write(planet.LastSector);
+                            writer.Write(planet.ObservedOrder);
+                            writer.Write(planet.Owner);
+                            writer.Write(planet.Level);
+                            writer.Write(planet.Shielded.HasValue);
+                            writer.Write(planet.Shielded.GetValueOrDefault());
+                            writer.Write(planet.Fighters);
+                            writer.Write(planet.FuelOre);
+                            writer.Write(planet.Organics);
+                            writer.Write(planet.Equipment);
                         }
                     }
 
@@ -537,6 +560,11 @@ namespace TWXProxy.Core
                     // Rebuild WarpsIn index from persisted Warp[] data.
                     // Pascal computes warp-ins on demand by scanning all sectors;
                     // we pre-build a cache here so WARPINCOUNT is O(1).
+                    // Clear persisted reverse links first so stale entries do not
+                    // survive when a sector's outbound warp list changes.
+                    foreach (var s in _sectors.Values)
+                        s.WarpsIn.Clear();
+
                     foreach (var s in _sectors.Values)
                     {
                         ushort origin = (ushort)s.Number;
@@ -557,8 +585,29 @@ namespace TWXProxy.Core
                             int    id         = reader.ReadInt32();
                             string name       = reader.ReadString();
                             int    lastSector = reader.ReadInt32();
-                            _planets[id] = new Planet { Id = id, Name = name, LastSector = lastSector };
+                            var planet = new Planet { Id = id, Name = name, LastSector = lastSector };
+                            if (_header.Version >= 12 && reader.BaseStream.Position < reader.BaseStream.Length)
+                            {
+                                if (_header.Version >= 14)
+                                    planet.ObservedOrder = reader.ReadInt32();
+                                planet.Owner = reader.ReadString();
+                                planet.Level = reader.ReadInt32();
+                                if (_header.Version >= 13)
+                                {
+                                    bool hasShielded = reader.ReadBoolean();
+                                    bool shielded = reader.ReadBoolean();
+                                    planet.Shielded = hasShielded ? shielded : null;
+                                }
+                                planet.Fighters = reader.ReadInt32();
+                                planet.FuelOre = reader.ReadInt32();
+                                planet.Organics = reader.ReadInt32();
+                                planet.Equipment = reader.ReadInt32();
+                            }
+
+                            _planets[id] = planet;
                         }
+
+                        ResetNextProvisionalPlanetId();
                     }
                 }
             }
@@ -722,13 +771,166 @@ namespace TWXProxy.Core
         /// <summary>Record or update a planet by its registry ID.</summary>
         public void SavePlanet(Planet planet)
         {
-            if (planet.Id > 0)
-                _planets[planet.Id] = planet;
+            if (planet.Id != 0)
+            {
+                _planets.AddOrUpdate(
+                    planet.Id,
+                    _ => ClonePlanet(planet),
+                    (_, existing) => MergePlanet(existing, planet));
+            }
+        }
+
+        public Planet SaveOrAttachPlanetByOrder(Planet planet)
+        {
+            if (planet.LastSector <= 0)
+            {
+                SavePlanet(planet);
+                return planet;
+            }
+
+            if (planet.ObservedOrder > 0 && planet.Id > 0)
+            {
+                Planet? provisional = _planets.Values
+                    .Where(p => p.Id < 0 && p.LastSector == planet.LastSector && p.ObservedOrder == planet.ObservedOrder)
+                    .OrderBy(p => p.Id)
+                    .FirstOrDefault();
+
+                if (provisional != null)
+                {
+                    Planet merged = MergePlanet(provisional, planet);
+                    merged.Id = planet.Id;
+                    _planets.TryRemove(provisional.Id, out _);
+                    _planets.AddOrUpdate(merged.Id, _ => merged, (_, existing) => MergePlanet(existing, merged));
+                    return merged;
+                }
+            }
+
+            SavePlanet(planet);
+            return GetPlanet(planet.Id) ?? planet;
+        }
+
+        public Planet SaveOrAttachPlanetByDetail(Planet planet)
+        {
+            if (planet.Id <= 0)
+            {
+                SavePlanet(planet);
+                return planet;
+            }
+
+            if (_planets.ContainsKey(planet.Id))
+            {
+                SavePlanet(planet);
+                return GetPlanet(planet.Id) ?? planet;
+            }
+
+            if (planet.LastSector > 0)
+            {
+                var provisionalCandidates = _planets.Values
+                    .Where(p => p.Id < 0 && p.LastSector == planet.LastSector)
+                    .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                    .ThenBy(p => p.Id)
+                    .ToList();
+
+                Planet? match = null;
+                string normalizedIncomingName = NormalizePlanetNameForMatch(planet.Name);
+                if (!string.IsNullOrWhiteSpace(normalizedIncomingName))
+                {
+                    var sameName = provisionalCandidates
+                        .Where(p => string.Equals(
+                            NormalizePlanetNameForMatch(p.Name),
+                            normalizedIncomingName,
+                            StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    if (sameName.Count == 1)
+                        match = sameName[0];
+                }
+
+                if (match == null && provisionalCandidates.Count == 1)
+                    match = provisionalCandidates[0];
+
+                if (match != null)
+                {
+                    Planet merged = MergePlanet(match, planet);
+                    merged.Id = planet.Id;
+                    _planets.TryRemove(match.Id, out _);
+                    _planets.AddOrUpdate(merged.Id, _ => merged, (_, existing) => MergePlanet(existing, merged));
+                    return merged;
+                }
+            }
+
+            SavePlanet(planet);
+            return GetPlanet(planet.Id) ?? planet;
+        }
+
+        public void SyncSectorPlanetSightings(int sectorNumber, IReadOnlyList<Planet> sightings)
+        {
+            if (sectorNumber <= 0)
+                return;
+
+            var normalizedSightings = sightings
+                .Select((planet, index) => new Planet
+                {
+                    Id = planet.Id,
+                    Name = planet.Name,
+                    LastSector = sectorNumber,
+                    ObservedOrder = index + 1,
+                    Shielded = planet.Shielded
+                })
+                .ToList();
+
+            var knownPlanets = _planets.Values
+                .Where(p => p.Id > 0 && p.LastSector == sectorNumber)
+                .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                .ThenBy(p => p.Id)
+                .ToList();
+
+            var provisionalPlanets = _planets.Values
+                .Where(p => p.Id < 0 && p.LastSector == sectorNumber)
+                .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                .ThenBy(p => p.Id)
+                .ToList();
+
+            int matchedKnown = Math.Min(knownPlanets.Count, normalizedSightings.Count);
+            for (int i = 0; i < matchedKnown; i++)
+            {
+                Planet update = ClonePlanet(normalizedSightings[i]);
+                update.Id = knownPlanets[i].Id;
+                SavePlanet(update);
+            }
+
+            int reusedProvisionals = 0;
+            for (int i = matchedKnown; i < normalizedSightings.Count; i++)
+            {
+                Planet sighting = ClonePlanet(normalizedSightings[i]);
+                if (reusedProvisionals < provisionalPlanets.Count)
+                {
+                    sighting.Id = provisionalPlanets[reusedProvisionals].Id;
+                    reusedProvisionals++;
+                }
+                else
+                {
+                    sighting.Id = AllocateProvisionalPlanetId();
+                }
+
+                SavePlanet(sighting);
+            }
+
+            foreach (Planet stale in provisionalPlanets.Skip(reusedProvisionals))
+                _planets.TryRemove(stale.Id, out _);
         }
 
         /// <summary>Look up a planet by registry ID; returns null if unknown.</summary>
         public Planet? GetPlanet(int id) =>
             _planets.TryGetValue(id, out var p) ? p : null;
+
+        public List<Planet> GetAllPlanets() =>
+            _planets.Values
+                .OrderBy(p => p.LastSector <= 0 ? int.MaxValue : p.LastSector)
+                .ThenBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                .ThenBy(p => string.IsNullOrWhiteSpace(p.Name) ? "~" : p.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(p => p.Id)
+                .ToList();
 
         /// <summary>
         /// Return all planets with a known ID whose last-seen sector is <paramref name="sectorNumber"/>.
@@ -737,7 +939,8 @@ namespace TWXProxy.Core
         public List<Planet> GetPlanetsInSector(int sectorNumber) =>
             _planets.Values
                 .Where(p => p.LastSector == sectorNumber)
-                .OrderBy(p => p.Id)
+                .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                .ThenBy(p => p.Id)
                 .ToList();
 
         /// <summary>
@@ -759,17 +962,84 @@ namespace TWXProxy.Core
             return planets.Select(p => p.Name ?? string.Empty).ToList();
         }
 
+        private static Planet ClonePlanet(Planet planet) => new()
+        {
+            Id = planet.Id,
+            Name = planet.Name,
+            LastSector = planet.LastSector,
+            ObservedOrder = planet.ObservedOrder,
+            Owner = planet.Owner,
+            Level = planet.Level,
+            Shielded = planet.Shielded,
+            Fighters = planet.Fighters,
+            FuelOre = planet.FuelOre,
+            Organics = planet.Organics,
+            Equipment = planet.Equipment,
+        };
+
+        private static Planet MergePlanet(Planet existing, Planet incoming) => new()
+        {
+            Id = incoming.Id > 0 ? incoming.Id : existing.Id,
+            Name = !string.IsNullOrWhiteSpace(incoming.Name) ? incoming.Name : existing.Name,
+            LastSector = incoming.LastSector > 0 ? incoming.LastSector : existing.LastSector,
+            ObservedOrder = incoming.ObservedOrder > 0 ? incoming.ObservedOrder : existing.ObservedOrder,
+            Owner = !string.IsNullOrWhiteSpace(incoming.Owner) ? incoming.Owner : existing.Owner,
+            Level = incoming.Level > 0 ? incoming.Level : existing.Level,
+            Shielded = incoming.Shielded ?? existing.Shielded,
+            Fighters = incoming.Fighters >= 0 ? incoming.Fighters : existing.Fighters,
+            FuelOre = incoming.FuelOre >= 0 ? incoming.FuelOre : existing.FuelOre,
+            Organics = incoming.Organics >= 0 ? incoming.Organics : existing.Organics,
+            Equipment = incoming.Equipment >= 0 ? incoming.Equipment : existing.Equipment,
+        };
+
+        private int AllocateProvisionalPlanetId()
+        {
+            while (_planets.ContainsKey(_nextProvisionalPlanetId))
+                _nextProvisionalPlanetId--;
+
+            return _nextProvisionalPlanetId--;
+        }
+
+        private static string NormalizePlanetNameForMatch(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            string normalized = raw.Trim();
+            normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
+            normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+            normalized = Regex.Replace(normalized, @"\s*\(Shielded\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+            normalized = Regex.Replace(normalized, @"^\([A-Z]\)\s*", string.Empty, RegexOptions.IgnoreCase);
+            return normalized.Trim();
+        }
+
+        private void ResetNextProvisionalPlanetId()
+        {
+            int smallestId = _planets.Keys.DefaultIfEmpty(0).Min();
+            _nextProvisionalPlanetId = smallestId < 0 ? smallestId - 1 : -1;
+        }
+
         /// <summary>
         /// Update the warp-in cache for a sector's outbound warps.
         /// Pascal has no WarpsIn cache, but we maintain one for O(1) WARPINCOUNT lookups.
         /// If the target sector doesn't exist yet we create a stub entry so the WarpsIn
         /// data is never lost (Pascal avoids this by writing every sector to disk where
         /// it always has a default record; we replicate that guarantee in memory).
+        /// This updater also removes stale reverse links when a sector's outbound warps
+        /// change.
         /// </summary>
         private void UpdateWarpInCache(SectorData sector)
         {
             ushort origin = (ushort)sector.Number;
-            foreach (var warp in sector.Warp.Where(w => w > 0))
+            var currentTargets = new HashSet<ushort>(sector.Warp.Where(w => w > 0));
+
+            foreach (var targetSector in _sectors.Values)
+            {
+                if (!currentTargets.Contains((ushort)targetSector.Number))
+                    targetSector.WarpsIn.Remove(origin);
+            }
+
+            foreach (var warp in currentTargets)
             {
                 if (!_sectors.TryGetValue(warp, out var targetSector))
                 {

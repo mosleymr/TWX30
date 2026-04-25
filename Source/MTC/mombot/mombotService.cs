@@ -272,20 +272,42 @@ internal sealed class mombotService
         if (string.IsNullOrWhiteSpace(scriptRoot))
             return Array.Empty<string>();
 
-        string startupRoot = Path.Combine(scriptRoot, "startups");
-        if (!Directory.Exists(startupRoot))
-            return Array.Empty<string>();
+        var startupReferences = new List<string>();
+        startupReferences.AddRange(EnumerateStartupScriptReferences(
+            Path.Combine(scriptRoot, "startups"),
+            SearchOption.TopDirectoryOnly));
+        startupReferences.AddRange(EnumerateStartupScriptReferences(
+            Path.Combine(scriptRoot, "local", "startups"),
+            SearchOption.AllDirectories));
 
-        return Directory
-            .EnumerateFiles(startupRoot, "*.cts", SearchOption.TopDirectoryOnly)
-            .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
-            .Select(path => BuildLoadReference(Path.GetFullPath(path)))
+        return startupReferences
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
     public void StopAllNonSystemScripts()
     {
         Core.ProxyGameOperations.StopAllScripts(_interpreter, includeSystemScripts: false);
+    }
+
+    public void HandleObservedScriptStop()
+    {
+        if (!Enabled)
+            return;
+
+        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        if (string.IsNullOrWhiteSpace(lastLoadedModule))
+            return;
+
+        if (IsScriptCurrentlyLoaded(lastLoadedModule))
+            return;
+
+        if (!IsModeScriptReference(lastLoadedModule))
+            return;
+
+        ApplySessionVar("$BOT~MODE", "General");
+        ApplySessionVar("$bot~mode", "General");
+        ApplySessionVar("$mode", "General");
     }
 
     public bool TryResolveInitialCommand(string input, out mombotCommandSpec? command, out string canonical)
@@ -589,9 +611,6 @@ internal sealed class mombotService
         int stopped = 0;
         foreach (Core.RunningScriptInfo script in running)
         {
-            if (script.IsSystemScript)
-                continue;
-
             string loadedName = script.Name ?? string.Empty;
             string leaf = Path.GetFileNameWithoutExtension(loadedName);
             if (!loadedName.StartsWith(selector, StringComparison.OrdinalIgnoreCase) &&
@@ -605,7 +624,7 @@ internal sealed class mombotService
         }
 
         if (stopped == 0)
-            return PublishUnsupported(context.CommandName, $"mombot could not find a non-system script starting with '{selector}'.");
+            return PublishUnsupported(context.CommandName, $"mombot could not find a script starting with '{selector}'.");
 
         return PublishNativeResult(context.CommandName, $"mombot stopped {stopped} script(s) matching '{selector}'.");
     }
@@ -802,11 +821,30 @@ internal sealed class mombotService
     {
         module = null;
 
-        string directory = Path.Combine(scriptRoot, "local");
-        if (!Directory.Exists(directory))
+        string localRoot = Path.Combine(scriptRoot, "local");
+        if (!Directory.Exists(localRoot))
             return false;
 
-        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
+        if (TryResolveLegacyLocalModuleCandidate(localRoot, canonical, out module))
+            return true;
+
+        foreach (string category in mombotCatalog.Categories)
+        {
+            if (TryResolveCategorizedLocalModuleCandidate(localRoot, category, canonical, out module))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool TryResolveLegacyLocalModuleCandidate(
+        string localRoot,
+        string canonical,
+        out mombotResolvedModule? module)
+    {
+        module = null;
+
+        string hiddenPath = Path.Combine(localRoot, "_" + canonical + ".cts");
         if (File.Exists(hiddenPath))
         {
             module = new mombotResolvedModule(
@@ -818,7 +856,7 @@ internal sealed class mombotService
             return true;
         }
 
-        string visiblePath = Path.Combine(directory, canonical + ".cts");
+        string visiblePath = Path.Combine(localRoot, canonical + ".cts");
         if (!File.Exists(visiblePath))
             return false;
 
@@ -829,6 +867,79 @@ internal sealed class mombotService
             string.Empty,
             false);
         return true;
+    }
+
+    private bool TryResolveCategorizedLocalModuleCandidate(
+        string localRoot,
+        string category,
+        string canonical,
+        out mombotResolvedModule? module)
+    {
+        module = null;
+
+        string categoryRoot = Path.Combine(localRoot, category.ToLowerInvariant());
+        if (!Directory.Exists(categoryRoot))
+            return false;
+
+        foreach (string fileName in new[] { "_" + canonical + ".cts", canonical + ".cts" })
+        {
+            string? match = Directory
+                .EnumerateFiles(categoryRoot, fileName, SearchOption.AllDirectories)
+                .OrderBy(path => Path.GetRelativePath(categoryRoot, path), StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(match))
+                continue;
+
+            string relativePath = Path.GetRelativePath(categoryRoot, match);
+            string type = ResolveLocalCategoryType(category, relativePath);
+            bool hidden = Path.GetFileName(match).StartsWith("_", StringComparison.OrdinalIgnoreCase);
+            module = new mombotResolvedModule(
+                BuildLoadReference(match),
+                Path.GetFullPath(match),
+                category,
+                type,
+                hidden);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string ResolveLocalCategoryType(string category, string relativePath)
+    {
+        if (string.Equals(category, "Daemons", StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        string? directory = Path.GetDirectoryName(relativePath);
+        if (string.IsNullOrWhiteSpace(directory))
+            return string.Empty;
+
+        string normalized = directory
+            .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+            .Trim(Path.DirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        string firstSegment = normalized
+            .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(firstSegment))
+            return string.Empty;
+
+        return mombotCatalog.Types.FirstOrDefault(type =>
+                   string.Equals(type, firstSegment, StringComparison.OrdinalIgnoreCase))
+               ?? string.Empty;
+    }
+
+    private IEnumerable<string> EnumerateStartupScriptReferences(string startupRoot, SearchOption searchOption)
+    {
+        if (!Directory.Exists(startupRoot))
+            return Enumerable.Empty<string>();
+
+        return Directory
+            .EnumerateFiles(startupRoot, "*.cts", searchOption)
+            .OrderBy(path => Path.GetRelativePath(startupRoot, path), StringComparer.OrdinalIgnoreCase)
+            .Select(path => BuildLoadReference(Path.GetFullPath(path)));
     }
 
     private bool TryResolvePreloadModuleCandidate(
@@ -951,11 +1062,7 @@ internal sealed class mombotService
         {
             foreach ((string alias, string canonical) in loaded)
                 _commandAliases[alias] = canonical;
-            return;
         }
-
-        foreach ((string alias, string canonical) in mombotCatalog.BuildDefaultAliasMap())
-            _commandAliases[alias] = canonical;
     }
 
     private static bool TryLoadCommandAliasesFromFile(string filePath, out Dictionary<string, string>? aliases)
@@ -981,12 +1088,19 @@ internal sealed class mombotService
                 if (separator <= 0 || separator >= line.Length - 1)
                     continue;
 
-                string alias = line[..separator].Trim();
+                string aliasList = line[..separator].Trim();
                 string canonical = line[(separator + 1)..].Trim();
-                if (string.IsNullOrWhiteSpace(alias) || string.IsNullOrWhiteSpace(canonical))
+                if (string.IsNullOrWhiteSpace(aliasList) || string.IsNullOrWhiteSpace(canonical))
                     continue;
 
-                loaded[alias] = canonical;
+                foreach (string aliasCandidate in aliasList.Split(','))
+                {
+                    string alias = aliasCandidate.Trim();
+                    if (string.IsNullOrWhiteSpace(alias))
+                        continue;
+
+                    loaded[alias] = canonical;
+                }
             }
 
             aliases = loaded;
@@ -1065,7 +1179,49 @@ internal sealed class mombotService
 
         string relativePath = Path.GetRelativePath(scriptRoot, fullPath);
         string[] segments = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return segments.Length > 0 && string.Equals(segments[0], "modes", StringComparison.OrdinalIgnoreCase);
+        if (segments.Length == 0)
+            return false;
+
+        if (string.Equals(segments[0], "modes", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return segments.Length > 1 &&
+               string.Equals(segments[0], "local", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(segments[1], "modes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsModeScriptReference(string scriptReference)
+    {
+        if (string.IsNullOrWhiteSpace(scriptReference))
+            return false;
+
+        if (TryResolveExplicitScriptReference(scriptReference, out _, out string? fullPath) &&
+            IsModeScriptPath(fullPath))
+        {
+            return true;
+        }
+
+        string normalized = scriptReference.Replace('\\', '/').Trim().TrimStart('/');
+        return normalized.StartsWith("scripts/mombot/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("scripts/mombot/local/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("local/modes/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsScriptCurrentlyLoaded(string scriptReference)
+    {
+        if (_interpreter == null || string.IsNullOrWhiteSpace(scriptReference))
+            return false;
+
+        string normalizedReference = scriptReference.Replace('\\', '/').Trim();
+        string fileName = Path.GetFileName(normalizedReference);
+
+        return Core.ProxyGameOperations
+            .GetRunningScripts(_interpreter)
+            .Any(script =>
+                script.Reference.Replace('\\', '/').EndsWith(normalizedReference, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Path.GetFileName(script.Reference.Replace('\\', '/')), fileName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(script.Name, scriptReference, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool HasHelpParameter(IReadOnlyList<string> parameters)
@@ -1325,11 +1481,15 @@ internal sealed class mombotService
         string route,
         string userName)
     {
-        string normalizedCommand = commandName;
+        string typedCommandName = string.IsNullOrWhiteSpace(commandName)
+            ? string.Empty
+            : commandName.Trim();
+        string normalizedCommand = typedCommandName;
         var parameters = rawParameters.Take(8).ToList();
 
         ApplyStockCommandRewrites(ref normalizedCommand, parameters);
         normalizedCommand = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(normalizedCommand));
+        ExpandStockParameterAliases(parameters);
         ApplyTravelCommandRewrites(ref normalizedCommand, parameters);
         normalizedCommand = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(normalizedCommand));
 
@@ -1340,7 +1500,8 @@ internal sealed class mombotService
             parameters,
             selfCommand,
             route,
-            userName);
+            userName,
+            typedCommandName);
     }
 
     private static string BuildNormalizedCommandLine(string canonical, IReadOnlyList<string> parameters)
@@ -1421,14 +1582,12 @@ internal sealed class mombotService
 
     private void ApplyTravelCommandRewrites(ref string commandName, List<string> parameters)
     {
-        if (!MatchesAnyCommand(commandName, "mow", "twarp", "bwarp", "pwarp", "smow"))
+        if (!MatchesAnyCommand(commandName, "mow", "twarp", "bwarp", "pwarp", "smow", "moveship", "m", "t", "b", "p"))
             return;
 
-        // Preserve Pascal/Mombot script parity for normal script-backed commands:
-        // single-letter arguments like "r" or "s" are often mode flags (for
-        // example "colo r 4547"), not sector aliases.  Only the travel-style
-        // commands handled here should expand sector shortcuts locally.
-        ExpandStockParameterAliases(parameters);
+        // Match the original script-bot command-processing order: stock sector
+        // aliases are expanded for parameters first, then travel-style commands
+        // get their special "planet <id>" -> sector rewrite.
         RewriteTravelPlanetTarget(parameters);
     }
 
@@ -1452,7 +1611,7 @@ internal sealed class mombotService
             return "l";
 
         string resolvedSector = ResolvePlanetSector(safePlanet);
-        return string.IsNullOrWhiteSpace(resolvedSector) ? string.Empty : resolvedSector;
+        return string.IsNullOrWhiteSpace(resolvedSector) ? "l" : resolvedSector;
     }
 
     private string ResolvePlanetSector(string planetIdToken)

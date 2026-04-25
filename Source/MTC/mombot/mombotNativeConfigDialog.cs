@@ -51,8 +51,14 @@ Version: 5.0.0";
         var txtDescription = BuildTextBox(defaults.Description, "Built-in native Mombot runtime");
         txtName.IsEnabled = false;
         txtDescription.IsEnabled = false;
-        var txtNameVar = BuildTextBox(defaults.NameVar, "BotName");
-        var txtCommsVar = BuildTextBox(defaults.CommsVar, "BotComms");
+        var txtBotName = BuildTextBox(defaults.NameVar, "MomBot");
+        var txtCommsName = BuildTextBox(defaults.CommsVar, "MomBot");
+        var txtServerName = BuildTextBox(defaults.ServerName, "server name");
+        var txtLoginName = BuildTextBox(defaults.LoginName, "login name");
+        var txtGameLetter = BuildTextBox(defaults.GameLetter, "B");
+        txtGameLetter.MaxLength = 1;
+        txtGameLetter.Width = 96;
+        txtGameLetter.HorizontalAlignment = HorizontalAlignment.Left;
         var txtLoginScript = BuildTextBox(defaults.LoginScript, "disabled");
         var txtTheme = BuildTextBox(defaults.Theme, "7|[MOMBOT]|~D|~G|~B|~C");
         txtTheme.MinWidth = 0;
@@ -92,8 +98,11 @@ Version: 5.0.0";
                 defaults.Script,
                 defaults.Description,
                 chkAutoStart.IsChecked == true,
-                txtNameVar.Text?.Trim() ?? string.Empty,
-                txtCommsVar.Text?.Trim() ?? string.Empty,
+                txtBotName.Text?.Trim() ?? string.Empty,
+                txtCommsName.Text?.Trim() ?? string.Empty,
+                txtServerName.Text?.Trim() ?? string.Empty,
+                txtLoginName.Text?.Trim() ?? string.Empty,
+                NormalizeGameLetter(txtGameLetter.Text),
                 txtLoginScript.Text?.Trim() ?? string.Empty,
                 txtTheme.Text?.Trim() ?? string.Empty);
             Close(true);
@@ -162,11 +171,15 @@ Version: 5.0.0";
                                 },
                                 BuildPairRow(nameCell, descriptionCell),
                                 BuildPairRow(
-                                    BuildFieldCell("Name Var", txtNameVar),
-                                    BuildFieldCell("Comms Var", txtCommsVar)),
+                                    BuildFieldCell("Bot Name", txtBotName),
+                                    BuildFieldCell("Comms Name", txtCommsName)),
                                 BuildPairRow(
-                                    BuildFieldCell("Startup", chkAutoStart),
+                                    BuildFieldCell("Server Login", txtServerName),
+                                    BuildFieldCell("Login Name", txtLoginName)),
+                                BuildPairRow(
+                                    BuildFieldCell("Game Letter", txtGameLetter),
                                     BuildFieldCell("Login Script", txtLoginScript)),
+                                BuildFullWidthCell("Startup", chkAutoStart),
                                 BuildFullWidthCell("Theme", txtTheme),
                                 new StackPanel
                                 {
@@ -182,7 +195,7 @@ Version: 5.0.0";
             },
         };
 
-        txtName.AttachedToVisualTree += (_, _) => txtName.Focus();
+        txtBotName.AttachedToVisualTree += (_, _) => txtBotName.Focus();
         KeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
@@ -205,6 +218,12 @@ Version: 5.0.0";
             BorderBrush = InputBorder,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
+    }
+
+    private static string NormalizeGameLetter(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrEmpty(normalized) ? string.Empty : normalized[..1].ToUpperInvariant();
     }
 
     private static TextBlock BuildViewer(string text, IBrush foreground, double fontSize)

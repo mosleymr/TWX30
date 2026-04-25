@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,6 +14,10 @@ namespace TWXProxy.Core;
 /// </summary>
 public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
 {
+    private static readonly object ScriptLoggingSync = new();
+    private static readonly Dictionary<object, HashSet<object>> ScriptLoggingSuppressors =
+        new(ReferenceEqualityComparer.Instance);
+
     private enum AnsiStripState
     {
         None,
@@ -40,6 +45,7 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
     private bool _binaryLogs;
     private bool _notifyPlayCuts = true;
     private int _maxPlayDelay = 10000;
+    private object? _scriptLoggingScope;
     private CancellationTokenSource? _playbackCancellation;
     private Task? _playbackTask;
     private Func<byte[], CancellationToken, Task>? _playbackSink;
@@ -191,6 +197,24 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         }
     }
 
+    public object? ScriptLoggingScope
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _scriptLoggingScope;
+            }
+        }
+        set
+        {
+            lock (_lock)
+            {
+                _scriptLoggingScope = value;
+            }
+        }
+    }
+
     public void SetLogIdentity(string? logIdentity)
     {
         string next = string.IsNullOrWhiteSpace(logIdentity)
@@ -218,6 +242,32 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         }
     }
 
+    public void SetScriptLoggingEnabled(object source, bool enabled)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        object? scope;
+        lock (_lock)
+        {
+            scope = _scriptLoggingScope;
+        }
+
+        UpdateScriptLoggingOverride(scope, source, enabled);
+    }
+
+    public void ClearScriptLoggingOverride(object source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        object? scope;
+        lock (_lock)
+        {
+            scope = _scriptLoggingScope;
+        }
+
+        UpdateScriptLoggingOverride(scope, source, enabled: true);
+    }
+
     public void RecordServerData(byte[] ansiData)
     {
         if (ansiData.Length == 0)
@@ -229,7 +279,7 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
 
         lock (_lock)
         {
-            if (!_logEnabled || !_logData)
+            if (!_logEnabled || !_logData || IsScriptLoggingSuppressedLocked())
                 return;
 
             EnsureLogOpenLocked();
@@ -313,6 +363,48 @@ public sealed class ModLog : TWXModule, IModLog, ITWXGlobals
         byte[] copy = new byte[ansiData.Length];
         Buffer.BlockCopy(ansiData, 0, copy, 0, ansiData.Length);
         return copy;
+    }
+
+    private bool IsScriptLoggingSuppressedLocked()
+    {
+        object? scope = _scriptLoggingScope;
+        if (scope == null)
+            return false;
+
+        lock (ScriptLoggingSync)
+        {
+            return ScriptLoggingSuppressors.TryGetValue(scope, out HashSet<object>? suppressors) &&
+                   suppressors.Count > 0;
+        }
+    }
+
+    private static void UpdateScriptLoggingOverride(object? scope, object source, bool enabled)
+    {
+        if (scope == null)
+            return;
+
+        lock (ScriptLoggingSync)
+        {
+            if (!ScriptLoggingSuppressors.TryGetValue(scope, out HashSet<object>? suppressors))
+            {
+                if (enabled)
+                    return;
+
+                suppressors = new HashSet<object>(ReferenceEqualityComparer.Instance);
+                ScriptLoggingSuppressors[scope] = suppressors;
+            }
+
+            if (enabled)
+            {
+                suppressors.Remove(source);
+                if (suppressors.Count == 0)
+                    ScriptLoggingSuppressors.Remove(scope);
+
+                return;
+            }
+
+            suppressors.Add(source);
+        }
     }
 
     private void EnsureLogOpenLocked()

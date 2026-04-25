@@ -77,7 +77,7 @@ namespace TWXProxy.Core
         private static string FormatTwxTime(DateTime now, string? format)
         {
             if (string.IsNullOrWhiteSpace(format))
-                return now.ToShortTimeString();
+                return ScriptTimeFormatter.Format(now);
 
             string trimmed = format.Trim();
             switch (trimmed)
@@ -103,7 +103,7 @@ namespace TWXProxy.Core
                     return now.Millisecond.ToString("000", CultureInfo.InvariantCulture);
                 case "t":
                 case "T":
-                    return now.ToShortTimeString();
+                    return ScriptTimeFormatter.Format(now);
             }
 
             string translated = TranslateTwxDateTimeFormat(trimmed);
@@ -987,7 +987,7 @@ namespace TWXProxy.Core
                 if (double.TryParse(parameters[0].Value, out double timeValue))
                 {
                     DateTime time = DateTime.FromOADate(timeValue);
-                    parameters[1].Value = time.ToShortTimeString();
+                    parameters[1].Value = ScriptTimeFormatter.Format(time);
                 }
             }
             
@@ -1468,12 +1468,12 @@ namespace TWXProxy.Core
                 }
                 catch
                 {
-                    parameters[0].Value = DateTime.Now.ToShortTimeString();
+                    parameters[0].Value = ScriptTimeFormatter.Format(DateTime.Now);
                 }
             }
             else
             {
-                parameters[0].Value = DateTime.Now.ToShortTimeString();
+                parameters[0].Value = ScriptTimeFormatter.Format(DateTime.Now);
             }
             return CmdAction.None;
         }
@@ -1524,10 +1524,20 @@ namespace TWXProxy.Core
         {
             // CMD: logging <on/off>
             // Enables or disables logging functionality
+            bool enabled = false;
+            string value = parameters[0].Value.ToUpperInvariant();
+            enabled = (value == "ON" || value == "1");
+
             if (GlobalModules.TWXLog is IModLog log)
             {
-                string value = parameters[0].Value.ToUpper();
-                log.LogData = (value == "ON" || value == "1");
+                if (script is Script scriptObj)
+                {
+                    log.SetScriptLoggingEnabled(scriptObj, enabled);
+                }
+                else
+                {
+                    log.LogData = enabled;
+                }
             }
             return CmdAction.None;
         }
@@ -1997,6 +2007,12 @@ namespace TWXProxy.Core
         {
             // CMD: autohaggle <on|off>
             return CmdAutoHaggle_Impl(script, parameters);
+        }
+
+        private static CmdAction CmdQuikStats(object script, CmdParam[] parameters)
+        {
+            // CMD: quikstats
+            return CmdQuikStats_Impl(script, parameters);
         }
 
         #endregion
@@ -2491,6 +2507,12 @@ namespace TWXProxy.Core
         {
             // CMD: getcourse var <from> <to>
             return CmdGetCourse_Impl(script, parameters);
+        }
+
+        private static CmdAction CmdGetCourseDijkstra(object script, CmdParam[] parameters)
+        {
+            // CMD: getcoursedijkstra var <from> <to>
+            return CmdGetCourseDijkstra_Impl(script, parameters);
         }
 
         private static CmdAction CmdGetDistance(object script, CmdParam[] parameters)

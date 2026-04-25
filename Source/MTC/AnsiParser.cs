@@ -28,6 +28,7 @@ public class AnsiParser
     private State    _state      = State.Ground;
     private string   _csiParam   = "";
     private char     _csiIntermediate = '\0';
+    private byte?    _pendingUtf8Latin1Lead;
 
     // Saved cursor
     private int _savedRow, _savedCol;
@@ -52,13 +53,72 @@ public class AnsiParser
     public void Feed(byte[] data, int length)
     {
         for (int i = 0; i < length; i++)
-            ProcessByte(data[i]);
+        {
+            byte b = data[i];
+
+            if (_pendingUtf8Latin1Lead is byte lead)
+            {
+                _pendingUtf8Latin1Lead = null;
+                if (TryDecodeUtf8Latin1Byte(lead, b, out byte decoded))
+                {
+                    ProcessByte(decoded);
+                    continue;
+                }
+
+                ProcessByte(lead);
+            }
+
+            if (IsUtf8Latin1Lead(b))
+            {
+                if (i + 1 >= length)
+                {
+                    _pendingUtf8Latin1Lead = b;
+                    continue;
+                }
+
+                if (TryDecodeUtf8Latin1Byte(b, data[i + 1], out byte decoded))
+                {
+                    ProcessByte(decoded);
+                    i++;
+                    continue;
+                }
+            }
+
+            ProcessByte(b);
+        }
     }
 
     public void Feed(string text)
     {
+        FlushPendingUtf8Latin1Lead();
         foreach (char c in text)
             ProcessByte((byte)c);
+    }
+
+    private void FlushPendingUtf8Latin1Lead()
+    {
+        if (_pendingUtf8Latin1Lead is not byte lead)
+            return;
+
+        _pendingUtf8Latin1Lead = null;
+        ProcessByte(lead);
+    }
+
+    private static bool IsUtf8Latin1Lead(byte b)
+        => b is 0xC2 or 0xC3;
+
+    private static bool TryDecodeUtf8Latin1Byte(byte lead, byte trail, out byte value)
+    {
+        value = 0;
+        if (!IsUtf8Latin1Lead(lead) || trail < 0x80 || trail > 0xBF)
+            return false;
+
+        int codePoint = ((lead & 0x1F) << 6) | (trail & 0x3F);
+        if (codePoint < 0x80 || codePoint > 0xFF)
+            return false;
+
+        value = (byte)codePoint;
+        return true;
     }
 
     // ── Main dispatch ──────────────────────────────────────────────────────

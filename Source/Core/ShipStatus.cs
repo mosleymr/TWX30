@@ -24,6 +24,7 @@ public class ShipStatus
     // ── Navigation ────────────────────────────────────────────────────────
     public int CurrentSector  { get; set; }
     public int Turns          { get; set; }
+    public bool UnlimitedGame { get; set; }
     public int TurnsPerWarp   { get; set; }
 
     // ── Cargo ─────────────────────────────────────────────────────────────

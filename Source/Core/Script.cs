@@ -169,7 +169,7 @@ namespace TWXProxy.Core
 
         private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
         {
-            ProgramEvent("Time hit", DateTime.Now.ToShortTimeString(), true);
+            ProgramEvent("Time hit", ScriptTimeFormatter.Format(DateTime.Now), true);
         }
 
         public void CountTimerEvent()
@@ -631,6 +631,21 @@ namespace TWXProxy.Core
                     Stop(i);
                 else
                     i++;
+            }
+        }
+
+        public void ForceStopAll(bool stopSysScripts)
+        {
+            for (int i = _scriptList.Count - 1; i >= 0; i--)
+            {
+                Script script = _scriptList[i];
+                if (!stopSysScripts && script.System)
+                    continue;
+
+                script.RequestForceStop();
+
+                if (!script.IsExecuting && IsScriptStillAtIndex(i, script))
+                    Stop(i);
             }
         }
 
@@ -1528,6 +1543,8 @@ namespace TWXProxy.Core
 #pragma warning restore CS0169
         private bool _paused;
         private PauseReason _pausedReason = PauseReason.None;
+        private bool _forceStopRequested;
+        private bool _isExecuting;
         private bool _lastLineHandled;
         private int _lastCodePos = -1;
         private int _loopCounter = 0;
@@ -1598,6 +1615,9 @@ namespace TWXProxy.Core
                 $"waitText='{_waitText}' waitingInput={_waitingForInput} subDepth={_subStack.Count} " +
                 $"triggers=[{triggerSummary}]\n");
 
+            if (GlobalModules.TWXLog is IModLog log)
+                log.ClearScriptLoggingOverride(this);
+
             if (_menuItemList.Count > 0 && GlobalModules.TWXMenu != null)
                 GlobalModules.TWXMenu.RemoveScriptMenus(this);
 
@@ -1659,6 +1679,23 @@ namespace TWXProxy.Core
         {
             // Send a notification message to self to start termination
             _owner.StopByHandle(this);
+        }
+
+        private bool ShouldAbortForForceStop()
+        {
+            if (!_forceStopRequested)
+                return false;
+
+            _paused = false;
+            _pausedReason = PauseReason.None;
+            _waitForActive = false;
+            _waitingForAuth = false;
+            _waitingForInput = false;
+            _keypressMode = false;
+            _inputVarParam = null;
+            _waitText = string.Empty;
+            _resetLoopDetectionOnNextExecute = true;
+            return true;
         }
 
         public void GetFromFile(string filename, bool compile)
@@ -2554,8 +2591,7 @@ namespace TWXProxy.Core
                     
                     if (_owner.ScriptRef != null)
                     {
-                        var scriptRef = _owner.ScriptRef!;
-                        var sysConst = scriptRef.GetSysConst(constID);
+                        var sysConst = ResolveRuntimeSysConst(constID);
                         if (sysConst != null)
                         {
                             indexValue = sysConst.Read(Array.Empty<string>());
@@ -2688,8 +2724,7 @@ namespace TWXProxy.Core
                     SkipArrayIndexes(code, ref codePos);   // nested sysconst – don't recurse infinitely
                     if (_owner.ScriptRef != null)
                     {
-                        var scriptRef2 = _owner.ScriptRef!;
-                        var innerConst = scriptRef2.GetSysConst(innerConstID);
+                        var innerConst = ResolveRuntimeSysConst(innerConstID);
                         if (innerConst != null)
                             indexValue = innerConst.Read(Array.Empty<string>());
                     }
@@ -2783,6 +2818,27 @@ namespace TWXProxy.Core
             }
 
             return progVar;
+        }
+
+        private ScriptSysConst? ResolveRuntimeSysConst(ushort sysConstId)
+        {
+            ScriptRef? scriptRef = _owner.ScriptRef;
+            if (scriptRef == null)
+                return null;
+
+            if (sysConstId >= scriptRef.SysConstCount)
+            {
+                if (GlobalModules.VerboseDebugMode)
+                {
+                    GlobalModules.DebugLog(
+                        $"[SYSCONST] Missing runtime sysconst id={sysConstId} " +
+                        $"knownCount={scriptRef.SysConstCount} script='{ScriptName}'\n");
+                }
+
+                return null;
+            }
+
+            return scriptRef.GetSysConst(sysConstId);
         }
 
         private static CmdParam[] GetOrCreatePreparedDispatchParams(PreparedInstruction instruction)
@@ -2973,7 +3029,7 @@ namespace TWXProxy.Core
 
                 case ScriptConstants.PARAM_SYSCONST:
                     {
-                        ScriptSysConst? sysConst = param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId);
+                        ScriptSysConst? sysConst = param.SysConst ?? ResolveRuntimeSysConst(param.SysConstId);
                         if (sysConst == null)
                             return string.Empty;
 
@@ -3090,7 +3146,7 @@ namespace TWXProxy.Core
 
                 case ScriptConstants.PARAM_SYSCONST:
                     {
-                        ScriptSysConst? sysConst = param.SysConst ?? _owner.ScriptRef?.GetSysConst(param.SysConstId);
+                        ScriptSysConst? sysConst = param.SysConst ?? ResolveRuntimeSysConst(param.SysConstId);
                         if (sysConst == null)
                         {
                             CmdParam missingParam = GetOrCreatePreparedRuntimeParam(param);
@@ -3145,12 +3201,22 @@ namespace TWXProxy.Core
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
+            _isExecuting = true;
 
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
+                _isExecuting = false;
                 RecordVmExecutionMetrics(true, completed, commandsExecuted, resolvedParamCount, metricsStart);
+                if (completed && _forceStopRequested)
+                    _owner.StopByHandle(this);
                 return completed;
+            }
+
+            if (ShouldAbortForForceStop())
+            {
+                _codePos = prepared.CodeLength;
+                return Finish(true);
             }
 
             _execScriptID = 0;
@@ -3170,6 +3236,12 @@ namespace TWXProxy.Core
             {
                 while (instructionIndex < prepared.Instructions.Length)
                 {
+                    if (ShouldAbortForForceStop())
+                    {
+                        _codePos = prepared.CodeLength;
+                        return Finish(true);
+                    }
+
                     PreparedInstruction instruction = prepared.Instructions[instructionIndex];
                     _execScriptID = instruction.ScriptId;
                     _codePos = instruction.RawEndOffset;
@@ -3353,12 +3425,22 @@ namespace TWXProxy.Core
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
+            _isExecuting = true;
 
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
+                _isExecuting = false;
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
+                if (completed && _forceStopRequested)
+                    _owner.StopByHandle(this);
                 return completed;
+            }
+
+            if (ShouldAbortForForceStop())
+            {
+                _codePos = _cmp?.Code.Length ?? _codePos;
+                return Finish(true);
             }
 
             if (_resetLoopDetectionOnNextExecute)
@@ -3417,13 +3499,18 @@ namespace TWXProxy.Core
 
             try
             {
-                // All Pascal TWX versions (2–6) use the same bytecode format:
+                // All supported compiled-script versions (2–7) currently use the same bytecode format:
                 // ScriptID:Byte|LineNumber:Word|CmdID:Word|Params|0:Byte
                 bool isOldFormat = true;
                 
                 // Execute bytecode until we hit a pause, stop, or end
                 while (_codePos < code.Length)
                 {
+                    if (ShouldAbortForForceStop())
+                    {
+                        _codePos = code.Length;
+                        return Finish(true);
+                    }
                     
                     ushort cmdID;
                     
@@ -3582,13 +3669,9 @@ namespace TWXProxy.Core
                             
                             if (_owner.ScriptRef == null)
                                 throw new Exception("ScriptRef not initialized");
-                            
-                            var scriptRef3 = _owner.ScriptRef!;
-                            var sysConst = scriptRef3.GetSysConst(constID);
-                            if (sysConst == null)
-                                throw new Exception($"System constant {constID} not found");
-                            
-                            string constValue = sysConst.Read(sysConstIndexValues);
+
+                            var sysConst = ResolveRuntimeSysConst(constID);
+                            string constValue = sysConst?.Read(sysConstIndexValues) ?? string.Empty;
                             var constParam = GetScratchParam(_cmdParams.Count, constValue);
                             _cmdParams.Add(constParam);
                         }
@@ -3826,23 +3909,26 @@ namespace TWXProxy.Core
                 return label;
 
             string normalized = label ?? string.Empty;
-
-            if (normalized.StartsWith(':'))
-            {
-                if (normalized.Length < 2)
-                    throw new ScriptException($"Bad goto label '{label}'");
-
-                normalized = normalized.Substring(1);
-            }
-            else if (string.IsNullOrEmpty(normalized))
-            {
+            if (string.IsNullOrEmpty(normalized))
                 throw new ScriptException($"Bad goto label '{label}'");
-            }
+
+            if (!normalized.StartsWith(':'))
+                normalized = ":" + normalized;
+
+            if (normalized.Length < 2)
+                throw new ScriptException($"Bad goto label '{label}'");
 
             normalized = normalized.ToUpperInvariant();
-            _cmp.ExtendName(ref normalized, _execScriptID);
 
-            return normalized;
+            // Labels should only ever use label namespacing rules.  Do not run them
+            // through generic name handling, which is intended for variables and
+            // values and should never interpret pieces of a label token.
+            if (!normalized.Contains('~'))
+                _cmp.ExtendLabelName(ref normalized, _execScriptID);
+            else if (normalized.StartsWith(":~", StringComparison.Ordinal))
+                normalized = ":" + normalized.Substring(2);
+
+            return normalized.Substring(1);
         }
 
         public void GotoLabel(string label)
@@ -4040,6 +4126,96 @@ namespace TWXProxy.Core
 
             if (!found)
                 server.Broadcast($"  {AnsiCodes.ANSI_8}No active triggers.\r\n");
+        }
+
+        public IReadOnlyList<ScriptVariableInfo> GetVariableSnapshot()
+        {
+            var variables = new List<ScriptVariableInfo>();
+            if (_cmp == null)
+                return variables;
+
+            foreach (var param in _cmp.ParamList.OfType<VarParam>())
+            {
+                AppendVariableSnapshot(variables, param, param.Name, 0);
+            }
+
+            return variables;
+        }
+
+        public IReadOnlyList<ScriptTriggerInfo> GetTriggerSnapshot()
+        {
+            var triggers = new List<ScriptTriggerInfo>();
+
+            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            {
+                Trigger[] snapshot;
+                try
+                {
+                    snapshot = _triggers[triggerType].ToArray();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var trigger in snapshot)
+                {
+                    triggers.Add(new ScriptTriggerInfo(
+                        triggerType,
+                        trigger.Name,
+                        trigger.Value,
+                        trigger.LabelName,
+                        trigger.Response,
+                        trigger.Param,
+                        trigger.LifeCycle));
+                }
+            }
+
+            return triggers;
+        }
+
+        private static void AppendVariableSnapshot(
+            List<ScriptVariableInfo> variables,
+            VarParam param,
+            string displayName,
+            int depth)
+        {
+            string value;
+            try
+            {
+                value = param.Value;
+            }
+            catch (Exception ex)
+            {
+                value = $"<error: {ex.Message}>";
+            }
+
+            variables.Add(new ScriptVariableInfo(
+                displayName,
+                value,
+                param.Vars.Count > 0,
+                depth));
+
+            foreach (var child in param.Vars)
+            {
+                AppendVariableSnapshot(
+                    variables,
+                    child,
+                    BuildIndexedVariableName(displayName, child.Name),
+                    depth + 1);
+            }
+        }
+
+        private static string BuildIndexedVariableName(string parentName, string childName)
+        {
+            if (string.IsNullOrWhiteSpace(parentName))
+                return childName;
+
+            if (int.TryParse(childName, out _))
+                return $"{parentName}[{childName}]";
+
+            string escaped = childName.Replace("\"", "\\\"");
+            return $"{parentName}[\"{escaped}\"]";
         }
 
         public void SetVariable(string varName, string value, string index)
@@ -4292,7 +4468,9 @@ namespace TWXProxy.Core
         public bool Paused { get => _paused; set => _paused = value; }
         public PauseReason PausedReason { get => _pausedReason; set => _pausedReason = value; }
         public bool WaitingForInput => _waitingForInput;
+        public bool WaitingForAuth => _waitingForAuth;
         public bool KeypressMode => _keypressMode;
+        public bool IsExecuting => _isExecuting;
         public bool LastLineHandled => _lastLineHandled;
         public int SubStackDepth => _subStack.Count;
         public ModInterpreter Controller => _owner;
@@ -4338,6 +4516,20 @@ namespace TWXProxy.Core
         public void Pause()
         {
             _paused = true;
+            _resetLoopDetectionOnNextExecute = true;
+        }
+
+        public void RequestForceStop()
+        {
+            _forceStopRequested = true;
+            _paused = false;
+            _pausedReason = PauseReason.None;
+            _waitForActive = false;
+            _waitingForAuth = false;
+            _waitingForInput = false;
+            _keypressMode = false;
+            _inputVarParam = null;
+            _waitText = string.Empty;
             _resetLoopDetectionOnNextExecute = true;
         }
 

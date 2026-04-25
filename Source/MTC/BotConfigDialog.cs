@@ -15,6 +15,9 @@ internal sealed record BotConfigDialogResult(
     bool AutoStart,
     string NameVar,
     string CommsVar,
+    string ServerName,
+    string LoginName,
+    string GameLetter,
     string LoginScript,
     string Theme);
 
@@ -82,6 +85,9 @@ internal sealed class BotConfigDialog : Window
                 chkAutoStart.IsChecked == true,
                 txtNameVar.Text?.Trim() ?? string.Empty,
                 txtCommsVar.Text?.Trim() ?? string.Empty,
+                string.Empty,
+                string.Empty,
+                string.Empty,
                 txtLoginScript.Text?.Trim() ?? string.Empty,
                 txtTheme.Text?.Trim() ?? string.Empty);
             Close(true);

@@ -29,6 +29,14 @@ using System.Linq;
 
 namespace TWXProxy.Core
 {
+    public sealed record BubbleInfo(
+        ushort Gate,
+        ushort Deepest,
+        ushort Size,
+        ushort MaxDepth,
+        bool Gapped,
+        IReadOnlyList<ushort> Sectors);
+
     /// <summary>
     /// Bubble structure representing a closed area of sectors
     /// </summary>
@@ -37,7 +45,9 @@ namespace TWXProxy.Core
         public ushort Gate;
         public ushort Deepest;
         public ushort Size;
+        public ushort MaxDepth;
         public bool Gapped;
+        public IReadOnlyList<ushort> Sectors;
     }
 
     /// <summary>
@@ -45,6 +55,9 @@ namespace TWXProxy.Core
     /// </summary>
     public class ModBubble : TWXModule, IModBubble
     {
+        public const int LegacyDefaultMaxBubbleSize = 25;
+        public const int DefaultMaxBubbleSize = 150;
+
         private int _bubbleSize;
         private int _deepestDepth;
         private int _deepestPoint;
@@ -53,12 +66,13 @@ namespace TWXProxy.Core
         private int _maxBubbleSize;
         private byte[] _bubblesCovered = Array.Empty<byte>();
         private byte[] _areaCovered = Array.Empty<byte>();
+        private readonly List<ushort> _areaTraversal = new();
         private List<Bubble> _bubbleList = new List<Bubble>();
         private StreamWriter? _targetFile;
 
         public ModBubble()
         {
-            MaxBubbleSize = 25;
+            MaxBubbleSize = DefaultMaxBubbleSize;
         }
 
         #region IModBubble Implementation
@@ -75,7 +89,7 @@ namespace TWXProxy.Core
 
         private bool IsClosedArea(Sector area, int areaIndex, ushort last, ushort depth)
         {
-            if (_bubbleSize > _maxBubbleSize || area.Explored == ExploreType.No)
+            if (_bubbleSize > _maxBubbleSize || !HasUsableWarpList(area))
             {
                 return false;
             }
@@ -86,6 +100,8 @@ namespace TWXProxy.Core
                 _deepestDepth = depth;
             }
 
+            if (_areaCovered[areaIndex - 1] == 0)
+                _areaTraversal.Add((ushort)areaIndex);
             _areaCovered[areaIndex - 1] = 1;
 
             for (int i = 0; i < 6; i++)
@@ -95,7 +111,7 @@ namespace TWXProxy.Core
                 if (warp == 0)
                     break;
                 
-                if (warp != last && _areaCovered[warp - 1] == 0 && area.Explored != ExploreType.No)
+                if (warp != last && _areaCovered[warp - 1] == 0)
                 {
                     var s = GlobalModules.Database?.LoadSector(warp);
                     if (s == null)
@@ -119,12 +135,26 @@ namespace TWXProxy.Core
             return true;
         }
 
-        private int TestBubble(ushort gate, ushort interior, out ushort deepest, out bool gapped)
+        private static bool HasUsableWarpList(Sector sector)
+        {
+            return sector.Explored != ExploreType.No && sector.Warp.Any(warp => warp > 0);
+        }
+
+        private int TestBubble(
+            ushort gate,
+            ushort interior,
+            out ushort deepest,
+            out bool gapped,
+            out ushort maxDepth,
+            out IReadOnlyList<ushort> sectors)
         {
             _bubbleSize = 0;
             _deepestDepth = 0;
             deepest = 0;
             gapped = false;
+            maxDepth = 0;
+            var coveredSectors = new List<ushort>();
+            sectors = coveredSectors;
 
             var database = GlobalModules.Database;
             if (database == null)
@@ -136,6 +166,7 @@ namespace TWXProxy.Core
 
             int sectorCount = database.SectorCount;
             _areaCovered = new byte[sectorCount];
+            _areaTraversal.Clear();
 
             if (!IsClosedArea(area, interior, gate, 0))
             {
@@ -143,28 +174,27 @@ namespace TWXProxy.Core
             }
 
             // Copy the area covered to bubbles covered
-            for (int i = 0; i < sectorCount; i++)
+            foreach (ushort sectorNumber in _areaTraversal)
             {
-                if (_areaCovered[i] == 1)
-                {
-                    // Check for backdoors
-                    if (!gapped)
-                    {
-                        int areaIndex = i + 1;
-                        var sector = database.LoadSector(areaIndex);
-                        if (sector != null)
-                        {
-                            var backDoors = database.GetBackDoors(sector, areaIndex);
-                            if (backDoors.Count > 0)
-                                gapped = true;
-                        }
-                    }
+                coveredSectors.Add(sectorNumber);
 
-                    _bubblesCovered[i] = 1;
+                // Check for backdoors
+                if (!gapped)
+                {
+                    var sector = database.LoadSector(sectorNumber);
+                    if (sector != null)
+                    {
+                        var backDoors = database.GetBackDoors(sector, sectorNumber);
+                        if (backDoors.Count > 0)
+                            gapped = true;
+                    }
                 }
+
+                _bubblesCovered[sectorNumber - 1] = 1;
             }
 
             deepest = (ushort)_deepestPoint;
+            maxDepth = sectors.Count > 0 ? (ushort)(_deepestDepth + 1) : (ushort)0;
             return _bubbleSize + 1;
         }
 
@@ -275,32 +305,7 @@ namespace TWXProxy.Core
             if (database == null)
                 return (0, 0, 0);
 
-            _bubbleList.Clear();
-            _totalBubbles = 0;
-            _gappedBubbles = 0;
-            _bubblesCovered = new byte[database.SectorCount];
-
-            for (int i = 1; i <= database.SectorCount; i++)
-            {
-                var s = database.LoadSector(i);
-                if (s == null)
-                    continue;
-
-                if (s.Warp[1] > 0 && _bubblesCovered[i - 1] == 0)
-                {
-                    CheckBubble(i, s.Warp[0]);
-                    CheckBubble(i, s.Warp[1]);
-
-                    if (s.Warp[2] > 0)
-                        CheckBubble(i, s.Warp[2]);
-                    if (s.Warp[3] > 0)
-                        CheckBubble(i, s.Warp[3]);
-                    if (s.Warp[4] > 0)
-                        CheckBubble(i, s.Warp[4]);
-                    if (s.Warp[5] > 0)
-                        CheckBubble(i, s.Warp[5]);
-                }
-            }
+            AnalyzeBubbles(database);
 
             foreach (var bubble in _bubbleList)
             {
@@ -313,6 +318,27 @@ namespace TWXProxy.Core
             }
 
             return (_totalBubbles, _gappedBubbles, _totalBubbles - _gappedBubbles);
+        }
+
+        public IReadOnlyList<BubbleInfo> GetBubbles()
+        {
+            var database = GlobalModules.Database;
+            if (database == null)
+                return Array.Empty<BubbleInfo>();
+
+            AnalyzeBubbles(database);
+
+            return _bubbleList
+                .Where(bubble => _bubblesCovered[bubble.Gate - 1] == 0)
+                .OrderBy(bubble => bubble.Gate)
+                .Select(bubble => new BubbleInfo(
+                    bubble.Gate,
+                    bubble.Deepest,
+                    bubble.Size,
+                    bubble.MaxDepth,
+                    bubble.Gapped,
+                    bubble.Sectors))
+                .ToArray();
         }
 
         public void ExportBubbles(StreamWriter writer)
@@ -331,33 +357,7 @@ namespace TWXProxy.Core
             if (database == null)
                 return;
 
-            _bubbleList.Clear();
-            _totalBubbles = 0;
-            _gappedBubbles = 0;
-            _bubblesCovered = new byte[database.SectorCount];
-
-            // Find all bubbles
-            for (int i = 1; i <= database.SectorCount; i++)
-            {
-                var s = database.LoadSector(i);
-                if (s == null)
-                    continue;
-
-                if (s.Warp[1] > 0 && _bubblesCovered[i - 1] == 0)
-                {
-                    CheckBubble(i, s.Warp[0]);
-                    CheckBubble(i, s.Warp[1]);
-
-                    if (s.Warp[2] > 0)
-                        CheckBubble(i, s.Warp[2]);
-                    if (s.Warp[3] > 0)
-                        CheckBubble(i, s.Warp[3]);
-                    if (s.Warp[4] > 0)
-                        CheckBubble(i, s.Warp[4]);
-                    if (s.Warp[5] > 0)
-                        CheckBubble(i, s.Warp[5]);
-                }
-            }
+            AnalyzeBubbles(database);
 
             if (useFile)
             {
@@ -398,9 +398,45 @@ namespace TWXProxy.Core
             }
         }
 
+        private void AnalyzeBubbles(ITWXDatabase database)
+        {
+            _bubbleList.Clear();
+            _totalBubbles = 0;
+            _gappedBubbles = 0;
+            _bubblesCovered = new byte[database.SectorCount];
+
+            for (int i = 1; i <= database.SectorCount; i++)
+            {
+                var sector = database.LoadSector(i);
+                if (sector == null)
+                    continue;
+
+                if (sector.Warp[1] > 0 && _bubblesCovered[i - 1] == 0)
+                {
+                    CheckBubble(i, sector.Warp[0]);
+                    CheckBubble(i, sector.Warp[1]);
+
+                    if (sector.Warp[2] > 0)
+                        CheckBubble(i, sector.Warp[2]);
+                    if (sector.Warp[3] > 0)
+                        CheckBubble(i, sector.Warp[3]);
+                    if (sector.Warp[4] > 0)
+                        CheckBubble(i, sector.Warp[4]);
+                    if (sector.Warp[5] > 0)
+                        CheckBubble(i, sector.Warp[5]);
+                }
+            }
+        }
+
         private void CheckBubble(int gate, ushort interior)
         {
-            int size = TestBubble((ushort)gate, interior, out ushort deepest, out bool gapped);
+            int size = TestBubble(
+                (ushort)gate,
+                interior,
+                out ushort deepest,
+                out bool gapped,
+                out ushort maxDepth,
+                out IReadOnlyList<ushort> sectors);
 
             if (size > 1)
             {
@@ -409,7 +445,9 @@ namespace TWXProxy.Core
                     Gate = (ushort)gate,
                     Deepest = deepest,
                     Size = (ushort)size,
-                    Gapped = gapped
+                    MaxDepth = maxDepth,
+                    Gapped = gapped,
+                    Sectors = sectors,
                 });
             }
         }

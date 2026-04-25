@@ -316,11 +316,12 @@ public class ProxyService : IProxyService
                                 TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");
-                                // Pascal ProcessPrompt calls TextEvent(CurrentLine) only — no TextLineEvent for partial prompts.
-                                // Pascal does NOT call ActivateTriggers after a prompt — only after a full \r-terminated
-                                // line (inside ProcessLine). Re-enabling triggers here was causing TextLineTriggers
-                                // registered during a prompt handler to fire on the next full line's TextLineEvent
-                                // instead of waiting for the line after that.
+                                // Pascal partial prompt flow is AutoTextEvent(CurrentLine), then
+                                // ProcessPrompt(CurrentLine) which calls TextEvent(CurrentLine).
+                                // Pascal does NOT call TextLineEvent or ActivateTriggers here —
+                                // those only happen after a full \r-terminated line in ProcessLine.
+                                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling AutoTextEvent on prompt...\n");
+                                interpreter.AutoTextEvent(scriptRemainder, false);
                                 interpreter.TextEvent(scriptRemainder, false);
                                 if (nativeHaggleResponded)
                                 {
