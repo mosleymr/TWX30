@@ -235,6 +235,7 @@ namespace TWXProxy.Core
         private int _nextProvisionalPlanetId = -1;
         private NetworkManager? _networkManager;
         private GameInstance? _gameInstance;
+        private long _changeStamp;
 
         public ModDatabase()
         {
@@ -304,6 +305,12 @@ namespace TWXProxy.Core
         public bool IsOpen => _isOpen;
 
         /// <summary>
+        /// Monotonic stamp for in-memory consumers that want to cache derived results
+        /// and invalidate them when the underlying database changes.
+        /// </summary>
+        public long ChangeStamp => Interlocked.Read(ref _changeStamp);
+
+        /// <summary>
         /// Updates selected header fields from caller-supplied values.  Only non-default
         /// values overwrite the stored ones, so optional fields can be left at their zero/
         /// empty defaults to leave the database copy unchanged.
@@ -324,6 +331,7 @@ namespace TWXProxy.Core
                 if (!string.IsNullOrEmpty(updates.Description)) _header.Description = updates.Description;
                 if (_header.Sectors > previousSectors)
                     EnsureSectorCapacity(_header.Sectors);
+                Interlocked.Increment(ref _changeStamp);
             }
             finally
             {
@@ -345,6 +353,7 @@ namespace TWXProxy.Core
                 _header = header;
                 if (_header.Sectors > previousSectors)
                     EnsureSectorCapacity(_header.Sectors);
+                Interlocked.Increment(ref _changeStamp);
             }
             finally
             {
@@ -692,6 +701,7 @@ namespace TWXProxy.Core
 
             // Update warp-in cache for connected sectors
             UpdateWarpInCache(sector);
+            Interlocked.Increment(ref _changeStamp);
         }
 
         private bool RepairLandmarkHeadersFromSectorData()

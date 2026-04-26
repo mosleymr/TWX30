@@ -31,8 +31,11 @@ internal class EmbeddedGameConfig
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NativeHaggleMode { get; set; }
     public bool   UseCache { get; set; } = true;
+    public int    BubbleMinSize { get; set; } = 5;
     public int    BubbleSize { get; set; } = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
     public bool   BubbleSizeCustomized { get; set; }
+    public int    DeadEndMinSize { get; set; } = 2;
+    public int    DeadEndMaxSize { get; set; } = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
     public bool   LocalEcho { get; set; } = true;
     public bool   LogEnabled { get; set; } = true;
     public bool   LogAnsi { get; set; }

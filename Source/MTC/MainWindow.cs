@@ -2606,11 +2606,24 @@ public class MainWindow : Window
     {
         var win = new BubblesWindow(
             () => _sessionDb,
-            () => _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize,
-            size =>
+            () => _state.Sector,
+            () => Math.Max(1, _embeddedGameConfig?.BubbleMinSize ?? 5),
+            () => Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            (minSize, maxSize) =>
             {
                 _embeddedGameConfig ??= new EmbeddedGameConfig();
-                _embeddedGameConfig.BubbleSize = Math.Max(1, size);
+                _embeddedGameConfig.BubbleMinSize = Math.Max(1, minSize);
+                _embeddedGameConfig.BubbleSize = Math.Max(1, maxSize);
+                _embeddedGameConfig.BubbleSizeCustomized = true;
+                _ = SaveCurrentGameConfigAsync();
+            },
+            () => Math.Max(1, _embeddedGameConfig?.DeadEndMinSize ?? 2),
+            () => Math.Max(1, _embeddedGameConfig?.DeadEndMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            (minSize, maxSize) =>
+            {
+                _embeddedGameConfig ??= new EmbeddedGameConfig();
+                _embeddedGameConfig.DeadEndMinSize = Math.Max(1, minSize);
+                _embeddedGameConfig.DeadEndMaxSize = Math.Max(1, maxSize);
                 _ = SaveCurrentGameConfigAsync();
             });
         win.Show();

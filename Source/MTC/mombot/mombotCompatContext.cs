@@ -12,7 +12,8 @@ internal sealed record mombotCommandContext(
     bool SelfCommand = false,
     string Route = "",
     string UserName = "",
-    string TypedCommandName = "");
+    string TypedCommandName = "",
+    string TypedParameterLine = "");
 
 internal sealed class mombotCompatContext
 {
@@ -103,9 +104,7 @@ internal sealed class mombotCompatContext
             "$BOT~COMMAND_TYPED",
             "$bot~command_typed",
             "$command_typed");
-        string userCommandLine = userCommandLineOverride ?? (context.Parameters.Count == 0
-            ? string.Empty
-            : string.Join(" ", context.Parameters));
+        string userCommandLine = userCommandLineOverride ?? context.TypedParameterLine;
         SetVars(vars, userCommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
         SetVars(vars, botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetVars(vars, context.SelfCommand ? "1" : "0", "$BOT~SELF_COMMAND", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$bot~self_command", "$self_command");

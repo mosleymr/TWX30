@@ -25,6 +25,15 @@ public sealed record TwxImportResult(
 /// </summary>
 public static class ProxyGameOperations
 {
+    private readonly record struct BubbleCacheKey(ModDatabase Database, long ChangeStamp, int MaxBubbleSize, bool AllowSeparatedByGates);
+    private readonly record struct DeadEndCacheKey(ModDatabase Database, long ChangeStamp, int MaxDeadEndSize);
+
+    private static readonly object FinderCacheLock = new();
+    private static BubbleCacheKey? _lastBubbleCacheKey;
+    private static IReadOnlyList<BubbleInfo> _lastBubbleCache = Array.Empty<BubbleInfo>();
+    private static DeadEndCacheKey? _lastDeadEndCacheKey;
+    private static IReadOnlyList<DeadEndInfo> _lastDeadEndCache = Array.Empty<DeadEndInfo>();
+
     public static IReadOnlyList<RunningScriptInfo> GetRunningScripts(ModInterpreter? interpreter)
     {
         if (interpreter == null)
@@ -292,13 +301,30 @@ public static class ProxyGameOperations
         }
     }
 
-    public static IReadOnlyList<BubbleInfo> GetBubbles(ModDatabase database, int maxBubbleSize)
+    public static IReadOnlyList<BubbleInfo> GetBubbles(
+        ModDatabase database,
+        int maxBubbleSize,
+        bool allowSectorsSeparatedByGates = false)
     {
         EnsureOpenDatabase(database);
 
+        int effectiveMaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : ModBubble.DefaultMaxBubbleSize;
+        BubbleCacheKey cacheKey = new(
+            database,
+            database.ChangeStamp,
+            effectiveMaxBubbleSize,
+            allowSectorsSeparatedByGates);
+
+        lock (FinderCacheLock)
+        {
+            if (_lastBubbleCacheKey == cacheKey)
+                return _lastBubbleCache;
+        }
+
         var bubble = new ModBubble
         {
-            MaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : ModBubble.DefaultMaxBubbleSize
+            MaxBubbleSize = effectiveMaxBubbleSize,
+            AllowSectorsSeparatedByGates = allowSectorsSeparatedByGates,
         };
 
         var previousDatabase = GlobalModules.TWXDatabase;
@@ -307,13 +333,46 @@ public static class ProxyGameOperations
         {
             GlobalModules.TWXDatabase = database;
             GlobalModules.TWXBubble = bubble;
-            return bubble.GetBubbles();
+            IReadOnlyList<BubbleInfo> bubbles = bubble.GetBubbles();
+            lock (FinderCacheLock)
+            {
+                _lastBubbleCacheKey = cacheKey;
+                _lastBubbleCache = bubbles;
+            }
+            return bubbles;
         }
         finally
         {
             GlobalModules.TWXBubble = previousBubble;
             GlobalModules.TWXDatabase = previousDatabase;
         }
+    }
+
+    public static IReadOnlyList<DeadEndInfo> GetDeadEnds(
+        ModDatabase database,
+        int maxDeadEndSize)
+    {
+        EnsureOpenDatabase(database);
+        int effectiveMaxDeadEndSize = maxDeadEndSize > 0 ? maxDeadEndSize : ModBubble.DefaultMaxBubbleSize;
+        DeadEndCacheKey cacheKey = new(database, database.ChangeStamp, effectiveMaxDeadEndSize);
+
+        lock (FinderCacheLock)
+        {
+            if (_lastDeadEndCacheKey == cacheKey)
+                return _lastDeadEndCache;
+        }
+
+        IReadOnlyList<DeadEndInfo> deadEnds = DeadEndFinder.Find(
+            database,
+            effectiveMaxDeadEndSize);
+
+        lock (FinderCacheLock)
+        {
+            _lastDeadEndCacheKey = cacheKey;
+            _lastDeadEndCache = deadEnds;
+        }
+
+        return deadEnds;
     }
 
     public static void ExportTwx(ModDatabase database, string outputPath)

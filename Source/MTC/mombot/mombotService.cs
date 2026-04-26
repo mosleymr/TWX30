@@ -555,9 +555,7 @@ internal sealed class mombotService
 
     private static string BuildModuleUserCommandLine(mombotCommandContext context)
     {
-        return context.Parameters.Count == 0
-            ? string.Empty
-            : string.Join(" ", context.Parameters);
+        return context.TypedParameterLine;
     }
 
     private mombotDispatchResult ExecuteNative(mombotCommandSpec command, mombotCommandContext context)
@@ -1364,7 +1362,7 @@ internal sealed class mombotService
         string remainder = line[prefix.Length..].TrimStart();
         if (string.IsNullOrWhiteSpace(remainder))
         {
-            context = new mombotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), true, "self", "self");
+            context = new mombotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), true, "self", "self", string.Empty, string.Empty);
             return true;
         }
 
@@ -1380,7 +1378,9 @@ internal sealed class mombotService
             parameters,
             true,
             "self",
-            "self");
+            "self",
+            string.Empty,
+            string.Join(" ", parameters));
         return true;
     }
 
@@ -1400,7 +1400,7 @@ internal sealed class mombotService
         string commandName = words[1];
         List<string> parameters = words.Skip(2).Take(8).ToList();
         string normalized = BuildNormalizedCommandLine(commandName, parameters);
-        context = new mombotCommandContext(normalized, commandName, parameters, false, route, userName);
+        context = new mombotCommandContext(normalized, commandName, parameters, false, route, userName, string.Empty, string.Join(" ", parameters));
         return true;
     }
 
@@ -1485,7 +1485,8 @@ internal sealed class mombotService
             ? string.Empty
             : commandName.Trim();
         string normalizedCommand = typedCommandName;
-        var parameters = rawParameters.Take(8).ToList();
+        var typedParameters = rawParameters.Take(8).ToList();
+        var parameters = typedParameters.ToList();
 
         ApplyStockCommandRewrites(ref normalizedCommand, parameters);
         normalizedCommand = NormalizeConfiguredCommandAlias(mombotCatalog.NormalizeCommandName(normalizedCommand));
@@ -1501,7 +1502,8 @@ internal sealed class mombotService
             selfCommand,
             route,
             userName,
-            typedCommandName);
+            typedCommandName,
+            string.Join(" ", typedParameters));
     }
 
     private static string BuildNormalizedCommandLine(string canonical, IReadOnlyList<string> parameters)

@@ -6,18 +6,20 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Core = TWXProxy.Core;
 
 namespace MTC;
 
 public class BubblesWindow : Window
 {
-    private sealed record BubbleRow(
-        Core.BubbleInfo Bubble,
-        int? DistToSd,
-        int? DistToSol);
+    private enum FinderTabKind
+    {
+        Bubbles,
+        DeadEnds,
+    }
 
-    private enum BubbleSortMode
+    private enum FinderSortMode
     {
         Door,
         Sectors,
@@ -26,24 +28,63 @@ public class BubblesWindow : Window
         DistToSol,
     }
 
+    private sealed record FinderRow(
+        ushort Door,
+        ushort Deepest,
+        ushort Size,
+        ushort Depth,
+        int? DistToSd,
+        int? DistToSol,
+        IReadOnlyList<ushort> Sectors,
+        bool Gapped);
+
+    private readonly record struct FinderCacheKey(
+        Core.ModDatabase Database,
+        long ChangeStamp,
+        FinderTabKind Kind,
+        int MinSize,
+        int MaxSize,
+        bool AllowSeparatedByGates);
+
+    private sealed class FinderTabState
+    {
+        public required FinderTabKind Kind { get; init; }
+        public required TextBlock Summary { get; init; }
+        public required TextBlock SearchStatus { get; init; }
+        public required TextBox MinSizeBox { get; init; }
+        public required TextBox MaxSizeBox { get; init; }
+        public required TextBox SectorSearchBox { get; init; }
+        public required StackPanel RowHost { get; init; }
+        public ScrollViewer? ResultsScrollViewer { get; set; }
+        public TacticalMapControl PreviewMap { get; set; } = null!;
+        public required Button CopySelectedButton { get; init; }
+        public required Button SectorSearchButton { get; init; }
+        public required CheckBox? AllowSeparatedByGatesCheckBox { get; init; }
+        public Button? SortSectorsButton { get; set; }
+        public Button? SortDepthButton { get; set; }
+        public Button? SortDistToSdButton { get; set; }
+        public Button? SortDistToSolButton { get; set; }
+        public FinderSortMode SortMode { get; set; } = FinderSortMode.Sectors;
+        public bool SortDescending { get; set; } = true;
+        public List<FinderRow> Rows { get; set; } = [];
+        public FinderRow? SelectedRow { get; set; }
+        public bool Loaded { get; set; }
+        public FinderCacheKey? CachedKey { get; set; }
+        public IReadOnlyList<FinderRow> CachedRows { get; set; } = Array.Empty<FinderRow>();
+    }
+
     private readonly Func<Core.ModDatabase?> _getDb;
-    private readonly Action<int>? _setMaxBubbleSize;
-    private readonly TextBlock _header;
-    private readonly TextBlock _summary;
-    private readonly StackPanel _content;
-    private readonly TextBox _bubbleSizeBox;
-    private Button? _sortSectorsButton;
-    private Button? _sortDepthButton;
-    private Button? _sortDistToSdButton;
-    private Button? _sortDistToSolButton;
-    private BubbleSortMode _sortMode = BubbleSortMode.Door;
-    private bool _sortDescending = true;
-    private int _currentBubbleSize;
+    private readonly Func<int> _getCurrentSector;
+    private readonly Action<int, int>? _setBubbleSizeRange;
+    private readonly Action<int, int>? _setDeadEndSizeRange;
+    private readonly FinderTabState _bubbleTab;
+    private readonly FinderTabState _deadEndTab;
 
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(8, 14, 20));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(14, 33, 42));
     private static readonly IBrush BgCard = new SolidColorBrush(Color.FromRgb(16, 53, 67));
     private static readonly IBrush BgCardAlt = new SolidColorBrush(Color.FromRgb(10, 43, 53));
+    private static readonly IBrush BgSelected = new SolidColorBrush(Color.FromRgb(32, 83, 97));
     private static readonly IBrush Edge = new SolidColorBrush(Color.FromRgb(57, 112, 128));
     private static readonly IBrush InnerEdge = new SolidColorBrush(Color.FromRgb(23, 81, 94));
     private static readonly IBrush ColText = new SolidColorBrush(Color.FromRgb(222, 238, 242));
@@ -53,20 +94,67 @@ public class BubblesWindow : Window
     private static readonly IBrush ColError = new SolidColorBrush(Color.FromRgb(255, 106, 106));
     private static readonly IBrush ColSuccess = new SolidColorBrush(Color.FromRgb(116, 239, 164));
 
-    public BubblesWindow(Func<Core.ModDatabase?> getDb, Func<int> getMaxBubbleSize, Action<int>? setMaxBubbleSize = null)
+    public BubblesWindow(
+        Func<Core.ModDatabase?> getDb,
+        Func<int> getCurrentSector,
+        Func<int> getBubbleMinSize,
+        Func<int> getBubbleMaxSize,
+        Action<int, int>? setBubbleSizeRange = null,
+        Func<int>? getDeadEndMinSize = null,
+        Func<int>? getDeadEndMaxSize = null,
+        Action<int, int>? setDeadEndSizeRange = null)
     {
         _getDb = getDb;
-        _setMaxBubbleSize = setMaxBubbleSize;
-        _currentBubbleSize = Math.Max(1, getMaxBubbleSize());
+        _getCurrentSector = getCurrentSector;
+        _setBubbleSizeRange = setBubbleSizeRange;
+        _setDeadEndSizeRange = setDeadEndSizeRange;
 
-        Title = "Bubble List";
-        Width = 980;
-        Height = 640;
-        MinWidth = 760;
-        MinHeight = 360;
+        Title = "Bubble Finder";
+        Width = 1340;
+        Height = 760;
+        MinWidth = 980;
+        MinHeight = 520;
         Background = BgWin;
         FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
+        _bubbleTab = BuildFinderTab(
+            FinderTabKind.Bubbles,
+            Math.Max(1, getBubbleMinSize()),
+            Math.Max(1, getBubbleMaxSize()),
+            showAllowSeparatedByGates: true);
+        _deadEndTab = BuildFinderTab(
+            FinderTabKind.DeadEnds,
+            Math.Max(1, getDeadEndMinSize?.Invoke() ?? 2),
+            Math.Max(1, getDeadEndMaxSize?.Invoke() ?? Core.ModBubble.DefaultMaxBubbleSize),
+            showAllowSeparatedByGates: false);
+
+        var tabs = new TabControl
+        {
+            Margin = new Thickness(12),
+            ItemsSource = new object[]
+            {
+                BuildTabItem("Bubbles", _bubbleTab),
+                BuildTabItem("Dead Ends", _deadEndTab),
+            },
+        };
+
+        tabs.SelectionChanged += async (_, _) =>
+        {
+            FinderTabState state = tabs.SelectedIndex == 1 ? _deadEndTab : _bubbleTab;
+            if (!state.Loaded)
+                await RefreshTabAsync(state);
+        };
+
+        Content = tabs;
+        Opened += async (_, _) =>
+        {
+            if (!_bubbleTab.Loaded)
+                await RefreshTabAsync(_bubbleTab);
+        };
+    }
+
+    private TabItem BuildTabItem(string header, FinderTabState state)
+    {
         var refreshButton = new Button
         {
             Content = "Refresh",
@@ -75,134 +163,316 @@ public class BubblesWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
         StyleActionButton(refreshButton, primary: true);
-        refreshButton.Click += async (_, _) => await RefreshFromInputAsync();
+        refreshButton.Click += async (_, _) => await RefreshTabFromInputAsync(state);
 
-        _bubbleSizeBox = new TextBox
-        {
-            Text = _currentBubbleSize.ToString(),
-            Width = 72,
-            Height = 34,
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalContentAlignment = VerticalAlignment.Center,
-        };
-        StyleInputBox(_bubbleSizeBox);
-
-        var bubbleSizeLabel = new TextBlock
-        {
-            Text = "Max Size",
-            Foreground = ColMuted,
-            FontSize = 12,
-            FontWeight = FontWeight.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
+        var minLabel = BuildToolbarLabel("Min Size");
+        var maxLabel = BuildToolbarLabel("Max Size");
 
         var actionsPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = 10,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { bubbleSizeLabel, _bubbleSizeBox, refreshButton },
-        };
-
-        _header = new TextBlock
-        {
-            Text = "Bubble list",
-            Foreground = ColText,
-            FontSize = 18,
-            FontWeight = FontWeight.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center,
-        };
-
-        _summary = new TextBlock
-        {
-            Text = string.Empty,
-            Foreground = ColMuted,
-            FontSize = 13,
-            Margin = new Thickness(0, 6, 0, 0),
-            TextWrapping = TextWrapping.Wrap,
-        };
-
-        var headerStack = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 0,
-            Children = { _header, _summary },
-        };
-
-        var refreshHost = new Border
-        {
-            Child = actionsPanel,
-            VerticalAlignment = VerticalAlignment.Top,
-        };
-        DockPanel.SetDock(refreshHost, Dock.Right);
-
-        var toolbar = new DockPanel
-        {
-            Background = BgPanel,
-            LastChildFill = true,
-            Margin = new Thickness(12, 12, 12, 8),
             Children =
             {
-                refreshHost,
-                headerStack,
+                minLabel,
+                state.MinSizeBox,
+                maxLabel,
+                state.MaxSizeBox,
+                refreshButton,
             },
         };
 
-        var columnHeader = BuildColumnHeader();
-
-        _content = new StackPanel
+        var headerText = new TextBlock
         {
-            Spacing = 8,
-            Margin = new Thickness(12, 0, 12, 12),
+            Text = state.Kind == FinderTabKind.Bubbles ? "Bubble results" : "Dead-end results",
+            Foreground = ColText,
+            FontSize = 18,
+            FontWeight = FontWeight.SemiBold,
         };
 
-        var scroll = new ScrollViewer
+        var topStack = new StackPanel
         {
-            Content = _content,
+            Orientation = Orientation.Vertical,
+            Spacing = 8,
+            Children =
+            {
+                new DockPanel
+                {
+                    Children =
+                    {
+                        new Border
+                        {
+                            Child = actionsPanel,
+                            VerticalAlignment = VerticalAlignment.Top,
+                        }.WithDock(Dock.Right),
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Vertical,
+                            Spacing = 4,
+                            Children =
+                            {
+                                headerText,
+                                state.Summary,
+                                state.SearchStatus,
+                            },
+                        },
+                    },
+                },
+            },
+        };
+
+        if (state.AllowSeparatedByGatesCheckBox != null)
+            topStack.Children.Add(state.AllowSeparatedByGatesCheckBox);
+
+        var resultsScrollViewer = new ScrollViewer
+        {
+            Content = state.RowHost,
             VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
         };
+        state.ResultsScrollViewer = resultsScrollViewer;
 
-        var layout = new DockPanel();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        DockPanel.SetDock(columnHeader, Dock.Top);
-        layout.Children.Add(toolbar);
-        layout.Children.Add(columnHeader);
-        layout.Children.Add(scroll);
-        Content = layout;
+        var leftPane = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
+            RowSpacing = 10,
+            Children =
+            {
+                BuildColumnHeader(state),
+                resultsScrollViewer.WithRow(1),
+                new Border
+                {
+                    Background = BgPanel,
+                    BorderBrush = InnerEdge,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(10, 8),
+                    Child = new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto,Auto"),
+                        ColumnSpacing = 8,
+                        Children =
+                        {
+                            state.CopySelectedButton,
+                            BuildToolbarLabel("Sector Search").WithColumn(2),
+                            state.SectorSearchBox.WithColumn(3),
+                            state.SectorSearchButton.WithColumn(4),
+                        },
+                    },
+                }.WithRow(2),
+            },
+        };
 
-        Opened += async (_, _) => await RefreshAsync();
+        var rightPane = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*"),
+            RowSpacing = 10,
+            Children =
+            {
+                new Border
+                {
+                    Background = BgCardAlt,
+                    BorderBrush = InnerEdge,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(12, 10),
+                    Child = new TextBlock
+                    {
+                        Text = "Map Preview",
+                        Foreground = ColMuted,
+                        FontSize = 12,
+                        FontWeight = FontWeight.SemiBold,
+                    },
+                },
+                new Border
+                {
+                    Background = BgPanel,
+                    BorderBrush = Edge,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(14),
+                    Padding = new Thickness(4),
+                    Child = new Border
+                    {
+                        Background = BgCardAlt,
+                        BorderBrush = InnerEdge,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(12),
+                        ClipToBounds = true,
+                        Child = state.PreviewMap,
+                    },
+                }.WithRow(1),
+            },
+        };
+
+        var body = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("2.7*,4.3*"),
+            ColumnSpacing = 12,
+            Margin = new Thickness(0, 10, 0, 0),
+            Children =
+            {
+                leftPane,
+                rightPane.WithColumn(1),
+            },
+        };
+
+        return new TabItem
+        {
+            Header = header,
+            Content = new Border
+            {
+                Background = BgWin,
+                Child = new DockPanel
+                {
+                    LastChildFill = true,
+                    Children =
+                    {
+                        new Border
+                        {
+                            Background = BgPanel,
+                            BorderBrush = Edge,
+                            BorderThickness = new Thickness(1),
+                            CornerRadius = new CornerRadius(14),
+                            Padding = new Thickness(14, 12),
+                            Margin = new Thickness(0, 0, 0, 10),
+                            Child = topStack,
+                        }.WithDock(Dock.Top),
+                        body,
+                    },
+                },
+            },
+        };
     }
 
-    private Control BuildColumnHeader()
+    private FinderTabState BuildFinderTab(FinderTabKind kind, int minSize, int maxSize, bool showAllowSeparatedByGates)
+    {
+        var state = new FinderTabState
+        {
+            Kind = kind,
+            Summary = new TextBlock
+            {
+                Foreground = ColMuted,
+                FontSize = 13,
+                TextWrapping = TextWrapping.Wrap,
+            },
+            SearchStatus = new TextBlock
+            {
+                Foreground = ColMuted,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+            },
+            MinSizeBox = new TextBox
+            {
+                Text = minSize.ToString(),
+                Width = 72,
+                Height = 34,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            },
+            MaxSizeBox = new TextBox
+            {
+                Text = maxSize.ToString(),
+                Width = 72,
+                Height = 34,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            },
+            SectorSearchBox = new TextBox
+            {
+                Width = 92,
+                Height = 34,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+            },
+            RowHost = new StackPanel
+            {
+                Spacing = 8,
+            },
+            PreviewMap = null!,
+            CopySelectedButton = new Button
+            {
+                Content = "Copy Sectors",
+                Padding = new Thickness(12, 5),
+                Height = 34,
+                IsEnabled = false,
+            },
+            SectorSearchButton = new Button
+            {
+                Content = "Go",
+                Padding = new Thickness(12, 5),
+                Height = 34,
+            },
+            AllowSeparatedByGatesCheckBox = showAllowSeparatedByGates
+                ? new CheckBox
+                {
+                    Content = "Allow sectors to be separated by gates",
+                    IsChecked = true,
+                    Foreground = ColText,
+                    VerticalAlignment = VerticalAlignment.Center,
+                }
+                : null,
+        };
+
+        StyleInputBox(state.MinSizeBox);
+        StyleInputBox(state.MaxSizeBox);
+        StyleInputBox(state.SectorSearchBox);
+        StyleActionButton(state.CopySelectedButton, primary: true);
+        StyleActionButton(state.SectorSearchButton, primary: true);
+        state.CopySelectedButton.Click += async (_, _) => await CopySelectedAsync(state);
+        state.SectorSearchButton.Click += async (_, _) => await SearchForSectorAsync(state);
+
+        if (state.AllowSeparatedByGatesCheckBox != null)
+            state.AllowSeparatedByGatesCheckBox.IsCheckedChanged += async (_, _) => await RefreshTabAsync(state, forceRecompute: true);
+
+        state.PreviewMap = new TacticalMapControl(
+            () => state.SelectedRow?.Door ?? Math.Max(1, _getCurrentSector()),
+            _getDb)
+        {
+            MinHeight = 420,
+        };
+        state.PreviewMap.SetViewMode(TacticalMapViewMode.Bubble);
+
+        return state;
+    }
+
+    private Control BuildColumnHeader(FinderTabState state)
     {
         var grid = new Grid
         {
-            Margin = new Thickness(12, 0, 12, 8),
-            ColumnDefinitions = new ColumnDefinitions("120,84,84,94,94,*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("84,84,84,92,92,*,Auto"),
             ColumnSpacing = 12,
         };
 
         AddHeaderCell(grid, "Door", 0);
-        _sortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, BubbleSortMode.Sectors);
-        _sortDepthButton = AddSortHeaderCell(grid, "Depth", 2, BubbleSortMode.Depth);
-        _sortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, BubbleSortMode.DistToSd);
-        _sortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, BubbleSortMode.DistToSol);
+        state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, state, FinderSortMode.Sectors);
+        state.SortDepthButton = AddSortHeaderCell(grid, "Depth", 2, state, FinderSortMode.Depth);
+        state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
+        state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
         AddHeaderCell(grid, "Sector List", 5);
         AddHeaderCell(grid, string.Empty, 6);
-        UpdateSortButtons();
+        UpdateSortButtons(state);
 
         return new Border
         {
             Background = BgCardAlt,
             BorderBrush = InnerEdge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Child = new Border
-            {
-                Padding = new Thickness(12, 10),
-                Child = grid,
-            },
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12, 10),
+            Child = grid,
+        };
+    }
+
+    private static TextBlock BuildToolbarLabel(string text)
+    {
+        return new TextBlock
+        {
+            Text = text,
+            Foreground = ColMuted,
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
         };
     }
 
@@ -220,7 +490,7 @@ public class BubblesWindow : Window
         grid.Children.Add(block);
     }
 
-    private Button AddSortHeaderCell(Grid grid, string text, int column, BubbleSortMode mode)
+    private Button AddSortHeaderCell(Grid grid, string text, int column, FinderTabState state, FinderSortMode mode)
     {
         var button = new Button
         {
@@ -229,62 +499,57 @@ public class BubblesWindow : Window
             BorderThickness = new Thickness(0),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            Foreground = ColMuted,
-            FontSize = 12,
-            FontWeight = FontWeight.SemiBold,
         };
         button.Click += async (_, _) =>
         {
-            OnSortClicked(mode);
-            await RefreshAsync();
+            OnSortClicked(state, mode);
+            await RefreshTabAsync(state);
         };
         Grid.SetColumn(button, column);
         grid.Children.Add(button);
         return button;
     }
 
-    private void OnSortClicked(BubbleSortMode mode)
+    private void OnSortClicked(FinderTabState state, FinderSortMode mode)
     {
-        if (_sortMode == mode)
-        {
-            _sortDescending = !_sortDescending;
-        }
+        if (state.SortMode == mode)
+            state.SortDescending = !state.SortDescending;
         else
         {
-            _sortMode = mode;
-            _sortDescending = true;
+            state.SortMode = mode;
+            state.SortDescending = true;
         }
     }
 
-    private void UpdateSortButtons()
+    private void UpdateSortButtons(FinderTabState state)
     {
-        if (_sortSectorsButton != null)
-            _sortSectorsButton.Content = BuildSortLabel("Sectors", BubbleSortMode.Sectors);
+        if (state.SortSectorsButton != null)
+            state.SortSectorsButton.Content = BuildSortLabel("Sectors", state, FinderSortMode.Sectors);
 
-        if (_sortDepthButton != null)
-            _sortDepthButton.Content = BuildSortLabel("Depth", BubbleSortMode.Depth);
+        if (state.SortDepthButton != null)
+            state.SortDepthButton.Content = BuildSortLabel("Depth", state, FinderSortMode.Depth);
 
-        if (_sortDistToSdButton != null)
-            _sortDistToSdButton.Content = BuildSortLabel("Dist to SD", BubbleSortMode.DistToSd);
+        if (state.SortDistToSdButton != null)
+            state.SortDistToSdButton.Content = BuildSortLabel("Dist to SD", state, FinderSortMode.DistToSd);
 
-        if (_sortDistToSolButton != null)
-            _sortDistToSolButton.Content = BuildSortLabel("Dist to Sol", BubbleSortMode.DistToSol);
+        if (state.SortDistToSolButton != null)
+            state.SortDistToSolButton.Content = BuildSortLabel("Dist to Sol", state, FinderSortMode.DistToSol);
     }
 
-    private Control BuildSortLabel(string label, BubbleSortMode mode)
+    private static Control BuildSortLabel(string label, FinderTabState state, FinderSortMode mode)
     {
         string displayLabel = mode switch
         {
-            BubbleSortMode.DistToSd => "Dist to\nSD",
-            BubbleSortMode.DistToSol => "Dist to\nSol",
+            FinderSortMode.DistToSd => "Dist to\nSD",
+            FinderSortMode.DistToSol => "Dist to\nSol",
             _ => label,
         };
 
-        string text = _sortMode != mode
-            ? $"{displayLabel} ▲▼"
-            : _sortDescending
-                ? $"{displayLabel} ▼"
-                : $"{displayLabel} ▲";
+        string text = state.SortMode != mode
+            ? $"{displayLabel}  ▲▼"
+            : state.SortDescending
+                ? $"{displayLabel}  ▼"
+                : $"{displayLabel}  ▲";
 
         return new TextBlock
         {
@@ -298,116 +563,233 @@ public class BubblesWindow : Window
         };
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshTabFromInputAsync(FinderTabState state)
     {
-        _content.Children.Clear();
-        UpdateSortButtons();
+        if (!TryApplyInput(state, out _, out _))
+            return;
+
+        await RefreshTabAsync(state, forceRecompute: true);
+    }
+
+    private async Task RefreshTabAsync(FinderTabState state, bool forceRecompute = false)
+    {
+        state.RowHost.Children.Clear();
+        UpdateSortButtons(state);
+        state.SearchStatus.Text = string.Empty;
 
         Core.ModDatabase? db = _getDb();
         if (db == null)
         {
-            _header.Text = "Bubble list";
-            _summary.Text = "No active database. Connect to or open a game first.";
-            _summary.Foreground = ColError;
+            state.Summary.Text = "No active database. Connect to or open a game first.";
+            state.Summary.Foreground = ColError;
+            state.Rows = [];
+            state.SelectedRow = null;
+            state.CachedKey = null;
+            state.CachedRows = Array.Empty<FinderRow>();
+            UpdatePreviewSelection(state, null);
+            state.Loaded = true;
             return;
         }
 
-        IReadOnlyList<Core.BubbleInfo> allBubbles = Core.ProxyGameOperations.GetBubbles(db, _currentBubbleSize);
+        if (!TryApplyInput(state, out int minSize, out int maxSize))
+            return;
+
         int stardockSector = ResolveStardockSector(db);
         int solSector = ResolveSolSector(db);
-        List<BubbleRow> solidBubbles = SortBubbles(
-            allBubbles
-                .Where(bubble => !bubble.Gapped)
-                .Select(bubble => BuildBubbleRow(db, bubble, stardockSector, solSector)))
-            .ToList();
+        IReadOnlyList<FinderRow> rows = GetOrLoadRows(
+            state,
+            db,
+            minSize,
+            maxSize,
+            stardockSector,
+            solSector,
+            forceRecompute);
 
-        _header.Text = $"Bubble list for {db.DatabaseName}";
-        _summary.Text = $"{solidBubbles.Count} solid bubble(s) found.";
-        _summary.Foreground = solidBubbles.Count == 0 ? ColWarn : ColMuted;
+        FinderRow? previousSelection = state.SelectedRow;
+        state.Rows = SortRows(state, rows).ToList();
+        state.Summary.Text = state.Kind == FinderTabKind.Bubbles
+            ? $"{state.Rows.Count} solid bubble(s) found."
+            : $"{state.Rows.Count} dead end(s) found.";
+        state.Summary.Foreground = state.Rows.Count == 0 ? ColWarn : ColMuted;
 
-        if (solidBubbles.Count == 0)
+        if (state.Rows.Count == 0)
         {
-            _content.Children.Add(new Border
-            {
-                Background = BgPanel,
-                BorderBrush = Edge,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(14, 12),
-                Child = new TextBlock
-                {
-                    Text = "No bubbles to display yet.",
-                    Foreground = ColText,
-                    FontSize = 14,
-                },
-            });
+            state.SelectedRow = null;
+            state.CopySelectedButton.IsEnabled = false;
+            state.RowHost.Children.Add(BuildEmptyCard(
+                state.Kind == FinderTabKind.Bubbles
+                    ? "No bubbles match the current size range."
+                    : "No dead ends match the current size range."));
+            UpdatePreviewSelection(state, null);
+            state.Loaded = true;
             return;
         }
 
-        foreach (BubbleRow bubble in solidBubbles)
-            _content.Children.Add(BuildBubbleRowCard(bubble));
+        FinderRow selectedRow = previousSelection != null
+            ? state.Rows.FirstOrDefault(row =>
+                row.Door == previousSelection.Door &&
+                row.Size == previousSelection.Size &&
+                row.Sectors.SequenceEqual(previousSelection.Sectors))
+              ?? state.Rows[0]
+            : state.Rows[0];
+        state.SelectedRow = selectedRow;
+        state.CopySelectedButton.IsEnabled = true;
 
+        foreach (FinderRow row in state.Rows)
+            state.RowHost.Children.Add(BuildRowCard(state, row));
+
+        UpdatePreviewSelection(state, selectedRow);
+        state.Loaded = true;
         await Task.CompletedTask;
     }
 
-    private async Task RefreshFromInputAsync()
+    private bool TryApplyInput(FinderTabState state, out int minSize, out int maxSize)
     {
-        if (!TryApplyBubbleSizeInput())
-            return;
+        minSize = 1;
+        maxSize = Core.ModBubble.DefaultMaxBubbleSize;
 
-        await RefreshAsync();
-    }
-
-    private bool TryApplyBubbleSizeInput()
-    {
-        string raw = (_bubbleSizeBox.Text ?? string.Empty).Trim();
-        if (!int.TryParse(raw, out int bubbleSize) || bubbleSize < 1)
+        string rawMin = (state.MinSizeBox.Text ?? string.Empty).Trim();
+        string rawMax = (state.MaxSizeBox.Text ?? string.Empty).Trim();
+        if (!int.TryParse(rawMin, out minSize) || minSize < 1 ||
+            !int.TryParse(rawMax, out maxSize) || maxSize < 1)
         {
-            _summary.Text = "Max size must be a whole number greater than zero.";
-            _summary.Foreground = ColError;
+            state.Summary.Text = "Min and max size must both be whole numbers greater than zero.";
+            state.Summary.Foreground = ColError;
             return false;
         }
 
-        _currentBubbleSize = bubbleSize;
-        _bubbleSizeBox.Text = bubbleSize.ToString();
-        _setMaxBubbleSize?.Invoke(bubbleSize);
+        if (minSize > maxSize)
+            (minSize, maxSize) = (maxSize, minSize);
+
+        state.MinSizeBox.Text = minSize.ToString();
+        state.MaxSizeBox.Text = maxSize.ToString();
+
+        if (state.Kind == FinderTabKind.Bubbles)
+            _setBubbleSizeRange?.Invoke(minSize, maxSize);
+        else
+            _setDeadEndSizeRange?.Invoke(minSize, maxSize);
+
         return true;
     }
 
-    private IOrderedEnumerable<BubbleRow> SortBubbles(IEnumerable<BubbleRow> bubbles)
+    private async Task SearchForSectorAsync(FinderTabState state)
     {
-        return _sortMode switch
+        string rawSector = (state.SectorSearchBox.Text ?? string.Empty).Trim();
+        if (!int.TryParse(rawSector, out int sectorNumber) || sectorNumber <= 0)
         {
-            BubbleSortMode.Sectors => _sortDescending
-                ? bubbles.OrderByDescending(bubble => bubble.Bubble.Size).ThenBy(bubble => bubble.Bubble.Gate)
-                : bubbles.OrderBy(bubble => bubble.Bubble.Size).ThenBy(bubble => bubble.Bubble.Gate),
-            BubbleSortMode.Depth => _sortDescending
-                ? bubbles.OrderByDescending(bubble => bubble.Bubble.MaxDepth).ThenBy(bubble => bubble.Bubble.Gate)
-                : bubbles.OrderBy(bubble => bubble.Bubble.MaxDepth).ThenBy(bubble => bubble.Bubble.Gate),
-            BubbleSortMode.DistToSd => SortByNullableDistance(bubbles, bubble => bubble.DistToSd),
-            BubbleSortMode.DistToSol => SortByNullableDistance(bubbles, bubble => bubble.DistToSol),
-            _ => bubbles.OrderBy(bubble => bubble.Bubble.Gate),
+            state.SearchStatus.Text = "Enter a whole-number sector to search.";
+            state.SearchStatus.Foreground = ColError;
+            return;
+        }
+
+        if (!TryApplyInput(state, out _, out _))
+            return;
+
+        await RefreshTabAsync(state);
+        if (state.Rows.Count == 0)
+        {
+            state.SearchStatus.Text = $"Sector {sectorNumber} is not in a {GetFinderKindName(state)}.";
+            state.SearchStatus.Foreground = ColWarn;
+            return;
+        }
+
+        FinderRow? row = state.Rows.FirstOrDefault(row =>
+            row.Door == sectorNumber || row.Sectors.Contains((ushort)sectorNumber));
+
+        if (row == null)
+        {
+            state.SearchStatus.Text = $"Sector {sectorNumber} is not in a {GetFinderKindName(state)}.";
+            state.SearchStatus.Foreground = ColWarn;
+            return;
+        }
+
+        state.SearchStatus.Text = state.Kind == FinderTabKind.Bubbles
+            ? $"Sector {sectorNumber} is in bubble door {row.Door}."
+            : $"Sector {sectorNumber} is in dead end door {row.Door}.";
+        state.SearchStatus.Foreground = ColSuccess;
+        SelectRow(state, row, bringIntoView: true);
+    }
+
+    private IReadOnlyList<FinderRow> GetOrLoadRows(
+        FinderTabState state,
+        Core.ModDatabase db,
+        int minSize,
+        int maxSize,
+        int stardockSector,
+        int solSector,
+        bool forceRecompute)
+    {
+        FinderCacheKey cacheKey = new(
+            db,
+            db.ChangeStamp,
+            state.Kind,
+            minSize,
+            maxSize,
+            state.AllowSeparatedByGatesCheckBox?.IsChecked == true);
+
+        if (!forceRecompute && state.CachedKey == cacheKey)
+            return state.CachedRows;
+
+        IReadOnlyList<FinderRow> rows = state.Kind switch
+        {
+            FinderTabKind.Bubbles => LoadBubbleRows(db, minSize, maxSize, state, stardockSector, solSector),
+            FinderTabKind.DeadEnds => LoadDeadEndRows(db, minSize, maxSize, stardockSector, solSector),
+            _ => Array.Empty<FinderRow>(),
         };
+
+        state.CachedKey = cacheKey;
+        state.CachedRows = rows;
+        return rows;
     }
 
-    private IOrderedEnumerable<BubbleRow> SortByNullableDistance(
-        IEnumerable<BubbleRow> bubbles,
-        Func<BubbleRow, int?> selector)
+    private static IReadOnlyList<FinderRow> LoadBubbleRows(
+        Core.ModDatabase db,
+        int minSize,
+        int maxSize,
+        FinderTabState state,
+        int stardockSector,
+        int solSector)
     {
-        return _sortDescending
-            ? bubbles.OrderBy(bubble => selector(bubble).HasValue ? 0 : 1)
-                .ThenByDescending(bubble => selector(bubble) ?? int.MinValue)
-                .ThenBy(bubble => bubble.Bubble.Gate)
-            : bubbles.OrderBy(bubble => selector(bubble).HasValue ? 0 : 1)
-                .ThenBy(bubble => selector(bubble) ?? int.MaxValue)
-                .ThenBy(bubble => bubble.Bubble.Gate);
+        IReadOnlyList<Core.BubbleInfo> bubbles = Core.ProxyGameOperations.GetBubbles(
+            db,
+            maxSize,
+            state.AllowSeparatedByGatesCheckBox?.IsChecked == true);
+
+        return bubbles
+            .Where(bubble => !bubble.Gapped)
+            .Where(bubble => bubble.Size >= minSize && bubble.Size <= maxSize)
+            .Select(bubble => new FinderRow(
+                bubble.Gate,
+                bubble.Deepest,
+                bubble.Size,
+                bubble.MaxDepth,
+                stardockSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, stardockSector)) : null,
+                solSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, solSector)) : null,
+                bubble.Sectors,
+                bubble.Gapped))
+            .ToArray();
     }
 
-    private static BubbleRow BuildBubbleRow(Core.ModDatabase db, Core.BubbleInfo bubble, int stardockSector, int solSector)
+    private static IReadOnlyList<FinderRow> LoadDeadEndRows(
+        Core.ModDatabase db,
+        int minSize,
+        int maxSize,
+        int stardockSector,
+        int solSector)
     {
-        int? distToSd = stardockSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, stardockSector)) : null;
-        int? distToSol = solSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, solSector)) : null;
-        return new BubbleRow(bubble, distToSd, distToSol);
+        IReadOnlyList<Core.DeadEndInfo> deadEnds = Core.ProxyGameOperations.GetDeadEnds(db, maxSize);
+        return deadEnds
+            .Where(deadEnd => deadEnd.Size >= minSize && deadEnd.Size <= maxSize)
+            .Select(deadEnd => new FinderRow(
+                deadEnd.Door,
+                deadEnd.Deepest,
+                deadEnd.Size,
+                deadEnd.MaxDepth,
+                stardockSector > 0 ? NormalizeDistance(db.GetDistance(deadEnd.Door, stardockSector)) : null,
+                solSector > 0 ? NormalizeDistance(db.GetDistance(deadEnd.Door, solSector)) : null,
+                deadEnd.Sectors,
+                false))
+            .ToArray();
     }
 
     private static int? NormalizeDistance(int distance) => distance >= 0 ? distance : null;
@@ -433,23 +815,52 @@ public class BubblesWindow : Window
         return db.DBHeader.Sectors > 0 ? 1 : 0;
     }
 
-    private static string FormatDistance(int? distance) => distance?.ToString() ?? string.Empty;
-
-    private Control BuildBubbleRowCard(BubbleRow bubble)
+    private IOrderedEnumerable<FinderRow> SortRows(FinderTabState state, IEnumerable<FinderRow> rows)
     {
-        string sectorList = string.Join(" ", bubble.Bubble.Sectors);
+        return state.SortMode switch
+        {
+            FinderSortMode.Sectors => state.SortDescending
+                ? rows.OrderByDescending(row => row.Size).ThenBy(row => row.Door)
+                : rows.OrderBy(row => row.Size).ThenBy(row => row.Door),
+            FinderSortMode.Depth => state.SortDescending
+                ? rows.OrderByDescending(row => row.Depth).ThenBy(row => row.Door)
+                : rows.OrderBy(row => row.Depth).ThenBy(row => row.Door),
+            FinderSortMode.DistToSd => SortByNullableDistance(rows, row => row.DistToSd, state.SortDescending),
+            FinderSortMode.DistToSol => SortByNullableDistance(rows, row => row.DistToSol, state.SortDescending),
+            _ => rows.OrderBy(row => row.Door),
+        };
+    }
+
+    private static IOrderedEnumerable<FinderRow> SortByNullableDistance(
+        IEnumerable<FinderRow> rows,
+        Func<FinderRow, int?> selector,
+        bool descending)
+    {
+        return descending
+            ? rows.OrderBy(row => selector(row).HasValue ? 0 : 1)
+                .ThenByDescending(row => selector(row) ?? int.MinValue)
+                .ThenBy(row => row.Door)
+            : rows.OrderBy(row => selector(row).HasValue ? 0 : 1)
+                .ThenBy(row => selector(row) ?? int.MaxValue)
+                .ThenBy(row => row.Door);
+    }
+
+    private Control BuildRowCard(FinderTabState state, FinderRow row)
+    {
+        string sectorList = string.Join(" ", row.Sectors);
+        bool selected = state.SelectedRow == row;
 
         var grid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("120,84,84,94,94,*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("84,84,84,92,92,*,Auto"),
             ColumnSpacing = 12,
         };
 
-        AddValueCell(grid, bubble.Bubble.Gate.ToString(), 0, ColAccent, bold: true);
-        AddValueCell(grid, bubble.Bubble.Size.ToString(), 1, ColText);
-        AddValueCell(grid, bubble.Bubble.MaxDepth.ToString(), 2, ColText);
-        AddValueCell(grid, FormatDistance(bubble.DistToSd), 3, ColText);
-        AddValueCell(grid, FormatDistance(bubble.DistToSol), 4, ColText);
+        AddValueCell(grid, row.Door.ToString(), 0, ColAccent, bold: true);
+        AddValueCell(grid, row.Size.ToString(), 1, ColText);
+        AddValueCell(grid, row.Depth.ToString(), 2, ColText);
+        AddValueCell(grid, FormatDistance(row.DistToSd), 3, ColText);
+        AddValueCell(grid, FormatDistance(row.DistToSol), 4, ColText);
         AddValueCell(grid, sectorList, 5, ColMuted, wrap: true);
 
         var copyButton = new Button
@@ -460,27 +871,127 @@ public class BubblesWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
         StyleActionButton(copyButton, primary: false);
-        copyButton.Click += async (_, _) => await CopyBubbleAsync(copyButton, sectorList);
+        copyButton.Click += async (_, _) => await CopySectorListAsync(copyButton, sectorList);
         Grid.SetColumn(copyButton, 6);
         grid.Children.Add(copyButton);
 
-        return new Border
+        var border = new Border
         {
-            Background = BgCard,
-            BorderBrush = Edge,
+            Background = selected ? BgSelected : BgCard,
+            BorderBrush = selected ? ColAccent : Edge,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Child = new Border
             {
-                Background = BgCardAlt,
-                BorderBrush = InnerEdge,
+                Background = selected ? BgCard : BgCardAlt,
+                BorderBrush = selected ? ColAccent : InnerEdge,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(9),
                 Padding = new Thickness(12, 10),
                 Child = grid,
             },
         };
+        border.PointerPressed += (_, _) => SelectRow(state, row);
+        return border;
     }
+
+    private Control BuildEmptyCard(string text)
+    {
+        return new Border
+        {
+            Background = BgPanel,
+            BorderBrush = Edge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14, 12),
+            Child = new TextBlock
+            {
+                Text = text,
+                Foreground = ColText,
+                FontSize = 14,
+            },
+        };
+    }
+
+    private static string GetFinderKindName(FinderTabState state)
+        => state.Kind == FinderTabKind.Bubbles ? "bubble" : "dead end";
+
+    private void SelectRow(FinderTabState state, FinderRow row, bool bringIntoView = false)
+    {
+        if (state.SelectedRow == row && !bringIntoView)
+            return;
+
+        state.SelectedRow = row;
+        state.CopySelectedButton.IsEnabled = true;
+        RebuildRows(state, bringIntoView);
+        UpdatePreviewSelection(state, row);
+    }
+
+    private void RebuildRows(FinderTabState state, bool bringIntoView = false)
+    {
+        state.RowHost.Children.Clear();
+        Control? selectedControl = null;
+        foreach (FinderRow row in state.Rows)
+        {
+            Control rowCard = BuildRowCard(state, row);
+            if (state.SelectedRow == row)
+                selectedControl = rowCard;
+            state.RowHost.Children.Add(rowCard);
+        }
+
+        if (bringIntoView && selectedControl != null)
+            Dispatcher.UIThread.Post(() => selectedControl.BringIntoView());
+    }
+
+    private void UpdatePreviewSelection(FinderTabState state, FinderRow? row)
+    {
+        if (row == null)
+        {
+            state.PreviewMap.SetPreviewSelection(null);
+            state.PreviewMap.FollowLiveSector();
+            return;
+        }
+
+        state.PreviewMap.CenterOnSector(row.Door);
+        state.PreviewMap.SetPreviewSelection(row.Sectors.Select(sector => (int)sector), row.Door);
+        state.PreviewMap.SetViewMode(TacticalMapViewMode.Bubble);
+    }
+
+    private async Task CopySelectedAsync(FinderTabState state)
+    {
+        if (state.SelectedRow == null)
+            return;
+
+        await CopyTextAsync(string.Join(" ", state.SelectedRow.Sectors));
+    }
+
+    private async Task CopySectorListAsync(Button button, string sectorList)
+    {
+        string previous = button.Content?.ToString() ?? "Copy";
+        try
+        {
+            await CopyTextAsync(sectorList);
+            button.Content = "Copied";
+            button.Foreground = ColSuccess;
+            await Task.Delay(900);
+        }
+        finally
+        {
+            button.Content = previous;
+            button.ClearValue(Button.ForegroundProperty);
+        }
+    }
+
+    private async Task CopyTextAsync(string text)
+    {
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard == null)
+            return;
+
+        await clipboard.SetTextAsync(text);
+    }
+
+    private static string FormatDistance(int? distance) => distance?.ToString() ?? string.Empty;
 
     private static void AddValueCell(Grid grid, string text, int column, IBrush foreground, bool bold = false, bool wrap = false)
     {
@@ -495,27 +1006,6 @@ public class BubblesWindow : Window
         };
         Grid.SetColumn(block, column);
         grid.Children.Add(block);
-    }
-
-    private async Task CopyBubbleAsync(Button button, string sectorList)
-    {
-        string previous = button.Content?.ToString() ?? "Copy";
-        try
-        {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (clipboard == null)
-                return;
-
-            await clipboard.SetTextAsync(sectorList);
-            button.Content = "Copied";
-            button.Foreground = ColSuccess;
-            await Task.Delay(900);
-        }
-        finally
-        {
-            button.Content = previous;
-            button.ClearValue(Button.ForegroundProperty);
-        }
     }
 
     private static void StyleActionButton(Button button, bool primary)
@@ -534,5 +1024,30 @@ public class BubblesWindow : Window
         textBox.BorderThickness = new Thickness(1);
         textBox.Foreground = ColText;
         textBox.CaretBrush = ColAccent;
+    }
+
+}
+
+internal static class BubbleFinderControlExtensions
+{
+    public static T WithDock<T>(this T control, Dock dock)
+        where T : Control
+    {
+        DockPanel.SetDock(control, dock);
+        return control;
+    }
+
+    public static T WithColumn<T>(this T control, int column)
+        where T : Control
+    {
+        Grid.SetColumn(control, column);
+        return control;
+    }
+
+    public static T WithRow<T>(this T control, int row)
+        where T : Control
+    {
+        Grid.SetRow(control, row);
+        return control;
     }
 }

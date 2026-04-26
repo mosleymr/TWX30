@@ -36,6 +36,7 @@ public class TacticalMapControl : Control
     private const float MinZoomFactor = 0.45f;
     private const float MaxZoomFactor = 1.75f;
     private const float ZoomStep = 0.12f;
+    private const int PreviewMaxHighlightedSectors = 20;
     private static readonly HexCell[] HexDirections =
     [
         new(1, 0),
@@ -63,6 +64,8 @@ public class TacticalMapControl : Control
     private string? _hoveredSectorPopupText;
     private Point _hoverPoint;
     private int? _centerSectorOverride;
+    private HashSet<int> _previewHighlightedSectors = [];
+    private int _previewGateSector;
 
     public TacticalMapControl(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
     {
@@ -189,6 +192,16 @@ public class TacticalMapControl : Control
             return;
 
         _centerSectorOverride = null;
+        InvalidateVisual();
+    }
+
+    public void SetPreviewSelection(IEnumerable<int>? highlightedSectors, int gateSector = 0)
+    {
+        _previewHighlightedSectors = highlightedSectors?
+            .Where(sectorNumber => sectorNumber > 0)
+            .ToHashSet()
+            ?? [];
+        _previewGateSector = gateSector > 0 ? gateSector : 0;
         InvalidateVisual();
     }
 
@@ -450,9 +463,33 @@ public class TacticalMapControl : Control
                 bool forward = HasOutgoingWarp(sector, targetSector);
                 bool backward = HasOutgoingWarp(target, sectorNumber);
                 bool twoWay = forward && backward;
+                bool highlightedEdge = snapshot.HighlightedSectors.Contains(sectorNumber) &&
+                                       snapshot.HighlightedSectors.Contains(targetSector);
+                bool gateEdge = snapshot.GateSector > 0 &&
+                                ((sectorNumber == snapshot.GateSector && snapshot.HighlightedSectors.Contains(targetSector)) ||
+                                 (targetSector == snapshot.GateSector && snapshot.HighlightedSectors.Contains(sectorNumber)));
 
                 SKPoint start = position;
                 SKPoint end = snapshot.Positions[targetSector];
+                if (snapshot.IsPreview)
+                {
+                    if (highlightedEdge)
+                    {
+                        linkGlow.Color = new SKColor(0xff, 0x4f, 0xd8, 42);
+                        linkPaint.Color = new SKColor(0xff, 0x4f, 0xd8, 210);
+                    }
+                    else if (gateEdge)
+                    {
+                        linkGlow.Color = new SKColor(0x44, 0xed, 0xf0, 36);
+                        linkPaint.Color = new SKColor(0x44, 0xed, 0xf0, 210);
+                    }
+                    else
+                    {
+                        linkGlow.Color = new SKColor(0x7e, 0x8f, 0x98, 14);
+                        linkPaint.Color = new SKColor(0xa0, 0xae, 0xb4, 78);
+                    }
+                }
+
                 canvas.DrawLine(start, end, linkGlow);
                 canvas.DrawLine(start, end, twoWay ? linkPaint : oneWayPaint);
             }
@@ -482,6 +519,34 @@ public class TacticalMapControl : Control
         foreach ((int sectorNumber, SKPoint position) in snapshot.Positions.OrderBy(kvp => snapshot.Depths.GetValueOrDefault(kvp.Key)))
         {
             snapshot.Sectors.TryGetValue(sectorNumber, out Core.SectorData? sector);
+
+            if (snapshot.IsPreview)
+            {
+                bool isGate = sectorNumber == snapshot.GateSector;
+                bool isHighlighted = snapshot.HighlightedSectors.Contains(sectorNumber);
+                SKColor previewFillColor = isGate
+                    ? new SKColor(0x12, 0x94, 0xa1)
+                    : isHighlighted
+                        ? new SKColor(0xc9, 0x2f, 0xd5)
+                        : new SKColor(0x53, 0x5d, 0x63);
+
+                nodeGlow.Color = previewFillColor.WithAlpha((byte)(isHighlighted || isGate ? 78 : 24));
+                canvas.DrawCircle(position, isHighlighted || isGate ? NodeRadius + 8f : NodeRadius + 5f, nodeGlow);
+
+                nodeFill.Color = previewFillColor;
+                canvas.DrawCircle(position, isHighlighted || isGate ? NodeRadius + 1.5f : NodeRadius - 1f, nodeFill);
+
+                ringPaint.Color = isGate
+                    ? new SKColor(0x85, 0xff, 0xff)
+                    : isHighlighted
+                        ? new SKColor(0xff, 0xb6, 0xfd)
+                        : new SKColor(0xc9, 0xd1, 0xd6);
+                canvas.DrawCircle(position, isHighlighted || isGate ? NodeRadius + 3.5f : NodeRadius + 0.5f, ringPaint);
+
+                textPaint.Color = SKColors.White;
+                canvas.DrawText(sectorNumber.ToString(), position.X, position.Y + 4f, textPaint);
+                continue;
+            }
 
             bool isCurrent = sectorNumber == snapshot.CurrentSector;
             bool isLandmark = snapshot.Landmarks.Contains(sectorNumber);
@@ -637,7 +702,11 @@ public class TacticalMapControl : Control
 
     private static void DrawOverlayLegend(SKCanvas canvas, float width, float height, MapSnapshot snapshot, TacticalMapViewMode viewMode)
     {
-        string text = snapshot.CenterSector > 0
+        string text = snapshot.IsPreview
+            ? snapshot.GateSector > 0
+                ? $"PREVIEW DOOR {snapshot.GateSector}  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
+                : $"PREVIEW  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
+            : snapshot.CenterSector > 0
             ? snapshot.CenterSector != snapshot.CurrentSector && snapshot.CurrentSector > 0
                 ? $"CENTER {snapshot.CenterSector}  |  LIVE {snapshot.CurrentSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
                 : $"LIVE SECTOR {snapshot.CenterSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
@@ -657,7 +726,8 @@ public class TacticalMapControl : Control
             Typeface = SKTypeface.Default,
         };
 
-        canvas.DrawRoundRect(new SKRoundRect(new SKRect(16, height - 36, 326, height - 12), 8, 8), overlayPaint);
+        float overlayRight = snapshot.IsPreview ? 420f : 326f;
+        canvas.DrawRoundRect(new SKRoundRect(new SKRect(16, height - 36, overlayRight, height - 12), 8, 8), overlayPaint);
         canvas.DrawText(text, 28, height - 18, textPaint);
     }
 
@@ -667,12 +737,18 @@ public class TacticalMapControl : Control
         Core.ModDatabase? db = _getDb();
         int liveSector = Math.Max(1, _getCurrentSector());
         int centerSector = _centerSectorOverride.GetValueOrDefault(liveSector);
-        int visibleDepth = GetVisibleDepth();
         snapshot.CurrentSector = liveSector;
         snapshot.CenterSector = centerSector;
 
         if (db == null || centerSector <= 0)
             return snapshot;
+
+        if (_previewHighlightedSectors.Count > 0)
+        {
+            return BuildPreviewSnapshot(db, liveSector, centerSector);
+        }
+
+        int visibleDepth = GetVisibleDepth();
 
         var visited = new Dictionary<int, int> { [centerSector] = 0 };
         var queue = new Queue<int>();
@@ -713,6 +789,148 @@ public class TacticalMapControl : Control
         AddLandmark(snapshot.Landmarks, header.AlphaCentauri);
 
         return snapshot;
+    }
+
+    private MapSnapshot BuildPreviewSnapshot(Core.ModDatabase db, int liveSector, int fallbackCenterSector)
+    {
+        int centerSector = _previewGateSector > 0
+            ? _previewGateSector
+            : _previewHighlightedSectors.FirstOrDefault(fallbackCenterSector);
+        if (centerSector <= 0)
+            centerSector = fallbackCenterSector;
+
+        var snapshot = new MapSnapshot
+        {
+            CurrentSector = liveSector,
+            CenterSector = centerSector,
+            GateSector = _previewGateSector,
+            IsPreview = true,
+            TotalHighlightedSectors = _previewHighlightedSectors.Count,
+        };
+
+        HashSet<int> previewHighlighted = LimitPreviewHighlightedSectors(
+            db,
+            centerSector,
+            _previewHighlightedSectors,
+            PreviewMaxHighlightedSectors);
+
+        foreach (int sectorNumber in previewHighlighted)
+            snapshot.HighlightedSectors.Add(sectorNumber);
+
+        var includedSectors = new HashSet<int>(snapshot.HighlightedSectors);
+        if (_previewGateSector > 0)
+        {
+            includedSectors.Add(_previewGateSector);
+            Core.SectorData? gateSector = db.GetSector(_previewGateSector);
+            if (gateSector != null)
+            {
+                foreach (int linkedSector in EnumerateLinkedSectors(gateSector))
+                    includedSectors.Add(linkedSector);
+            }
+        }
+
+        if (includedSectors.Count == 0)
+            includedSectors.Add(centerSector);
+
+        foreach (int sectorNumber in includedSectors)
+            snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
+
+        snapshot.Depths = BuildPreviewDepths(snapshot.Sectors, centerSector);
+        if (_viewMode == TacticalMapViewMode.Hex)
+            ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
+        else
+            snapshot.Positions = ComputeBubblePositions(db, centerSector, snapshot.Depths);
+
+        return snapshot;
+    }
+
+    private static HashSet<int> LimitPreviewHighlightedSectors(
+        Core.ModDatabase db,
+        int centerSector,
+        IReadOnlyCollection<int> highlightedSectors,
+        int maxHighlightedSectors)
+    {
+        var highlighted = highlightedSectors
+            .Where(sectorNumber => sectorNumber > 0)
+            .ToHashSet();
+        if (highlighted.Count <= maxHighlightedSectors)
+            return highlighted;
+
+        var limited = new HashSet<int>();
+        var visited = new HashSet<int>();
+        var queue = new Queue<int>();
+
+        if (centerSector > 0)
+        {
+            visited.Add(centerSector);
+            queue.Enqueue(centerSector);
+        }
+
+        while (queue.Count > 0 && limited.Count < maxHighlightedSectors)
+        {
+            int sectorNumber = queue.Dequeue();
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null)
+                continue;
+
+            foreach (int linkedSector in EnumerateLinkedSectors(sector))
+            {
+                if (!highlighted.Contains(linkedSector) || !visited.Add(linkedSector))
+                    continue;
+
+                limited.Add(linkedSector);
+                queue.Enqueue(linkedSector);
+                if (limited.Count >= maxHighlightedSectors)
+                    break;
+            }
+        }
+
+        if (limited.Count >= maxHighlightedSectors)
+            return limited;
+
+        foreach (int sectorNumber in highlighted.OrderBy(sectorNumber => sectorNumber))
+        {
+            limited.Add(sectorNumber);
+            if (limited.Count >= maxHighlightedSectors)
+                break;
+        }
+
+        return limited;
+    }
+
+    private static Dictionary<int, int> BuildPreviewDepths(
+        IReadOnlyDictionary<int, Core.SectorData?> sectors,
+        int centerSector)
+    {
+        var depths = new Dictionary<int, int>();
+        if (!sectors.ContainsKey(centerSector))
+            return depths;
+
+        var queue = new Queue<int>();
+        queue.Enqueue(centerSector);
+        depths[centerSector] = 0;
+
+        while (queue.Count > 0)
+        {
+            int sectorNumber = queue.Dequeue();
+            int depth = depths[sectorNumber];
+            if (!sectors.TryGetValue(sectorNumber, out Core.SectorData? sector) || sector == null)
+                continue;
+
+            foreach (int linkedSector in EnumerateLinkedSectors(sector))
+            {
+                if (!sectors.ContainsKey(linkedSector) || depths.ContainsKey(linkedSector))
+                    continue;
+
+                depths[linkedSector] = depth + 1;
+                queue.Enqueue(linkedSector);
+            }
+        }
+
+        foreach (int sectorNumber in sectors.Keys)
+            depths.TryAdd(sectorNumber, int.MaxValue / 4);
+
+        return depths;
     }
 
     private static Dictionary<int, SKPoint> ComputeBubblePositions(Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
@@ -1276,6 +1494,33 @@ public class TacticalMapControl : Control
 
     private static (SKColor Fill, SKColor Edge, SKColor Text, SKColor PortText) GetHexPalette(MapSnapshot snapshot, int sectorNumber, Core.SectorData? sector)
     {
+        if (snapshot.IsPreview)
+        {
+            if (sectorNumber == snapshot.GateSector)
+            {
+                return (
+                    new SKColor(0x0f, 0x3d, 0x44, 210),
+                    new SKColor(0x58, 0xf5, 0xf0),
+                    new SKColor(0xe9, 0xff, 0xff),
+                    new SKColor(0xb0, 0xff, 0xff));
+            }
+
+            if (snapshot.HighlightedSectors.Contains(sectorNumber))
+            {
+                return (
+                    new SKColor(0x38, 0x12, 0x3c, 210),
+                    new SKColor(0xff, 0x57, 0xee),
+                    new SKColor(0xff, 0xec, 0xff),
+                    new SKColor(0xff, 0xb8, 0xfa));
+            }
+
+            return (
+                new SKColor(0x20, 0x23, 0x28, 190),
+                new SKColor(0xb8, 0xc0, 0xc5),
+                new SKColor(0xf0, 0xf3, 0xf5),
+                new SKColor(0xd9, 0xe1, 0xe5));
+        }
+
         bool isCurrent = sectorNumber == snapshot.CurrentSector;
         bool isLandmark = snapshot.Landmarks.Contains(sectorNumber);
         if (isCurrent)
@@ -1355,11 +1600,15 @@ public class TacticalMapControl : Control
     {
         public int CurrentSector { get; set; }
         public int CenterSector { get; set; }
+        public int GateSector { get; set; }
+        public bool IsPreview { get; set; }
+        public int TotalHighlightedSectors { get; set; }
         public Dictionary<int, SKPoint> Positions { get; set; } = new();
         public Dictionary<int, Core.SectorData?> Sectors { get; set; } = new();
         public Dictionary<int, int> Depths { get; set; } = new();
         public Dictionary<int, HexCell> HexCells { get; set; } = new();
         public Dictionary<HexCell, int> SectorByHexCell { get; set; } = new();
+        public HashSet<int> HighlightedSectors { get; } = [];
         public HashSet<int> Landmarks { get; } = [];
     }
 
