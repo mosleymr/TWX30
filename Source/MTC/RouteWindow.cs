@@ -276,13 +276,13 @@ public class RouteWindow : Window
         if (_currentRoute.Count == 0)
             return;
 
-        await CopyTextAsync(string.Join(" ", _currentRoute));
         string previousText = _copySectorsButton.Content?.ToString() ?? "Copy Sectors";
         IBrush previousForeground = _copySectorsButton.Foreground ?? BgWin;
         try
         {
-            _copySectorsButton.Content = "Copied";
-            _copySectorsButton.Foreground = ColSuccess;
+            bool copied = await ClipboardHelper.TrySetTextAsync(this, string.Join(" ", _currentRoute));
+            _copySectorsButton.Content = copied ? "Copied" : "Copy failed";
+            _copySectorsButton.Foreground = copied ? ColSuccess : ColError;
             await Task.Delay(900);
         }
         finally
@@ -304,13 +304,6 @@ public class RouteWindow : Window
         _hopsText.Text = "Hops: --";
         _copySectorsButton.IsEnabled = false;
     }
-
-    private async Task CopyTextAsync(string text)
-    {
-        if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard)
-            await clipboard.SetTextAsync(text);
-    }
-
     private static TextBlock BuildLabel(string text)
     {
         return new TextBlock

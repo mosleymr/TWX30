@@ -346,6 +346,7 @@ public class MainWindow : Window
     // ── Status bar text ───────────────────────────────────────────────────
     private TextBlock _statusText = new();
     private TextBlock _statusStarDockValue = new();
+    private TextBlock _statusBackdoorValue = new();
     private TextBlock _statusRylosValue = new();
     private TextBlock _statusAlphaValue = new();
     private TextBlock _deckHudHeaderSector = new();
@@ -771,6 +772,7 @@ public class MainWindow : Window
         _statusBar.Height = 34;
         _statusBarContent.Children.Clear();
         _statusBarContent.Children.Add(BuildStatusLocationChip("SD", _statusStarDockValue, HudAccentHot));
+        _statusBarContent.Children.Add(BuildStatusLocationChip("BD", _statusBackdoorValue, HudAccentWarn));
         _statusBarContent.Children.Add(BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent));
         _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
         _statusBarContent.Children.Add(_statusText);
@@ -4271,6 +4273,7 @@ public class MainWindow : Window
             : "[ disconnected ]";
 
         string starDock = "-";
+        string backdoor = "-";
         string rylos = "-";
         string alpha = "-";
         int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
@@ -4309,6 +4312,13 @@ public class MainWindow : Window
                 starDock = savedStarDock;
         }
 
+        string savedBackdoor = ReadCurrentMombotSectorVar("0",
+            "$MAP~BACKDOOR",
+            "$MAP~backdoor",
+            "$backdoor");
+        if (IsDefinedMombotSectorValue(savedBackdoor))
+            backdoor = savedBackdoor;
+
         if (rylos == "-")
         {
             string savedRylos = ReadCurrentMombotSectorVar("0",
@@ -4330,6 +4340,7 @@ public class MainWindow : Window
         }
 
         _statusStarDockValue.Text = starDock;
+        _statusBackdoorValue.Text = backdoor;
         _statusRylosValue.Text = rylos;
         _statusAlphaValue.Text = alpha;
 
@@ -6538,9 +6549,9 @@ public class MainWindow : Window
 
     private void ConfigureStatusHaggleButton()
     {
-        _statusHaggleButton.MinWidth = 62;
+        _statusHaggleButton.MinWidth = 56;
         _statusHaggleButton.Height = 20;
-        _statusHaggleButton.Padding = new Thickness(6, 1, 3, 1);
+        _statusHaggleButton.Padding = new Thickness(4, 1);
         _statusHaggleButton.FontSize = 11;
         _statusHaggleButton.FontWeight = FontWeight.SemiBold;
         _statusHaggleButton.VerticalAlignment = VerticalAlignment.Center;
@@ -6563,9 +6574,9 @@ public class MainWindow : Window
 
     private void ConfigureStatusToggleButton()
     {
-        _statusLivePausedButton.MinWidth = 62;
+        _statusLivePausedButton.MinWidth = 56;
         _statusLivePausedButton.Height = 20;
-        _statusLivePausedButton.Padding = new Thickness(6, 1, 3, 1);
+        _statusLivePausedButton.Padding = new Thickness(4, 1);
         _statusLivePausedButton.FontSize = 11;
         _statusLivePausedButton.FontWeight = FontWeight.SemiBold;
         _statusLivePausedButton.VerticalAlignment = VerticalAlignment.Center;

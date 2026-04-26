@@ -966,7 +966,7 @@ public class BubblesWindow : Window
         if (state.SelectedRow == null)
             return;
 
-        await CopyTextAsync(string.Join(" ", state.SelectedRow.Sectors));
+        await ClipboardHelper.TrySetTextAsync(this, string.Join(" ", state.SelectedRow.Sectors));
     }
 
     private async Task CopySectorListAsync(Button button, string sectorList)
@@ -974,9 +974,9 @@ public class BubblesWindow : Window
         string previous = button.Content?.ToString() ?? "Copy";
         try
         {
-            await CopyTextAsync(sectorList);
-            button.Content = "Copied";
-            button.Foreground = ColSuccess;
+            bool copied = await ClipboardHelper.TrySetTextAsync(this, sectorList);
+            button.Content = copied ? "Copied" : "Copy failed";
+            button.Foreground = copied ? ColSuccess : ColError;
             await Task.Delay(900);
         }
         finally
@@ -984,15 +984,6 @@ public class BubblesWindow : Window
             button.Content = previous;
             button.ClearValue(Button.ForegroundProperty);
         }
-    }
-
-    private async Task CopyTextAsync(string text)
-    {
-        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-        if (clipboard == null)
-            return;
-
-        await clipboard.SetTextAsync(text);
     }
 
     private static string FormatDistance(int? distance) => distance?.ToString() ?? string.Empty;

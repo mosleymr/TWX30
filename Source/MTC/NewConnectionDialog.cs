@@ -315,11 +315,7 @@ public class NewConnectionDialog : Window
                 {
                     string selected = textBox.SelectedText ?? string.Empty;
                     if (selected.Length > 0)
-                    {
-                        var clipboard = TopLevel.GetTopLevel(textBox)?.Clipboard;
-                        if (clipboard != null)
-                            await clipboard.SetTextAsync(selected);
-                    }
+                        await ClipboardHelper.TrySetTextAsync(textBox, selected);
                     e.Handled = true;
                     break;
                 }
@@ -329,10 +325,8 @@ public class NewConnectionDialog : Window
                     string selected = textBox.SelectedText ?? string.Empty;
                     if (selected.Length > 0)
                     {
-                        var clipboard = TopLevel.GetTopLevel(textBox)?.Clipboard;
-                        if (clipboard != null)
-                            await clipboard.SetTextAsync(selected);
-                        ReplaceSelection(textBox, string.Empty);
+                        if (await ClipboardHelper.TrySetTextAsync(textBox, selected))
+                            ReplaceSelection(textBox, string.Empty);
                     }
                     e.Handled = true;
                     break;
