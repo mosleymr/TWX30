@@ -34,6 +34,12 @@ public class MainWindow : Window
 {
     private sealed record CommEntry(Core.CommMessageChannel Channel, string Sender, string Message, bool IsLocal);
     private readonly record struct PendingDisplayChunk(byte[] Bytes, int LineCount, bool RewrotePromptOverwrite);
+    private readonly record struct FinderPrewarmKey(
+        string DatabasePath,
+        long ChangeStamp,
+        int BubbleMaxSize,
+        int DeadEndMaxSize,
+        bool AllowSeparatedByGates);
 
     private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
     private const int MaxCommEntries = 500;
@@ -56,7 +62,6 @@ public class MainWindow : Window
     private readonly TelnetClient    _telnet;
     private TerminalControl _termCtrl = null!;
     private TerminalControl _deckTermCtrl = null!;
-    private readonly DispatcherTimer _performanceTimer;
     private readonly DispatcherTimer _statusRefreshTimer;
     private readonly Core.ShipInfoParser _shipParser = new();
     private readonly DispatcherTimer _mombotKeepaliveTimer;
@@ -86,6 +91,7 @@ public class MainWindow : Window
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
+    private MenuItem        _toolsMenu     = new() { Header = "_Tools" };
     private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private readonly MenuItem _viewClearRecents = new() { Header = "Clear _Recents" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
@@ -106,7 +112,6 @@ public class MainWindow : Window
     private readonly Button _menuFontSizeDecreaseButton = new() { Content = "-" };
     private readonly Button _menuFontSizeIncreaseButton = new() { Content = "+" };
     private readonly Border _statusMacroHost = new();
-    private readonly TextBlock _statusPerfText = new();
     private readonly StackPanel _statusBarContent = new()
     {
         Orientation = Orientation.Horizontal,
@@ -150,9 +155,9 @@ public class MainWindow : Window
     private readonly Border _statusLivePausedFrame = new();
     private readonly object _pausedTerminalSync = new();
     private readonly object _terminalDisplayArtifactSync = new();
+    private readonly object _finderPrewarmSync = new();
     private readonly List<byte[]> _pausedTerminalChunks = [];
     private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
-    private readonly ThroughputMeter _proxyThroughput = new();
     private bool _terminalLivePaused;
     private int _displayDrainScheduled;
     private bool _statusStopAllHovered;
@@ -245,6 +250,7 @@ public class MainWindow : Window
     private bool _mombotStartupPostInitPending;
     private bool _mombotStartupFinalizeRunning;
     private bool _nativeBotAutoStartInFlight;
+    private FinderPrewarmKey? _lastFinderPrewarmKey;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -472,8 +478,6 @@ public class MainWindow : Window
         _telnet.AppDataDecoded += text =>
         {
             _sessionLog.RecordServerText(text);
-            int lineCount = CountTransportLines(text);
-            RecordProxyTraffic(text.Length, lineCount);
         };
 
         // Update current sector from the command prompt — fires on every "Command [TL=...]:[N]"
@@ -541,9 +545,6 @@ public class MainWindow : Window
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
 
-        _performanceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _performanceTimer.Tick += (_, _) => RefreshPerformanceCounters();
-
         _statusRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _statusRefreshTimer.Tick += (_, _) =>
         {
@@ -552,6 +553,7 @@ public class MainWindow : Window
         };
 
         Content = BuildLayout();
+        PositionChanged += (_, _) => NotifyTerminalWindowMove();
 
         ApplyDebugLoggingPreferences();
         RebuildRecentMenu();
@@ -562,8 +564,6 @@ public class MainWindow : Window
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
         _buffer.Dirty = true;
-
-        UpdatePerformanceStatusVisibility();
 
         _mombotKeepaliveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _mombotKeepaliveTimer.Tick += (_, _) =>
@@ -602,7 +602,6 @@ public class MainWindow : Window
             _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
-            _performanceTimer.Stop();
             _statusRefreshTimer.Stop();
         };
     }
@@ -617,6 +616,12 @@ public class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_terminalFontFamilyName))
             control.SetFont(_terminalFontFamilyName);
         return control;
+    }
+
+    private void NotifyTerminalWindowMove()
+    {
+        _termCtrl.NotifyHostWindowPositionChanged();
+        _deckTermCtrl.NotifyHostWindowPositionChanged();
     }
 
     private void RecreateClassicShellControls()
@@ -762,12 +767,6 @@ public class MainWindow : Window
         _statusText.Margin             = new Thickness(6, 0, 0, 0);
         _statusText.FontSize           = 13;
 
-        _statusPerfText.Foreground = HudAccent;
-        _statusPerfText.VerticalAlignment = VerticalAlignment.Center;
-        _statusPerfText.Margin = new Thickness(10, 0, 0, 0);
-        _statusPerfText.FontSize = 12;
-        _statusPerfText.IsVisible = false;
-
         _statusBar.Background = BgStatus;
         _statusBar.Height = 34;
         _statusBarContent.Children.Clear();
@@ -775,7 +774,6 @@ public class MainWindow : Window
         _statusBarContent.Children.Add(BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent));
         _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
         _statusBarContent.Children.Add(_statusText);
-        _statusBarContent.Children.Add(_statusPerfText);
         _statusBar.Child = _statusBarContent;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         dock.Children.Add(_statusBar);
@@ -826,7 +824,8 @@ public class MainWindow : Window
         _suppressDeckPanelStateSync = false;
         _tacticalMap = new TacticalMapControl(
             () => _state.Sector,
-            () => _sessionDb)
+            () => _sessionDb,
+            () => _state)
         {
             MinHeight = 220,
         };
@@ -2486,13 +2485,8 @@ public class MainWindow : Window
         var viewDbItem = new MenuItem { Header = "_Database..." };
         viewDbItem.Click += (_, _) => OnViewDatabase();
 
-        var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
-        viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
-
         var viewBubblesItem = new MenuItem { Header = "_Bubbles..." };
         viewBubblesItem.Click += (_, _) => OnViewBubbles();
-        var viewScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
-        viewScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
@@ -2507,7 +2501,7 @@ public class MainWindow : Window
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, new Separator(), viewBubblesItem, viewGameInfoItem, viewDbItem, viewScriptDebuggerItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, new Separator(), viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2528,11 +2522,19 @@ public class MainWindow : Window
             Items  = { mapViewItem },
         };
 
+        var toolsFindRouteItem = new MenuItem { Header = "_Find Route..." };
+        toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
+        var toolsGameInfoItem = new MenuItem { Header = "_Game Info..." };
+        toolsGameInfoItem.Click += (_, _) => OnViewGameInfo();
+        var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
+        toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
+        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsScriptDebuggerItem };
+
         var menu = new Menu
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _toolsMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
         };
 
         RefreshCommWindowMenuState();
@@ -2598,7 +2600,17 @@ public class MainWindow : Window
     {
         var win = new MapWindow(
             () => _state.Sector,
-            () => _sessionDb);
+            () => _sessionDb,
+            () => _state);
+        win.Show();
+    }
+
+    private void OnToolsFindRoute()
+    {
+        var win = new RouteWindow(
+            () => _sessionDb,
+            () => _state.Sector,
+            () => _state);
         win.Show();
     }
 
@@ -2607,6 +2619,7 @@ public class MainWindow : Window
         var win = new BubblesWindow(
             () => _sessionDb,
             () => _state.Sector,
+            () => _state,
             () => Math.Max(1, _embeddedGameConfig?.BubbleMinSize ?? 5),
             () => Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize),
             (minSize, maxSize) =>
@@ -2634,6 +2647,47 @@ public class MainWindow : Window
         _appPrefs.RecentFiles.Clear();
         _appPrefs.Save();
         RebuildRecentMenu();
+    }
+
+    private void QueueFinderPrewarm(Core.ModDatabase? db)
+    {
+        if (db == null)
+            return;
+
+        int bubbleMaxSize = Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize);
+        int deadEndMaxSize = Math.Max(1, _embeddedGameConfig?.DeadEndMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize);
+        const bool allowSeparatedByGates = true;
+
+        FinderPrewarmKey prewarmKey = new(
+            db.DatabasePath,
+            db.ChangeStamp,
+            bubbleMaxSize,
+            deadEndMaxSize,
+            allowSeparatedByGates);
+
+        lock (_finderPrewarmSync)
+        {
+            if (_lastFinderPrewarmKey == prewarmKey)
+                return;
+
+            _lastFinderPrewarmKey = prewarmKey;
+        }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                Core.GlobalModules.DebugLog(
+                    $"[MTC.FinderPrewarm] start db={db.DatabasePath} bubbleMax={bubbleMaxSize} deadEndMax={deadEndMaxSize} allowSeparated={allowSeparatedByGates}\n");
+                _ = Core.ProxyGameOperations.GetBubbles(db, bubbleMaxSize, allowSeparatedByGates);
+                _ = Core.ProxyGameOperations.GetDeadEnds(db, deadEndMaxSize);
+                Core.GlobalModules.DebugLog($"[MTC.FinderPrewarm] done db={db.DatabasePath}\n");
+            }
+            catch (Exception ex)
+            {
+                Core.GlobalModules.DebugLog($"[MTC.FinderPrewarm] failed: {ex}\n");
+            }
+        });
     }
 
     private void OnViewDatabase()
@@ -4957,24 +5011,6 @@ public class MainWindow : Window
         RefreshSessionLogTarget();
         if (_gameInstance != null)
             _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
-        Dispatcher.UIThread.Post(UpdatePerformanceStatusVisibility, DispatcherPriority.Background);
-    }
-
-    private void UpdatePerformanceStatusVisibility()
-    {
-        bool visible = _appPrefs.DebugLoggingEnabled;
-        _statusPerfText.IsVisible = visible;
-
-        if (visible)
-        {
-            RefreshPerformanceCounters();
-            if (!_performanceTimer.IsEnabled)
-                _performanceTimer.Start();
-            return;
-        }
-
-        _performanceTimer.Stop();
-        _statusPerfText.Text = string.Empty;
     }
 
     private void RequestStatusBarRefresh()
@@ -4998,26 +5034,6 @@ public class MainWindow : Window
         statusRefreshTimer.Start();
     }
 
-    private void RefreshPerformanceCounters()
-    {
-        ThroughputSample proxy = _proxyThroughput.SampleAndReset();
-        _statusPerfText.Text = FormatByteRate(proxy.BytesPerSecond);
-    }
-
-    private void RecordProxyTraffic(int bytes, int lines) => _proxyThroughput.Add(bytes, lines);
-
-    private static int CountTransportLines(string text)
-    {
-        int count = 0;
-        foreach (char ch in text)
-        {
-            if (ch == '\r')
-                count++;
-        }
-
-        return count;
-    }
-
     private static int CountTransportLines(byte[] bytes)
     {
         int count = 0;
@@ -5029,12 +5045,6 @@ public class MainWindow : Window
 
         return count;
     }
-
-    private static string FormatByteRate(long bytesPerSecond)
-    {
-        return $"{bytesPerSecond:N0} B/s";
-    }
-
     private string GetDebugLogGameName()
     {
         if (_gameInstance != null && !string.IsNullOrWhiteSpace(_gameInstance.GameName))
@@ -5359,6 +5369,33 @@ public class MainWindow : Window
         config.Mtc.State = BuildEmbeddedMtcState();
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
         return config;
+    }
+
+    private void ApplyEmbeddedConnectionState(string gameName, EmbeddedGameConfig config)
+    {
+        _state.GameName = NormalizeGameName(string.IsNullOrWhiteSpace(config.Name) ? gameName : config.Name);
+        _state.Host = config.Host;
+        _state.Port = config.Port;
+        _state.Sectors = config.Sectors;
+        _state.AutoReconnect = config.AutoReconnect;
+        _state.UseLogin = config.UseLogin;
+        _state.UseRLogin = config.UseRLogin;
+        _state.LoginScript = string.IsNullOrWhiteSpace(config.LoginScript) ? "0_Login.cts" : config.LoginScript;
+        _state.LoginName = config.LoginName;
+        _state.Password = config.Password;
+        _state.GameLetter = string.IsNullOrWhiteSpace(config.GameLetter)
+            ? string.Empty
+            : config.GameLetter.Trim().Substring(0, 1).ToUpperInvariant();
+        _state.EmbeddedProxy = config.Mtc?.EmbeddedProxy ?? _state.EmbeddedProxy;
+        _state.LocalTwxProxy = config.Mtc?.LocalTwxProxy ?? _state.LocalTwxProxy;
+        _state.TwxProxyDbPath = config.Mtc?.TwxProxyDbPath ?? _state.TwxProxyDbPath;
+        _state.Protocol = Enum.TryParse<TwProtocol>(config.Mtc?.Protocol, true, out TwProtocol protocol)
+            ? protocol
+            : TwProtocol.Telnet;
+
+        int scrollbackLines = config.Mtc?.ScrollbackLines ?? 0;
+        if (scrollbackLines > 0)
+            _buffer.ScrollbackLines = scrollbackLines;
     }
 
     private static EmbeddedMtcState BuildEmbeddedMtcState(ConnectionProfile profile)
@@ -5697,6 +5734,7 @@ public class MainWindow : Window
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        ApplyEmbeddedConnectionState(gameName, gameConfig);
         bool configChanged =
             !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
             gameConfig.Host != _state.Host ||
@@ -5920,7 +5958,6 @@ public class MainWindow : Window
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
-                    RecordProxyTraffic(chunk.Length, CountTransportLines(chunk));
                     _sessionLog.RecordServerData(chunk);
                     byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk, out bool rewrotePromptOverwrite);
                     EnqueueDisplayChunk(displayChunk, CountTransportLines(displayChunk), rewrotePromptOverwrite);
@@ -5945,7 +5982,6 @@ public class MainWindow : Window
             if (_terminalLivePaused)
             {
                 _sessionLog.RecordServerData(e.Data);
-                RecordProxyTraffic(e.Data.Length, CountTransportLines(e.Data));
                 QueuePausedTerminalChunk(e.Data);
             }
 
@@ -7298,6 +7334,7 @@ public class MainWindow : Window
 
             _sessionDb = db;
             Core.ScriptRef.SetActiveDatabase(db);
+            QueueFinderPrewarm(db);
 
             Dispatcher.UIThread.Post(() =>
                 _parser.Feed($"\x1b[1;36m[Database: {dbPath}]\x1b[0m\r\n"));
@@ -8041,8 +8078,9 @@ public class MainWindow : Window
         string programDir = interpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
         string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
-        TraceRuntimeStop($"[BotStop] external begin bot='{activeBotName}' lastLoaded='{lastLoadedModule}'");
-        ClearMombotRelogState();
+        bool preserveDoNotResuscitate = ShouldStopNativeMombotAfterDisconnect();
+        TraceRuntimeStop($"[BotStop] external begin bot='{activeBotName}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate}");
+        ClearMombotRelogState(preserveDoNotResuscitate);
         interpreter?.StopBot(activeBotName);
 
         int drainedScripts = 0;
@@ -8066,13 +8104,16 @@ public class MainWindow : Window
         Core.GlobalModules.FlushDebugLog();
     }
 
-    private void ClearMombotRelogState()
+    private void ClearMombotRelogState(bool preserveDoNotResuscitate = false)
     {
         Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
         Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
-        Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "0");
-        Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "0");
-        Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "0");
+        if (!preserveDoNotResuscitate)
+        {
+            Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "0");
+            Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "0");
+            Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "0");
+        }
         Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
         Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
         Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
@@ -9201,8 +9242,9 @@ public class MainWindow : Window
             ? string.Empty
             : NormalizeScriptStopPath(scriptRoot, programDir, scriptDirectory);
 
-        TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}'");
-        ClearMombotRelogState();
+        bool preserveDoNotResuscitate = ShouldStopNativeMombotAfterDisconnect();
+        TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate}");
+        ClearMombotRelogState(preserveDoNotResuscitate);
         ClearNativeMombotStartupDataGather();
         StoredBotSection nativeBotSection = LoadConfiguredBotSections().First(bot => bot.IsNative);
         Core.BotConfig nativeBotConfig = nativeBotSection.Config;
@@ -15501,6 +15543,7 @@ public class MainWindow : Window
         AddDockRoot(_proxyMenu, "_Proxy");
         AddDockRoot(_botMenu, "_Bot");
         AddDockRoot(_quickMenu, "_Quick");
+        AddDockRoot(_toolsMenu, "_Tools");
         AddDockRoot(_aiMenu, "_AI");
 
         if (!_nativeDockMenuAttached)
@@ -15633,6 +15676,8 @@ public class MainWindow : Window
         string previousGameName = DeriveGameName();
         string previousConfigPath = _currentProfilePath ?? AppPaths.TwxproxyGameConfigFileFor(previousGameName);
         string previousDatabasePath = _embeddedGameConfig?.DatabasePath ?? string.Empty;
+        string previousHost = _embeddedGameConfig?.Host ?? _state.Host;
+        int previousPort = _embeddedGameConfig?.Port > 0 ? _embeddedGameConfig.Port : _state.Port;
         if (string.IsNullOrWhiteSpace(previousDatabasePath))
             previousDatabasePath = AppPaths.TwxproxyDatabasePathForGame(previousGameName);
 
@@ -15693,13 +15738,13 @@ public class MainWindow : Window
         ApplyProfile(BuildProfileFromConfig(config));
         ApplyDebugLoggingPreferences();
         AddToRecentAndSave(newConfigPath);
-        await SyncEmbeddedProxySettingsAsync();
+        await SyncEmbeddedProxySettingsAsync(previousHost, previousPort);
 
         _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
         _buffer.Dirty = true;
     }
 
-    private async Task SyncEmbeddedProxySettingsAsync()
+    private async Task SyncEmbeddedProxySettingsAsync(string? previousHostOverride = null, int? previousPortOverride = null)
     {
         if (!_state.EmbeddedProxy)
         {
@@ -15712,8 +15757,8 @@ public class MainWindow : Window
         var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         string? originalNativeHaggleMode = gameConfig.NativeHaggleMode;
         gameConfig.NativeHaggleMode = null;
-        string previousHost = gameConfig.Host;
-        int previousPort = gameConfig.Port;
+        string previousHost = previousHostOverride ?? gameConfig.Host;
+        int previousPort = previousPortOverride ?? gameConfig.Port;
 
         bool configChanged =
             !string.Equals(originalNativeHaggleMode ?? string.Empty, gameConfig.NativeHaggleMode ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||

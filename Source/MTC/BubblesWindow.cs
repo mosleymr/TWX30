@@ -75,6 +75,7 @@ public class BubblesWindow : Window
 
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly Func<int> _getCurrentSector;
+    private readonly Func<GameState?>? _getState;
     private readonly Action<int, int>? _setBubbleSizeRange;
     private readonly Action<int, int>? _setDeadEndSizeRange;
     private readonly FinderTabState _bubbleTab;
@@ -97,6 +98,7 @@ public class BubblesWindow : Window
     public BubblesWindow(
         Func<Core.ModDatabase?> getDb,
         Func<int> getCurrentSector,
+        Func<GameState?>? getState,
         Func<int> getBubbleMinSize,
         Func<int> getBubbleMaxSize,
         Action<int, int>? setBubbleSizeRange = null,
@@ -106,6 +108,7 @@ public class BubblesWindow : Window
     {
         _getDb = getDb;
         _getCurrentSector = getCurrentSector;
+        _getState = getState;
         _setBubbleSizeRange = setBubbleSizeRange;
         _setDeadEndSizeRange = setDeadEndSizeRange;
 
@@ -427,7 +430,8 @@ public class BubblesWindow : Window
 
         state.PreviewMap = new TacticalMapControl(
             () => state.SelectedRow?.Door ?? Math.Max(1, _getCurrentSector()),
-            _getDb)
+            _getDb,
+            () => _getState?.Invoke())
         {
             MinHeight = 420,
         };

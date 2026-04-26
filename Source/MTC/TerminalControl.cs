@@ -19,6 +19,20 @@ namespace MTC;
 /// </summary>
 public class TerminalControl : Control
 {
+    private sealed class CachedRenderRun
+    {
+        public required double X { get; init; }
+        public required double Width { get; init; }
+        public required TermColor Background { get; init; }
+        public required bool Blink { get; init; }
+        public FormattedText? Text { get; init; }
+    }
+
+    private sealed class CachedRenderRow
+    {
+        public required CachedRenderRun[] Runs { get; init; }
+    }
+
     private static readonly (string Name, byte[] Bytes)[] MacroHotkeyDefinitions =
     [
         ("F1", [0x1B, (byte)'O', (byte)'P']),
@@ -36,9 +50,18 @@ public class TerminalControl : Control
 
     private readonly TerminalBuffer _buffer;
     private readonly DispatcherTimer _cursorTimer;
+    private readonly DispatcherTimer _windowMoveTimer;
     private bool _cursorOn = true;
     private bool _dirtySubscriptionActive;
+    private bool _hostWindowMoving;
     private int _redrawQueued;
+    private CachedRenderRow[] _visibleRowCache = [];
+    private long _visibleRowCacheDirtyVersion = -1;
+    private int _visibleRowCacheTopDocumentRow = int.MinValue;
+    private int _visibleRowCacheColumns = -1;
+    private int _visibleRowCacheRows = -1;
+    private double _visibleRowCacheFontSize = -1;
+    private string _visibleRowCacheFontKey = string.Empty;
 
     // Monospace font metrics – measured once at construction time (or on font change)
     private double _charWidth;
@@ -98,8 +121,26 @@ public class TerminalControl : Control
         VerticalAlignment   = Avalonia.Layout.VerticalAlignment.Stretch;
 
         _cursorTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(530) };
-        _cursorTimer.Tick += (_, _) => { _cursorOn = !_cursorOn; InvalidateVisual(); };
+        _cursorTimer.Tick += (_, _) =>
+        {
+            if (_hostWindowMoving)
+                return;
+
+            _cursorOn = !_cursorOn;
+            InvalidateVisual();
+        };
         _cursorTimer.Start();
+
+        _windowMoveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(160) };
+        _windowMoveTimer.Tick += (_, _) =>
+        {
+            _windowMoveTimer.Stop();
+            if (!_hostWindowMoving)
+                return;
+
+            _hostWindowMoving = false;
+            InvalidateVisual();
+        };
 
         AttachedToVisualTree += (_, _) => EnsureDirtySubscription();
         DetachedFromVisualTree += (_, _) => RemoveDirtySubscription();
@@ -158,6 +199,7 @@ public class TerminalControl : Control
         _fontFamily = new FontFamily(familyName);
         _typeFace   = new Typeface(_fontFamily);
         MeasureFont();
+        InvalidateVisibleRowCache();
         // Force a buffer resize on the next arrange pass
         _buffer.Resize(_buffer.Columns, _buffer.Rows);
         InvalidateMeasure();
@@ -172,6 +214,7 @@ public class TerminalControl : Control
 
         _fontSize = normalized;
         MeasureFont();
+        InvalidateVisibleRowCache();
         _buffer.Resize(_buffer.Columns, _buffer.Rows);
         InvalidateMeasure();
         InvalidateVisual();
@@ -184,7 +227,10 @@ public class TerminalControl : Control
         int newCols = Math.Max(10, (int)(finalSize.Width  / _charWidth));
         int newRows = Math.Max(3,  (int)(finalSize.Height / _lineHeight));
         if (newCols != _buffer.Columns || newRows != _buffer.Rows)
+        {
+            InvalidateVisibleRowCache();
             _buffer.Resize(newCols, newRows);
+        }
         return finalSize;
     }
 
@@ -225,71 +271,26 @@ public class TerminalControl : Control
     {
         SyncScrollAnchorToLatest();
         long renderedDirtyVersion = _buffer.DirtyVersion;
-        var runBuilder = new StringBuilder(_buffer.Columns);
+        bool cacheUpToDate = EnsureVisibleRowCache(_scrollOffset, renderedDirtyVersion);
 
         // Solid black background
         ctx.FillRectangle(Brushes.Black, new Rect(Bounds.Size));
 
-        int scrollOff = _scrollOffset;  // snapshot to keep the frame consistent
-        for (int row = 0; row < _buffer.Rows; row++)
+        for (int row = 0; row < _visibleRowCache.Length; row++)
         {
-            double y   = row * _lineHeight;
-            int    col = 0;
-
-            while (col < _buffer.Columns)
+            double y = row * _lineHeight;
+            foreach (CachedRenderRun run in _visibleRowCache[row].Runs)
             {
-                var cell  = GetDisplayCell(row, col, scrollOff);
-                var fg    = cell.Foreground;
-                var bg    = cell.Background;
-                var blink = cell.Blink;
+                if (run.Background != TermColor.Black)
+                    ctx.FillRectangle(GetBrush(run.Background), new Rect(run.X, y, run.Width, _lineHeight));
 
-                // Extend run as long as fg+bg+blink match
-                int end = col + 1;
-                while (end < _buffer.Columns)
-                {
-                    var c = GetDisplayCell(row, end, scrollOff);
-                    if (c.Foreground != fg || c.Background != bg || c.Blink != blink) break;
-                    end++;
-                }
-
-                double x = col * _charWidth;
-                double w = (end - col) * _charWidth;
-
-                // Background fill (skip pure black to reduce overdraw)
-                if (bg != TermColor.Black)
-                    ctx.FillRectangle(GetBrush(bg), new Rect(x, y, w, _lineHeight));
-
-                // Text run – skip when cell is blinking and in the "off" phase
-                if (!blink || _cursorOn)
-                {
-                    runBuilder.Clear();
-                    bool hasVisibleGlyph = false;
-                    for (int i = col; i < end; i++)
-                    {
-                        char ch = GetDisplayCell(row, i, scrollOff).Char;
-                        runBuilder.Append(ch);
-                        hasVisibleGlyph |= ch != ' ';
-                    }
-
-                    if (hasVisibleGlyph)
-                    {
-                        var ft = new FormattedText(
-                            runBuilder.ToString(),
-                            CultureInfo.InvariantCulture,
-                            FlowDirection.LeftToRight,
-                            _typeFace,
-                            _fontSize,
-                            GetBrush(fg));
-
-                        ctx.DrawText(ft, new Point(x, y));
-                    }
-                }
-                col = end;
+                if (run.Text != null && (!run.Blink || _cursorOn))
+                    ctx.DrawText(run.Text, new Point(run.X, y));
             }
         }
 
         // Block cursor – suppressed when scrolled back
-        if (scrollOff == 0 && _buffer.CursorVisible && _cursorOn)
+        if (_scrollOffset == 0 && _buffer.CursorVisible && _cursorOn)
         {
             double cx = _buffer.CursorCol * _charWidth;
             double cy = _buffer.CursorRow * _lineHeight;
@@ -303,13 +304,13 @@ public class TerminalControl : Control
             RenderSelection(ctx);
 
         // Scrollback indicator bar – appears at top when scrolled back
-        if (scrollOff > 0)
+        if (_scrollOffset > 0)
         {
             ctx.FillRectangle(
                 new SolidColorBrush(Color.FromArgb(210, 0, 0, 0)),
                 new Rect(0, 0, Bounds.Width, _lineHeight));
             var indFt = new FormattedText(
-                $"  ── SCROLLBACK  {scrollOff} of {_buffer.ScrollbackCount}  " +
+                $"  ── SCROLLBACK  {_scrollOffset} of {_buffer.ScrollbackCount}  " +
                  " (scroll down to return to live) ──",
                 CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight,
@@ -319,9 +320,10 @@ public class TerminalControl : Control
             ctx.DrawText(indFt, new Point(4, (_lineHeight - indFt.Height) / 2));
         }
 
-        _buffer.AcknowledgeDirty(renderedDirtyVersion);
+        if (cacheUpToDate)
+            _buffer.AcknowledgeDirty(renderedDirtyVersion);
         Interlocked.Exchange(ref _redrawQueued, 0);
-        if (_buffer.Dirty)
+        if (_buffer.Dirty && !_hostWindowMoving)
             RequestRedraw();
     }
 
@@ -364,6 +366,13 @@ public class TerminalControl : Control
 
             Interlocked.Exchange(ref _redrawQueued, 0);
         }, DispatcherPriority.Render);
+    }
+
+    public void NotifyHostWindowPositionChanged()
+    {
+        _hostWindowMoving = true;
+        _windowMoveTimer.Stop();
+        _windowMoveTimer.Start();
     }
 
     // ── Mouse wheel scrollback ─────────────────────────────────────────────
@@ -786,6 +795,106 @@ public class TerminalControl : Control
         return brush;
     }
 
+    private void InvalidateVisibleRowCache()
+    {
+        _visibleRowCache = [];
+        _visibleRowCacheDirtyVersion = -1;
+        _visibleRowCacheTopDocumentRow = int.MinValue;
+        _visibleRowCacheColumns = -1;
+        _visibleRowCacheRows = -1;
+        _visibleRowCacheFontSize = -1;
+        _visibleRowCacheFontKey = string.Empty;
+    }
+
+    private bool EnsureVisibleRowCache(int scrollOff, long dirtyVersion)
+    {
+        int topDocumentRow = GetViewportTopDocumentRow(scrollOff);
+        string fontKey = _fontFamily.ToString();
+        bool viewportMatches =
+            _visibleRowCache.Length == _buffer.Rows &&
+            _visibleRowCacheTopDocumentRow == topDocumentRow &&
+            _visibleRowCacheColumns == _buffer.Columns &&
+            _visibleRowCacheRows == _buffer.Rows &&
+            Math.Abs(_visibleRowCacheFontSize - _fontSize) < 0.01 &&
+            string.Equals(_visibleRowCacheFontKey, fontKey, StringComparison.Ordinal);
+
+        if (_hostWindowMoving && viewportMatches)
+            return _visibleRowCacheDirtyVersion == dirtyVersion;
+
+        if (viewportMatches && _visibleRowCacheDirtyVersion == dirtyVersion)
+            return true;
+
+        var rows = new CachedRenderRow[_buffer.Rows];
+        var runBuilder = new StringBuilder(_buffer.Columns);
+
+        for (int row = 0; row < _buffer.Rows; row++)
+        {
+            int col = 0;
+            var runs = new List<CachedRenderRun>();
+
+            while (col < _buffer.Columns)
+            {
+                var cell = GetDisplayCell(row, col, scrollOff);
+                var fg = cell.Foreground;
+                var bg = cell.Background;
+                bool blink = cell.Blink;
+
+                int end = col + 1;
+                while (end < _buffer.Columns)
+                {
+                    var next = GetDisplayCell(row, end, scrollOff);
+                    if (next.Foreground != fg || next.Background != bg || next.Blink != blink)
+                        break;
+
+                    end++;
+                }
+
+                runBuilder.Clear();
+                bool hasVisibleGlyph = false;
+                for (int i = col; i < end; i++)
+                {
+                    char ch = GetDisplayCell(row, i, scrollOff).Char;
+                    runBuilder.Append(ch);
+                    hasVisibleGlyph |= ch != ' ';
+                }
+
+                FormattedText? ft = null;
+                if (hasVisibleGlyph)
+                {
+                    ft = new FormattedText(
+                        runBuilder.ToString(),
+                        CultureInfo.InvariantCulture,
+                        FlowDirection.LeftToRight,
+                        _typeFace,
+                        _fontSize,
+                        GetBrush(fg));
+                }
+
+                runs.Add(new CachedRenderRun
+                {
+                    X = col * _charWidth,
+                    Width = (end - col) * _charWidth,
+                    Background = bg,
+                    Blink = blink,
+                    Text = ft,
+                });
+
+                col = end;
+            }
+
+            rows[row] = new CachedRenderRow { Runs = runs.ToArray() };
+        }
+
+        _visibleRowCache = rows;
+        _visibleRowCacheDirtyVersion = dirtyVersion;
+        _visibleRowCacheTopDocumentRow = topDocumentRow;
+        _visibleRowCacheColumns = _buffer.Columns;
+        _visibleRowCacheRows = _buffer.Rows;
+        _visibleRowCacheFontSize = _fontSize;
+        _visibleRowCacheFontKey = fontKey;
+        return true;
+    }
+
     private bool SyncScrollAnchorToLatest()
     {
         long latestGeneration = _buffer.ScrollbackGeneration;
@@ -808,6 +917,7 @@ public class TerminalControl : Control
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         _cursorTimer.Stop();
+        _windowMoveTimer.Stop();
         base.OnDetachedFromVisualTree(e);
     }
 }

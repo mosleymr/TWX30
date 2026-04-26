@@ -50,6 +50,7 @@ public class TacticalMapControl : Control
 
     private readonly Func<int> _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
+    private readonly Func<GameState?>? _getState;
     private readonly (float X, float Y, float Size, byte Alpha)[] _stars;
     private MapSnapshot _lastSnapshot = new();
     private float _zoomFactor = DefaultZoomFactor;
@@ -66,11 +67,18 @@ public class TacticalMapControl : Control
     private int? _centerSectorOverride;
     private HashSet<int> _previewHighlightedSectors = [];
     private int _previewGateSector;
+    private int _previewSurroundingDepth;
+    private bool _previewLimitHighlightedSectors = true;
+    private string? _previewLegendText;
 
-    public TacticalMapControl(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
+    public TacticalMapControl(
+        Func<int> getCurrentSector,
+        Func<Core.ModDatabase?> getDb,
+        Func<GameState?>? getState = null)
     {
         _getCurrentSector = getCurrentSector;
         _getDb = getDb;
+        _getState = getState;
         ClipToBounds = true;
         PointerWheelChanged += OnPointerWheelChanged;
         PointerMoved += OnPointerMoved;
@@ -195,13 +203,21 @@ public class TacticalMapControl : Control
         InvalidateVisual();
     }
 
-    public void SetPreviewSelection(IEnumerable<int>? highlightedSectors, int gateSector = 0)
+    public void SetPreviewSelection(
+        IEnumerable<int>? highlightedSectors,
+        int gateSector = 0,
+        int surroundingDepth = 0,
+        string? legendText = null,
+        bool limitHighlightedSectors = true)
     {
         _previewHighlightedSectors = highlightedSectors?
             .Where(sectorNumber => sectorNumber > 0)
             .ToHashSet()
             ?? [];
         _previewGateSector = gateSector > 0 ? gateSector : 0;
+        _previewSurroundingDepth = Math.Max(0, surroundingDepth);
+        _previewLegendText = string.IsNullOrWhiteSpace(legendText) ? null : legendText.Trim();
+        _previewLimitHighlightedSectors = limitHighlightedSectors;
         InvalidateVisual();
     }
 
@@ -542,6 +558,8 @@ public class TacticalMapControl : Control
                         ? new SKColor(0xff, 0xb6, 0xfd)
                         : new SKColor(0xc9, 0xd1, 0xd6);
                 canvas.DrawCircle(position, isHighlighted || isGate ? NodeRadius + 3.5f : NodeRadius + 0.5f, ringPaint);
+                if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay previewOverlay))
+                    DrawCircularOwnershipRings(canvas, ringPaint, position, isHighlighted || isGate ? NodeRadius + 3.5f : NodeRadius + 0.5f, previewOverlay);
 
                 textPaint.Color = SKColors.White;
                 canvas.DrawText(sectorNumber.ToString(), position.X, position.Y + 4f, textPaint);
@@ -572,6 +590,8 @@ public class TacticalMapControl : Control
                     ? new SKColor(0x8a, 0xc6, 0xff)
                     : new SKColor(0x73, 0xd4, 0xd9);
             canvas.DrawCircle(position, isCurrent ? NodeRadius + 4f : NodeRadius + 1.5f, ringPaint);
+            if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay overlay))
+                DrawCircularOwnershipRings(canvas, ringPaint, position, isCurrent ? NodeRadius + 4f : NodeRadius + 1.5f, overlay);
 
             textPaint.Color = fillColor.Red > 200 && fillColor.Green > 160
                 ? new SKColor(0x0d, 0x18, 0x1f)
@@ -593,6 +613,7 @@ public class TacticalMapControl : Control
         using var fillPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill };
         using var edgeGlow = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 7f };
         using var edgePaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2.4f };
+        using var ringPaint = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2f };
         using var sectorPaint = new SKPaint
         {
             IsAntialias = true,
@@ -621,6 +642,8 @@ public class TacticalMapControl : Control
             edgePaint.Color = palette.Edge;
             canvas.DrawPath(hexPath, edgeGlow);
             canvas.DrawPath(hexPath, edgePaint);
+            if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay overlay))
+                DrawHexOwnershipRings(canvas, ringPaint, position, HexRadius + 1.5f, overlay);
 
             string portLabel = GetPortTypeLabel(sector);
             sectorPaint.Color = palette.Text;
@@ -703,9 +726,11 @@ public class TacticalMapControl : Control
     private static void DrawOverlayLegend(SKCanvas canvas, float width, float height, MapSnapshot snapshot, TacticalMapViewMode viewMode)
     {
         string text = snapshot.IsPreview
-            ? snapshot.GateSector > 0
-                ? $"PREVIEW DOOR {snapshot.GateSector}  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
-                : $"PREVIEW  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
+            ? !string.IsNullOrWhiteSpace(snapshot.PreviewLegendText)
+                ? snapshot.PreviewLegendText
+                : snapshot.GateSector > 0
+                    ? $"PREVIEW DOOR {snapshot.GateSector}  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
+                    : $"PREVIEW  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
             : snapshot.CenterSector > 0
             ? snapshot.CenterSector != snapshot.CurrentSector && snapshot.CurrentSector > 0
                 ? $"CENTER {snapshot.CenterSector}  |  LIVE {snapshot.CurrentSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
@@ -726,7 +751,9 @@ public class TacticalMapControl : Control
             Typeface = SKTypeface.Default,
         };
 
-        float overlayRight = snapshot.IsPreview ? 420f : 326f;
+        float overlayRight = snapshot.IsPreview
+            ? Math.Min(width - 16f, Math.Max(420f, textPaint.MeasureText(text) + 42f))
+            : 326f;
         canvas.DrawRoundRect(new SKRoundRect(new SKRect(16, height - 36, overlayRight, height - 12), 8, 8), overlayPaint);
         canvas.DrawText(text, 28, height - 18, textPaint);
     }
@@ -782,6 +809,7 @@ public class TacticalMapControl : Control
             ApplyHexLayout(snapshot, db, centerSector, visited);
         else
             snapshot.Positions = ComputeBubblePositions(db, centerSector, visited);
+        PopulateOwnershipOverlays(snapshot, db);
 
         var header = db.DBHeader;
         AddLandmark(snapshot.Landmarks, header.StarDock);
@@ -806,13 +834,18 @@ public class TacticalMapControl : Control
             GateSector = _previewGateSector,
             IsPreview = true,
             TotalHighlightedSectors = _previewHighlightedSectors.Count,
+            PreviewLegendText = _previewLegendText,
         };
 
-        HashSet<int> previewHighlighted = LimitPreviewHighlightedSectors(
-            db,
-            centerSector,
-            _previewHighlightedSectors,
-            PreviewMaxHighlightedSectors);
+        HashSet<int> previewHighlighted = _previewLimitHighlightedSectors
+            ? LimitPreviewHighlightedSectors(
+                db,
+                centerSector,
+                _previewHighlightedSectors,
+                PreviewMaxHighlightedSectors)
+            : _previewHighlightedSectors
+                .Where(sectorNumber => sectorNumber > 0)
+                .ToHashSet();
 
         foreach (int sectorNumber in previewHighlighted)
             snapshot.HighlightedSectors.Add(sectorNumber);
@@ -829,6 +862,9 @@ public class TacticalMapControl : Control
             }
         }
 
+        if (_previewSurroundingDepth > 0)
+            ExpandPreviewNeighbors(db, includedSectors, _previewSurroundingDepth);
+
         if (includedSectors.Count == 0)
             includedSectors.Add(centerSector);
 
@@ -840,8 +876,64 @@ public class TacticalMapControl : Control
             ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
         else
             snapshot.Positions = ComputeBubblePositions(db, centerSector, snapshot.Depths);
+        PopulateOwnershipOverlays(snapshot, db);
 
         return snapshot;
+    }
+
+    private void PopulateOwnershipOverlays(MapSnapshot snapshot, Core.ModDatabase db)
+    {
+        snapshot.OwnershipOverlays.Clear();
+        GameState? state = _getState?.Invoke();
+
+        foreach ((int sectorNumber, Core.SectorData? sector) in snapshot.Sectors)
+        {
+            if (sector == null)
+                continue;
+
+            bool friendlyFigs = HasFriendlyFigs(sector, state);
+            bool enemyFigs = sector.Fighters.Quantity > 0 &&
+                             SectorOwnershipClassifier.IsEnemyOwner(sector.Fighters.Owner, state);
+            bool friendlyPlanets = false;
+            bool enemyPlanets = false;
+
+            foreach (Core.Planet planet in db.GetPlanetsInSector(sectorNumber))
+            {
+                if (SectorOwnershipClassifier.IsFriendlyOwner(planet.Owner, state))
+                    friendlyPlanets = true;
+                else if (SectorOwnershipClassifier.IsEnemyOwner(planet.Owner, state))
+                    enemyPlanets = true;
+
+                if ((friendlyFigs || friendlyPlanets) && (enemyFigs || enemyPlanets))
+                    break;
+            }
+
+            var overlay = new SectorOwnershipOverlay(friendlyFigs, friendlyPlanets, enemyFigs, enemyPlanets);
+            if (overlay.HasAny)
+                snapshot.OwnershipOverlays[sectorNumber] = overlay;
+        }
+    }
+
+    private static bool HasFriendlyFigs(Core.SectorData sector, GameState? state)
+    {
+        if (sector.Fighters.Quantity > 0 &&
+            SectorOwnershipClassifier.IsFriendlyOwner(sector.Fighters.Owner, state))
+        {
+            return true;
+        }
+
+        return sector.Variables.TryGetValue("FIGSEC", out string? figMarker) &&
+               IsTruthySectorVariable(figMarker);
+    }
+
+    private static bool IsTruthySectorVariable(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return !value.Equals("0", StringComparison.OrdinalIgnoreCase) &&
+               !value.Equals("false", StringComparison.OrdinalIgnoreCase) &&
+               !value.Equals("no", StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<int> LimitPreviewHighlightedSectors(
@@ -931,6 +1023,37 @@ public class TacticalMapControl : Control
             depths.TryAdd(sectorNumber, int.MaxValue / 4);
 
         return depths;
+    }
+
+    private static void ExpandPreviewNeighbors(Core.ModDatabase db, HashSet<int> includedSectors, int depth)
+    {
+        if (depth <= 0 || includedSectors.Count == 0)
+            return;
+
+        var queue = new Queue<(int SectorNumber, int Depth)>();
+        var visited = new HashSet<int>(includedSectors);
+        foreach (int sectorNumber in includedSectors)
+            queue.Enqueue((sectorNumber, 0));
+
+        while (queue.Count > 0)
+        {
+            (int sectorNumber, int currentDepth) = queue.Dequeue();
+            if (currentDepth >= depth)
+                continue;
+
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null)
+                continue;
+
+            foreach (int linkedSector in EnumerateLinkedSectors(sector))
+            {
+                if (!visited.Add(linkedSector))
+                    continue;
+
+                includedSectors.Add(linkedSector);
+                queue.Enqueue((linkedSector, currentDepth + 1));
+            }
+        }
     }
 
     private static Dictionary<int, SKPoint> ComputeBubblePositions(Core.ModDatabase db, int centerSector, Dictionary<int, int> visited)
@@ -1483,6 +1606,65 @@ public class TacticalMapControl : Control
         return MathF.Sqrt((dx * dx) + (dy * dy));
     }
 
+    private static void DrawCircularOwnershipRings(
+        SKCanvas canvas,
+        SKPaint ringPaint,
+        SKPoint position,
+        float baseRadius,
+        SectorOwnershipOverlay overlay)
+    {
+        float nextRadius = baseRadius + 4.5f;
+        DrawOwnershipRings(
+            drawRadius => canvas.DrawCircle(position, drawRadius, ringPaint),
+            ringPaint,
+            ref nextRadius,
+            overlay);
+    }
+
+    private static void DrawHexOwnershipRings(
+        SKCanvas canvas,
+        SKPaint ringPaint,
+        SKPoint position,
+        float baseRadius,
+        SectorOwnershipOverlay overlay)
+    {
+        float nextRadius = baseRadius + 4.5f;
+        DrawOwnershipRings(
+            drawRadius =>
+            {
+                using SKPath hexPath = CreateHexPath(position, drawRadius);
+                canvas.DrawPath(hexPath, ringPaint);
+            },
+            ringPaint,
+            ref nextRadius,
+            overlay);
+    }
+
+    private static void DrawOwnershipRings(
+        Action<float> drawRing,
+        SKPaint ringPaint,
+        ref float nextRadius,
+        SectorOwnershipOverlay overlay)
+    {
+        for (int index = 0; index < overlay.FriendlyRingCount; index++)
+        {
+            ringPaint.Color = index == 0
+                ? new SKColor(0x29, 0xf7, 0x57)
+                : new SKColor(0x94, 0xff, 0xb0);
+            drawRing(nextRadius);
+            nextRadius += 4f;
+        }
+
+        for (int index = 0; index < overlay.EnemyRingCount; index++)
+        {
+            ringPaint.Color = index == 0
+                ? new SKColor(0xff, 0x5f, 0x5f)
+                : new SKColor(0xff, 0xa0, 0xa0);
+            drawRing(nextRadius);
+            nextRadius += 4f;
+        }
+    }
+
     private static SKTypeface CreatePopupTypeface()
     {
         if (OperatingSystem.IsMacOS())
@@ -1603,13 +1785,26 @@ public class TacticalMapControl : Control
         public int GateSector { get; set; }
         public bool IsPreview { get; set; }
         public int TotalHighlightedSectors { get; set; }
+        public string? PreviewLegendText { get; set; }
         public Dictionary<int, SKPoint> Positions { get; set; } = new();
         public Dictionary<int, Core.SectorData?> Sectors { get; set; } = new();
         public Dictionary<int, int> Depths { get; set; } = new();
         public Dictionary<int, HexCell> HexCells { get; set; } = new();
         public Dictionary<HexCell, int> SectorByHexCell { get; set; } = new();
+        public Dictionary<int, SectorOwnershipOverlay> OwnershipOverlays { get; } = [];
         public HashSet<int> HighlightedSectors { get; } = [];
         public HashSet<int> Landmarks { get; } = [];
+    }
+
+    private readonly record struct SectorOwnershipOverlay(
+        bool FriendlyFigs,
+        bool FriendlyPlanets,
+        bool EnemyFigs,
+        bool EnemyPlanets)
+    {
+        public int FriendlyRingCount => FriendlyPlanets ? 2 : FriendlyFigs ? 1 : 0;
+        public int EnemyRingCount => EnemyPlanets ? 2 : EnemyFigs ? 1 : 0;
+        public bool HasAny => FriendlyRingCount > 0 || EnemyRingCount > 0;
     }
 
     private sealed class TacticalDrawOp(Rect bounds, TacticalMapControl owner) : ICustomDrawOperation

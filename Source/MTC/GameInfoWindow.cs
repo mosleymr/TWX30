@@ -622,31 +622,7 @@ public class GameInfoWindow : Window
     }
 
     private static bool IsFriendlyOwner(string owner, GameState? state)
-    {
-        if (string.IsNullOrWhiteSpace(owner) || owner == "-")
-            return false;
-
-        string trimmed = owner.Trim();
-        if (trimmed.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.Equals("yours", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        if (state != null)
-        {
-            if (state.Corp > 0 && trimmed.Contains($"[{state.Corp}]", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            if (!string.IsNullOrWhiteSpace(state.TraderName) &&
-                trimmed.Contains(state.TraderName, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+        => SectorOwnershipClassifier.IsFriendlyOwner(owner, state);
 
     private void ToggleSort(string table, string column)
     {

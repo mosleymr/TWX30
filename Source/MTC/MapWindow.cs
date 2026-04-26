@@ -40,6 +40,7 @@ public class MapWindow : Window
     private int  _centerSector;
     private readonly Func<int>            _getCurrentSector;
     private readonly Func<Core.ModDatabase?> _getDb;
+    private readonly Func<GameState?>? _getState;
     private bool _followCurrentSector = true;
     private MapViewMode _viewMode = MapViewMode.Bubble;
 
@@ -108,10 +109,14 @@ public class MapWindow : Window
     // ── Star field (random, fixed seed per window) ────────────────────────
     private readonly (float X, float Y, byte A)[] _stars;
 
-    public MapWindow(Func<int> getCurrentSector, Func<Core.ModDatabase?> getDb)
+    public MapWindow(
+        Func<int> getCurrentSector,
+        Func<Core.ModDatabase?> getDb,
+        Func<GameState?>? getState = null)
     {
         _getCurrentSector = getCurrentSector;
         _getDb            = getDb;
+        _getState         = getState;
         _centerSector     = getCurrentSector();
         if (_centerSector <= 0) _centerSector = 1;
 
@@ -310,7 +315,8 @@ public class MapWindow : Window
 
         _tacticalMap = new TacticalMapControl(
             () => _centerSector,
-            () => _getDb())
+            () => _getDb(),
+            () => _getState?.Invoke())
         {
             MinHeight = 220,
         };
