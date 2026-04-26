@@ -39,6 +39,7 @@ public class MainWindow : Window
         long ChangeStamp,
         int BubbleMaxSize,
         int DeadEndMaxSize,
+        int TunnelMaxSize,
         bool AllowSeparatedByGates);
 
     private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
@@ -63,6 +64,7 @@ public class MainWindow : Window
     private TerminalControl _termCtrl = null!;
     private TerminalControl _deckTermCtrl = null!;
     private readonly DispatcherTimer _statusRefreshTimer;
+    private readonly DispatcherTimer _redAlertTimer;
     private readonly Core.ShipInfoParser _shipParser = new();
     private readonly DispatcherTimer _mombotKeepaliveTimer;
     // ── Current saved profile path (null = not yet saved) ──────────────────
@@ -101,6 +103,8 @@ public class MainWindow : Window
     private readonly MenuItem _viewClassicSkin = new() { Header = "_Classic Console" };
     private readonly MenuItem _viewCommandDeckSkin = new() { Header = "_Command Deck" };
     private readonly MenuItem _viewCommWindow = new() { Header = "_Comm Window" };
+    private readonly MenuItem _viewShowHaggleDetails = new() { Header = "Haggle _Statistics" };
+    private readonly MenuItem _viewBottomBar = new() { Header = "_Bottom Bar" };
     private readonly List<(MenuItem Item, double Size)> _viewFontSizeItems = [];
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
@@ -127,6 +131,7 @@ public class MainWindow : Window
     private bool _deckPanelsInitialized;
     private bool _suppressDeckPanelStateSync;
     private TacticalMapControl? _tacticalMap;
+    private MapWindow? _mapWindow;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
@@ -145,14 +150,23 @@ public class MainWindow : Window
     private readonly List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
+    private MacroSettingsDialog? _macroSettingsDialog;
+    private readonly Button _statusMacrosButton = new();
     private readonly Button _statusStopAllButton = new();
     private readonly Button _statusCommButton = new();
+    private readonly Button _statusBotButton = new();
+    private readonly Button _statusMapButton = new();
     private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
     private readonly Button _statusLivePausedButton = new() { Content = "LIVE" };
+    private readonly Button _statusRedAlertButton = new() { Content = "RED ALERT" };
+    private readonly Border _statusMacrosFrame = new();
     private readonly Border _statusStopAllFrame = new();
     private readonly Border _statusCommFrame = new();
+    private readonly Border _statusBotFrame = new();
+    private readonly Border _statusMapFrame = new();
     private readonly Border _statusHaggleFrame = new();
     private readonly Border _statusLivePausedFrame = new();
+    private readonly Border _statusRedAlertFrame = new();
     private readonly object _pausedTerminalSync = new();
     private readonly object _terminalDisplayArtifactSync = new();
     private readonly object _finderPrewarmSync = new();
@@ -160,15 +174,36 @@ public class MainWindow : Window
     private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
     private bool _terminalLivePaused;
     private int _displayDrainScheduled;
+    private bool _statusMacrosHovered;
     private bool _statusStopAllHovered;
     private bool _statusCommHovered;
+    private bool _statusBotHovered;
+    private bool _statusMapHovered;
     private bool _statusHaggleHovered;
     private bool _statusLivePausedHovered;
+    private bool _redAlertEnabled;
     private Avalonia.Controls.Shapes.Path? _statusStopAllSign;
     private TextBlock? _statusStopAllLabel;
     private Border? _statusCommFlap;
     private Border? _statusCommBody;
     private Border? _statusCommIndicator;
+    private Border? _statusBotHead;
+    private Border? _statusBotBody;
+    private Border? _statusBotEyeLeft;
+    private Border? _statusBotEyeRight;
+    private Border? _statusBotAntenna;
+    private Border? _statusBotAntennaTip;
+    private Border? _statusMapPanelLeft;
+    private Border? _statusMapPanelCenter;
+    private Border? _statusMapPanelRight;
+    private Avalonia.Controls.Shapes.Path? _statusMapRoute;
+    private Border? _statusMapNodeA;
+    private Border? _statusMapNodeB;
+    private Border? _statusMapNodeC;
+    private Border? _statusMacrosLineTop;
+    private Border? _statusMacrosLineMiddle;
+    private Border? _statusMacrosLineBottom;
+    private Avalonia.Controls.Shapes.Path? _statusMacrosPlay;
     private Border? _commPanelBorder;
     private Button? _commFedTabButton;
     private Button? _commSubspaceTabButton;
@@ -213,6 +248,7 @@ public class MainWindow : Window
     private string _mombotPreferencesInputPrompt = string.Empty;
     private string _mombotPreferencesInputBuffer = string.Empty;
     private Action<string>? _mombotPreferencesInputHandler;
+    private MombotPreferencesBlankSubmitBehavior _mombotPreferencesBlankSubmitBehavior = MombotPreferencesBlankSubmitBehavior.Ignore;
     private int _mombotPreferencesHotkeySlot;
     private int _mombotPreferencesShipPageStart = 1;
     private int _mombotPreferencesPlanetTypePageStart = 1;
@@ -230,6 +266,7 @@ public class MainWindow : Window
     private string _mombotPromptDraft = string.Empty;
     private Func<string, string>? _mombotPromptSubmitTransform;
     private int _mombotPromptHistoryIndex;
+    private int _mombotPromptCursorIndex;
     private MombotPreferencesPage _mombotPreferencesPage;
     private string _mombotLastKeepaliveLine = string.Empty;
     private int _mombotObservedGamePromptVersion;
@@ -419,6 +456,32 @@ public class MainWindow : Window
     private static readonly IBrush HudAccentWarn= new SolidColorBrush(Color.FromRgb(255, 112, 112));
     private static readonly IBrush HudBustBg    = new SolidColorBrush(Color.FromRgb(196, 48, 48));
     private static readonly IBrush HudStatus    = new SolidColorBrush(Color.FromRgb(11,  20, 28));
+
+    private static void SetBrushColor(IBrush brush, Color color)
+    {
+        if (brush is SolidColorBrush solidBrush)
+            solidBrush.Color = color;
+    }
+
+    private void ApplyRedAlertPalette(bool enabled)
+    {
+        if (enabled)
+        {
+            SetBrushColor(BgWindow,    Color.FromRgb(54, 20, 24));
+            SetBrushColor(HudWindow,   Color.FromRgb(19,  7, 10));
+            SetBrushColor(HudMenu,     Color.FromRgb(34, 11, 15));
+            SetBrushColor(HudShell,    Color.FromRgb(28, 10, 14));
+            SetBrushColor(HudEdge,     Color.FromRgb(184, 52, 58));
+        }
+        else
+        {
+            SetBrushColor(BgWindow,    Color.FromRgb(105, 105, 105));
+            SetBrushColor(HudWindow,   Color.FromRgb(8,   14,  20));
+            SetBrushColor(HudMenu,     Color.FromRgb(16,  27,  36));
+            SetBrushColor(HudShell,    Color.FromRgb(10,  21,  29));
+            SetBrushColor(HudEdge,     Color.FromRgb(57,  112, 128));
+        }
+    }
     private static readonly FontFamily HudTitleFont = new("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif");
     private static readonly Bitmap AboutLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc.png")));
     private static readonly Bitmap HudLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
@@ -553,6 +616,13 @@ public class MainWindow : Window
             RefreshStatusBar();
         };
 
+        _redAlertTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _redAlertTimer.Tick += (_, _) =>
+        {
+            _redAlertTimer.Stop();
+            ClearRedAlert();
+        };
+
         Content = BuildLayout();
         PositionChanged += (_, _) => NotifyTerminalWindowMove();
 
@@ -603,6 +673,7 @@ public class MainWindow : Window
             _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _sessionLog.Dispose();
+            _redAlertTimer.Stop();
             _statusRefreshTimer.Stop();
         };
     }
@@ -777,6 +848,7 @@ public class MainWindow : Window
         _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
         _statusBarContent.Children.Add(_statusText);
         _statusBar.Child = _statusBarContent;
+        _statusBar.IsVisible = _appPrefs.ShowBottomBar;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
         dock.Children.Add(_statusBar);
 
@@ -1263,7 +1335,7 @@ public class MainWindow : Window
         var zoomText = new TextBlock();
         Button bubbleButton = null!;
         Button hexButton = null!;
-        bubbleButton = BuildDeckToggleToolButton("Bubble", () =>
+        bubbleButton = BuildDeckToggleToolButton("Modern", () =>
         {
             _tacticalMap?.SetViewMode(TacticalMapViewMode.Bubble);
             UpdateViewButtons();
@@ -2384,11 +2456,27 @@ public class MainWindow : Window
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
         RefreshCommWindowMenuState();
+        RefreshHaggleDetailsMenuState();
+        RefreshBottomBarMenuState();
     }
 
     private void RefreshCommWindowMenuState()
     {
         _viewCommWindow.Icon = _commWindowVisible
+            ? new TextBlock { Text = "●", Foreground = HudAccentOk }
+            : null;
+    }
+
+    private void RefreshHaggleDetailsMenuState()
+    {
+        _viewShowHaggleDetails.Icon = _appPrefs.ShowHaggleDetails
+            ? new TextBlock { Text = "●", Foreground = HudAccentOk }
+            : null;
+    }
+
+    private void RefreshBottomBarMenuState()
+    {
+        _viewBottomBar.Icon = _appPrefs.ShowBottomBar
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
     }
@@ -2494,6 +2582,8 @@ public class MainWindow : Window
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
         _viewCommWindow.Click += (_, _) => ToggleCommWindow();
+        _viewShowHaggleDetails.Click += (_, _) => ToggleShowHaggleDetails();
+        _viewBottomBar.Click += (_, _) => ToggleBottomBar();
         var skinMenu = new MenuItem
         {
             Header = "_Skin",
@@ -2503,7 +2593,7 @@ public class MainWindow : Window
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, new Separator(), viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2567,14 +2657,22 @@ public class MainWindow : Window
         _menuFontSizeFrame.VerticalAlignment = VerticalAlignment.Center;
         BuildMenuFontSizeBox();
 
+        _statusMacrosFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusMacrosFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusMapFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusMapFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusStopAllFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusStopAllFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusCommFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusCommFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusBotFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusBotFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusHaggleFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusHaggleFrame.VerticalAlignment = VerticalAlignment.Center;
-        _statusLivePausedFrame.Margin = new Thickness(0, 4, 8, 4);
+        _statusLivePausedFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusLivePausedFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusRedAlertFrame.Margin = new Thickness(0, 4, 8, 4);
+        _statusRedAlertFrame.VerticalAlignment = VerticalAlignment.Center;
 
         var rightTools = new StackPanel
         {
@@ -2584,12 +2682,15 @@ public class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                _menuFontSizeFrame,
-                _statusStopAllFrame,
+                _statusMapFrame,
+                _statusBotFrame,
                 _statusCommFrame,
+                _statusStopAllFrame,
+                _statusMacrosFrame,
                 _statusMacroHost,
                 _statusHaggleFrame,
                 _statusLivePausedFrame,
+                _statusRedAlertFrame,
             },
         };
         Grid.SetColumn(rightTools, 1);
@@ -2600,11 +2701,25 @@ public class MainWindow : Window
 
     private void OnViewMap()
     {
-        var win = new MapWindow(
+        if (_mapWindow != null)
+        {
+            _mapWindow.Show();
+            _mapWindow.Activate();
+            return;
+        }
+
+        _mapWindow = new MapWindow(
             () => _state.Sector,
             () => _sessionDb,
             () => _state);
-        win.Show();
+        _mapWindow.Closed += (_, _) =>
+        {
+            _mapWindow = null;
+            UpdateTerminalLiveSelector();
+        };
+        _mapWindow.Show();
+        _mapWindow.Activate();
+        UpdateTerminalLiveSelector();
     }
 
     private void OnToolsFindRoute()
@@ -2640,6 +2755,15 @@ public class MainWindow : Window
                 _embeddedGameConfig.DeadEndMinSize = Math.Max(1, minSize);
                 _embeddedGameConfig.DeadEndMaxSize = Math.Max(1, maxSize);
                 _ = SaveCurrentGameConfigAsync();
+            },
+            () => Math.Max(1, _embeddedGameConfig?.TunnelMinSize ?? 2),
+            () => Math.Max(1, _embeddedGameConfig?.TunnelMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            (minSize, maxSize) =>
+            {
+                _embeddedGameConfig ??= new EmbeddedGameConfig();
+                _embeddedGameConfig.TunnelMinSize = Math.Max(1, minSize);
+                _embeddedGameConfig.TunnelMaxSize = Math.Max(1, maxSize);
+                _ = SaveCurrentGameConfigAsync();
             });
         win.Show();
     }
@@ -2658,6 +2782,7 @@ public class MainWindow : Window
 
         int bubbleMaxSize = Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize);
         int deadEndMaxSize = Math.Max(1, _embeddedGameConfig?.DeadEndMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize);
+        int tunnelMaxSize = Math.Max(1, _embeddedGameConfig?.TunnelMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize);
         const bool allowSeparatedByGates = true;
 
         FinderPrewarmKey prewarmKey = new(
@@ -2665,6 +2790,7 @@ public class MainWindow : Window
             db.ChangeStamp,
             bubbleMaxSize,
             deadEndMaxSize,
+            tunnelMaxSize,
             allowSeparatedByGates);
 
         lock (_finderPrewarmSync)
@@ -2680,9 +2806,10 @@ public class MainWindow : Window
             try
             {
                 Core.GlobalModules.DebugLog(
-                    $"[MTC.FinderPrewarm] start db={db.DatabasePath} bubbleMax={bubbleMaxSize} deadEndMax={deadEndMaxSize} allowSeparated={allowSeparatedByGates}\n");
+                    $"[MTC.FinderPrewarm] start db={db.DatabasePath} bubbleMax={bubbleMaxSize} deadEndMax={deadEndMaxSize} tunnelMax={tunnelMaxSize} allowSeparated={allowSeparatedByGates}\n");
                 _ = Core.ProxyGameOperations.GetBubbles(db, bubbleMaxSize, allowSeparatedByGates);
                 _ = Core.ProxyGameOperations.GetDeadEnds(db, deadEndMaxSize);
+                _ = Core.ProxyGameOperations.GetTunnels(db, tunnelMaxSize);
                 Core.GlobalModules.DebugLog($"[MTC.FinderPrewarm] done db={db.DatabasePath}\n");
             }
             catch (Exception ex)
@@ -3774,6 +3901,27 @@ public class MainWindow : Window
         RefreshCommWindowUi();
     }
 
+    private void ToggleShowHaggleDetails()
+    {
+        _appPrefs.ShowHaggleDetails = !_appPrefs.ShowHaggleDetails;
+        _appPrefs.Save();
+        RefreshHaggleDetailsMenuState();
+        RequestStatusBarRefresh();
+    }
+
+    private void ToggleBottomBar()
+    {
+        _appPrefs.ShowBottomBar = !_appPrefs.ShowBottomBar;
+        _appPrefs.Save();
+        ApplyBottomBarVisibility();
+        RefreshBottomBarMenuState();
+    }
+
+    private void ApplyBottomBarVisibility()
+    {
+        _statusBar.IsVisible = _appPrefs.ShowBottomBar;
+    }
+
     private void RefreshCommWindowUi()
     {
         if (_commPanelBorder != null)
@@ -4276,16 +4424,24 @@ public class MainWindow : Window
         string backdoor = "-";
         string rylos = "-";
         string alpha = "-";
-        int hagglePct = _gameInstance?.NativeHaggleSuccessRatePercent ?? 0;
-        int haggleGood = _gameInstance?.NativeHaggleGoodCount ?? 0;
-        int haggleGreat = _gameInstance?.NativeHaggleGreatCount ?? 0;
-        int haggleExcellent = _gameInstance?.NativeHaggleExcellentCount ?? 0;
-        bool showHagglePct =
-            _gameInstance != null &&
-            (_gameInstance.NativeHaggleEnabled ||
-             haggleGood > 0 ||
-             haggleGreat > 0 ||
-             haggleExcellent > 0);
+        bool haggleDetailsEnabled = _appPrefs.ShowHaggleDetails;
+        int hagglePct = 0;
+        int haggleGood = 0;
+        int haggleGreat = 0;
+        int haggleExcellent = 0;
+        bool showHagglePct = false;
+        if (haggleDetailsEnabled && _gameInstance != null)
+        {
+            hagglePct = _gameInstance.NativeHaggleSuccessRatePercent;
+            haggleGood = _gameInstance.NativeHaggleGoodCount;
+            haggleGreat = _gameInstance.NativeHaggleGreatCount;
+            haggleExcellent = _gameInstance.NativeHaggleExcellentCount;
+            showHagglePct =
+                _gameInstance.NativeHaggleEnabled ||
+                haggleGood > 0 ||
+                haggleGreat > 0 ||
+                haggleExcellent > 0;
+        }
 
         if (_sessionDb != null)
         {
@@ -4352,13 +4508,8 @@ public class MainWindow : Window
         string? haggleText = showHagglePct
             ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : null;
-        bool showBot = _embeddedGameConfig?.mombot != null || _mombot.IsAttached || _gameInstance != null;
-        BotRuntimeState botRuntime = GetBotRuntimeState();
-        string? botText = showBot
-            ? $"Bot: {botRuntime.DisplayName}"
-            : null;
-
-        _statusText.Text = string.Join("  ", new[] { haggleText, botText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        _statusText.Text = string.Join("  ", new[] { haggleText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        SyncRedAlertFromMombotVar();
         UpdateTerminalLiveSelector();
 
         _deckHudHeaderConnection.Text = _state.Connected
@@ -4457,6 +4608,7 @@ public class MainWindow : Window
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
     private void OnGameDisconnected()
     {
+        ClearRedAlert();
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
         UpdateHaggleToggleState();
@@ -4578,8 +4730,11 @@ public class MainWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             RefreshMombotUi();
-            RequestStatusBarRefresh();
-            _buffer.Dirty = true;
+            if (_appPrefs.ShowHaggleDetails)
+            {
+                RequestStatusBarRefresh();
+                _buffer.Dirty = true;
+            }
         });
     }
 
@@ -4972,6 +5127,15 @@ public class MainWindow : Window
 
     private async Task OnMacrosAsync()
     {
+        if (_macroSettingsDialog != null)
+        {
+            if (_macroSettingsDialog.WindowState == WindowState.Minimized)
+                _macroSettingsDialog.WindowState = WindowState.Normal;
+
+            _macroSettingsDialog.Activate();
+            return;
+        }
+
         var dialog = new MacroSettingsDialog(
             _appPrefs.MacroBindings
                 .Select(binding => new AppPreferences.MacroBinding
@@ -4982,21 +5146,34 @@ public class MainWindow : Window
                 .ToArray(),
             PlayConfiguredMacroBurstAsync);
 
-        bool saved = await dialog.ShowDialog<bool>(this);
-        if (!saved)
-            return;
+        _macroSettingsDialog = dialog;
+        UpdateTerminalLiveSelector();
 
-        _appPrefs.MacroBindings.Clear();
-        foreach (AppPreferences.MacroBinding binding in dialog.Result)
+        try
         {
-            _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
-            {
-                Hotkey = binding.Hotkey,
-                Macro = binding.Macro,
-            });
-        }
+            bool saved = await dialog.ShowDialog<bool>(this);
+            if (!saved)
+                return;
 
-        _appPrefs.Save();
+            _appPrefs.MacroBindings.Clear();
+            foreach (AppPreferences.MacroBinding binding in dialog.Result)
+            {
+                _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
+                {
+                    Hotkey = binding.Hotkey,
+                    Macro = binding.Macro,
+                });
+            }
+
+            _appPrefs.Save();
+        }
+        finally
+        {
+            if (ReferenceEquals(_macroSettingsDialog, dialog))
+                _macroSettingsDialog = null;
+
+            UpdateTerminalLiveSelector();
+        }
     }
 
     private void ApplyDebugLoggingPreferences()
@@ -6365,10 +6542,22 @@ public class MainWindow : Window
 
     private void ConfigureStatusModeSelector()
     {
+        ConfigureStatusMacrosButton();
+        ConfigureStatusMapButton();
         ConfigureStatusStopAllButton();
         ConfigureStatusCommButton();
+        ConfigureStatusBotButton();
         ConfigureStatusHaggleButton();
         ConfigureStatusToggleButton();
+        ConfigureStatusRedAlertButton();
+
+        _statusMacrosFrame.Padding = new Thickness(3, 2);
+        _statusMacrosFrame.CornerRadius = new CornerRadius(8);
+        _statusMacrosFrame.Child = _statusMacrosButton;
+
+        _statusMapFrame.Padding = new Thickness(3, 2);
+        _statusMapFrame.CornerRadius = new CornerRadius(8);
+        _statusMapFrame.Child = _statusMapButton;
 
         _statusStopAllFrame.Padding = new Thickness(3, 2);
         _statusStopAllFrame.CornerRadius = new CornerRadius(8);
@@ -6378,6 +6567,10 @@ public class MainWindow : Window
         _statusCommFrame.CornerRadius = new CornerRadius(8);
         _statusCommFrame.Child = _statusCommButton;
 
+        _statusBotFrame.Padding = new Thickness(3, 2);
+        _statusBotFrame.CornerRadius = new CornerRadius(8);
+        _statusBotFrame.Child = _statusBotButton;
+
         _statusHaggleFrame.Padding = new Thickness(4, 2);
         _statusHaggleFrame.CornerRadius = new CornerRadius(8);
         _statusHaggleFrame.Child = _statusHaggleButton;
@@ -6386,7 +6579,216 @@ public class MainWindow : Window
         _statusLivePausedFrame.CornerRadius = new CornerRadius(8);
         _statusLivePausedFrame.Child = _statusLivePausedButton;
 
+        _statusRedAlertFrame.Padding = new Thickness(4, 2);
+        _statusRedAlertFrame.CornerRadius = new CornerRadius(8);
+        _statusRedAlertFrame.Child = _statusRedAlertButton;
+
         UpdateTerminalLiveSelector();
+    }
+
+    private void ConfigureStatusMacrosButton()
+    {
+        _statusMacrosButton.MinWidth = 0;
+        _statusMacrosButton.Width = 28;
+        _statusMacrosButton.Height = 20;
+        _statusMacrosButton.Padding = new Thickness(2, 1);
+        _statusMacrosButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusMacrosButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusMacrosButton.Content = BuildStatusMacrosIcon();
+        ToolTip.SetTip(_statusMacrosButton, "Open macro settings");
+        _statusMacrosButton.Click += (_, _) =>
+        {
+            _ = OnMacrosAsync();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusMacrosButton.PointerEntered += (_, _) =>
+        {
+            _statusMacrosHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusMacrosButton.PointerExited += (_, _) =>
+        {
+            _statusMacrosHovered = false;
+            UpdateTerminalLiveSelector();
+        };
+    }
+
+    private Control BuildStatusMacrosIcon()
+    {
+        _statusMacrosLineTop = BuildStatusMacrosLine(new Thickness(1, 2, 5, 0), 10);
+        _statusMacrosLineMiddle = BuildStatusMacrosLine(new Thickness(1, 0, 5, 0), 12);
+        _statusMacrosLineBottom = BuildStatusMacrosLine(new Thickness(1, 0, 5, 2), 8);
+        _statusMacrosPlay = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 5.5,
+            Height = 6.5,
+            Stretch = Stretch.Fill,
+            Data = Geometry.Parse("M 0,0 L 5.5,3.25 L 0,6.5 Z"),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 1, 0),
+            IsHitTestVisible = false,
+        };
+
+        return new Grid
+        {
+            Width = 18,
+            Height = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new StackPanel
+                {
+                    Spacing = 2,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        _statusMacrosLineTop,
+                        _statusMacrosLineMiddle,
+                        _statusMacrosLineBottom,
+                    },
+                },
+                _statusMacrosPlay,
+            },
+        };
+    }
+
+    private static Border BuildStatusMacrosLine(Thickness margin, double width)
+    {
+        return new Border
+        {
+            Width = width,
+            Height = 2,
+            CornerRadius = new CornerRadius(1),
+            Margin = margin,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+    }
+
+    private void ConfigureStatusMapButton()
+    {
+        _statusMapButton.MinWidth = 0;
+        _statusMapButton.Width = 28;
+        _statusMapButton.Height = 20;
+        _statusMapButton.Padding = new Thickness(2, 1);
+        _statusMapButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusMapButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusMapButton.Content = BuildStatusMapIcon();
+        ToolTip.SetTip(_statusMapButton, "Open map window");
+        _statusMapButton.Click += (_, _) =>
+        {
+            OnViewMap();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusMapButton.PointerEntered += (_, _) =>
+        {
+            _statusMapHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusMapButton.PointerExited += (_, _) =>
+        {
+            _statusMapHovered = false;
+            UpdateTerminalLiveSelector();
+        };
+    }
+
+    private Control BuildStatusMapIcon()
+    {
+        _statusMapPanelLeft = new Border
+        {
+            Width = 4.5,
+            Height = 12,
+            CornerRadius = new CornerRadius(1.4, 0.8, 0.8, 1.4),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            RenderTransform = new SkewTransform(-8, 0),
+            Margin = new Thickness(0, 0, 0, 0),
+        };
+
+        _statusMapPanelCenter = new Border
+        {
+            Width = 5,
+            Height = 12,
+            CornerRadius = new CornerRadius(0.8),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        _statusMapPanelRight = new Border
+        {
+            Width = 4.5,
+            Height = 12,
+            CornerRadius = new CornerRadius(0.8, 1.4, 1.4, 0.8),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            RenderTransform = new SkewTransform(8, 0),
+            Margin = new Thickness(0, 0, 0, 0),
+        };
+
+        _statusMapRoute = new Avalonia.Controls.Shapes.Path
+        {
+            Width = 16,
+            Height = 12,
+            Stretch = Stretch.Fill,
+            StrokeThickness = 1.1,
+            Data = Geometry.Parse("M 2,9 L 6,5 L 10,7 L 14,3"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+
+        _statusMapNodeA = BuildStatusMapNode(new Thickness(1, 8, 0, 0), HorizontalAlignment.Left);
+        _statusMapNodeB = BuildStatusMapNode(new Thickness(0, 4, 0, 0), HorizontalAlignment.Center);
+        _statusMapNodeC = BuildStatusMapNode(new Thickness(0, 2, 1, 0), HorizontalAlignment.Right);
+
+        return new Grid
+        {
+            Width = 18,
+            Height = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new Grid
+                {
+                    Width = 15,
+                    Height = 12,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        _statusMapPanelLeft,
+                        _statusMapPanelCenter,
+                        _statusMapPanelRight,
+                    },
+                },
+                _statusMapRoute,
+                _statusMapNodeA,
+                _statusMapNodeB,
+                _statusMapNodeC,
+            },
+        };
+    }
+
+    private static Border BuildStatusMapNode(Thickness margin, HorizontalAlignment alignment)
+    {
+        return new Border
+        {
+            Width = 2.8,
+            Height = 2.8,
+            CornerRadius = new CornerRadius(1.4),
+            HorizontalAlignment = alignment,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = margin,
+            IsHitTestVisible = false,
+        };
     }
 
     private void ConfigureStatusStopAllButton()
@@ -6480,6 +6882,33 @@ public class MainWindow : Window
         };
     }
 
+    private void ConfigureStatusBotButton()
+    {
+        _statusBotButton.MinWidth = 0;
+        _statusBotButton.Width = 28;
+        _statusBotButton.Height = 20;
+        _statusBotButton.Padding = new Thickness(2, 1);
+        _statusBotButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusBotButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusBotButton.Content = BuildStatusBotIcon();
+        ToolTip.SetTip(_statusBotButton, "Start or stop native MomBot");
+        _statusBotButton.Click += async (_, _) =>
+        {
+            await ToggleNativeMombotFromToolbarAsync();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusBotButton.PointerEntered += (_, _) =>
+        {
+            _statusBotHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusBotButton.PointerExited += (_, _) =>
+        {
+            _statusBotHovered = false;
+            UpdateTerminalLiveSelector();
+        };
+    }
+
     private Control BuildStatusCommIcon()
     {
         _statusCommFlap = new Border
@@ -6530,6 +6959,101 @@ public class MainWindow : Window
             {
                 _statusCommFlap,
                 _statusCommBody,
+            },
+        };
+    }
+
+    private Control BuildStatusBotIcon()
+    {
+        _statusBotAntenna = new Border
+        {
+            Width = 1.5,
+            Height = 3,
+            CornerRadius = new CornerRadius(1),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 0, 0, -1),
+        };
+
+        _statusBotAntennaTip = new Border
+        {
+            Width = 3,
+            Height = 3,
+            CornerRadius = new CornerRadius(1.5),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+
+        _statusBotEyeLeft = new Border
+        {
+            Width = 2.4,
+            Height = 2.4,
+            CornerRadius = new CornerRadius(1.2),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        _statusBotEyeRight = new Border
+        {
+            Width = 2.4,
+            Height = 2.4,
+            CornerRadius = new CornerRadius(1.2),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        var eyes = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = GridLength.Auto },
+                new ColumnDefinition { Width = new GridLength(3) },
+                new ColumnDefinition { Width = GridLength.Auto },
+            },
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _statusBotEyeLeft,
+                _statusBotEyeRight,
+            },
+        };
+        Grid.SetColumn(_statusBotEyeRight, 2);
+
+        _statusBotHead = new Border
+        {
+            Width = 12,
+            Height = 8,
+            CornerRadius = new CornerRadius(2),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Padding = new Thickness(2, 0),
+            Child = eyes,
+        };
+
+        _statusBotBody = new Border
+        {
+            Width = 9,
+            Height = 4,
+            CornerRadius = new CornerRadius(1.5),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 1, 0, 0),
+        };
+
+        return new StackPanel
+        {
+            Spacing = 0,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                _statusBotAntennaTip,
+                _statusBotAntenna,
+                _statusBotHead,
+                _statusBotBody,
             },
         };
     }
@@ -6597,14 +7121,40 @@ public class MainWindow : Window
         };
     }
 
+    private void ConfigureStatusRedAlertButton()
+    {
+        _statusRedAlertButton.MinWidth = 84;
+        _statusRedAlertButton.Height = 20;
+        _statusRedAlertButton.Padding = new Thickness(6, 1);
+        _statusRedAlertButton.FontSize = 10.5;
+        _statusRedAlertButton.FontWeight = FontWeight.Bold;
+        _statusRedAlertButton.VerticalAlignment = VerticalAlignment.Center;
+        ToolTip.SetTip(_statusRedAlertButton, "Clear active red alert");
+        _statusRedAlertButton.Click += (_, _) =>
+        {
+            if (_redAlertEnabled)
+                ClearRedAlert();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+    }
+
     private void UpdateTerminalLiveSelector()
     {
         bool enabled = _gameInstance != null;
+        BotRuntimeState botRuntime = GetBotRuntimeState();
+        ApplyStatusToggleFrameStyle(_statusMacrosFrame, true);
+        ApplyStatusToggleFrameStyle(_statusMapFrame, true);
         ApplyStatusToggleFrameStyle(_statusCommFrame, true);
+        ApplyStatusToggleFrameStyle(_statusBotFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusHaggleFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
+        ApplyStatusToggleFrameStyle(_statusRedAlertFrame, true);
+        _statusRedAlertFrame.IsVisible = _redAlertEnabled;
 
+        ApplyStatusMacrosButtonStyle(_statusMacrosButton, _macroSettingsDialog != null);
+        ApplyStatusMapButtonStyle(_statusMapButton, _mapWindow != null);
         ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
+        ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, enabled);
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: enabled && _gameInstance?.NativeHaggleEnabled == true, enabled);
         _statusHaggleButton.Content = enabled && _statusHaggleHovered
             ? (_gameInstance?.NativeHaggleEnabled == true ? "OFF" : "ON")
@@ -6613,6 +7163,7 @@ public class MainWindow : Window
             ? (_terminalLivePaused ? "RESUME" : "PAUSE")
             : (_terminalLivePaused ? "PAUSED" : "LIVE");
         ApplyStatusModeButtonStyle(_statusLivePausedButton, paused: _terminalLivePaused, enabled);
+        ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _redAlertEnabled);
     }
 
     private void ApplyStatusToggleFrameStyle(Border frame, bool enabled)
@@ -6661,6 +7212,34 @@ public class MainWindow : Window
         button.Foreground = selected ? HudAccentInk : HudMuted;
     }
 
+    private void ApplyStatusMacrosButtonStyle(Button button, bool selected)
+    {
+        button.IsEnabled = true;
+        button.Background = selected
+            ? new SolidColorBrush(Color.Parse("#5CD5FF"))
+            : (_statusMacrosHovered ? HudHeaderAlt : HudFrame);
+        button.BorderBrush = selected
+            ? HudAccentHot
+            : (_statusMacrosHovered ? HudAccent : HudInnerEdge);
+        button.BorderThickness = new Thickness(1);
+
+        Color lineColor = selected
+            ? Color.Parse("#E8FBFF")
+            : (_statusMacrosHovered ? Color.Parse("#A7F1FF") : Color.Parse("#7CD0DE"));
+        Color playColor = selected
+            ? Color.Parse("#FFE28A")
+            : (_statusMacrosHovered ? Color.Parse("#DDFBFF") : Color.Parse("#B7D5DF"));
+
+        if (_statusMacrosLineTop != null)
+            _statusMacrosLineTop.Background = new SolidColorBrush(lineColor);
+        if (_statusMacrosLineMiddle != null)
+            _statusMacrosLineMiddle.Background = new SolidColorBrush(lineColor);
+        if (_statusMacrosLineBottom != null)
+            _statusMacrosLineBottom.Background = new SolidColorBrush(lineColor);
+        if (_statusMacrosPlay != null)
+            _statusMacrosPlay.Fill = new SolidColorBrush(playColor);
+    }
+
     private void ApplyStatusCommButtonStyle(Button button, bool selected)
     {
         button.IsEnabled = true;
@@ -6700,6 +7279,111 @@ public class MainWindow : Window
         }
     }
 
+    private void ApplyStatusMapButtonStyle(Button button, bool selected)
+    {
+        button.IsEnabled = true;
+        button.Background = selected
+            ? new SolidColorBrush(Color.Parse("#5CD5FF"))
+            : (_statusMapHovered ? HudHeaderAlt : HudFrame);
+        button.BorderBrush = selected
+            ? HudAccentHot
+            : (_statusMapHovered ? HudAccent : HudInnerEdge);
+        button.BorderThickness = new Thickness(1);
+
+        Color panelBorder = selected
+            ? Color.Parse("#E8FBFF")
+            : (_statusMapHovered ? Color.Parse("#9DC3CF") : Color.Parse("#7894A0"));
+        Color leftFill = selected
+            ? Color.Parse("#103D56")
+            : (_statusMapHovered ? Color.Parse("#1A3240") : Color.Parse("#152733"));
+        Color centerFill = selected
+            ? Color.Parse("#12384E")
+            : (_statusMapHovered ? Color.Parse("#18303C") : Color.Parse("#13242D"));
+        Color rightFill = selected
+            ? Color.Parse("#153246")
+            : (_statusMapHovered ? Color.Parse("#1A2D38") : Color.Parse("#14222A"));
+        Color routeColor = selected
+            ? Color.Parse("#FFE28A")
+            : (_statusMapHovered ? Color.Parse("#A7F1FF") : Color.Parse("#6CC7D7"));
+        Color nodeColor = selected
+            ? Color.Parse("#FFF5C5")
+            : (_statusMapHovered ? Color.Parse("#DDFBFF") : Color.Parse("#9FD9E4"));
+
+        if (_statusMapPanelLeft != null)
+        {
+            _statusMapPanelLeft.Background = new SolidColorBrush(leftFill);
+            _statusMapPanelLeft.BorderBrush = new SolidColorBrush(panelBorder);
+        }
+
+        if (_statusMapPanelCenter != null)
+        {
+            _statusMapPanelCenter.Background = new SolidColorBrush(centerFill);
+            _statusMapPanelCenter.BorderBrush = new SolidColorBrush(panelBorder);
+        }
+
+        if (_statusMapPanelRight != null)
+        {
+            _statusMapPanelRight.Background = new SolidColorBrush(rightFill);
+            _statusMapPanelRight.BorderBrush = new SolidColorBrush(panelBorder);
+        }
+
+        if (_statusMapRoute != null)
+            _statusMapRoute.Stroke = new SolidColorBrush(routeColor);
+
+        if (_statusMapNodeA != null)
+            _statusMapNodeA.Background = new SolidColorBrush(nodeColor);
+        if (_statusMapNodeB != null)
+            _statusMapNodeB.Background = new SolidColorBrush(nodeColor);
+        if (_statusMapNodeC != null)
+            _statusMapNodeC.Background = new SolidColorBrush(nodeColor);
+    }
+
+    private void ApplyStatusBotButtonStyle(Button button, bool selected, bool enabled)
+    {
+        button.IsEnabled = enabled;
+        button.Background = selected
+            ? new SolidColorBrush(Color.Parse("#1EF0AE"))
+            : (_statusBotHovered ? HudHeaderAlt : HudFrame);
+        button.BorderBrush = selected
+            ? HudAccentHot
+            : (_statusBotHovered ? HudAccent : HudInnerEdge);
+        button.BorderThickness = new Thickness(1);
+
+        Color shellColor = selected
+            ? Color.Parse("#083327")
+            : (_statusBotHovered ? Color.Parse("#A7D8E4") : Color.Parse("#89A2AC"));
+        Color headFillColor = selected
+            ? Color.Parse("#C8FFF0")
+            : (_statusBotHovered ? Color.Parse("#173342") : Color.Parse("#112530"));
+        Color eyeColor = selected
+            ? Color.Parse("#0ACB86")
+            : (_statusBotHovered ? Color.Parse("#7CEFFF") : Color.Parse("#4E7D89"));
+        Color antennaTipColor = selected
+            ? Color.Parse("#FFF1C2")
+            : (_statusBotHovered ? Color.Parse("#DCE8ED") : Color.Parse("#8FA2AB"));
+
+        if (_statusBotHead != null)
+        {
+            _statusBotHead.Background = new SolidColorBrush(headFillColor);
+            _statusBotHead.BorderBrush = new SolidColorBrush(shellColor);
+        }
+
+        if (_statusBotBody != null)
+        {
+            _statusBotBody.Background = new SolidColorBrush(headFillColor);
+            _statusBotBody.BorderBrush = new SolidColorBrush(shellColor);
+        }
+
+        if (_statusBotEyeLeft != null)
+            _statusBotEyeLeft.Background = new SolidColorBrush(eyeColor);
+        if (_statusBotEyeRight != null)
+            _statusBotEyeRight.Background = new SolidColorBrush(eyeColor);
+        if (_statusBotAntenna != null)
+            _statusBotAntenna.Background = new SolidColorBrush(shellColor);
+        if (_statusBotAntennaTip != null)
+            _statusBotAntennaTip.Background = new SolidColorBrush(antennaTipColor);
+    }
+
     private void ApplyStatusModeButtonStyle(Button button, bool paused, bool enabled)
     {
         button.IsEnabled = enabled;
@@ -6707,6 +7391,70 @@ public class MainWindow : Window
         button.BorderBrush = paused ? HudAccentHot : HudAccent;
         button.BorderThickness = new Thickness(1);
         button.Foreground = HudAccentInk;
+    }
+
+    private void ApplyStatusRedAlertButtonStyle(Button button, bool enabled)
+    {
+        button.IsEnabled = enabled;
+        button.Background = enabled
+            ? new SolidColorBrush(Color.FromRgb(196, 28, 36))
+            : new SolidColorBrush(Color.FromRgb(55, 61, 68));
+        button.BorderBrush = enabled
+            ? new SolidColorBrush(Color.FromRgb(255, 208, 208))
+            : new SolidColorBrush(Color.FromRgb(103, 112, 122));
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = enabled ? Brushes.White : new SolidColorBrush(Color.FromRgb(176, 184, 190));
+        button.Content = "RED ALERT";
+    }
+
+    private static void SetRedAlertVars(string value)
+        => SetMombotCurrentVars(value, "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
+
+    private void SyncRedAlertFromMombotVar()
+        => SetRedAlertEnabled(IsMombotTruthy(ReadCurrentMombotVar("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert")));
+
+    internal void TriggerRedAlert()
+    {
+        RestartRedAlertTimer();
+        SetRedAlertVars("TRUE");
+        SetRedAlertEnabled(true);
+    }
+
+    internal void ClearRedAlert()
+    {
+        _redAlertTimer.Stop();
+        SetRedAlertVars("FALSE");
+        SetRedAlertEnabled(false);
+    }
+
+    private void SetRedAlertEnabled(bool enabled)
+    {
+        if (_redAlertEnabled == enabled)
+        {
+            _statusRedAlertFrame.IsVisible = _redAlertEnabled;
+            ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _redAlertEnabled);
+            return;
+        }
+
+        _redAlertEnabled = enabled;
+        if (enabled)
+            RestartRedAlertTimer();
+        else
+            _redAlertTimer.Stop();
+        ApplyRedAlertPalette(enabled);
+        Background = BgWindow;
+        UpdateTerminalLiveSelector();
+        RefreshStatusBar();
+        RefreshInfoPanels();
+        _buffer.Dirty = true;
+        _termCtrl?.InvalidateVisual();
+        _deckTermCtrl?.InvalidateVisual();
+    }
+
+    private void RestartRedAlertTimer()
+    {
+        _redAlertTimer.Stop();
+        _redAlertTimer.Start();
     }
 
     private void SetTerminalLivePaused(bool paused)
@@ -9101,6 +9849,29 @@ public class MainWindow : Window
         return Path.Combine("scripts", directory).Replace('\\', '/');
     }
 
+    private async Task ToggleNativeMombotFromToolbarAsync()
+    {
+        if (_mombot.Enabled)
+        {
+            await StopInternalMombotAsync();
+            return;
+        }
+
+        StoredBotSection? nativeBot = LoadConfiguredBotSections().FirstOrDefault(section => section.IsNative);
+        if (nativeBot == null)
+        {
+            PublishMombotLocalMessage("No native MomBot configuration is available.");
+            return;
+        }
+
+        StopActiveExternalBot();
+        await StartInternalMombotAsync(
+            nativeBot.Config,
+            requestedBotName: string.Empty,
+            interactiveOfflinePrompt: true,
+            publishMissingGameMessage: true);
+    }
+
     private async Task StartInternalMombotAsync(
         Core.BotConfig? nativeBotConfig = null,
         string requestedBotName = "",
@@ -9907,6 +10678,7 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
+        SetMombotCurrentVars("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
         PersistMombotVars(shipCapRelative, "$cap_file");
         PersistMombotVars(planetFileRelative, "$planet_file");
 
@@ -11184,6 +11956,12 @@ public class MainWindow : Window
         TraderList,
     }
 
+    private enum MombotPreferencesBlankSubmitBehavior
+    {
+        Ignore,
+        Submit,
+    }
+
     private sealed record MombotGridContext(
         MombotPromptSurface Surface,
         int CurrentSector,
@@ -11716,6 +12494,45 @@ public class MainWindow : Window
             return true;
         }
 
+        if (MatchesMombotPromptSequence(bytes, 'C'))
+        {
+            MoveMombotPromptCursor(1);
+            return true;
+        }
+
+        if (MatchesMombotPromptSequence(bytes, 'D'))
+        {
+            MoveMombotPromptCursor(-1);
+            return true;
+        }
+
+        if (MatchesMombotPromptSequence(bytes, 'H'))
+        {
+            SetMombotPromptCursor(0);
+            return true;
+        }
+
+        if (MatchesMombotPromptSequence(bytes, 'F'))
+        {
+            SetMombotPromptCursor(_mombotPromptBuffer.Length);
+            return true;
+        }
+
+        if (bytes.Length == 4 &&
+            bytes[0] == 0x1B &&
+            bytes[1] == (byte)'[' &&
+            bytes[2] == (byte)'3' &&
+            bytes[3] == (byte)'~')
+        {
+            if (DeleteMombotPromptCharacterAtCursor())
+            {
+                _mombotPromptHistoryIndex = _mombotCommandHistory.Count;
+                _mombotPromptDraft = _mombotPromptBuffer;
+                RedrawMombotPrompt();
+            }
+            return true;
+        }
+
         if (bytes.Length == 1 && bytes[0] == 0x1B)
         {
             CancelMombotPrompt();
@@ -11729,11 +12546,7 @@ public class MainWindow : Window
             {
                 case 0x08:
                 case 0x7F:
-                    if (_mombotPromptBuffer.Length > 0)
-                    {
-                        _mombotPromptBuffer = _mombotPromptBuffer[..^1];
-                        changed = true;
-                    }
+                    changed = DeleteMombotPromptCharacterBeforeCursor() || changed;
                     break;
 
                 case 0x0D:
@@ -11760,7 +12573,7 @@ public class MainWindow : Window
                             return true;
                         }
 
-                        _mombotPromptBuffer += (char)value;
+                        InsertMombotPromptCharacter((char)value);
                         changed = true;
                     }
                     break;
@@ -12017,6 +12830,7 @@ public class MainWindow : Window
         _mombotPromptDraft = initialValue;
         _mombotPromptSubmitTransform = submitTransform;
         _mombotPromptHistoryIndex = _mombotCommandHistory.Count;
+        _mombotPromptCursorIndex = initialValue.Length;
         _mombotHotkeyPromptOpen = false;
         _mombotScriptPromptOpen = false;
         _mombotPreferencesOpen = false;
@@ -12087,7 +12901,57 @@ public class MainWindow : Window
         _mombotPromptBuffer = _mombotPromptHistoryIndex >= count
             ? _mombotPromptDraft
             : _mombotCommandHistory[_mombotPromptHistoryIndex];
+        _mombotPromptCursorIndex = _mombotPromptBuffer.Length;
         RedrawMombotPrompt();
+    }
+
+    private void MoveMombotPromptCursor(int delta)
+    {
+        if (!_mombotPromptOpen)
+            return;
+
+        SetMombotPromptCursor(_mombotPromptCursorIndex + delta);
+    }
+
+    private void SetMombotPromptCursor(int index)
+    {
+        if (!_mombotPromptOpen)
+            return;
+
+        int normalized = Math.Clamp(index, 0, _mombotPromptBuffer.Length);
+        if (normalized == _mombotPromptCursorIndex)
+            return;
+
+        _mombotPromptCursorIndex = normalized;
+        RedrawMombotPrompt();
+    }
+
+    private void InsertMombotPromptCharacter(char value)
+    {
+        int cursor = Math.Clamp(_mombotPromptCursorIndex, 0, _mombotPromptBuffer.Length);
+        _mombotPromptBuffer = _mombotPromptBuffer.Insert(cursor, value.ToString());
+        _mombotPromptCursorIndex = cursor + 1;
+    }
+
+    private bool DeleteMombotPromptCharacterBeforeCursor()
+    {
+        int cursor = Math.Clamp(_mombotPromptCursorIndex, 0, _mombotPromptBuffer.Length);
+        if (cursor <= 0)
+            return false;
+
+        _mombotPromptBuffer = _mombotPromptBuffer.Remove(cursor - 1, 1);
+        _mombotPromptCursorIndex = cursor - 1;
+        return true;
+    }
+
+    private bool DeleteMombotPromptCharacterAtCursor()
+    {
+        int cursor = Math.Clamp(_mombotPromptCursorIndex, 0, _mombotPromptBuffer.Length);
+        if (cursor >= _mombotPromptBuffer.Length)
+            return false;
+
+        _mombotPromptBuffer = _mombotPromptBuffer.Remove(cursor, 1);
+        return true;
     }
 
     private void CancelMombotPrompt()
@@ -12135,6 +12999,7 @@ public class MainWindow : Window
         _mombotScriptPromptOpen = false;
         _mombotPreferencesOpen = false;
         _mombotPreferencesCaptureSingleKey = false;
+        _mombotPreferencesBlankSubmitBehavior = MombotPreferencesBlankSubmitBehavior.Ignore;
         _mombotPreferencesInputPrompt = string.Empty;
         _mombotPreferencesInputBuffer = string.Empty;
         _mombotPreferencesInputHandler = null;
@@ -12146,6 +13011,7 @@ public class MainWindow : Window
         _mombotPromptDraft = string.Empty;
         _mombotPromptSubmitTransform = null;
         _mombotPromptHistoryIndex = _mombotCommandHistory.Count;
+        _mombotPromptCursorIndex = 0;
     }
 
     private void RedrawMombotPrompt()
@@ -12166,7 +13032,12 @@ public class MainWindow : Window
                 _parser.Feed(_mombotPreferencesInputBuffer);
         }
         else if (!_mombotScriptPromptOpen && !_mombotHotkeyPromptOpen && !_mombotMacroPromptOpen && _mombotPromptBuffer.Length > 0)
+        {
             _parser.Feed(_mombotPromptBuffer);
+            int charsToMoveLeft = _mombotPromptBuffer.Length - Math.Clamp(_mombotPromptCursorIndex, 0, _mombotPromptBuffer.Length);
+            if (charsToMoveLeft > 0)
+                _parser.Feed($"\x1b[{charsToMoveLeft}D");
+        }
         _buffer.Dirty = true;
         FocusActiveTerminal();
     }
@@ -12264,6 +13135,7 @@ public class MainWindow : Window
     private void ClearMombotPreferencesInputState()
     {
         _mombotPreferencesCaptureSingleKey = false;
+        _mombotPreferencesBlankSubmitBehavior = MombotPreferencesBlankSubmitBehavior.Ignore;
         _mombotPreferencesInputPrompt = string.Empty;
         _mombotPreferencesInputBuffer = string.Empty;
         _mombotPreferencesInputHandler = null;
@@ -12383,11 +13255,19 @@ public class MainWindow : Window
         return true;
     }
 
-    private void BeginMombotPreferencesInput(string prompt, Action<string> handler, string initialValue = "", bool captureSingleKey = false)
+    private void BeginMombotPreferencesInput(
+        string prompt,
+        Action<string> handler,
+        string initialValue = "",
+        bool captureSingleKey = false,
+        MombotPreferencesBlankSubmitBehavior blankSubmitBehavior = MombotPreferencesBlankSubmitBehavior.Ignore)
     {
         _mombotPreferencesCaptureSingleKey = captureSingleKey;
+        _mombotPreferencesBlankSubmitBehavior = blankSubmitBehavior;
         _mombotPreferencesInputPrompt = prompt;
-        _mombotPreferencesInputBuffer = captureSingleKey ? string.Empty : initialValue;
+        // TWX-style preference edits should prompt for a fresh value rather than
+        // preloading the current one into the editable buffer.
+        _mombotPreferencesInputBuffer = string.Empty;
         _mombotPreferencesInputHandler = handler;
         RedrawMombotPrompt();
     }
@@ -12395,8 +13275,11 @@ public class MainWindow : Window
     private void CompleteMombotPreferencesInput(string value)
     {
         Action<string>? handler = _mombotPreferencesInputHandler;
+        MombotPreferencesBlankSubmitBehavior blankSubmitBehavior = _mombotPreferencesBlankSubmitBehavior;
         ClearMombotPreferencesInputState();
-        handler?.Invoke(value);
+
+        if (blankSubmitBehavior == MombotPreferencesBlankSubmitBehavior.Submit || !string.IsNullOrWhiteSpace(value))
+            handler?.Invoke(value);
 
         if (_mombotPreferencesOpen && _mombotPreferencesInputHandler == null)
             RenderMombotPreferencesPage();
@@ -12501,28 +13384,32 @@ public class MainWindow : Window
                 BeginMombotPreferencesInput(
                     "Game Password",
                     value => PersistMombotVars(value.Trim(), "$BOT~PASSWORD", "$bot~password", "$password"),
-                    ReadCurrentMombotVar(string.Empty, "$BOT~PASSWORD", "$bot~password", "$password"));
+                    ReadCurrentMombotVar(string.Empty, "$BOT~PASSWORD", "$bot~password", "$password"),
+                    blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
                 return;
 
             case 'Z':
                 BeginMombotPreferencesInput(
                     "Bot Password",
                     value => PersistMombotVars(value.Trim(), "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password"),
-                    ReadCurrentMombotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password"));
+                    ReadCurrentMombotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password"),
+                    blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
                 return;
 
             case 'G':
                 BeginMombotPreferencesInput(
                     "Game Letter",
                     value => PersistMombotVars(value.Trim().ToUpperInvariant(), "$BOT~LETTER", "$bot~letter", "$letter"),
-                    ReadCurrentMombotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter"));
+                    ReadCurrentMombotVar(string.Empty, "$BOT~LETTER", "$bot~letter", "$letter"),
+                    blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
                 return;
 
             case 'C':
                 BeginMombotPreferencesInput(
                     "Login Name",
                     value => PersistMombotVars(value.Trim(), "$BOT~USERNAME", "$bot~username", "$username"),
-                    ReadCurrentMombotVar(string.Empty, "$BOT~USERNAME", "$bot~username", "$username"));
+                    ReadCurrentMombotVar(string.Empty, "$BOT~USERNAME", "$bot~username", "$username"),
+                    blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
                 return;
 
             case '1':
@@ -12540,15 +13427,15 @@ public class MainWindow : Window
                 return;
 
             case '3':
-                PromptMombotCountPreference("Surround figs", 0, 50000, "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS");
+                PromptMombotCountPreference("Surround figs", 0, 50000, MombotCountZeroBehavior.KeepZero, "$PLAYER~surroundFigs", "$PLAYER~SURROUNDFIGS");
                 return;
 
             case '4':
-                PromptMombotCountPreference("Surround limpets", 0, 250, "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP");
+                PromptMombotCountPreference("Surround limpets", 0, 250, MombotCountZeroBehavior.KeepZero, "$PLAYER~surroundLimp", "$PLAYER~SURROUNDLIMP");
                 return;
 
             case '5':
-                PromptMombotCountPreference("Surround armids", 0, 250, "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE");
+                PromptMombotCountPreference("Surround armids", 0, 250, MombotCountZeroBehavior.KeepZero, "$PLAYER~surroundMine", "$PLAYER~SURROUNDMINE");
                 return;
 
             case '8':
@@ -12640,15 +13527,16 @@ public class MainWindow : Window
                 BeginMombotPreferencesInput(
                     "Alarm List",
                     value => PersistMombotVars(value.Trim(), "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list"),
-                    ReadCurrentMombotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list"));
+                    ReadCurrentMombotVar(string.Empty, "$BOT~alarm_list", "$bot~alarm_list", "$alarm_list"),
+                    blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
                 return;
 
             case 'X':
-                PromptMombotCountPreference("Safe Ship", 0, int.MaxValue, "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship");
+                PromptMombotCountPreference("Safe Ship", 0, int.MaxValue, MombotCountZeroBehavior.TreatAsUndefined, "$BOT~SAFE_SHIP", "$BOT~safe_ship", "$bot~safe_ship", "$safe_ship");
                 return;
 
             case 'L':
-                PromptMombotCountPreference("Safe Planet", 0, int.MaxValue, "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet");
+                PromptMombotCountPreference("Safe Planet", 0, int.MaxValue, MombotCountZeroBehavior.TreatAsUndefined, "$BOT~SAFE_PLANET", "$BOT~safe_planet", "$bot~safe_planet", "$safe_planet");
                 return;
 
             case 'E':
@@ -13215,7 +14103,18 @@ public class MainWindow : Window
         AppendMombotPreferencesFooter(body, "[>] Preferences", "[<] Planet List", hasMore ? "[+] More Traders, any other key exits" : "Any other key exits");
     }
 
-    private void PromptMombotCountPreference(string prompt, int minValue, int maxValue, params string[] names)
+    private enum MombotCountZeroBehavior
+    {
+        KeepZero,
+        TreatAsUndefined,
+    }
+
+    private void PromptMombotCountPreference(
+        string prompt,
+        int minValue,
+        int maxValue,
+        MombotCountZeroBehavior zeroBehavior = MombotCountZeroBehavior.KeepZero,
+        params string[] names)
     {
         BeginMombotPreferencesInput(
             prompt,
@@ -13226,6 +14125,12 @@ public class MainWindow : Window
 
                 if (count < minValue || count > maxValue)
                     return;
+
+                if (count == 0 && zeroBehavior == MombotCountZeroBehavior.TreatAsUndefined)
+                {
+                    PersistMombotVars("0", names);
+                    return;
+                }
 
                 PersistMombotVars(count.ToString(), names);
             },
@@ -13364,7 +14269,8 @@ public class MainWindow : Window
                     customCommands[slot - 1] = string.IsNullOrWhiteSpace(command) ? "0" : command.Trim();
                     WriteMombotHotkeyConfig(new MombotHotkeyConfigData(hotkeys, customKeys, customCommands));
                 },
-                currentCommand);
+                currentCommand,
+                blankSubmitBehavior: MombotPreferencesBlankSubmitBehavior.Submit);
             return;
         }
 

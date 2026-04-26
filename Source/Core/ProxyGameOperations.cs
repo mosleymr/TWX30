@@ -27,12 +27,15 @@ public static class ProxyGameOperations
 {
     private readonly record struct BubbleCacheKey(ModDatabase Database, long ChangeStamp, int MaxBubbleSize, bool AllowSeparatedByGates);
     private readonly record struct DeadEndCacheKey(ModDatabase Database, long ChangeStamp, int MaxDeadEndSize);
+    private readonly record struct TunnelCacheKey(ModDatabase Database, long ChangeStamp, int MaxTunnelSize);
 
     private static readonly object FinderCacheLock = new();
     private static BubbleCacheKey? _lastBubbleCacheKey;
     private static IReadOnlyList<BubbleInfo> _lastBubbleCache = Array.Empty<BubbleInfo>();
     private static DeadEndCacheKey? _lastDeadEndCacheKey;
     private static IReadOnlyList<DeadEndInfo> _lastDeadEndCache = Array.Empty<DeadEndInfo>();
+    private static TunnelCacheKey? _lastTunnelCacheKey;
+    private static IReadOnlyList<TunnelInfo> _lastTunnelCache = Array.Empty<TunnelInfo>();
 
     public static IReadOnlyList<RunningScriptInfo> GetRunningScripts(ModInterpreter? interpreter)
     {
@@ -373,6 +376,33 @@ public static class ProxyGameOperations
         }
 
         return deadEnds;
+    }
+
+    public static IReadOnlyList<TunnelInfo> GetTunnels(
+        ModDatabase database,
+        int maxTunnelSize)
+    {
+        EnsureOpenDatabase(database);
+        int effectiveMaxTunnelSize = maxTunnelSize > 0 ? maxTunnelSize : ModBubble.DefaultMaxBubbleSize;
+        TunnelCacheKey cacheKey = new(database, database.ChangeStamp, effectiveMaxTunnelSize);
+
+        lock (FinderCacheLock)
+        {
+            if (_lastTunnelCacheKey == cacheKey)
+                return _lastTunnelCache;
+        }
+
+        IReadOnlyList<TunnelInfo> tunnels = TunnelFinder.Find(
+            database,
+            effectiveMaxTunnelSize);
+
+        lock (FinderCacheLock)
+        {
+            _lastTunnelCacheKey = cacheKey;
+            _lastTunnelCache = tunnels;
+        }
+
+        return tunnels;
     }
 
     public static void ExportTwx(ModDatabase database, string outputPath)

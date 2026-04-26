@@ -17,6 +17,7 @@ public class BubblesWindow : Window
     {
         Bubbles,
         DeadEnds,
+        Tunnels,
     }
 
     private enum FinderSortMode
@@ -78,8 +79,10 @@ public class BubblesWindow : Window
     private readonly Func<GameState?>? _getState;
     private readonly Action<int, int>? _setBubbleSizeRange;
     private readonly Action<int, int>? _setDeadEndSizeRange;
+    private readonly Action<int, int>? _setTunnelSizeRange;
     private readonly FinderTabState _bubbleTab;
     private readonly FinderTabState _deadEndTab;
+    private readonly FinderTabState _tunnelTab;
 
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(8, 14, 20));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(14, 33, 42));
@@ -104,13 +107,17 @@ public class BubblesWindow : Window
         Action<int, int>? setBubbleSizeRange = null,
         Func<int>? getDeadEndMinSize = null,
         Func<int>? getDeadEndMaxSize = null,
-        Action<int, int>? setDeadEndSizeRange = null)
+        Action<int, int>? setDeadEndSizeRange = null,
+        Func<int>? getTunnelMinSize = null,
+        Func<int>? getTunnelMaxSize = null,
+        Action<int, int>? setTunnelSizeRange = null)
     {
         _getDb = getDb;
         _getCurrentSector = getCurrentSector;
         _getState = getState;
         _setBubbleSizeRange = setBubbleSizeRange;
         _setDeadEndSizeRange = setDeadEndSizeRange;
+        _setTunnelSizeRange = setTunnelSizeRange;
 
         Title = "Bubble Finder";
         Width = 1340;
@@ -130,6 +137,11 @@ public class BubblesWindow : Window
             Math.Max(1, getDeadEndMinSize?.Invoke() ?? 2),
             Math.Max(1, getDeadEndMaxSize?.Invoke() ?? Core.ModBubble.DefaultMaxBubbleSize),
             showAllowSeparatedByGates: false);
+        _tunnelTab = BuildFinderTab(
+            FinderTabKind.Tunnels,
+            Math.Max(1, getTunnelMinSize?.Invoke() ?? 2),
+            Math.Max(1, getTunnelMaxSize?.Invoke() ?? Core.ModBubble.DefaultMaxBubbleSize),
+            showAllowSeparatedByGates: false);
 
         var tabs = new TabControl
         {
@@ -138,12 +150,13 @@ public class BubblesWindow : Window
             {
                 BuildTabItem("Bubbles", _bubbleTab),
                 BuildTabItem("Dead Ends", _deadEndTab),
+                BuildTabItem("Tunnels", _tunnelTab),
             },
         };
 
         tabs.SelectionChanged += async (_, _) =>
         {
-            FinderTabState state = tabs.SelectedIndex == 1 ? _deadEndTab : _bubbleTab;
+            FinderTabState state = GetTabState(tabs.SelectedIndex);
             if (!state.Loaded)
                 await RefreshTabAsync(state);
         };
@@ -188,7 +201,13 @@ public class BubblesWindow : Window
 
         var headerText = new TextBlock
         {
-            Text = state.Kind == FinderTabKind.Bubbles ? "Bubble results" : "Dead-end results",
+            Text = state.Kind switch
+            {
+                FinderTabKind.Bubbles => "Bubble results",
+                FinderTabKind.DeadEnds => "Dead-end results",
+                FinderTabKind.Tunnels => "Tunnel results",
+                _ => "Finder results",
+            },
             Foreground = ColText,
             FontSize = 18,
             FontWeight = FontWeight.SemiBold,
@@ -348,6 +367,16 @@ public class BubblesWindow : Window
         };
     }
 
+    private FinderTabState GetTabState(int selectedIndex)
+    {
+        return selectedIndex switch
+        {
+            1 => _deadEndTab,
+            2 => _tunnelTab,
+            _ => _bubbleTab,
+        };
+    }
+
     private FinderTabState BuildFinderTab(FinderTabKind kind, int minSize, int maxSize, bool showAllowSeparatedByGates)
     {
         var state = new FinderTabState
@@ -448,11 +477,23 @@ public class BubblesWindow : Window
             ColumnSpacing = 12,
         };
 
-        AddHeaderCell(grid, "Door", 0);
-        state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, state, FinderSortMode.Sectors);
-        state.SortDepthButton = AddSortHeaderCell(grid, "Depth", 2, state, FinderSortMode.Depth);
-        state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
-        state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
+        if (state.Kind == FinderTabKind.Tunnels)
+        {
+            AddHeaderCell(grid, "Start", 0);
+            AddHeaderCell(grid, "End", 1);
+            state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 2, state, FinderSortMode.Sectors);
+            state.SortDepthButton = null;
+            state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
+            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
+        }
+        else
+        {
+            AddHeaderCell(grid, "Door", 0);
+            state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, state, FinderSortMode.Sectors);
+            state.SortDepthButton = AddSortHeaderCell(grid, "Depth", 2, state, FinderSortMode.Depth);
+            state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
+            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
+        }
         AddHeaderCell(grid, "Sector List", 5);
         AddHeaderCell(grid, string.Empty, 6);
         UpdateSortButtons(state);
@@ -611,9 +652,13 @@ public class BubblesWindow : Window
 
         FinderRow? previousSelection = state.SelectedRow;
         state.Rows = SortRows(state, rows).ToList();
-        state.Summary.Text = state.Kind == FinderTabKind.Bubbles
-            ? $"{state.Rows.Count} solid bubble(s) found."
-            : $"{state.Rows.Count} dead end(s) found.";
+        state.Summary.Text = state.Kind switch
+        {
+            FinderTabKind.Bubbles => $"{state.Rows.Count} solid bubble(s) found.",
+            FinderTabKind.DeadEnds => $"{state.Rows.Count} dead end(s) found.",
+            FinderTabKind.Tunnels => $"{state.Rows.Count} tunnel(s) found.",
+            _ => $"{state.Rows.Count} result(s) found.",
+        };
         state.Summary.Foreground = state.Rows.Count == 0 ? ColWarn : ColMuted;
 
         if (state.Rows.Count == 0)
@@ -621,9 +666,13 @@ public class BubblesWindow : Window
             state.SelectedRow = null;
             state.CopySelectedButton.IsEnabled = false;
             state.RowHost.Children.Add(BuildEmptyCard(
-                state.Kind == FinderTabKind.Bubbles
-                    ? "No bubbles match the current size range."
-                    : "No dead ends match the current size range."));
+                state.Kind switch
+                {
+                    FinderTabKind.Bubbles => "No bubbles match the current size range.",
+                    FinderTabKind.DeadEnds => "No dead ends match the current size range.",
+                    FinderTabKind.Tunnels => "No tunnels match the current size range.",
+                    _ => "No results match the current size range.",
+                }));
             UpdatePreviewSelection(state, null);
             state.Loaded = true;
             return;
@@ -670,8 +719,10 @@ public class BubblesWindow : Window
 
         if (state.Kind == FinderTabKind.Bubbles)
             _setBubbleSizeRange?.Invoke(minSize, maxSize);
-        else
+        else if (state.Kind == FinderTabKind.DeadEnds)
             _setDeadEndSizeRange?.Invoke(minSize, maxSize);
+        else
+            _setTunnelSizeRange?.Invoke(minSize, maxSize);
 
         return true;
     }
@@ -698,7 +749,7 @@ public class BubblesWindow : Window
         }
 
         FinderRow? row = state.Rows.FirstOrDefault(row =>
-            row.Door == sectorNumber || row.Sectors.Contains((ushort)sectorNumber));
+            row.Door == sectorNumber || row.Deepest == sectorNumber || row.Sectors.Contains((ushort)sectorNumber));
 
         if (row == null)
         {
@@ -707,9 +758,13 @@ public class BubblesWindow : Window
             return;
         }
 
-        state.SearchStatus.Text = state.Kind == FinderTabKind.Bubbles
-            ? $"Sector {sectorNumber} is in bubble door {row.Door}."
-            : $"Sector {sectorNumber} is in dead end door {row.Door}.";
+        state.SearchStatus.Text = state.Kind switch
+        {
+            FinderTabKind.Bubbles => $"Sector {sectorNumber} is in bubble door {row.Door}.",
+            FinderTabKind.DeadEnds => $"Sector {sectorNumber} is in dead end door {row.Door}.",
+            FinderTabKind.Tunnels => $"Sector {sectorNumber} is in tunnel {row.Door} -> {row.Deepest}.",
+            _ => $"Sector {sectorNumber} was found.",
+        };
         state.SearchStatus.Foreground = ColSuccess;
         SelectRow(state, row, bringIntoView: true);
     }
@@ -738,6 +793,7 @@ public class BubblesWindow : Window
         {
             FinderTabKind.Bubbles => LoadBubbleRows(db, minSize, maxSize, state, stardockSector, solSector),
             FinderTabKind.DeadEnds => LoadDeadEndRows(db, minSize, maxSize, stardockSector, solSector),
+            FinderTabKind.Tunnels => LoadTunnelRows(db, minSize, maxSize, stardockSector, solSector),
             _ => Array.Empty<FinderRow>(),
         };
 
@@ -796,7 +852,44 @@ public class BubblesWindow : Window
             .ToArray();
     }
 
+    private static IReadOnlyList<FinderRow> LoadTunnelRows(
+        Core.ModDatabase db,
+        int minSize,
+        int maxSize,
+        int stardockSector,
+        int solSector)
+    {
+        IReadOnlyList<Core.TunnelInfo> tunnels = Core.ProxyGameOperations.GetTunnels(db, maxSize);
+        return tunnels
+            .Where(tunnel => tunnel.Size >= minSize && tunnel.Size <= maxSize)
+            .Select(tunnel => new FinderRow(
+                tunnel.Start,
+                tunnel.End,
+                tunnel.Size,
+                tunnel.Size,
+                stardockSector > 0 ? NormalizeNearestDistance(db, tunnel.Start, tunnel.End, stardockSector) : null,
+                solSector > 0 ? NormalizeNearestDistance(db, tunnel.Start, tunnel.End, solSector) : null,
+                tunnel.Sectors,
+                false))
+            .ToArray();
+    }
+
     private static int? NormalizeDistance(int distance) => distance >= 0 ? distance : null;
+
+    private static int? NormalizeNearestDistance(Core.ModDatabase db, int firstSector, int secondSector, int targetSector)
+    {
+        int first = db.GetDistance(firstSector, targetSector);
+        int second = db.GetDistance(secondSector, targetSector);
+        bool hasFirst = first >= 0;
+        bool hasSecond = second >= 0;
+        if (!hasFirst && !hasSecond)
+            return null;
+        if (!hasFirst)
+            return second;
+        if (!hasSecond)
+            return first;
+        return Math.Min(first, second);
+    }
 
     private static int ResolveStardockSector(Core.ModDatabase db)
     {
@@ -861,8 +954,16 @@ public class BubblesWindow : Window
         };
 
         AddValueCell(grid, row.Door.ToString(), 0, ColAccent, bold: true);
-        AddValueCell(grid, row.Size.ToString(), 1, ColText);
-        AddValueCell(grid, row.Depth.ToString(), 2, ColText);
+        if (state.Kind == FinderTabKind.Tunnels)
+        {
+            AddValueCell(grid, row.Deepest.ToString(), 1, ColText);
+            AddValueCell(grid, row.Size.ToString(), 2, ColText);
+        }
+        else
+        {
+            AddValueCell(grid, row.Size.ToString(), 1, ColText);
+            AddValueCell(grid, row.Depth.ToString(), 2, ColText);
+        }
         AddValueCell(grid, FormatDistance(row.DistToSd), 3, ColText);
         AddValueCell(grid, FormatDistance(row.DistToSol), 4, ColText);
         AddValueCell(grid, sectorList, 5, ColMuted, wrap: true);
@@ -918,7 +1019,13 @@ public class BubblesWindow : Window
     }
 
     private static string GetFinderKindName(FinderTabState state)
-        => state.Kind == FinderTabKind.Bubbles ? "bubble" : "dead end";
+        => state.Kind switch
+        {
+            FinderTabKind.Bubbles => "bubble",
+            FinderTabKind.DeadEnds => "dead end",
+            FinderTabKind.Tunnels => "tunnel",
+            _ => "result",
+        };
 
     private void SelectRow(FinderTabState state, FinderRow row, bool bringIntoView = false)
     {
@@ -956,8 +1063,22 @@ public class BubblesWindow : Window
             return;
         }
 
-        state.PreviewMap.CenterOnSector(row.Door);
-        state.PreviewMap.SetPreviewSelection(row.Sectors.Select(sector => (int)sector), row.Door);
+        if (state.Kind == FinderTabKind.Tunnels)
+        {
+            int centerSector = row.Sectors.Count > 0 ? row.Sectors[row.Sectors.Count / 2] : row.Door;
+            state.PreviewMap.CenterOnSector(centerSector);
+            state.PreviewMap.SetPreviewSelection(
+                row.Sectors.Select(sector => (int)sector),
+                gateSector: 0,
+                surroundingDepth: 1,
+                legendText: $"PREVIEW TUNNEL {row.Door} -> {row.Deepest}  |  {row.Sectors.Count} SELECTED");
+        }
+        else
+        {
+            state.PreviewMap.CenterOnSector(row.Door);
+            state.PreviewMap.SetPreviewSelection(row.Sectors.Select(sector => (int)sector), row.Door);
+        }
+
         state.PreviewMap.SetViewMode(TacticalMapViewMode.Bubble);
     }
 

@@ -4,6 +4,7 @@ using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Controls.Shapes;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -147,12 +148,28 @@ public class MapWindow : Window
             Margin            = new Thickness(6, 0, 12, 0),
         };
 
-        _backBtn = new Button { Content = "\u25c4", Width = 32, Height = 32, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _backBtn = new Button
+        {
+            Content = BuildToolbarChevronIcon(forward: false),
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(2),
+            IsEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         _backBtn.Click += (_, _) => NavBack();
         ToolTip.SetTip(_backBtn, "Back");
         StyleToolbarButton(_backBtn);
 
-        _fwdBtn = new Button { Content = "\u25ba", Width = 32, Height = 32, Padding = new Thickness(4, 2), IsEnabled = false, VerticalAlignment = VerticalAlignment.Center };
+        _fwdBtn = new Button
+        {
+            Content = BuildToolbarChevronIcon(forward: true),
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(2),
+            IsEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         _fwdBtn.Click += (_, _) => NavForward();
         ToolTip.SetTip(_fwdBtn, "Forward");
         StyleToolbarButton(_fwdBtn);
@@ -216,7 +233,7 @@ public class MapWindow : Window
             BorderBrush = DeckInnerEdge,
             BorderThickness = new Thickness(1),
             Foreground = DeckText,
-            ItemsSource = new[] { "Classic", "Bubble", "Hex" },
+            ItemsSource = new[] { "Classic", "Modern", "Hex" },
             SelectedIndex = 1,
         };
         _viewSelector.SelectionChanged += (_, _) =>
@@ -255,10 +272,24 @@ public class MapWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        var zoomOutBtn = new Button { Content = "-", Width = 32, Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        var zoomOutBtn = new Button
+        {
+            Content = BuildToolbarZoomIcon(increase: false),
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         zoomOutBtn.Click += (_, _) => _tacticalMap?.AdjustZoom(-0.12f);
         StyleToolbarButton(zoomOutBtn);
-        var zoomInBtn = new Button { Content = "+", Width = 32, Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        var zoomInBtn = new Button
+        {
+            Content = BuildToolbarZoomIcon(increase: true),
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(2),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
         zoomInBtn.Click += (_, _) => _tacticalMap?.AdjustZoom(0.12f);
         StyleToolbarButton(zoomInBtn);
         var zoomResetBtn = new Button { Content = "Reset", Height = 32, Padding = new Thickness(12, 4), VerticalAlignment = VerticalAlignment.Center };
@@ -470,13 +501,7 @@ public class MapWindow : Window
 
     private void UpdateTitle()
     {
-        string modeLabel = _viewMode switch
-        {
-            MapViewMode.Classic => "Classic",
-            MapViewMode.Hex => "Hex",
-            _ => "Bubble",
-        };
-        _titleLabel.Text = $"Map View  //  {modeLabel}  //  Center: Sector {_centerSector}";
+        _titleLabel.Text = $"Map View / Center: Sector {_centerSector}";
     }
 
     private void UpdateTacticalZoomUi()
@@ -493,6 +518,105 @@ public class MapWindow : Window
         button.Foreground = primary ? DeckAccentInk : DeckText;
         button.FontSize = 12;
         button.FontWeight = FontWeight.SemiBold;
+    }
+
+    private static Grid BuildToolbarIconSurface(Color accentColor)
+    {
+        var accentBrush = new SolidColorBrush(accentColor);
+        var haloBrush = new SolidColorBrush(Color.FromArgb(36, accentColor.R, accentColor.G, accentColor.B));
+        var sheenBrush = new SolidColorBrush(Color.FromArgb(140, 255, 255, 255));
+
+        var ring = new Border
+        {
+            Width = 14,
+            Height = 14,
+            CornerRadius = new CornerRadius(7),
+            BorderThickness = new Thickness(1.15),
+            BorderBrush = accentBrush,
+            Background = haloBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var sheen = new Border
+        {
+            Width = 6,
+            Height = 1,
+            CornerRadius = new CornerRadius(1),
+            Background = sheenBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 2, 0, 0),
+            Opacity = 0.9,
+        };
+
+        return new Grid
+        {
+            Width = 16,
+            Height = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                ring,
+                sheen,
+            },
+        };
+    }
+
+    private static Control BuildToolbarZoomIcon(bool increase)
+    {
+        Color accentColor = increase
+            ? Color.FromRgb(118, 255, 141)
+            : Color.FromRgb(0, 212, 201);
+
+        var accentBrush = new SolidColorBrush(accentColor);
+        var icon = BuildToolbarIconSurface(accentColor);
+        icon.Children.Add(new Border
+        {
+            Width = 7,
+            Height = 1.8,
+            CornerRadius = new CornerRadius(1),
+            Background = accentBrush,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        if (increase)
+        {
+            icon.Children.Add(new Border
+            {
+                Width = 1.8,
+                Height = 7,
+                CornerRadius = new CornerRadius(1),
+                Background = accentBrush,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+
+        return icon;
+    }
+
+    private static Control BuildToolbarChevronIcon(bool forward)
+    {
+        Color accentColor = Color.FromRgb(94, 244, 238);
+        var icon = BuildToolbarIconSurface(accentColor);
+        var accentBrush = new SolidColorBrush(accentColor);
+        icon.Children.Add(new Avalonia.Controls.Shapes.Path
+        {
+            Width = 7,
+            Height = 9,
+            Stretch = Stretch.Fill,
+            Stroke = accentBrush,
+            StrokeThickness = 1.5,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Data = Geometry.Parse(forward
+                ? "M 1,1 L 6,4.5 L 1,8"
+                : "M 6,1 L 1,4.5 L 6,8"),
+        });
+        return icon;
     }
 
     private static void StyleToolbarTextBox(TextBox textBox)

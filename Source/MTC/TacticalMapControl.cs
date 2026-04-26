@@ -71,6 +71,15 @@ public class TacticalMapControl : Control
     private bool _previewLimitHighlightedSectors = true;
     private string? _previewLegendText;
 
+    private static string GetViewModeLabel(TacticalMapViewMode viewMode)
+    {
+        return viewMode switch
+        {
+            TacticalMapViewMode.Hex => "HEX",
+            _ => "MODERN",
+        };
+    }
+
     public TacticalMapControl(
         Func<int> getCurrentSector,
         Func<Core.ModDatabase?> getDb,
@@ -733,8 +742,8 @@ public class TacticalMapControl : Control
                     : $"PREVIEW  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
             : snapshot.CenterSector > 0
             ? snapshot.CenterSector != snapshot.CurrentSector && snapshot.CurrentSector > 0
-                ? $"CENTER {snapshot.CenterSector}  |  LIVE {snapshot.CurrentSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
-                : $"LIVE SECTOR {snapshot.CenterSector}  |  {viewMode.ToString().ToUpperInvariant()} VIEW  |  {snapshot.Positions.Count} SECTORS"
+                ? $"CENTER {snapshot.CenterSector}  |  LIVE {snapshot.CurrentSector}  |  {GetViewModeLabel(viewMode)} VIEW  |  {snapshot.Positions.Count} SECTORS"
+                : $"LIVE SECTOR {snapshot.CenterSector}  |  {GetViewModeLabel(viewMode)} VIEW  |  {snapshot.Positions.Count} SECTORS"
             : "LIVE TACTICAL OVERLAY";
 
         using var overlayPaint = new SKPaint

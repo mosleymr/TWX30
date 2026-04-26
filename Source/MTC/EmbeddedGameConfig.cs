@@ -36,6 +36,8 @@ internal class EmbeddedGameConfig
     public bool   BubbleSizeCustomized { get; set; }
     public int    DeadEndMinSize { get; set; } = 2;
     public int    DeadEndMaxSize { get; set; } = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
+    public int    TunnelMinSize { get; set; } = 2;
+    public int    TunnelMaxSize { get; set; } = TWXProxy.Core.ModBubble.DefaultMaxBubbleSize;
     public bool   LocalEcho { get; set; } = true;
     public bool   LogEnabled { get; set; } = true;
     public bool   LogAnsi { get; set; }

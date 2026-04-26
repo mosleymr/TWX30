@@ -38,6 +38,9 @@ public static class ProxyMenuCatalog
         foreach (string file in Directory.EnumerateFiles(scriptsRoot))
         {
             string fileName = Path.GetFileName(file);
+            if (!IsQuickLoadScriptFile(fileName))
+                continue;
+
             string groupName = ResolveVirtualQuickGroup(fileName, quickLoadMap);
             AddQuickEntry(groups, groupName, fileName, fileName);
         }
@@ -51,6 +54,9 @@ public static class ProxyMenuCatalog
             foreach (string file in Directory.EnumerateFiles(directory))
             {
                 string fileName = Path.GetFileName(file);
+                if (!IsQuickLoadScriptFile(fileName))
+                    continue;
+
                 string relativePath = directoryName + "/" + fileName;
                 AddQuickEntry(groups, directoryName, fileName, relativePath);
             }
@@ -241,6 +247,15 @@ public static class ProxyMenuCatalog
             return WindowsInstallInfo.GetInstalledProgramDirOrDefault();
 
         return AppContext.BaseDirectory;
+    }
+
+    private static bool IsQuickLoadScriptFile(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        return fileName.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".cts", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ParseBool(string value, bool fallback)

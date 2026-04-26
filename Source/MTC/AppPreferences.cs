@@ -45,6 +45,8 @@ public class AppPreferences
     public bool VerboseDebugLogging { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
+    public bool ShowHaggleDetails { get; set; }
+    public bool ShowBottomBar { get; set; } = true;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
@@ -114,6 +116,8 @@ public class AppPreferences
                 new XElement("VerboseDebugLogging", VerboseDebugLogging),
                 new XElement("DebugPortHaggleEnabled", DebugPortHaggleEnabled),
                 new XElement("DebugPlanetHaggleEnabled", DebugPlanetHaggleEnabled),
+                new XElement("ShowHaggleDetails", ShowHaggleDetails),
+                new XElement("ShowBottomBar", ShowBottomBar),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PortHaggleMode", PortHaggleMode),
@@ -187,6 +191,10 @@ public class AppPreferences
                 prefs.DebugPortHaggleEnabled = debugPortHaggleEnabled;
             if (bool.TryParse((string?)root.Element("DebugPlanetHaggleEnabled"), out bool debugPlanetHaggleEnabled))
                 prefs.DebugPlanetHaggleEnabled = debugPlanetHaggleEnabled;
+            if (bool.TryParse((string?)root.Element("ShowHaggleDetails"), out bool showHaggleDetails))
+                prefs.ShowHaggleDetails = showHaggleDetails;
+            if (bool.TryParse((string?)root.Element("ShowBottomBar"), out bool showBottomBar))
+                prefs.ShowBottomBar = showBottomBar;
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
