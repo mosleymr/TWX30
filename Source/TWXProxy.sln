@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TWXC", "TWXC\TWXC.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TWXD", "TWXD\TWXD.csproj", "{DB2B7880-EB38-4CBA-97B0-27DF4B4575B4}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TWXCourseBench", "TWXCourseBench\TWXCourseBench.csproj", "{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -67,6 +69,18 @@ Global
 		{DB2B7880-EB38-4CBA-97B0-27DF4B4575B4}.Release|x64.Build.0 = Release|Any CPU
 		{DB2B7880-EB38-4CBA-97B0-27DF4B4575B4}.Release|x86.ActiveCfg = Release|Any CPU
 		{DB2B7880-EB38-4CBA-97B0-27DF4B4575B4}.Release|x86.Build.0 = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|x64.Build.0 = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Debug|x86.Build.0 = Debug|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|Any CPU.Build.0 = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|x64.ActiveCfg = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|x64.Build.0 = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|x86.ActiveCfg = Release|Any CPU
+		{39DE60AB-5CBB-4F64-8DC9-3172E1DD2203}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
