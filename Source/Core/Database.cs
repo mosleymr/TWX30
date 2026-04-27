@@ -236,6 +236,10 @@ namespace TWXProxy.Core
         private NetworkManager? _networkManager;
         private GameInstance? _gameInstance;
         private long _changeStamp;
+        private readonly object _pathGraphLock = new();
+        private PathGraph? _pathGraphCache;
+        private long _pathGraphCacheChangeStamp = long.MinValue;
+        [ThreadStatic] private static BidirectionalPathScratch? _threadBidirectionalScratch;
 
         public ModDatabase()
         {
@@ -1215,6 +1219,99 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Calculate a shortest path using the classic TWX/TWX27 breadth-first
+        /// course semantics. Ties are resolved by stored warp order, and the
+        /// returned path includes both start and destination sectors.
+        /// </summary>
+        public List<int> CalculatePascalShortestPath(int fromSector, int toSector, HashSet<int>? avoidSectors = null)
+        {
+            if (fromSector < 1 || fromSector > _header.Sectors ||
+                toSector < 1 || toSector > _header.Sectors)
+            {
+                return new List<int>();
+            }
+
+            if (fromSector == toSector)
+            {
+                return new List<int> { fromSector };
+            }
+
+            var avoids = avoidSectors ?? new HashSet<int>();
+            var visited = new bool[_header.Sectors + 1];
+            var previous = new int[_header.Sectors + 1];
+            var queue = new Queue<int>();
+
+            // Match TWX27 PlotWarpCourse semantics: the start sector itself is
+            // always allowed even if it appears in the avoids set.
+            visited[fromSector] = true;
+            queue.Enqueue(fromSector);
+
+            while (queue.Count > 0)
+            {
+                int focus = queue.Dequeue();
+                var sector = GetSector(focus);
+                if (sector == null)
+                    continue;
+
+                foreach (var warp in sector.Warp.Where(w => w > 0 && w <= _header.Sectors))
+                {
+                    int adjacent = warp;
+                    if (avoids.Contains(adjacent) || visited[adjacent])
+                        continue;
+
+                    previous[adjacent] = focus;
+
+                    if (adjacent == toSector)
+                    {
+                        var result = new List<int>();
+                        int current = adjacent;
+                        while (current > 0)
+                        {
+                            result.Add(current);
+                            current = previous[current];
+                        }
+
+                        result.Reverse();
+                        return result;
+                    }
+
+                    visited[adjacent] = true;
+                    queue.Enqueue(adjacent);
+                }
+            }
+
+            return new List<int>();
+        }
+
+        /// <summary>
+        /// Calculate a shortest path using bidirectional breadth-first search.
+        /// The returned path includes both start and destination sectors. Exact
+        /// tie-breaking may differ from TWX27/Pascal semantics, but hop count is
+        /// guaranteed to be shortest on the directed warp graph.
+        /// </summary>
+        public List<int> CalculateBidirectionalShortestPath(int fromSector, int toSector, HashSet<int>? avoidSectors = null)
+        {
+            if (fromSector < 1 || fromSector > _header.Sectors ||
+                toSector < 1 || toSector > _header.Sectors)
+            {
+                return new List<int>();
+            }
+
+            if (fromSector == toSector)
+            {
+                return new List<int> { fromSector };
+            }
+
+            var avoids = avoidSectors ?? new HashSet<int>();
+            if (avoids.Contains(toSector))
+                return new List<int>();
+
+            PathGraph graph = GetPathGraph();
+            BidirectionalPathScratch scratch = GetBidirectionalScratch(graph.SectorCount);
+            return scratch.FindPath(graph, fromSector, toSector, avoids);
+        }
+
+        /// <summary>
         /// Reconstruct path from previous nodes dictionary
         /// </summary>
         private List<int> ReconstructPath(Dictionary<int, int> previous, int start, int end)
@@ -1249,6 +1346,111 @@ namespace TWXProxy.Core
         {
             var path = CalculateShortestPath(fromSector, toSector, avoidSectors);
             return path.Count > 0 ? path.Count - 1 : -1;
+        }
+
+        private PathGraph GetPathGraph()
+        {
+            int sectorCount = _header.Sectors;
+            long changeStamp = ChangeStamp;
+            PathGraph? cached = _pathGraphCache;
+            if (cached != null &&
+                _pathGraphCacheChangeStamp == changeStamp &&
+                cached.SectorCount == sectorCount)
+            {
+                return cached;
+            }
+
+            lock (_pathGraphLock)
+            {
+                cached = _pathGraphCache;
+                if (cached != null &&
+                    _pathGraphCacheChangeStamp == changeStamp &&
+                    cached.SectorCount == sectorCount)
+                {
+                    return cached;
+                }
+
+                var outbound = new int[sectorCount + 1][];
+                var inbound = new int[sectorCount + 1][];
+                for (int sectorNumber = 1; sectorNumber <= sectorCount; sectorNumber++)
+                {
+                    if (_sectors.TryGetValue(sectorNumber, out var sector))
+                    {
+                        outbound[sectorNumber] = ExtractValidWarps(sector.Warp, sectorCount);
+                        inbound[sectorNumber] = ExtractValidWarpsIn(sector.WarpsIn, sectorCount);
+                    }
+                    else
+                    {
+                        outbound[sectorNumber] = Array.Empty<int>();
+                        inbound[sectorNumber] = Array.Empty<int>();
+                    }
+                }
+
+                cached = new PathGraph(sectorCount, outbound, inbound);
+                _pathGraphCache = cached;
+                _pathGraphCacheChangeStamp = changeStamp;
+                return cached;
+            }
+        }
+
+        private static int[] ExtractValidWarps(ushort[] warps, int sectorCount)
+        {
+            int validCount = 0;
+            for (int i = 0; i < warps.Length; i++)
+            {
+                ushort warp = warps[i];
+                if (warp > 0 && warp <= sectorCount)
+                    validCount++;
+            }
+
+            if (validCount == 0)
+                return Array.Empty<int>();
+
+            var result = new int[validCount];
+            int index = 0;
+            for (int i = 0; i < warps.Length; i++)
+            {
+                ushort warp = warps[i];
+                if (warp > 0 && warp <= sectorCount)
+                    result[index++] = warp;
+            }
+
+            return result;
+        }
+
+        private static int[] ExtractValidWarpsIn(List<ushort> warpsIn, int sectorCount)
+        {
+            if (warpsIn.Count == 0)
+                return Array.Empty<int>();
+
+            int validCount = 0;
+            for (int i = 0; i < warpsIn.Count; i++)
+            {
+                ushort warp = warpsIn[i];
+                if (warp > 0 && warp <= sectorCount)
+                    validCount++;
+            }
+
+            if (validCount == 0)
+                return Array.Empty<int>();
+
+            var result = new int[validCount];
+            int index = 0;
+            for (int i = 0; i < warpsIn.Count; i++)
+            {
+                ushort warp = warpsIn[i];
+                if (warp > 0 && warp <= sectorCount)
+                    result[index++] = warp;
+            }
+
+            return result;
+        }
+
+        private static BidirectionalPathScratch GetBidirectionalScratch(int sectorCount)
+        {
+            BidirectionalPathScratch scratch = _threadBidirectionalScratch ??= new BidirectionalPathScratch();
+            scratch.EnsureCapacity(sectorCount);
+            return scratch;
         }
 
         /// <summary>
@@ -2200,6 +2402,217 @@ namespace TWXProxy.Core
         }
 
         #endregion
+
+        private sealed class PathGraph
+        {
+            public PathGraph(int sectorCount, int[][] outbound, int[][] inbound)
+            {
+                SectorCount = sectorCount;
+                Outbound = outbound;
+                Inbound = inbound;
+            }
+
+            public int SectorCount { get; }
+            public int[][] Outbound { get; }
+            public int[][] Inbound { get; }
+        }
+
+        private sealed class BidirectionalPathScratch
+        {
+            private int[] _visitStampForward = Array.Empty<int>();
+            private int[] _visitStampBackward = Array.Empty<int>();
+            private int[] _distanceForward = Array.Empty<int>();
+            private int[] _distanceBackward = Array.Empty<int>();
+            private int[] _previousForward = Array.Empty<int>();
+            private int[] _nextBackward = Array.Empty<int>();
+            private int[] _queueForward = Array.Empty<int>();
+            private int[] _queueBackward = Array.Empty<int>();
+            private int _stamp;
+
+            public void EnsureCapacity(int sectorCount)
+            {
+                int size = sectorCount + 1;
+                if (_visitStampForward.Length >= size)
+                    return;
+
+                _visitStampForward = new int[size];
+                _visitStampBackward = new int[size];
+                _distanceForward = new int[size];
+                _distanceBackward = new int[size];
+                _previousForward = new int[size];
+                _nextBackward = new int[size];
+                _queueForward = new int[size];
+                _queueBackward = new int[size];
+                _stamp = 0;
+            }
+
+            public List<int> FindPath(PathGraph graph, int fromSector, int toSector, HashSet<int> avoidSectors)
+            {
+                int stamp = NextStamp();
+                int headForward = 0;
+                int tailForward = 0;
+                int headBackward = 0;
+                int tailBackward = 0;
+                int bestMeet = 0;
+                int bestDistance = int.MaxValue;
+                bool hasAvoids = avoidSectors.Count > 0;
+
+                _visitStampForward[fromSector] = stamp;
+                _distanceForward[fromSector] = 0;
+                _previousForward[fromSector] = 0;
+                _queueForward[tailForward++] = fromSector;
+
+                _visitStampBackward[toSector] = stamp;
+                _distanceBackward[toSector] = 0;
+                _nextBackward[toSector] = 0;
+                _queueBackward[tailBackward++] = toSector;
+
+                while (headForward < tailForward && headBackward < tailBackward)
+                {
+                    if ((tailForward - headForward) <= (tailBackward - headBackward))
+                    {
+                        ExpandForwardLevel(graph, stamp, hasAvoids, avoidSectors,
+                            ref headForward, ref tailForward, ref bestMeet, ref bestDistance);
+                    }
+                    else
+                    {
+                        ExpandBackwardLevel(graph, stamp, hasAvoids, avoidSectors, fromSector,
+                            ref headBackward, ref tailBackward, ref bestMeet, ref bestDistance);
+                    }
+
+                    if (bestMeet == 0)
+                        continue;
+
+                    int forwardFront = headForward < tailForward ? _distanceForward[_queueForward[headForward]] : int.MaxValue / 4;
+                    int backwardFront = headBackward < tailBackward ? _distanceBackward[_queueBackward[headBackward]] : int.MaxValue / 4;
+                    if ((long)forwardFront + backwardFront >= bestDistance)
+                        break;
+                }
+
+                return bestMeet == 0 ? new List<int>() : ReconstructPath(fromSector, toSector, bestMeet);
+            }
+
+            private void ExpandForwardLevel(
+                PathGraph graph,
+                int stamp,
+                bool hasAvoids,
+                HashSet<int> avoidSectors,
+                ref int head,
+                ref int tail,
+                ref int bestMeet,
+                ref int bestDistance)
+            {
+                int levelDistance = _distanceForward[_queueForward[head]];
+                while (head < tail && _distanceForward[_queueForward[head]] == levelDistance)
+                {
+                    int current = _queueForward[head++];
+                    int[] warps = graph.Outbound[current];
+                    for (int i = 0; i < warps.Length; i++)
+                    {
+                        int adjacent = warps[i];
+                        if (_visitStampForward[adjacent] == stamp)
+                            continue;
+
+                        if (hasAvoids && avoidSectors.Contains(adjacent))
+                            continue;
+
+                        _visitStampForward[adjacent] = stamp;
+                        _distanceForward[adjacent] = levelDistance + 1;
+                        _previousForward[adjacent] = current;
+                        _queueForward[tail++] = adjacent;
+
+                        if (_visitStampBackward[adjacent] == stamp)
+                        {
+                            int totalDistance = _distanceForward[adjacent] + _distanceBackward[adjacent];
+                            if (totalDistance < bestDistance)
+                            {
+                                bestDistance = totalDistance;
+                                bestMeet = adjacent;
+                            }
+                        }
+                    }
+                }
+            }
+
+            private void ExpandBackwardLevel(
+                PathGraph graph,
+                int stamp,
+                bool hasAvoids,
+                HashSet<int> avoidSectors,
+                int fromSector,
+                ref int head,
+                ref int tail,
+                ref int bestMeet,
+                ref int bestDistance)
+            {
+                int levelDistance = _distanceBackward[_queueBackward[head]];
+                while (head < tail && _distanceBackward[_queueBackward[head]] == levelDistance)
+                {
+                    int current = _queueBackward[head++];
+                    int[] inbound = graph.Inbound[current];
+                    for (int i = 0; i < inbound.Length; i++)
+                    {
+                        int previous = inbound[i];
+                        if (_visitStampBackward[previous] == stamp)
+                            continue;
+
+                        if (hasAvoids && previous != fromSector && avoidSectors.Contains(previous))
+                            continue;
+
+                        _visitStampBackward[previous] = stamp;
+                        _distanceBackward[previous] = levelDistance + 1;
+                        _nextBackward[previous] = current;
+                        _queueBackward[tail++] = previous;
+
+                        if (_visitStampForward[previous] == stamp)
+                        {
+                            int totalDistance = _distanceForward[previous] + _distanceBackward[previous];
+                            if (totalDistance < bestDistance)
+                            {
+                                bestDistance = totalDistance;
+                                bestMeet = previous;
+                            }
+                        }
+                    }
+                }
+            }
+
+            private List<int> ReconstructPath(int fromSector, int toSector, int meetSector)
+            {
+                var result = new List<int>();
+                int current = meetSector;
+                while (current > 0)
+                {
+                    result.Add(current);
+                    current = _previousForward[current];
+                }
+
+                result.Reverse();
+                if (result.Count == 0 || result[0] != fromSector)
+                    return new List<int>();
+
+                current = _nextBackward[meetSector];
+                while (current > 0)
+                {
+                    result.Add(current);
+                    current = _nextBackward[current];
+                }
+
+                return result.Count > 0 && result[^1] == toSector ? result : new List<int>();
+            }
+
+            private int NextStamp()
+            {
+                _stamp++;
+                if (_stamp != int.MaxValue)
+                    return _stamp;
+
+                Array.Clear(_visitStampForward, 0, _visitStampForward.Length);
+                Array.Clear(_visitStampBackward, 0, _visitStampBackward.Length);
+                _stamp = 1;
+                return _stamp;
+            }
+        }
 
         #region IDisposable
 

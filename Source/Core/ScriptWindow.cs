@@ -645,6 +645,13 @@ namespace TWXProxy.Core
                         {
                             if (_menus.ContainsKey(matchingItem.Name))
                             {
+                                if (matchingItem.CloseMenu)
+                                {
+                                    GlobalModules.DebugLog(
+                                        $"[Menu] Closing current menu '{currentMenu.Name}' before opening submenu '{matchingItem.Name}' due to CloseMenu=TRUE\n");
+                                    CloseMenu(false);
+                                }
+
                                 OpenMenu(matchingItem.Name, 0);
                                 return true;
                             }

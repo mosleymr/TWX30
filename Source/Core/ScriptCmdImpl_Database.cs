@@ -369,7 +369,7 @@ namespace TWXProxy.Core
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
-                var path = CalculatePascalCourse(fromSector, toSector);
+                var path = CalculateGetCoursePath(fromSector, toSector);
                 parameters[0].Value = scalarIsHopCount
                     ? (path.Count - 1).ToString()
                     : path.Count.ToString();
@@ -590,61 +590,12 @@ namespace TWXProxy.Core
             return _activeDatabase.CalculateShortestPath(fromSector, toSector, _avoidedSectors);
         }
 
-        private static List<int> CalculatePascalCourse(int fromSector, int toSector)
+        private static List<int> CalculateGetCoursePath(int fromSector, int toSector)
         {
             if (_activeDatabase == null)
                 return new List<int>();
 
-            int sectorCount = _activeDatabase.SectorCount;
-            if (fromSector < 1 || fromSector > sectorCount || toSector < 1 || toSector > sectorCount)
-                return new List<int>();
-
-            // Match TWX27 PlotWarpCourse():
-            // - start sector is always allowed even if voided
-            // - search is breadth-first using the stored warp order
-            // - return path includes start and destination after reversal
-            var visited = new bool[sectorCount + 1];
-            var previous = new int[sectorCount + 1];
-            var queue = new Queue<int>();
-
-            visited[fromSector] = true;
-            queue.Enqueue(fromSector);
-
-            while (queue.Count > 0)
-            {
-                int focus = queue.Dequeue();
-                var sector = _activeDatabase.GetSector(focus);
-                if (sector == null)
-                    continue;
-
-                foreach (var warp in sector.Warp.Where(w => w > 0 && w <= sectorCount))
-                {
-                    int adjacent = warp;
-                    if (_avoidedSectors.Contains(adjacent) || visited[adjacent])
-                        continue;
-
-                    previous[adjacent] = focus;
-
-                    if (adjacent == toSector)
-                    {
-                        var result = new List<int>();
-                        int current = adjacent;
-                        while (current > 0)
-                        {
-                            result.Add(current);
-                            current = previous[current];
-                        }
-
-                        result.Reverse();
-                        return result;
-                    }
-
-                    visited[adjacent] = true;
-                    queue.Enqueue(adjacent);
-                }
-            }
-
-            return new List<int>();
+            return _activeDatabase.CalculateBidirectionalShortestPath(fromSector, toSector, _avoidedSectors);
         }
 
         #endregion
