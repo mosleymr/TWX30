@@ -81,6 +81,7 @@ internal class EmbeddedMtcConfig
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
     public int ScrollbackLines { get; set; } = 2000;
+    public EmbeddedMtcStatusBarConfig StatusBar { get; set; } = new();
     [JsonIgnore]
     public MTC.mombot.mombotConfig mombot { get; set; } = new();
     [JsonPropertyName("mombot")]
@@ -106,6 +107,23 @@ internal class EmbeddedMtcConfig
         }
     }
     public EmbeddedMtcState State { get; set; } = new();
+}
+
+internal class EmbeddedMtcStatusBarConfig
+{
+    public bool ShowStarDock { get; set; } = true;
+    public bool ShowBackdoor { get; set; } = true;
+    public bool ShowRylos { get; set; } = true;
+    public bool ShowAlpha { get; set; } = true;
+    public bool ShowIpInfo { get; set; } = true;
+    public bool ShowHaggleInfo { get; set; }
+    public List<EmbeddedMtcStatusSectorChip> CustomSectors { get; set; } = [];
+}
+
+internal class EmbeddedMtcStatusSectorChip
+{
+    public string Name { get; set; } = string.Empty;
+    public int Sector { get; set; }
 }
 
 internal class EmbeddedMtcState

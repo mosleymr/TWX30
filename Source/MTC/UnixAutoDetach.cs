@@ -42,6 +42,48 @@ internal static class UnixAutoDetach
         }
     }
 
+    public static bool TryLaunchAdditionalInstance(string[] args, out string? error)
+    {
+        error = null;
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+            return false;
+
+        string? processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath))
+            processPath = Process.GetCurrentProcess().MainModule?.FileName;
+
+        if (string.IsNullOrWhiteSpace(processPath))
+        {
+            error = "current executable path is unavailable";
+            return false;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(BuildShellCommand(processPath, args));
+            using Process? child = Process.Start(startInfo);
+            if (child == null)
+            {
+                error = "launcher process failed to start";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static string BuildShellCommand(string processPath, IReadOnlyList<string> args)
     {
         var parts = new List<string>(args.Count + 2)

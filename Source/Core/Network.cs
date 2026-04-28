@@ -176,6 +176,7 @@ namespace TWXProxy.Core
         public event EventHandler<CommandEventArgs>? CommandReceived;
         public event EventHandler? Connected;
         public event EventHandler<DisconnectEventArgs>? Disconnected;
+        public event EventHandler? ScriptLoaded;
         public event EventHandler? ScriptStopped;
         public event EventHandler? ClearInputBufferRequested;
         public event Action<bool>? NativeHaggleChanged;
@@ -386,6 +387,7 @@ namespace TWXProxy.Core
         public void NotifyScriptLoad()
         {
             _ = SendEchoMarkAsync(2);
+            ScriptLoaded?.Invoke(this, EventArgs.Empty);
         }
 
         public void NotifyScriptStop()

@@ -15,6 +15,12 @@ internal static class Program
     private const int DefaultSamples = 10000;
     private const int DefaultSeed = 12345;
     private const int DefaultDiffExamples = 5;
+    private const int AllCoursesSourceChecks = 4;
+    private const int AllCoursesDestinationChecksPerSource = 32;
+    private const int AllCoursesComparisonSources = 4;
+    private const int DistanceChecks = 2000;
+    private const int WarpChecks = 500;
+    private const int WarpBenchmarkChecks = 2000;
 
     private static int Main(string[] args)
     {
@@ -64,6 +70,8 @@ internal static class Program
         Console.WriteLine($"effective sector count: {sectorCount}");
         var graph = PreparedGraph.FromDatabase(db);
         var hotRunner = new PascalHotRunner(graph);
+        var allCoursesHotBuilder = new PascalAllCoursesHotBuilder(graph);
+        var reverseDistanceRunner = new ReverseDistanceRunner(graph);
         var candidates = Enumerable.Range(1, sectorCount)
             .Where(i => graph.Outbound[i].Length > 0)
             .ToArray();
@@ -97,6 +105,9 @@ internal static class Program
         ComparisonStats hotStats = CompareAgainstBaseline("hot-bfs", pairs, pascalResults, hotResults, diffExamples);
         ComparisonStats bidirectionalStats = CompareAgainstBaseline("bidirectional-bfs", pairs, pascalResults, bidirectionalResults, diffExamples);
         ComparisonStats dijkstraStats = CompareAgainstBaseline("dijkstra", pairs, pascalResults, dijkstraResults, diffExamples);
+        AllCoursesComparisonStats allCoursesStats = CompareAllCoursesImplementations(db, candidates, allCoursesHotBuilder, seed, diffExamples);
+        ApiConsistencyStats apiStats = ValidateCourseApis(db, candidates, pairs, seed, diffExamples);
+        WarpHelperBenchmarkStats warpBenchmarkStats = BenchmarkWarpHelperAlgorithms(db, reverseDistanceRunner, pairs, diffExamples);
 
         Console.WriteLine($"DB={db.DatabaseName} path={dbPath}");
         Console.WriteLine($"  candidate sectors with warps: {candidates.Length}");
@@ -108,6 +119,9 @@ internal static class Program
         PrintComparison(bidirectionalStats);
         Console.WriteLine($"  dijkstra:           {dijkstraMs:F2} ms ({dijkstraMs / pairs.Count:F4} ms/query) [{DescribeRelative(dijkstraMs, pascalMs)}]");
         PrintComparison(dijkstraStats);
+        PrintAllCoursesComparison(allCoursesStats);
+        PrintApiConsistency(apiStats);
+        PrintWarpHelperBenchmark(warpBenchmarkStats);
     }
 
     private static void WarmUp(
@@ -277,6 +291,491 @@ internal static class Program
                 Console.WriteLine($"      {example}");
     }
 
+    private static AllCoursesComparisonStats CompareAllCoursesImplementations(
+        ModDatabase db,
+        IReadOnlyList<int> candidates,
+        PascalAllCoursesHotBuilder hotBuilder,
+        int seed,
+        int diffExamples)
+    {
+        var stats = new AllCoursesComparisonStats();
+        var rng = new Random(unchecked(seed + db.DatabaseName.GetHashCode() ^ 0x41C0A11C));
+        int[] sampledSources = candidates
+            .OrderBy(_ => rng.Next())
+            .Take(Math.Min(AllCoursesComparisonSources, candidates.Count))
+            .ToArray();
+
+        foreach (int source in sampledSources)
+        {
+            stats.SourcesChecked++;
+
+            var legacyStopwatch = Stopwatch.StartNew();
+            List<List<string>> legacyCourses = BuildLegacyAllCourses(db, source);
+            legacyStopwatch.Stop();
+            stats.LegacyElapsedMs += legacyStopwatch.Elapsed.TotalMilliseconds;
+
+            var currentStopwatch = Stopwatch.StartNew();
+            List<List<string>> currentCourses = db.GetAllCoursesFrom(source);
+            currentStopwatch.Stop();
+            stats.CurrentElapsedMs += currentStopwatch.Elapsed.TotalMilliseconds;
+
+            var hotStopwatch = Stopwatch.StartNew();
+            List<List<string>> hotCourses = hotBuilder.BuildAllCourses(source);
+            hotStopwatch.Stop();
+            stats.HotElapsedMs += hotStopwatch.Elapsed.TotalMilliseconds;
+
+            int entryCount = Math.Min(legacyCourses.Count, currentCourses.Count);
+            for (int destination = 1; destination <= entryCount; destination++)
+            {
+                stats.EntriesChecked++;
+                List<int> legacyRoute = ParseAllCourseEntry(legacyCourses, destination);
+                List<int> currentRoute = ParseAllCourseEntry(currentCourses, destination);
+
+                if (PathsEqual(legacyRoute, currentRoute))
+                    stats.ExactSamePath++;
+
+                bool legacyReachable = IsReachableAllCourse(source, destination, legacyRoute);
+                bool currentReachable = IsReachableAllCourse(source, destination, currentRoute);
+
+                if (!legacyReachable && !currentReachable)
+                {
+                    stats.BothUnreachable++;
+                    continue;
+                }
+
+                if (legacyReachable && !currentReachable)
+                {
+                    stats.LegacyOnlyReachable++;
+                    AddExample(stats.Examples, diffExamples,
+                        $"getallcourses reachable mismatch {source}->{destination}: legacy={PathToString(legacyRoute)} current=<none>");
+                    continue;
+                }
+
+                if (!legacyReachable && currentReachable)
+                {
+                    stats.CurrentOnlyReachable++;
+                    AddExample(stats.Examples, diffExamples,
+                        $"getallcourses reachable mismatch {source}->{destination}: legacy=<none> current={PathToString(currentRoute)}");
+                    continue;
+                }
+
+                int legacyHops = legacyRoute.Count - 1;
+                int currentHops = currentRoute.Count - 1;
+                if (legacyHops == currentHops)
+                {
+                    stats.SameHopCount++;
+                    if (!PathsEqual(legacyRoute, currentRoute))
+                    {
+                        AddExample(stats.Examples, diffExamples,
+                            $"getallcourses same distance diff route {source}->{destination}: legacy={PathToString(legacyRoute)} current={PathToString(currentRoute)}");
+                    }
+                }
+                else
+                {
+                    stats.DifferentHopCount++;
+                    AddExample(stats.Examples, diffExamples,
+                        $"getallcourses different distance {source}->{destination}: legacy={PathToString(legacyRoute)} ({legacyHops}) current={PathToString(currentRoute)} ({currentHops})");
+                }
+            }
+
+            int hotEntryCount = Math.Min(legacyCourses.Count, hotCourses.Count);
+            for (int destination = 1; destination <= hotEntryCount; destination++)
+            {
+                List<int> legacyRoute = ParseAllCourseEntry(legacyCourses, destination);
+                List<int> hotRoute = ParseAllCourseEntry(hotCourses, destination);
+                if (!PathsEqual(legacyRoute, hotRoute))
+                {
+                    stats.HotMismatches++;
+                    AddExample(stats.HotExamples, diffExamples,
+                        $"hot getallcourses mismatch {source}->{destination}: legacy={PathToString(legacyRoute)} hot={PathToString(hotRoute)}");
+                }
+                else
+                {
+                    stats.HotExactMatches++;
+                }
+            }
+        }
+
+        return stats;
+    }
+
+    private static void PrintAllCoursesComparison(AllCoursesComparisonStats stats)
+    {
+        Console.WriteLine("  getallcourses legacy vs current:");
+        Console.WriteLine($"    sources checked: {stats.SourcesChecked}");
+        Console.WriteLine($"    entries checked: {stats.EntriesChecked}");
+        Console.WriteLine($"    legacy total time: {stats.LegacyElapsedMs:F2} ms");
+        Console.WriteLine($"    hot bfs total time: {stats.HotElapsedMs:F2} ms");
+        Console.WriteLine($"    current total time: {stats.CurrentElapsedMs:F2} ms");
+        Console.WriteLine($"    hot exact matches vs legacy: {stats.HotExactMatches}");
+        Console.WriteLine($"    hot mismatches vs legacy: {stats.HotMismatches}");
+        Console.WriteLine($"    exact same path: {stats.ExactSamePath}");
+        Console.WriteLine($"    same hop count: {stats.SameHopCount}");
+        Console.WriteLine($"    different hop count: {stats.DifferentHopCount}");
+        Console.WriteLine($"    both unreachable: {stats.BothUnreachable}");
+        Console.WriteLine($"    legacy-only reachable: {stats.LegacyOnlyReachable}");
+        Console.WriteLine($"    current-only reachable: {stats.CurrentOnlyReachable}");
+        Console.WriteLine("    sample diffs:");
+        if (stats.Examples.Count == 0)
+            Console.WriteLine("      <none>");
+        else
+            foreach (string example in stats.Examples)
+                Console.WriteLine($"      {example}");
+        if (stats.HotExamples.Count > 0)
+        {
+            Console.WriteLine("    sample hot diffs:");
+            foreach (string example in stats.HotExamples)
+                Console.WriteLine($"      {example}");
+        }
+    }
+
+    private static ApiConsistencyStats ValidateCourseApis(
+        ModDatabase db,
+        IReadOnlyList<int> candidates,
+        IReadOnlyList<(int From, int To)> pairs,
+        int seed,
+        int diffExamples)
+    {
+        var stats = new ApiConsistencyStats();
+        var rng = new Random(unchecked(seed + db.DatabaseName.GetHashCode() ^ 0x5A17C0DE));
+        int[] sampledSources = candidates
+            .OrderBy(_ => rng.Next())
+            .Take(Math.Min(AllCoursesSourceChecks, candidates.Count))
+            .ToArray();
+
+        foreach (int source in sampledSources)
+        {
+            stats.AllCoursesSourcesChecked++;
+            var allCoursesStopwatch = Stopwatch.StartNew();
+            List<List<string>> allCourses = db.GetAllCoursesFrom(source);
+            allCoursesStopwatch.Stop();
+            stats.AllCoursesElapsedMs += allCoursesStopwatch.Elapsed.TotalMilliseconds;
+            List<List<string>> expectedAllCourses = BuildLegacyAllCourses(db, source);
+            var destinations = candidates
+                .Where(candidate => candidate != source)
+                .OrderBy(_ => rng.Next())
+                .Take(AllCoursesDestinationChecksPerSource)
+                .ToList();
+
+            foreach (int destination in destinations)
+            {
+                stats.AllCoursesEntriesChecked++;
+                List<int> expected = ParseAllCourseEntry(expectedAllCourses, destination);
+                List<int> actual = ParseAllCourseEntry(allCourses, destination);
+
+                if (expected.Count == 1 && expected[0] == destination)
+                {
+                    if (actual.Count == 1 && actual[0] == destination)
+                    {
+                        stats.AllCoursesUnreachableMatches++;
+                    }
+                    else
+                    {
+                        stats.AllCoursesMismatches++;
+                        AddExample(stats.Examples, diffExamples,
+                            $"getallcourses mismatch {source}->{destination}: expected=<none> actual={PathToString(actual)}");
+                    }
+
+                    continue;
+                }
+
+                if (PathsEqual(expected, actual))
+                {
+                    stats.AllCoursesExactMatches++;
+                }
+                else
+                {
+                    stats.AllCoursesMismatches++;
+                    AddExample(stats.Examples, diffExamples,
+                        $"getallcourses mismatch {source}->{destination}: expected={PathToString(expected)} actual={PathToString(actual)}");
+                }
+            }
+        }
+
+        foreach (var pair in pairs.Take(DistanceChecks))
+        {
+            stats.DistancePairsChecked++;
+            int expected = GetExpectedDistance(db, pair.From, pair.To);
+            int actual = db.GetDistance(pair.From, pair.To);
+            if (expected == actual)
+            {
+                stats.DistanceMatches++;
+            }
+            else
+            {
+                stats.DistanceMismatches++;
+                AddExample(stats.Examples, diffExamples,
+                    $"getdistance mismatch {pair.From}->{pair.To}: expected={expected} actual={actual}");
+            }
+        }
+
+        foreach (var pair in pairs)
+        {
+            if (stats.WarpPairsChecked >= WarpChecks)
+                break;
+
+            var sector = db.GetSector(pair.From);
+            if (sector == null)
+                continue;
+
+            var warps = sector.Warp
+                .Where(warp => warp > 0 && warp <= db.SectorCount)
+                .Select(warp => (int)warp)
+                .ToList();
+            if (warps.Count == 0)
+                continue;
+
+            stats.WarpPairsChecked++;
+
+            List<int> expectedSorted = warps
+                .Select(warp => (warp, distance: GetExpectedDistance(db, warp, pair.To)))
+                .OrderBy(item => item.distance < 0 ? int.MaxValue : item.distance)
+                .ThenBy(item => item.warp)
+                .Select(item => item.warp)
+                .ToList();
+            List<int> actualSorted = db.GetWarpsSortedByDistance(pair.From, pair.To);
+            if (PathsEqual(expectedSorted, actualSorted))
+            {
+                stats.WarpOrderingMatches++;
+            }
+            else
+            {
+                stats.WarpOrderingMismatches++;
+                AddExample(stats.Examples, diffExamples,
+                    $"getwarpssortedbydistance mismatch {pair.From}->{pair.To}: expected={PathToString(expectedSorted)} actual={PathToString(actualSorted)}");
+            }
+
+            int expectedNearest = expectedSorted
+                .FirstOrDefault(warp => GetExpectedDistance(db, warp, pair.To) >= 0);
+            int actualNearest = db.GetNearestWarp(pair.From, pair.To);
+            if (expectedNearest == actualNearest)
+            {
+                stats.NearestWarpMatches++;
+            }
+            else
+            {
+                stats.NearestWarpMismatches++;
+                AddExample(stats.Examples, diffExamples,
+                    $"getnearestwarp mismatch {pair.From}->{pair.To}: expected={expectedNearest} actual={actualNearest}");
+            }
+        }
+
+        return stats;
+    }
+
+    private static void PrintApiConsistency(ApiConsistencyStats stats)
+    {
+        Console.WriteLine("  course api consistency:");
+        Console.WriteLine($"    getallcourses sources checked: {stats.AllCoursesSourcesChecked}");
+        Console.WriteLine($"    getallcourses total time: {stats.AllCoursesElapsedMs:F2} ms");
+        Console.WriteLine($"    getallcourses entries checked: {stats.AllCoursesEntriesChecked}");
+        Console.WriteLine($"    getallcourses exact matches: {stats.AllCoursesExactMatches}");
+        Console.WriteLine($"    getallcourses unreachable matches: {stats.AllCoursesUnreachableMatches}");
+        Console.WriteLine($"    getallcourses mismatches: {stats.AllCoursesMismatches}");
+        Console.WriteLine($"    getdistance pairs checked: {stats.DistancePairsChecked}");
+        Console.WriteLine($"    getdistance matches: {stats.DistanceMatches}");
+        Console.WriteLine($"    getdistance mismatches: {stats.DistanceMismatches}");
+        Console.WriteLine($"    warp helper pairs checked: {stats.WarpPairsChecked}");
+        Console.WriteLine($"    getwarpssortedbydistance matches: {stats.WarpOrderingMatches}");
+        Console.WriteLine($"    getwarpssortedbydistance mismatches: {stats.WarpOrderingMismatches}");
+        Console.WriteLine($"    getnearestwarp matches: {stats.NearestWarpMatches}");
+        Console.WriteLine($"    getnearestwarp mismatches: {stats.NearestWarpMismatches}");
+        Console.WriteLine("    sample api diffs:");
+        if (stats.Examples.Count == 0)
+            Console.WriteLine("      <none>");
+        else
+            foreach (string example in stats.Examples)
+                Console.WriteLine($"      {example}");
+    }
+
+    private static WarpHelperBenchmarkStats BenchmarkWarpHelperAlgorithms(
+        ModDatabase db,
+        ReverseDistanceRunner reverseDistanceRunner,
+        IReadOnlyList<(int From, int To)> pairs,
+        int diffExamples)
+    {
+        var stats = new WarpHelperBenchmarkStats();
+        var sampledPairs = new List<(int From, int To, List<int> Warps)>();
+
+        foreach (var pair in pairs)
+        {
+            if (sampledPairs.Count >= WarpBenchmarkChecks)
+                break;
+
+            var sector = db.GetSector(pair.From);
+            if (sector == null)
+                continue;
+
+            var warps = sector.Warp
+                .Where(warp => warp > 0 && warp <= db.SectorCount)
+                .Select(warp => (int)warp)
+                .ToList();
+            if (warps.Count == 0)
+                continue;
+
+            sampledPairs.Add((pair.From, pair.To, warps));
+        }
+
+        var currentSortWatch = Stopwatch.StartNew();
+        foreach (var sample in sampledPairs)
+        {
+            List<int> currentSorted = db.GetWarpsSortedByDistance(sample.From, sample.To);
+            List<int> reverseSorted = reverseDistanceRunner.GetWarpsSortedByDistance(sample.Warps, sample.To);
+            if (PathsEqual(currentSorted, reverseSorted))
+            {
+                stats.SortedMatches++;
+            }
+            else
+            {
+                stats.SortedMismatches++;
+                AddExample(stats.Examples, diffExamples,
+                    $"reverse sort mismatch {sample.From}->{sample.To}: current={PathToString(currentSorted)} reverse={PathToString(reverseSorted)}");
+            }
+        }
+        currentSortWatch.Stop();
+        stats.CurrentSortedElapsedMs = currentSortWatch.Elapsed.TotalMilliseconds;
+
+        var reverseSortWatch = Stopwatch.StartNew();
+        foreach (var sample in sampledPairs)
+            _ = reverseDistanceRunner.GetWarpsSortedByDistance(sample.Warps, sample.To);
+        reverseSortWatch.Stop();
+        stats.ReverseSortedElapsedMs = reverseSortWatch.Elapsed.TotalMilliseconds;
+
+        var currentNearestWatch = Stopwatch.StartNew();
+        foreach (var sample in sampledPairs)
+        {
+            int currentNearest = db.GetNearestWarp(sample.From, sample.To);
+            int reverseNearest = reverseDistanceRunner.GetNearestWarp(sample.Warps, sample.To);
+            if (currentNearest == reverseNearest)
+            {
+                stats.NearestMatches++;
+            }
+            else
+            {
+                stats.NearestMismatches++;
+                AddExample(stats.Examples, diffExamples,
+                    $"reverse nearest mismatch {sample.From}->{sample.To}: current={currentNearest} reverse={reverseNearest}");
+            }
+        }
+        currentNearestWatch.Stop();
+        stats.CurrentNearestElapsedMs = currentNearestWatch.Elapsed.TotalMilliseconds;
+
+        var reverseNearestWatch = Stopwatch.StartNew();
+        foreach (var sample in sampledPairs)
+            _ = reverseDistanceRunner.GetNearestWarp(sample.Warps, sample.To);
+        reverseNearestWatch.Stop();
+        stats.ReverseNearestElapsedMs = reverseNearestWatch.Elapsed.TotalMilliseconds;
+
+        stats.PairsChecked = sampledPairs.Count;
+        return stats;
+    }
+
+    private static void PrintWarpHelperBenchmark(WarpHelperBenchmarkStats stats)
+    {
+        Console.WriteLine("  warp helper algorithms:");
+        Console.WriteLine($"    pairs checked: {stats.PairsChecked}");
+        Console.WriteLine($"    current sorted total time: {stats.CurrentSortedElapsedMs:F2} ms");
+        Console.WriteLine($"    reverse-bfs sorted total time: {stats.ReverseSortedElapsedMs:F2} ms");
+        Console.WriteLine($"    sorted matches: {stats.SortedMatches}");
+        Console.WriteLine($"    sorted mismatches: {stats.SortedMismatches}");
+        Console.WriteLine($"    current nearest total time: {stats.CurrentNearestElapsedMs:F2} ms");
+        Console.WriteLine($"    reverse-bfs nearest total time: {stats.ReverseNearestElapsedMs:F2} ms");
+        Console.WriteLine($"    nearest matches: {stats.NearestMatches}");
+        Console.WriteLine($"    nearest mismatches: {stats.NearestMismatches}");
+        Console.WriteLine("    sample diffs:");
+        if (stats.Examples.Count == 0)
+            Console.WriteLine("      <none>");
+        else
+            foreach (string example in stats.Examples)
+                Console.WriteLine($"      {example}");
+    }
+
+    private static int GetExpectedDistance(ModDatabase db, int fromSector, int toSector)
+    {
+        List<int> path = db.CalculateBidirectionalShortestPath(fromSector, toSector);
+        return path.Count > 0 ? path.Count - 1 : -1;
+    }
+
+    private static bool IsReachableAllCourse(int source, int destination, IReadOnlyList<int> route)
+    {
+        if (route.Count == 0)
+            return false;
+
+        if (source == destination)
+            return route.Count == 1 && route[0] == source;
+
+        return route[0] == source && route[^1] == destination;
+    }
+
+    private static List<int> ParseAllCourseEntry(IReadOnlyList<List<string>> allCourses, int destination)
+    {
+        if (destination < 1 || destination > allCourses.Count)
+            return new List<int>();
+
+        var result = new List<int>(allCourses[destination - 1].Count);
+        foreach (string step in allCourses[destination - 1])
+        {
+            if (int.TryParse(step, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sector))
+                result.Add(sector);
+        }
+
+        return result;
+    }
+
+    private static List<List<string>> BuildLegacyAllCourses(ModDatabase db, int startSector, HashSet<int>? avoidSectors = null)
+    {
+        var courses = new List<List<string>>();
+        if (startSector < 1 || startSector > db.SectorCount)
+            return courses;
+
+        var avoids = avoidSectors ?? new HashSet<int>();
+        var visited = new HashSet<int>();
+        var previous = new Dictionary<int, int>();
+        var queue = new Queue<int>();
+
+        if (!avoids.Contains(startSector))
+        {
+            visited.Add(startSector);
+            queue.Enqueue(startSector);
+        }
+
+        while (queue.Count > 0)
+        {
+            int currentSector = queue.Dequeue();
+            var sector = db.GetSector(currentSector);
+            if (sector == null)
+                continue;
+
+            foreach (var warp in sector.Warp.Where(w => w > 0 && w <= db.SectorCount))
+            {
+                int adjacent = warp;
+                if (avoids.Contains(adjacent) || visited.Contains(adjacent))
+                    continue;
+
+                visited.Add(adjacent);
+                previous[adjacent] = currentSector;
+                queue.Enqueue(adjacent);
+            }
+        }
+
+        for (int sectorNumber = 1; sectorNumber <= db.SectorCount; sectorNumber++)
+        {
+            var course = new List<string> { sectorNumber.ToString(CultureInfo.InvariantCulture) };
+            int reverse = previous.TryGetValue(sectorNumber, out var prev) ? prev : 0;
+
+            while (reverse > 0)
+            {
+                course.Add(reverse.ToString(CultureInfo.InvariantCulture));
+                reverse = previous.TryGetValue(reverse, out prev) ? prev : 0;
+            }
+
+            course.Reverse();
+            courses.Add(course);
+        }
+
+        return courses;
+    }
+
     private static List<string> ResolveDatabasePaths(List<string> rawPaths)
     {
         if (rawPaths.Count == 0)
@@ -406,6 +905,58 @@ internal static class Program
         public List<string> Examples { get; } = new();
     }
 
+    private sealed class ApiConsistencyStats
+    {
+        public int AllCoursesSourcesChecked { get; set; }
+        public double AllCoursesElapsedMs { get; set; }
+        public int AllCoursesEntriesChecked { get; set; }
+        public int AllCoursesExactMatches { get; set; }
+        public int AllCoursesUnreachableMatches { get; set; }
+        public int AllCoursesMismatches { get; set; }
+        public int DistancePairsChecked { get; set; }
+        public int DistanceMatches { get; set; }
+        public int DistanceMismatches { get; set; }
+        public int WarpPairsChecked { get; set; }
+        public int WarpOrderingMatches { get; set; }
+        public int WarpOrderingMismatches { get; set; }
+        public int NearestWarpMatches { get; set; }
+        public int NearestWarpMismatches { get; set; }
+        public List<string> Examples { get; } = new();
+    }
+
+    private sealed class AllCoursesComparisonStats
+    {
+        public int SourcesChecked { get; set; }
+        public int EntriesChecked { get; set; }
+        public double LegacyElapsedMs { get; set; }
+        public double HotElapsedMs { get; set; }
+        public double CurrentElapsedMs { get; set; }
+        public int HotExactMatches { get; set; }
+        public int HotMismatches { get; set; }
+        public int ExactSamePath { get; set; }
+        public int SameHopCount { get; set; }
+        public int DifferentHopCount { get; set; }
+        public int BothUnreachable { get; set; }
+        public int LegacyOnlyReachable { get; set; }
+        public int CurrentOnlyReachable { get; set; }
+        public List<string> Examples { get; } = new();
+        public List<string> HotExamples { get; } = new();
+    }
+
+    private sealed class WarpHelperBenchmarkStats
+    {
+        public int PairsChecked { get; set; }
+        public double CurrentSortedElapsedMs { get; set; }
+        public double ReverseSortedElapsedMs { get; set; }
+        public int SortedMatches { get; set; }
+        public int SortedMismatches { get; set; }
+        public double CurrentNearestElapsedMs { get; set; }
+        public double ReverseNearestElapsedMs { get; set; }
+        public int NearestMatches { get; set; }
+        public int NearestMismatches { get; set; }
+        public List<string> Examples { get; } = new();
+    }
+
     private sealed class PreparedGraph
     {
         private PreparedGraph(int sectorCount, int[][] outbound, int[][] inbound)
@@ -524,6 +1075,223 @@ internal static class Program
 
             result.Reverse();
             return result.Count > 0 && result[0] == fromSector ? result : new List<int>();
+        }
+
+        private int NextStamp()
+        {
+            _stamp++;
+            if (_stamp != int.MaxValue)
+                return _stamp;
+
+            Array.Clear(_visitStamp, 0, _visitStamp.Length);
+            _stamp = 1;
+            return _stamp;
+        }
+    }
+
+    private sealed class PascalAllCoursesHotBuilder
+    {
+        private readonly PreparedGraph _graph;
+        private readonly int[] _visitStamp;
+        private readonly int[] _previous;
+        private readonly int[] _queue;
+        private int _stamp;
+
+        public PascalAllCoursesHotBuilder(PreparedGraph graph)
+        {
+            _graph = graph;
+            _visitStamp = new int[graph.SectorCount + 1];
+            _previous = new int[graph.SectorCount + 1];
+            _queue = new int[graph.SectorCount + 1];
+        }
+
+        public List<List<string>> BuildAllCourses(int startSector)
+        {
+            if (startSector < 1 || startSector > _graph.SectorCount)
+                return new List<List<string>>();
+
+            int stamp = NextStamp();
+            int head = 0;
+            int tail = 0;
+
+            _visitStamp[startSector] = stamp;
+            _previous[startSector] = 0;
+            _queue[tail++] = startSector;
+
+            while (head < tail)
+            {
+                int focus = _queue[head++];
+                int[] warps = _graph.Outbound[focus];
+                for (int i = 0; i < warps.Length; i++)
+                {
+                    int adjacent = warps[i];
+                    if (_visitStamp[adjacent] == stamp)
+                        continue;
+
+                    _visitStamp[adjacent] = stamp;
+                    _previous[adjacent] = focus;
+                    _queue[tail++] = adjacent;
+                }
+            }
+
+            var courses = new List<List<string>>(_graph.SectorCount);
+            for (int sectorNumber = 1; sectorNumber <= _graph.SectorCount; sectorNumber++)
+            {
+                if (sectorNumber == startSector)
+                {
+                    courses.Add(new List<string> { startSector.ToString(CultureInfo.InvariantCulture) });
+                }
+                else if (_visitStamp[sectorNumber] != stamp)
+                {
+                    courses.Add(new List<string> { sectorNumber.ToString(CultureInfo.InvariantCulture) });
+                }
+                else
+                {
+                    courses.Add(ReconstructCourse(startSector, sectorNumber));
+                }
+            }
+
+            return courses;
+        }
+
+        private List<string> ReconstructCourse(int startSector, int destination)
+        {
+            var reversed = new List<int>();
+            int current = destination;
+            while (current > 0)
+            {
+                reversed.Add(current);
+                current = _previous[current];
+            }
+
+            reversed.Reverse();
+            if (reversed.Count == 0 || reversed[0] != startSector)
+                return new List<string> { destination.ToString(CultureInfo.InvariantCulture) };
+
+            return reversed
+                .Select(sector => sector.ToString(CultureInfo.InvariantCulture))
+                .ToList();
+        }
+
+        private int NextStamp()
+        {
+            _stamp++;
+            if (_stamp != int.MaxValue)
+                return _stamp;
+
+            Array.Clear(_visitStamp, 0, _visitStamp.Length);
+            _stamp = 1;
+            return _stamp;
+        }
+    }
+
+    private sealed class ReverseDistanceRunner
+    {
+        private readonly PreparedGraph _graph;
+        private readonly int[] _visitStamp;
+        private readonly int[] _distance;
+        private readonly int[] _queue;
+        private int _stamp;
+
+        public ReverseDistanceRunner(PreparedGraph graph)
+        {
+            _graph = graph;
+            _visitStamp = new int[graph.SectorCount + 1];
+            _distance = new int[graph.SectorCount + 1];
+            _queue = new int[graph.SectorCount + 1];
+        }
+
+        public List<int> GetWarpsSortedByDistance(IReadOnlyList<int> warps, int targetSector)
+        {
+            var scores = ScoreWarps(warps, targetSector);
+            return scores
+                .OrderBy(item => item.distance < 0 ? int.MaxValue : item.distance)
+                .ThenBy(item => item.warp)
+                .Select(item => item.warp)
+                .ToList();
+        }
+
+        public int GetNearestWarp(IReadOnlyList<int> warps, int targetSector)
+        {
+            var scores = ScoreWarps(warps, targetSector);
+            int bestWarp = 0;
+            int bestDistance = int.MaxValue;
+
+            for (int i = 0; i < scores.Count; i++)
+            {
+                var score = scores[i];
+                if (score.distance >= 0 && score.distance < bestDistance)
+                {
+                    bestDistance = score.distance;
+                    bestWarp = score.warp;
+                }
+            }
+
+            return bestWarp;
+        }
+
+        private List<(int warp, int distance)> ScoreWarps(IReadOnlyList<int> warps, int targetSector)
+        {
+            var results = new List<(int warp, int distance)>(warps.Count);
+            if (targetSector < 1 || targetSector > _graph.SectorCount)
+            {
+                for (int i = 0; i < warps.Count; i++)
+                    results.Add((warps[i], -1));
+                return results;
+            }
+
+            int[] distances = new int[warps.Count];
+            Array.Fill(distances, -1);
+            int unresolved = warps.Count;
+            for (int i = 0; i < warps.Count; i++)
+            {
+                if (warps[i] == targetSector)
+                {
+                    distances[i] = 0;
+                    unresolved--;
+                }
+            }
+
+            if (unresolved > 0)
+            {
+                int stamp = NextStamp();
+                int head = 0;
+                int tail = 0;
+
+                _visitStamp[targetSector] = stamp;
+                _distance[targetSector] = 0;
+                _queue[tail++] = targetSector;
+
+                while (head < tail && unresolved > 0)
+                {
+                    int focus = _queue[head++];
+                    int nextDistance = _distance[focus] + 1;
+                    int[] inbound = _graph.Inbound[focus];
+                    for (int i = 0; i < inbound.Length; i++)
+                    {
+                        int previous = inbound[i];
+                        if (_visitStamp[previous] == stamp)
+                            continue;
+
+                        _visitStamp[previous] = stamp;
+                        _distance[previous] = nextDistance;
+                        _queue[tail++] = previous;
+
+                        for (int warpIndex = 0; warpIndex < warps.Count; warpIndex++)
+                        {
+                            if (distances[warpIndex] < 0 && warps[warpIndex] == previous)
+                            {
+                                distances[warpIndex] = nextDistance;
+                                unresolved--;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (int i = 0; i < warps.Count; i++)
+                results.Add((warps[i], distances[i]));
+            return results;
         }
 
         private int NextStamp()

@@ -435,7 +435,7 @@ namespace TWXProxy.Core
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
-                var path = CalculatePath(fromSector, toSector);
+                var path = CalculateGetCoursePath(fromSector, toSector);
                 parameters[0].Value = (path.Count - 1).ToString(); // Distance is path length - 1
 
                 string pathDesc = path.Count > 0

@@ -104,7 +104,7 @@ public class MainWindow : Window
     private readonly MenuItem _viewCommandDeckSkin = new() { Header = "_Command Deck" };
     private readonly MenuItem _viewCommWindow = new() { Header = "_Comm Window" };
     private readonly MenuItem _viewShowHaggleDetails = new() { Header = "Haggle _Statistics" };
-    private readonly MenuItem _viewBottomBar = new() { Header = "_Bottom Bar" };
+    private readonly MenuItem _viewBottomBar = new() { Header = "_Status Bar" };
     private readonly List<(MenuItem Item, double Size)> _viewFontSizeItems = [];
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
@@ -174,6 +174,7 @@ public class MainWindow : Window
     private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
     private bool _terminalLivePaused;
     private int _displayDrainScheduled;
+    private string _statusBarLayoutSignature = string.Empty;
     private bool _statusMacrosHovered;
     private bool _statusStopAllHovered;
     private bool _statusCommHovered;
@@ -386,6 +387,10 @@ public class MainWindow : Window
     private TextBlock _statusBackdoorValue = new();
     private TextBlock _statusRylosValue = new();
     private TextBlock _statusAlphaValue = new();
+    private Control? _statusStarDockChip;
+    private Control? _statusBackdoorChip;
+    private Control? _statusRylosChip;
+    private Control? _statusAlphaChip;
     private TextBlock _deckHudHeaderSector = new();
     private TextBlock _deckHudHeaderConnection = new();
     private TextBlock _deckHudShipName = new();
@@ -838,15 +843,11 @@ public class MainWindow : Window
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
         _statusText.Margin             = new Thickness(6, 0, 0, 0);
         _statusText.FontSize           = 13;
+        _statusText.IsVisible          = false;
 
         _statusBar.Background = BgStatus;
         _statusBar.Height = 34;
-        _statusBarContent.Children.Clear();
-        _statusBarContent.Children.Add(BuildStatusLocationChip("SD", _statusStarDockValue, HudAccentHot));
-        _statusBarContent.Children.Add(BuildStatusLocationChip("BD", _statusBackdoorValue, HudAccentWarn));
-        _statusBarContent.Children.Add(BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent));
-        _statusBarContent.Children.Add(BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk));
-        _statusBarContent.Children.Add(_statusText);
+        InvalidateStatusBarLayout();
         _statusBar.Child = _statusBarContent;
         _statusBar.IsVisible = _appPrefs.ShowBottomBar;
         DockPanel.SetDock(_statusBar, Dock.Bottom);
@@ -1880,6 +1881,157 @@ public class MainWindow : Window
         };
     }
 
+    private Control BuildStatusLocationChip(string label, string value, IBrush accent)
+    {
+        string safeLabel = string.IsNullOrWhiteSpace(label) ? "?" : label.Trim();
+        var valueBlock = new TextBlock();
+        valueBlock.Text = value;
+        valueBlock.Foreground = HudText;
+        valueBlock.FontFamily = HudTitleFont;
+        valueBlock.FontSize = 13;
+        valueBlock.FontWeight = FontWeight.SemiBold;
+        valueBlock.VerticalAlignment = VerticalAlignment.Center;
+        valueBlock.MinWidth = 28;
+        valueBlock.TextAlignment = TextAlignment.Center;
+
+        return new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = accent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(10, 4),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 7,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = safeLabel.ToUpperInvariant(),
+                        Foreground = HudMuted,
+                        FontSize = 10,
+                        FontWeight = FontWeight.SemiBold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    valueBlock,
+                },
+            },
+        };
+    }
+
+    private EmbeddedMtcStatusBarConfig GetStatusBarConfigForDisplay()
+    {
+        EmbeddedMtcStatusBarConfig? config = _embeddedGameConfig?.Mtc?.StatusBar;
+        if (config == null)
+            return new EmbeddedMtcStatusBarConfig();
+
+        config.CustomSectors = SanitizeStatusSectorChips(config.CustomSectors);
+        return config;
+    }
+
+    private EmbeddedMtcStatusBarConfig GetOrCreateCurrentStatusBarConfig()
+    {
+        _embeddedGameConfig ??= new EmbeddedGameConfig();
+        _embeddedGameConfig.Mtc ??= new EmbeddedMtcConfig();
+        _embeddedGameConfig.Mtc.StatusBar ??= new EmbeddedMtcStatusBarConfig();
+        _embeddedGameConfig.Mtc.StatusBar.CustomSectors =
+            SanitizeStatusSectorChips(_embeddedGameConfig.Mtc.StatusBar.CustomSectors);
+        return _embeddedGameConfig.Mtc.StatusBar;
+    }
+
+    private static List<EmbeddedMtcStatusSectorChip> SanitizeStatusSectorChips(
+        IEnumerable<EmbeddedMtcStatusSectorChip?>? chips)
+    {
+        if (chips == null)
+            return [];
+
+        return chips
+            .Where(static chip => chip != null)
+            .Select(static chip => new EmbeddedMtcStatusSectorChip
+            {
+                Name = (chip!.Name ?? string.Empty).Trim(),
+                Sector = chip.Sector,
+            })
+            .Where(static chip =>
+                !string.IsNullOrWhiteSpace(chip.Name) &&
+                chip.Sector > 0 &&
+                chip.Sector != ushort.MaxValue)
+            .ToList();
+    }
+
+    private void EnsureFixedStatusLocationChips()
+    {
+        _statusStarDockChip ??= BuildStatusLocationChip("SD", _statusStarDockValue, HudAccentHot);
+        _statusBackdoorChip ??= BuildStatusLocationChip("BD", _statusBackdoorValue, HudAccentWarn);
+        _statusRylosChip ??= BuildStatusLocationChip("Rylos", _statusRylosValue, HudAccent);
+        _statusAlphaChip ??= BuildStatusLocationChip("Alpha", _statusAlphaValue, HudAccentOk);
+    }
+
+    private bool ShouldShowStatusBarHaggleInfo()
+        => GetStatusBarConfigForDisplay().ShowHaggleInfo;
+
+    private string BuildStatusBarLayoutSignature()
+    {
+        EmbeddedMtcStatusBarConfig config = GetStatusBarConfigForDisplay();
+        string custom = string.Join("|",
+            config.CustomSectors.Select(static chip => $"{chip.Name}:{chip.Sector}"));
+        return string.Join(";",
+            config.ShowStarDock ? "sd1" : "sd0",
+            config.ShowBackdoor ? "bd1" : "bd0",
+            config.ShowRylos ? "ry1" : "ry0",
+            config.ShowAlpha ? "al1" : "al0",
+            custom);
+    }
+
+    private void EnsureStatusBarLayout()
+    {
+        EnsureFixedStatusLocationChips();
+
+        string signature = BuildStatusBarLayoutSignature();
+        if (string.Equals(signature, _statusBarLayoutSignature, StringComparison.Ordinal))
+            return;
+
+        _statusBarContent.Children.Clear();
+        EmbeddedMtcStatusBarConfig config = GetStatusBarConfigForDisplay();
+
+        if (config.ShowStarDock)
+            _statusBarContent.Children.Add(_statusStarDockChip!);
+        if (config.ShowBackdoor)
+            _statusBarContent.Children.Add(_statusBackdoorChip!);
+        if (config.ShowRylos)
+            _statusBarContent.Children.Add(_statusRylosChip!);
+        if (config.ShowAlpha)
+            _statusBarContent.Children.Add(_statusAlphaChip!);
+
+        foreach (EmbeddedMtcStatusSectorChip chip in config.CustomSectors)
+        {
+            if (string.IsNullOrWhiteSpace(chip.Name) || chip.Sector <= 0 || chip.Sector == ushort.MaxValue)
+                continue;
+
+            _statusBarContent.Children.Add(BuildStatusLocationChip(chip.Name.Trim(), chip.Sector.ToString(CultureInfo.InvariantCulture), HudAccent));
+        }
+
+        _statusText.Margin = _statusBarContent.Children.Count > 0
+            ? new Thickness(6, 0, 0, 0)
+            : new Thickness(0);
+        _statusBarContent.Children.Add(_statusText);
+        _statusBarLayoutSignature = signature;
+    }
+
+    private void InvalidateStatusBarLayout()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(InvalidateStatusBarLayout, DispatcherPriority.Background);
+            return;
+        }
+
+        _statusBarLayoutSignature = string.Empty;
+        EnsureStatusBarLayout();
+    }
+
     private Control BuildDeckLauncherButton(string text, Action onClick)
     {
         var button = new Button
@@ -2469,7 +2621,7 @@ public class MainWindow : Window
 
     private void RefreshHaggleDetailsMenuState()
     {
-        _viewShowHaggleDetails.Icon = _appPrefs.ShowHaggleDetails
+        _viewShowHaggleDetails.Icon = ShouldShowStatusBarHaggleInfo()
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
     }
@@ -2582,7 +2734,7 @@ public class MainWindow : Window
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
         _viewCommWindow.Click += (_, _) => ToggleCommWindow();
-        _viewShowHaggleDetails.Click += (_, _) => ToggleShowHaggleDetails();
+        _viewShowHaggleDetails.Click += async (_, _) => await ToggleShowHaggleDetailsAsync();
         _viewBottomBar.Click += (_, _) => ToggleBottomBar();
         var skinMenu = new MenuItem
         {
@@ -2618,9 +2770,11 @@ public class MainWindow : Window
         toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
         var toolsGameInfoItem = new MenuItem { Header = "_Game Info..." };
         toolsGameInfoItem.Click += (_, _) => OnViewGameInfo();
+        var toolsConfigureStatusBarItem = new MenuItem { Header = "Configure _Status Bar..." };
+        toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
-        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
 
         var menu = new Menu
         {
@@ -3901,10 +4055,11 @@ public class MainWindow : Window
         RefreshCommWindowUi();
     }
 
-    private void ToggleShowHaggleDetails()
+    private async Task ToggleShowHaggleDetailsAsync()
     {
-        _appPrefs.ShowHaggleDetails = !_appPrefs.ShowHaggleDetails;
-        _appPrefs.Save();
+        EmbeddedMtcStatusBarConfig config = GetOrCreateCurrentStatusBarConfig();
+        config.ShowHaggleInfo = !config.ShowHaggleInfo;
+        await SaveCurrentGameConfigAsync();
         RefreshHaggleDetailsMenuState();
         RequestStatusBarRefresh();
     }
@@ -3915,6 +4070,68 @@ public class MainWindow : Window
         _appPrefs.Save();
         ApplyBottomBarVisibility();
         RefreshBottomBarMenuState();
+    }
+
+    private async Task OnConfigureStatusBarAsync()
+    {
+        string gameName = DeriveGameName();
+        if (string.IsNullOrWhiteSpace(gameName))
+        {
+            await ShowMessageAsync("Status Bar", "Open or load a game first.");
+            return;
+        }
+
+        EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        _embeddedGameConfig = config;
+        EmbeddedMtcStatusBarConfig statusConfig = GetOrCreateCurrentStatusBarConfig();
+
+        var dialog = new StatusBarConfigDialog(statusConfig);
+        bool saved = await dialog.ShowDialog<bool>(this);
+        if (!saved || dialog.Result == null)
+            return;
+
+        List<EmbeddedMtcStatusSectorChip> previousCustomSectors =
+            SanitizeStatusSectorChips(statusConfig.CustomSectors);
+        bool previousShowStarDock = statusConfig.ShowStarDock;
+        bool previousShowBackdoor = statusConfig.ShowBackdoor;
+        bool previousShowRylos = statusConfig.ShowRylos;
+        bool previousShowAlpha = statusConfig.ShowAlpha;
+        bool previousShowIpInfo = statusConfig.ShowIpInfo;
+        bool previousShowHaggleInfo = statusConfig.ShowHaggleInfo;
+
+        try
+        {
+            statusConfig.ShowStarDock = dialog.Result.ShowStarDock;
+            statusConfig.ShowBackdoor = dialog.Result.ShowBackdoor;
+            statusConfig.ShowRylos = dialog.Result.ShowRylos;
+            statusConfig.ShowAlpha = dialog.Result.ShowAlpha;
+            statusConfig.ShowIpInfo = dialog.Result.ShowIpInfo;
+            statusConfig.ShowHaggleInfo = dialog.Result.ShowHaggleInfo;
+            statusConfig.CustomSectors = SanitizeStatusSectorChips(dialog.Result.CustomSectors);
+
+            await SaveCurrentGameConfigAsync();
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                InvalidateStatusBarLayout();
+                RefreshHaggleDetailsMenuState();
+                RequestStatusBarRefresh();
+            }, DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            statusConfig.ShowStarDock = previousShowStarDock;
+            statusConfig.ShowBackdoor = previousShowBackdoor;
+            statusConfig.ShowRylos = previousShowRylos;
+            statusConfig.ShowAlpha = previousShowAlpha;
+            statusConfig.ShowIpInfo = previousShowIpInfo;
+            statusConfig.ShowHaggleInfo = previousShowHaggleInfo;
+            statusConfig.CustomSectors = previousCustomSectors;
+            InvalidateStatusBarLayout();
+            RefreshHaggleDetailsMenuState();
+            RequestStatusBarRefresh();
+            await ShowMessageAsync("Status Bar Save Failed", ex.Message);
+        }
     }
 
     private void ApplyBottomBarVisibility()
@@ -4416,15 +4633,27 @@ public class MainWindow : Window
 
     private void RefreshStatusBar()
     {
-        string conn = _state.Connected
-            ? $"[ {_state.Host}:{_state.Port} ]"
-            : "[ disconnected ]";
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(RefreshStatusBar, DispatcherPriority.Background);
+            return;
+        }
+
+        EnsureStatusBarLayout();
+        RefreshHaggleDetailsMenuState();
+
+        EmbeddedMtcStatusBarConfig statusConfig = GetStatusBarConfigForDisplay();
+        string? conn = statusConfig.ShowIpInfo
+            ? (_state.Connected
+                ? $"[ {_state.Host}:{_state.Port} ]"
+                : "[ disconnected ]")
+            : null;
 
         string starDock = "-";
         string backdoor = "-";
         string rylos = "-";
         string alpha = "-";
-        bool haggleDetailsEnabled = _appPrefs.ShowHaggleDetails;
+        bool haggleDetailsEnabled = statusConfig.ShowHaggleInfo;
         int hagglePct = 0;
         int haggleGood = 0;
         int haggleGreat = 0;
@@ -4443,21 +4672,22 @@ public class MainWindow : Window
                 haggleExcellent > 0;
         }
 
-        if (_sessionDb != null)
+        if (_sessionDb != null &&
+            (statusConfig.ShowStarDock || statusConfig.ShowRylos || statusConfig.ShowAlpha))
         {
             var header = _sessionDb.DBHeader;
 
-            if (header.StarDock != 0 && header.StarDock != 65535)
+            if (statusConfig.ShowStarDock && header.StarDock != 0 && header.StarDock != 65535)
                 starDock = header.StarDock.ToString();
 
-            if (header.Rylos != 0 && header.Rylos != 65535)
+            if (statusConfig.ShowRylos && header.Rylos != 0 && header.Rylos != 65535)
                 rylos = header.Rylos.ToString();
 
-            if (header.AlphaCentauri != 0 && header.AlphaCentauri != 65535)
+            if (statusConfig.ShowAlpha && header.AlphaCentauri != 0 && header.AlphaCentauri != 65535)
                 alpha = header.AlphaCentauri.ToString();
         }
 
-        if (starDock == "-")
+        if (statusConfig.ShowStarDock && starDock == "-")
         {
             string savedStarDock = ReadCurrentMombotSectorVar("0",
                 "$STARDOCK",
@@ -4468,14 +4698,17 @@ public class MainWindow : Window
                 starDock = savedStarDock;
         }
 
-        string savedBackdoor = ReadCurrentMombotSectorVar("0",
-            "$MAP~BACKDOOR",
-            "$MAP~backdoor",
-            "$backdoor");
-        if (IsDefinedMombotSectorValue(savedBackdoor))
-            backdoor = savedBackdoor;
+        if (statusConfig.ShowBackdoor)
+        {
+            string savedBackdoor = ReadCurrentMombotSectorVar("0",
+                "$MAP~BACKDOOR",
+                "$MAP~backdoor",
+                "$backdoor");
+            if (IsDefinedMombotSectorValue(savedBackdoor))
+                backdoor = savedBackdoor;
+        }
 
-        if (rylos == "-")
+        if (statusConfig.ShowRylos && rylos == "-")
         {
             string savedRylos = ReadCurrentMombotSectorVar("0",
                 "$MAP~RYLOS",
@@ -4485,7 +4718,7 @@ public class MainWindow : Window
                 rylos = savedRylos;
         }
 
-        if (alpha == "-")
+        if (statusConfig.ShowAlpha && alpha == "-")
         {
             string savedAlpha = ReadCurrentMombotSectorVar("0",
                 "$MAP~ALPHA_CENTAURI",
@@ -4500,15 +4733,14 @@ public class MainWindow : Window
         _statusRylosValue.Text = rylos;
         _statusAlphaValue.Text = alpha;
 
-        bool hasRunningNonSystemScripts = Core.ProxyGameOperations
-            .GetRunningScripts(CurrentInterpreter)
-            .Any(script => !script.IsSystemScript);
-        ApplyStatusToggleFrameStyle(_statusStopAllFrame, hasRunningNonSystemScripts);
-        ApplyStatusStopAllButtonStyle(_statusStopAllButton, hasRunningNonSystemScripts);
+        bool hasInterruptibleScripts = CurrentInterpreter?.HasInterruptibleScripts() ?? false;
+        ApplyStatusToggleFrameStyle(_statusStopAllFrame, hasInterruptibleScripts);
+        ApplyStatusStopAllButtonStyle(_statusStopAllButton, hasInterruptibleScripts);
         string? haggleText = showHagglePct
             ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : null;
         _statusText.Text = string.Join("  ", new[] { haggleText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        _statusText.IsVisible = !string.IsNullOrWhiteSpace(_statusText.Text);
         SyncRedAlertFromMombotVar();
         UpdateTerminalLiveSelector();
 
@@ -4730,7 +4962,7 @@ public class MainWindow : Window
         Dispatcher.UIThread.Post(() =>
         {
             RefreshMombotUi();
-            if (_appPrefs.ShowHaggleDetails)
+            if (ShouldShowStatusBarHaggleInfo())
             {
                 RequestStatusBarRefresh();
                 _buffer.Dirty = true;
@@ -6397,6 +6629,12 @@ public class MainWindow : Window
 
         gi.ScriptStopped += (_, _) =>
         {
+            Dispatcher.UIThread.Post(() =>
+            {
+                RefreshStatusBar();
+                RebuildProxyMenu();
+            });
+
             _mombot.HandleObservedScriptStop();
 
             string promptAnsi = _mombotLastObservedGamePromptAnsi;
@@ -6410,6 +6648,15 @@ public class MainWindow : Window
                 promptAnsi,
                 promptPlain,
                 promptVersion);
+        };
+
+        gi.ScriptLoaded += (_, _) =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                RefreshStatusBar();
+                RebuildProxyMenu();
+            });
         };
 
         _gameInstance = gi;
@@ -6800,10 +7047,10 @@ public class MainWindow : Window
         _statusStopAllButton.VerticalAlignment = VerticalAlignment.Center;
         _statusStopAllButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusStopAllButton.Content = BuildStatusStopAllIcon();
-        ToolTip.SetTip(_statusStopAllButton, "Force stop all non-system scripts");
+        ToolTip.SetTip(_statusStopAllButton, "Force stop active scripts and modes");
         _statusStopAllButton.Click += (_, _) =>
         {
-            _ = OnProxyForceStopAllScriptsAsync(includeSystemScripts: false);
+            _ = OnProxyForceStopInterruptibleScriptsAsync();
             Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusStopAllButton.PointerEntered += (_, _) =>
@@ -7674,7 +7921,12 @@ public class MainWindow : Window
             var json = System.Text.Json.JsonSerializer.Serialize(persisted, _jsonOpts);
             await File.WriteAllTextAsync(path, json);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.StatusBarConfig] save failed for '{gameName}': {ex}\n");
+            Core.GlobalModules.FlushDebugLog();
+        }
     }
 
     private async Task SaveCurrentGameConfigAsync()
@@ -8111,6 +8363,11 @@ public class MainWindow : Window
     {
         try
         {
+            string[] args = Environment.GetCommandLineArgs().Skip(1).ToArray();
+
+            if (UnixAutoDetach.TryLaunchAdditionalInstance(args, out string? unixLaunchError))
+                return;
+
             string? processPath = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(processPath))
                 processPath = Process.GetCurrentProcess().MainModule?.FileName;
@@ -8128,7 +8385,7 @@ public class MainWindow : Window
                 UseShellExecute = false,
             };
 
-            foreach (string arg in Environment.GetCommandLineArgs().Skip(1))
+            foreach (string arg in args)
                 startInfo.ArgumentList.Add(arg);
 
             Process.Start(startInfo);
@@ -15995,6 +16252,24 @@ public class MainWindow : Window
         FocusActiveTerminal();
     }
 
+    private async Task OnProxyForceStopInterruptibleScriptsAsync()
+    {
+        await Task.Yield();
+
+        try
+        {
+            Core.ProxyGameOperations.ForceStopInterruptibleScripts(CurrentInterpreter);
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("STOP Failed", ex.Message);
+        }
+
+        RebuildProxyMenu();
+        RefreshStatusBar();
+        FocusActiveTerminal();
+    }
+
     private async Task OnProxyStopScriptAsync(int scriptId)
     {
         await Task.Yield();
@@ -16573,18 +16848,27 @@ public class MainWindow : Window
     /// <summary>Opens a recently used game config or database directly (no file picker, no connect).</summary>
     private async Task OpenRecentAsync(string path)
     {
-        _menuBar.Close();
-        if (!File.Exists(path))
+        try
         {
-            await ShowMessageAsync("File Not Found",
-                $"The file\n{path}\nno longer exists.\n\nIt will be removed from the recent list.");
-            _appPrefs.RecentFiles.Remove(path);
-            _appPrefs.Save();
-            RebuildRecentMenu();
-            return;
-        }
+            _menuBar.Close();
+            if (!File.Exists(path))
+            {
+                await ShowMessageAsync("File Not Found",
+                    $"The file\n{path}\nno longer exists.\n\nIt will be removed from the recent list.");
+                _appPrefs.RecentFiles.Remove(path);
+                _appPrefs.Save();
+                RebuildRecentMenu();
+                return;
+            }
 
-        await OpenPathAsync(path, addToRecent: true);
+            await OpenPathAsync(path, addToRecent: true);
+        }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog($"[MTC.OpenRecent] failed path='{path}': {ex}\n");
+            Core.GlobalModules.FlushDebugLog();
+            await ShowMessageAsync("Open Recent Failed", ex.Message);
+        }
     }
 
     /// <summary>File > Edit Connection: update the shared game config in-place.</summary>

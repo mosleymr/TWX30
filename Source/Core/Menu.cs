@@ -139,6 +139,7 @@ namespace TWXProxy.Core
                 exitText += currentAnsiLine;
 
             await _gameInstance.SendMessageAsync(exitText);
+            _interpreter?.ResumeAfterMenuInterrupt();
         }
 
         public async Task<bool> HandleMenuCommandAsync(char command)
@@ -149,6 +150,7 @@ namespace TWXProxy.Core
 
             if (_currentMenu == MenuState.None)
             {
+                _interpreter?.PauseForMenuInterrupt();
                 _currentMenu = MenuState.Main;
                 await _gameInstance.SendMessageAsync("\r\n");
                 await ShowMenuPromptAsync();
@@ -658,8 +660,8 @@ namespace TWXProxy.Core
             help.Append("  I - List active scripts\r\n");
             help.Append("  D - List script directory\r\n");
             help.Append("  K - Kill script by ID\r\n");
-            help.Append("  X - Terminate the current script and exit menu\r\n");
-            help.Append("  Z - Stop all non-system scripts\r\n\r\n");
+            help.Append("  X - Terminate the current script/mode and exit menu\r\n");
+            help.Append("  Z - Stop all interruptible scripts\r\n\r\n");
             await _gameInstance.SendMessageAsync(help.ToString());
             await ShowScriptMenuPromptAsync();
         }
@@ -841,9 +843,11 @@ namespace TWXProxy.Core
                 }
                 else
                 {
-                    int count = _interpreter.Count;
+                    int count = Enumerable.Range(0, _interpreter.Count)
+                        .Select(_interpreter.GetScript)
+                        .Count(static script => script != null && (!script.System || script.IsBot));
                     await _gameInstance.SendMessageAsync($"\r\nStopping {count} script(s)...\r\n");
-                    _interpreter.StopAll(false);
+                    _interpreter.ForceStopInterruptible();
                     await _gameInstance.SendMessageAsync("All scripts stopped.\r\n");
                 }
             }
@@ -1311,7 +1315,7 @@ namespace TWXProxy.Core
                 for (int i = _interpreter.Count - 1; i >= 0; i--)
                 {
                     Script? script = _interpreter.GetScript(i);
-                    if (script != null && !script.System)
+                    if (script != null && (!script.System || script.IsBot))
                     {
                         targetScript = script;
                         targetIndex = i;
@@ -1327,7 +1331,7 @@ namespace TWXProxy.Core
                 }
                 else
                 {
-                    await _gameInstance.SendMessageAsync("\r\nNo non-system scripts running.\r\n");
+                    await _gameInstance.SendMessageAsync("\r\nNo interruptible scripts running.\r\n");
                 }
             }
             catch (Exception ex)
@@ -1640,7 +1644,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            List<int> path = db.CalculateShortestPath(fromSector, toSector);
+            List<int> path = db.CalculateBidirectionalShortestPath(fromSector, toSector);
             if (path.Count == 0)
             {
                 await _gameInstance.SendMessageAsync("\r\nInsufficient mapping data to plot warp course.\r\n");
@@ -2512,7 +2516,7 @@ namespace TWXProxy.Core
                     'P' => "Port menu: shows recorded port details and summaries.",
                     'S' => "Script menu: load, inspect, and control proxy scripts.",
                     'T' => "Setup menu: proxy runtime options and database management.",
-                    'Z' => "Stop all scripts: immediately terminates all active non-system scripts.",
+                    'Z' => "Stop all scripts: immediately terminates all active interruptible scripts and modes.",
                     'H' => "Toggle native haggle: enables or disables the built-in C# haggle engine.",
                     '-' => "Show all clients: lists the terminals attached to this proxy.",
                     '/' => "Streaming mode: toggles a reduced-output client mode for safer screen sharing.",
@@ -2553,8 +2557,8 @@ namespace TWXProxy.Core
                     'I' => "List active scripts: lists running scripts and their IDs.",
                     'D' => "List script directory: shows the scripts available in the scripts folder.",
                     'K' => "Kill script by ID: terminates the script with the specified numeric ID.",
-                    'X' => "Terminate current script and exit menu: stops the most recent non-system script.",
-                    'Z' => "Stop all scripts: immediately terminates all non-system scripts.",
+                    'X' => "Terminate current script and exit menu: stops the most recent interruptible script or mode.",
+                    'Z' => "Stop all scripts: immediately terminates all interruptible scripts and modes.",
                     _ => null
                 },
                 MenuState.Setup => key switch

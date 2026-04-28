@@ -132,6 +132,7 @@ namespace TWXProxy.Core
         private string _activeLoginScript = string.Empty;
         private string _activeBotTag = string.Empty;
         private readonly HashSet<string> _activeBotThemeKeys = new(StringComparer.Ordinal);
+        private readonly HashSet<Script> _menuInterruptedScripts = new();
 #pragma warning disable CS0649 // Field is never assigned to
         private int _activeBotTagLength;
 #pragma warning restore CS0649
@@ -649,6 +650,21 @@ namespace TWXProxy.Core
             }
         }
 
+        public void ForceStopInterruptible()
+        {
+            for (int i = _scriptList.Count - 1; i >= 0; i--)
+            {
+                Script script = _scriptList[i];
+                if (script.System && !script.IsBot)
+                    continue;
+
+                script.RequestForceStop();
+
+                if (!script.IsExecuting && IsScriptStillAtIndex(i, script))
+                    Stop(i);
+            }
+        }
+
         public void SwitchBot(string scriptName, string botName, bool stopBotScripts)
         {
             ITWXServer? server = GlobalModules.TWXServer;
@@ -995,10 +1011,43 @@ namespace TWXProxy.Core
             return _scriptList.Where(s => s.IsBot).ToList();
         }
 
+        public bool HasInterruptibleScripts()
+        {
+            return _scriptList.Any(static s => !s.System || s.IsBot);
+        }
+
         public bool IsAnyScriptWaitingForInput()
         {
             // Check if any script is waiting for user input (GETINPUT)
             return _scriptList.Any(s => s.WaitingForInput);
+        }
+
+        public void PauseForMenuInterrupt()
+        {
+            _menuInterruptedScripts.Clear();
+
+            foreach (Script script in _scriptList)
+            {
+                if ((script.System && !script.IsBot) || script.Paused)
+                    continue;
+
+                script.Pause();
+                _menuInterruptedScripts.Add(script);
+            }
+        }
+
+        public void ResumeAfterMenuInterrupt()
+        {
+            if (_menuInterruptedScripts.Count == 0)
+                return;
+
+            foreach (Script script in _menuInterruptedScripts.ToArray())
+            {
+                if (_scriptList.Contains(script) && script.Paused)
+                    script.Resume();
+            }
+
+            _menuInterruptedScripts.Clear();
         }
 
         public void ProgramEvent(string eventName, string matchText, bool exclusive)

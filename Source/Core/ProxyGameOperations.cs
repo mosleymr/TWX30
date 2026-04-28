@@ -176,6 +176,11 @@ public static class ProxyGameOperations
         interpreter?.ForceStopAll(includeSystemScripts);
     }
 
+    public static void ForceStopInterruptibleScripts(ModInterpreter? interpreter)
+    {
+        interpreter?.ForceStopInterruptible();
+    }
+
     public static void ExportWarps(ModDatabase database, string outputPath)
     {
         EnsureOpenDatabase(database);

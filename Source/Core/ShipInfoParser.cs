@@ -87,14 +87,16 @@ public class ShipInfoParser
 
         if (_inInfoBlock)
         {
+            if (trimmed.Length == 0)
+                return;
+
             if (TryParseIncrementalInfoLine(trimmed))
                 return;
 
-            // Do not let an interrupted or malformed info display trap the parser
-            // in info mode forever. Discard the partial snapshot instead of
-            // publishing half-reset ship state.
-            _infoBlockSnapshot = null;
-            _inInfoBlock = false;
+            // The live "I" display can contain blank/odd formatting or server
+            // noise between known info lines. Stay in info mode until the next
+            // command prompt instead of discarding the entire snapshot.
+            return;
         }
 
         // ── "/" one-liner lines (contain the ³ separator) ─────────────────
