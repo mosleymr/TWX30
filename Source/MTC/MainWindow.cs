@@ -322,11 +322,16 @@ public class MainWindow : Window
     private TextBlock _valEquipment = new();
     private TextBlock _valColonists = new();
     private TextBlock _valEmpty     = new();
-    private Border    _holdsFuelOreFill = new();
-    private Border    _holdsOrganicsFill = new();
-    private Border    _holdsEquipmentFill = new();
-    private Border    _holdsColonistsFill = new();
-    private Border    _holdsEmptyFill = new();
+    private ColumnDefinition _holdsFuelOreColumn = new();
+    private ColumnDefinition _holdsOrganicsColumn = new();
+    private ColumnDefinition _holdsEquipmentColumn = new();
+    private ColumnDefinition _holdsColonistsColumn = new();
+    private ColumnDefinition _holdsEmptyColumn = new();
+    private Border? _holdsFuelOreSegment;
+    private Border? _holdsOrganicsSegment;
+    private Border? _holdsEquipmentSegment;
+    private Border? _holdsColonistsSegment;
+    private Border? _holdsEmptySegment;
     private TextBlock _valFighters  = new();
     private TextBlock _valShields   = new();
     private TextBlock _valTrnWarp   = new();
@@ -461,6 +466,11 @@ public class MainWindow : Window
     private static readonly IBrush HudAccentWarn= new SolidColorBrush(Color.FromRgb(255, 112, 112));
     private static readonly IBrush HudBustBg    = new SolidColorBrush(Color.FromRgb(196, 48, 48));
     private static readonly IBrush HudStatus    = new SolidColorBrush(Color.FromRgb(11,  20, 28));
+    private static readonly IBrush HoldsOreBrush = new SolidColorBrush(Color.FromRgb(214, 164, 96));
+    private static readonly IBrush HoldsOrgBrush = new SolidColorBrush(Color.FromRgb(118, 178, 116));
+    private static readonly IBrush HoldsEqBrush = new SolidColorBrush(Color.FromRgb(96, 171, 194));
+    private static readonly IBrush HoldsColsBrush = new SolidColorBrush(Color.FromRgb(164, 128, 198));
+    private static readonly IBrush HoldsFreeBrush = new SolidColorBrush(Color.FromRgb(123, 145, 156));
 
     private static void SetBrushColor(IBrush brush, Color color)
     {
@@ -490,9 +500,6 @@ public class MainWindow : Window
     private static readonly FontFamily HudTitleFont = new("Eurostile, Bank Gothic, Bahnschrift, Segoe UI, sans-serif");
     private static readonly Bitmap AboutLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc.png")));
     private static readonly Bitmap HudLogo = new(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
-    private const double HoldsMeterLabelWidth = 44;
-    private const double HoldsMeterBarWidth = 74;
-    private const double HoldsMeterValueWidth = 42;
 
     private sealed class DeckPanelState
     {
@@ -733,11 +740,16 @@ public class MainWindow : Window
         _valEquipment = new();
         _valColonists = new();
         _valEmpty = new();
-        _holdsFuelOreFill = new();
-        _holdsOrganicsFill = new();
-        _holdsEquipmentFill = new();
-        _holdsColonistsFill = new();
-        _holdsEmptyFill = new();
+        _holdsFuelOreColumn = new();
+        _holdsOrganicsColumn = new();
+        _holdsEquipmentColumn = new();
+        _holdsColonistsColumn = new();
+        _holdsEmptyColumn = new();
+        _holdsFuelOreSegment = null;
+        _holdsOrganicsSegment = null;
+        _holdsEquipmentSegment = null;
+        _holdsColonistsSegment = null;
+        _holdsEmptySegment = null;
         _valFighters = new();
         _valShields = new();
         _valTrnWarp = new();
@@ -865,16 +877,20 @@ public class MainWindow : Window
     {
         RecreateClassicShellControls();
         _tacticalMap = null;
+        bool hasSidebarSections = HasVisibleStatusPanelSections();
 
         // Margin lets the gray BgChrome peek in on all four sides as a frame.
         var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(200) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(6) : new GridLength(0) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        var sidebar = BuildSidebar();
-        Grid.SetColumn(sidebar, 0);
-        grid.Children.Add(sidebar);
+        if (hasSidebarSections)
+        {
+            var sidebar = BuildSidebar();
+            Grid.SetColumn(sidebar, 0);
+            grid.Children.Add(sidebar);
+        }
 
         var termArea = BuildTerminalArea();
         Grid.SetColumn(termArea, 2);
@@ -2770,11 +2786,13 @@ public class MainWindow : Window
         toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
         var toolsGameInfoItem = new MenuItem { Header = "_Game Info..." };
         toolsGameInfoItem.Click += (_, _) => OnViewGameInfo();
+        var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
+        toolsConfigureStatusPanelItem.Click += async (_, _) => await OnConfigureStatusPanelAsync();
         var toolsConfigureStatusBarItem = new MenuItem { Header = "Configure _Status Bar..." };
         toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
-        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
 
         var menu = new Menu
         {
@@ -3015,12 +3033,24 @@ public class MainWindow : Window
             Margin      = new Thickness(0, 0, 0, 0),
         };
 
-        // Trader Info
-        stack.Children.Add(BuildTraderInfoPanel());
+        foreach (AppPreferences.StatusPanelSectionPreference section in _appPrefs.GetOrderedStatusPanelSections())
+        {
+            if (!section.Visible)
+                continue;
 
-        stack.Children.Add(BuildHoldsPanel());
-
-        stack.Children.Add(BuildShipInfoPanel());
+            switch (section.Id)
+            {
+                case AppPreferences.StatusPanelTrader:
+                    stack.Children.Add(BuildTraderInfoPanel());
+                    break;
+                case AppPreferences.StatusPanelHolds:
+                    stack.Children.Add(BuildHoldsPanel());
+                    break;
+                case AppPreferences.StatusPanelShipInfo:
+                    stack.Children.Add(BuildShipInfoPanel());
+                    break;
+            }
+        }
 
         var scroll = new ScrollViewer
         {
@@ -3049,6 +3079,9 @@ public class MainWindow : Window
 
         return outer;
     }
+
+    private bool HasVisibleStatusPanelSections()
+        => _appPrefs.GetOrderedStatusPanelSections().Any(section => section.Visible);
 
     private Control BuildTraderInfoPanel()
     {
@@ -3201,12 +3234,9 @@ public class MainWindow : Window
                     Height = 1,
                     Margin = new Thickness(0),
                 },
-                BuildHoldsMeterRow("Ore", _valFuelOre, _holdsFuelOreFill),
-                BuildHoldsMeterRow("Org", _valOrganics, _holdsOrganicsFill),
-                BuildHoldsMeterRow("Eq", _valEquipment, _holdsEquipmentFill),
-                BuildHoldsMeterRow("Cols", _valColonists, _holdsColonistsFill),
-                BuildHoldsMeterRow("Empty", _valEmpty, _holdsEmptyFill, HudMuted),
-                new Border { Height = 8 },
+                BuildHoldsStackedBar(),
+                BuildHoldsLegendCompact(),
+                new Border { Height = 4 },
             },
         };
 
@@ -3229,6 +3259,114 @@ public class MainWindow : Window
         };
     }
 
+    private Control BuildHoldsStackedBar()
+    {
+        _holdsFuelOreColumn = new ColumnDefinition { Width = new GridLength(0, GridUnitType.Star) };
+        _holdsOrganicsColumn = new ColumnDefinition { Width = new GridLength(0, GridUnitType.Star) };
+        _holdsEquipmentColumn = new ColumnDefinition { Width = new GridLength(0, GridUnitType.Star) };
+        _holdsColonistsColumn = new ColumnDefinition { Width = new GridLength(0, GridUnitType.Star) };
+        _holdsEmptyColumn = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+
+        var segments = new Grid
+        {
+            ColumnDefinitions =
+            {
+                _holdsFuelOreColumn,
+                _holdsOrganicsColumn,
+                _holdsEquipmentColumn,
+                _holdsColonistsColumn,
+                _holdsEmptyColumn,
+            },
+            ClipToBounds = true,
+        };
+
+        _holdsFuelOreSegment = AddHoldsSegment(segments, HoldsOreBrush, 0);
+        _holdsOrganicsSegment = AddHoldsSegment(segments, HoldsOrgBrush, 1);
+        _holdsEquipmentSegment = AddHoldsSegment(segments, HoldsEqBrush, 2);
+        _holdsColonistsSegment = AddHoldsSegment(segments, HoldsColsBrush, 3);
+        _holdsEmptySegment = AddHoldsSegment(segments, HoldsFreeBrush, 4);
+
+        return new Border
+        {
+            Margin = new Thickness(10, 8, 10, 3),
+            Height = 14,
+            Background = HudStatus,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(1),
+            Child = segments,
+        };
+    }
+
+    private static Border AddHoldsSegment(Grid grid, IBrush brush, int column)
+    {
+        var segment = new Border
+        {
+            Background = brush,
+        };
+        Grid.SetColumn(segment, column);
+        grid.Children.Add(segment);
+        return segment;
+    }
+
+    private Control BuildHoldsLegendCompact()
+    {
+        var legend = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(10, 0, 10, 0),
+        };
+        legend.Children.Add(BuildHoldsLegendItem("Ore", HoldsOreBrush));
+        legend.Children.Add(BuildHoldsLegendItem("Org", HoldsOrgBrush));
+        legend.Children.Add(BuildHoldsLegendItem("Equ", HoldsEqBrush));
+        legend.Children.Add(BuildHoldsLegendItem("Colo", HoldsColsBrush));
+        legend.Children.Add(BuildHoldsLegendItem("Free", HoldsFreeBrush));
+        return legend;
+    }
+
+    private Control BuildHoldsLegendItem(string label, IBrush chipBrush)
+    {
+        var row = new Grid
+        {
+            Margin = new Thickness(0, 1, 12, 1),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(new GridLength(3)),
+                new ColumnDefinition(GridLength.Auto),
+            },
+            Children =
+            {
+                BuildLegendSwatch(chipBrush),
+                new TextBlock
+                {
+                    Text = label,
+                    Foreground = HudMuted,
+                    FontSize = 11,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+            },
+        };
+
+        Grid.SetColumn(row.Children[0], 0);
+        Grid.SetColumn(row.Children[1], 2);
+        return row;
+    }
+
+    private static Control BuildLegendSwatch(IBrush brush)
+    {
+        return new Border
+        {
+            Width = 10,
+            Height = 10,
+            CornerRadius = new CornerRadius(2),
+            Background = brush,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
     // ── Expanded Ship Info panel ───────────────────────────────────────────
 
     private Control BuildShipInfoPanel()
@@ -3243,10 +3381,11 @@ public class MainWindow : Window
         });
         panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1 });
 
-        // Full-width rows: Fighters, Shields
+        // Full-width rows: Fighters, Shields, Turns/Warp
         foreach (var (key, tb) in new (string, TextBlock)[] {
             ("Fighters",   _valFighters),
             ("Shields",    _valShields),
+            ("Turns/Warp", _valTrnWarp),
         })
         {
             tb.Text = "-"; tb.Foreground = HudText; tb.FontSize = 13;
@@ -3320,64 +3459,6 @@ public class MainWindow : Window
         var left = MakeHalf(k1, v1); var right = MakeHalf(k2, v2);
         Grid.SetColumn(left, 0); Grid.SetColumn(right, 2);
         row.Children.Add(left); row.Children.Add(right);
-        return row;
-    }
-
-    private Control BuildHoldsMeterRow(string label, TextBlock value, Border fill, IBrush? fillBrush = null)
-    {
-        value.Text = "0";
-        value.Foreground = HudText;
-        value.FontSize = 12;
-        value.FontWeight = FontWeight.SemiBold;
-        value.TextAlignment = TextAlignment.Right;
-        value.MinWidth = 34;
-        value.VerticalAlignment = VerticalAlignment.Center;
-
-        fill.Background = fillBrush ?? HudAccent;
-        fill.CornerRadius = new CornerRadius(4);
-        fill.HorizontalAlignment = HorizontalAlignment.Left;
-        fill.VerticalAlignment = VerticalAlignment.Stretch;
-        fill.Width = 0;
-        fill.Margin = new Thickness(1);
-
-        var track = new Border
-        {
-            Width = HoldsMeterBarWidth,
-            Height = 12,
-            Background = HudStatus,
-            BorderBrush = HudInnerEdge,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(5),
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new Grid
-            {
-                ClipToBounds = true,
-                Children = { fill },
-            },
-        };
-
-        var labelTb = new TextBlock
-        {
-            Text = label,
-            Foreground = HudMuted,
-            FontSize = 12,
-            FontWeight = FontWeight.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center,
-            Width = HoldsMeterLabelWidth,
-        };
-
-        var row = new Grid { Margin = new Thickness(8, 3, 8, 3) };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterLabelWidth) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterBarWidth) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HoldsMeterValueWidth) });
-        Grid.SetColumn(labelTb, 0);
-        Grid.SetColumn(track, 2);
-        Grid.SetColumn(value, 4);
-        row.Children.Add(labelTb);
-        row.Children.Add(track);
-        row.Children.Add(value);
         return row;
     }
 
@@ -3627,13 +3708,47 @@ public class MainWindow : Window
             tb.Foreground = active ? Brushes.Black : HudMuted;
     }
 
-    private static void UpdateHoldsMeterFill(Border fill, int value, int total)
+    private void UpdateHoldsStackedBar(int fuelOre, int organics, int equipment, int colonists, int empty, int total)
     {
-        double ratio = total > 0
-            ? Math.Clamp((double)value / total, 0d, 1d)
-            : 0d;
-        fill.Width = Math.Round((HoldsMeterBarWidth - 2) * ratio);
-        fill.IsVisible = fill.Width > 0;
+        int safeFuelOre = Math.Max(0, fuelOre);
+        int safeOrganics = Math.Max(0, organics);
+        int safeEquipment = Math.Max(0, equipment);
+        int safeColonists = Math.Max(0, colonists);
+        int safeEmpty = Math.Max(0, empty);
+
+        int displayTotal = Math.Max(total, safeFuelOre + safeOrganics + safeEquipment + safeColonists + safeEmpty);
+        if (displayTotal <= 0)
+        {
+            _holdsFuelOreColumn.Width = new GridLength(0, GridUnitType.Star);
+            _holdsOrganicsColumn.Width = new GridLength(0, GridUnitType.Star);
+            _holdsEquipmentColumn.Width = new GridLength(0, GridUnitType.Star);
+            _holdsColonistsColumn.Width = new GridLength(0, GridUnitType.Star);
+            _holdsEmptyColumn.Width = new GridLength(1, GridUnitType.Star);
+            return;
+        }
+
+        _holdsFuelOreColumn.Width = new GridLength(safeFuelOre, GridUnitType.Star);
+        _holdsOrganicsColumn.Width = new GridLength(safeOrganics, GridUnitType.Star);
+        _holdsEquipmentColumn.Width = new GridLength(safeEquipment, GridUnitType.Star);
+        _holdsColonistsColumn.Width = new GridLength(safeColonists, GridUnitType.Star);
+        _holdsEmptyColumn.Width = new GridLength(safeEmpty, GridUnitType.Star);
+    }
+
+    private void UpdateHoldsSegmentTooltips(int fuelOre, int organics, int equipment, int colonists, int empty)
+    {
+        SetHoldsSegmentToolTip(_holdsFuelOreSegment, "Ore", fuelOre);
+        SetHoldsSegmentToolTip(_holdsOrganicsSegment, "Org", organics);
+        SetHoldsSegmentToolTip(_holdsEquipmentSegment, "Equ", equipment);
+        SetHoldsSegmentToolTip(_holdsColonistsSegment, "Colo", colonists);
+        SetHoldsSegmentToolTip(_holdsEmptySegment, "Free", empty);
+    }
+
+    private static void SetHoldsSegmentToolTip(Border? segment, string label, int value)
+    {
+        if (segment == null)
+            return;
+
+        ToolTip.SetTip(segment, $"{label}: {Math.Max(0, value):N0}");
     }
 
     /// <summary>Builds a titled info panel containing key/value rows.</summary>
@@ -4070,6 +4185,20 @@ public class MainWindow : Window
         _appPrefs.Save();
         ApplyBottomBarVisibility();
         RefreshBottomBarMenuState();
+    }
+
+    private async Task OnConfigureStatusPanelAsync()
+    {
+        var dialog = new StatusPanelConfigDialog(_appPrefs.GetOrderedStatusPanelSections());
+        bool saved = await dialog.ShowDialog<bool>(this);
+        if (!saved || dialog.Result == null)
+            return;
+
+        _appPrefs.SetStatusPanelSections(dialog.Result.Sections);
+        _appPrefs.Save();
+
+        if (!_useCommandDeckSkin)
+            ApplySelectedSkinSafe();
     }
 
     private async Task OnConfigureStatusBarAsync()
@@ -4549,11 +4678,8 @@ public class MainWindow : Window
         _deckValColonists.Text = _valColonists.Text;
         _valEmpty.Text     = _state.HoldsEmpty.ToString();
         _deckValEmpty.Text = _valEmpty.Text;
-        UpdateHoldsMeterFill(_holdsFuelOreFill, _state.FuelOre, holdsTotal);
-        UpdateHoldsMeterFill(_holdsOrganicsFill, _state.Organics, holdsTotal);
-        UpdateHoldsMeterFill(_holdsEquipmentFill, _state.Equipment, holdsTotal);
-        UpdateHoldsMeterFill(_holdsColonistsFill, _state.Colonists, holdsTotal);
-        UpdateHoldsMeterFill(_holdsEmptyFill, _state.HoldsEmpty, holdsTotal);
+        UpdateHoldsStackedBar(_state.FuelOre, _state.Organics, _state.Equipment, _state.Colonists, _state.HoldsEmpty, holdsTotal);
+        UpdateHoldsSegmentTooltips(_state.FuelOre, _state.Organics, _state.Equipment, _state.Colonists, _state.HoldsEmpty);
         _valFighters.Text  = _state.Fighters.ToString("N0");
         _deckValFighters.Text = _valFighters.Text;
         _valShields.Text   = _state.Shields.ToString("N0");
@@ -4629,6 +4755,73 @@ public class MainWindow : Window
         }
 
         return _state.Turns.ToString();
+    }
+
+    private string? GetNativeBotModeStatusText()
+    {
+        if (!_mombot.Enabled)
+            return null;
+
+        string mode = _mombot.GetStatusSnapshot().Mode;
+        if (string.IsNullOrWhiteSpace(mode))
+            mode = "General";
+
+        return $"Bot Mode: {mode}";
+    }
+
+    private string? GetActiveScriptStatusText()
+    {
+        IReadOnlyList<Core.RunningScriptInfo> scripts = Core.ProxyGameOperations.GetRunningScripts(CurrentInterpreter);
+        if (scripts.Count == 0)
+            return null;
+
+        Core.RunningScriptInfo? activeScript = scripts
+            .Where(static script => !script.IsSystemScript && !script.IsBot)
+            .Where(script => !IsNativeMombotModeScriptReference(script.Reference))
+            .LastOrDefault(script => !script.Paused);
+
+        if (activeScript == null)
+        {
+            activeScript = scripts
+                .Where(static script => !script.IsSystemScript && !script.IsBot)
+                .Where(script => !IsNativeMombotModeScriptReference(script.Reference))
+                .LastOrDefault();
+        }
+
+        if (activeScript == null)
+            return null;
+
+        string scriptName = GetRunningScriptDisplayName(activeScript);
+        return string.IsNullOrWhiteSpace(scriptName)
+            ? null
+            : $"Active Script: {scriptName}";
+    }
+
+    private static bool IsNativeMombotModeScriptReference(string? scriptReference)
+    {
+        if (string.IsNullOrWhiteSpace(scriptReference))
+            return false;
+
+        string normalized = scriptReference.Replace('\\', '/').Trim();
+        return normalized.StartsWith("scripts/mombot/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("scripts/mombot/local/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.StartsWith("local/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("/scripts/mombot/modes/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("/scripts/mombot/local/modes/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetRunningScriptDisplayName(Core.RunningScriptInfo script)
+    {
+        string candidate = string.IsNullOrWhiteSpace(script.Name)
+            ? script.Reference
+            : script.Name;
+        if (string.IsNullOrWhiteSpace(candidate))
+            return string.Empty;
+
+        string trimmed = candidate.Trim();
+        string fileName = Path.GetFileNameWithoutExtension(trimmed);
+        return string.IsNullOrWhiteSpace(fileName) ? trimmed : fileName;
     }
 
     private void RefreshStatusBar()
@@ -4739,7 +4932,9 @@ public class MainWindow : Window
         string? haggleText = showHagglePct
             ? $"Haggle Pct: {hagglePct}% {haggleGood}/{haggleGreat}/{haggleExcellent}"
             : null;
-        _statusText.Text = string.Join("  ", new[] { haggleText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        string? botModeText = GetNativeBotModeStatusText();
+        string? activeScriptText = GetActiveScriptStatusText();
+        _statusText.Text = string.Join("  ", new[] { botModeText, activeScriptText, haggleText, conn }.Where(static part => !string.IsNullOrWhiteSpace(part)));
         _statusText.IsVisible = !string.IsNullOrWhiteSpace(_statusText.Text);
         SyncRedAlertFromMombotVar();
         UpdateTerminalLiveSelector();
@@ -12588,6 +12783,32 @@ public class MainWindow : Window
     private static string ExpandConfiguredMacro(string macro)
         => string.IsNullOrEmpty(macro) ? string.Empty : macro.Replace("*", "\r");
 
+    private static bool TryGetConfiguredCommandMacro(string macro, out string commandText)
+    {
+        string trimmed = macro?.Trim() ?? string.Empty;
+        if (trimmed.StartsWith(">", StringComparison.Ordinal))
+        {
+            commandText = trimmed[1..].Trim();
+            return true;
+        }
+
+        commandText = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetConfiguredScriptMacro(string macro, out string scriptReference)
+    {
+        string trimmed = macro?.Trim() ?? string.Empty;
+        if (trimmed.StartsWith("$", StringComparison.Ordinal))
+        {
+            scriptReference = trimmed[1..].Trim();
+            return true;
+        }
+
+        scriptReference = string.Empty;
+        return false;
+    }
+
     private async Task PromptAndPlayConfiguredMacroAsync(AppPreferences.MacroBinding binding)
     {
         string macro = binding.Macro;
@@ -12626,32 +12847,83 @@ public class MainWindow : Window
         FocusActiveTerminal();
     }
 
-    private Task<string?> PlayConfiguredMacroBurstAsync(string macro, int count)
+    private async Task<string?> PlayConfiguredMacroBurstAsync(string macro, int count)
     {
         if (string.IsNullOrWhiteSpace(macro))
-            return Task.FromResult<string?>("Macro is empty.");
+            return "Macro is empty.";
+
+        if (TryGetConfiguredCommandMacro(macro, out string commandText))
+            return await PlayConfiguredCommandMacroAsync(commandText, count);
+
+        if (TryGetConfiguredScriptMacro(macro, out string scriptReference))
+            return await PlayConfiguredScriptMacroAsync(scriptReference, count);
 
         if (!HasActiveMacroConnection())
-            return Task.FromResult<string?>("Macros need an active game connection.");
+            return "Macros need an active game connection.";
 
         Action<byte[]>? send = _terminalInputHandler;
         if (send == null)
-            return Task.FromResult<string?>("Macros need an active game connection.");
+            return "Macros need an active game connection.";
 
         string expanded = ExpandConfiguredMacro(macro);
         if (string.IsNullOrEmpty(expanded))
-            return Task.FromResult<string?>(null);
+            return null;
 
         byte[] payload = System.Text.Encoding.Latin1.GetBytes(expanded);
         if (payload.Length == 0)
-            return Task.FromResult<string?>(null);
+            return null;
 
         if (!TryBuildRepeatedMacroPayload(payload, count, out byte[] burstPayload, out string? burstError))
-            return Task.FromResult<string?>(burstError ?? "Macro burst is invalid.");
+            return burstError ?? "Macro burst is invalid.";
 
         send(burstPayload);
+        return null;
+    }
 
-        return Task.FromResult<string?>(null);
+    private async Task<string?> PlayConfiguredCommandMacroAsync(string commandText, int count)
+    {
+        if (string.IsNullOrWhiteSpace(commandText))
+            return "Enter a native Mombot command after >.";
+
+        if (_gameInstance == null)
+            return "Command macros need the embedded proxy to be running.";
+
+        for (int i = 0; i < count; i++)
+            await ExecuteMombotUiCommandAsync(commandText);
+
+        FocusActiveTerminal();
+        return null;
+    }
+
+    private async Task<string?> PlayConfiguredScriptMacroAsync(string scriptReference, int count)
+    {
+        if (string.IsNullOrWhiteSpace(scriptReference))
+            return "Enter a script name after $.";
+
+        if (count > 1)
+            return "Script macros can only be played once at a time.";
+
+        var interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return "Script macros need the embedded proxy to be running.";
+
+        string normalizedReference = scriptReference.Trim().Replace('\\', '/');
+
+        try
+        {
+            await Task.Yield();
+            Core.ProxyGameOperations.LoadScript(interpreter, normalizedReference);
+            _parser.Feed($"\x1b[1;36m[Loaded macro script: {normalizedReference}]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+            RebuildProxyMenu();
+            RebuildScriptsMenu();
+            FocusActiveTerminal();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
     }
 
     private static byte[] GetCombinedMacroPayload(IEnumerable<byte[]> chunks)

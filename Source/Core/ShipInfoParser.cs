@@ -124,6 +124,21 @@ public class ShipInfoParser
             {
                 _s.Fighters = ParseInt(m.Groups[1].Value);
                 Updated?.Invoke(_s);
+                return;
+            }
+        }
+
+        // ── Live turn-count lines ────────────────────────────────────────
+        // "You have 24,991 turns remaining."
+        // "You have 1 turn remaining."
+        {
+            var m = _rxTurnsRemaining.Match(trimmed);
+            if (m.Success)
+            {
+                _s.Turns = ParseInt(m.Groups[1].Value);
+                _s.UnlimitedGame = false;
+                Updated?.Invoke(_s);
+                return;
             }
         }
 
@@ -266,6 +281,10 @@ public class ShipInfoParser
 
     private static readonly Regex _rxCreditsAndEmptyHolds = new(
         @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?\.",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex _rxTurnsRemaining = new(
+        @"^You have ([\d,]+) turns? remaining\.?$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxRankExp = new(

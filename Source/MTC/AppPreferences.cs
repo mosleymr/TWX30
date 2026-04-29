@@ -32,10 +32,29 @@ public class AppPreferences
         public bool Minimized { get; set; }
     }
 
+    public sealed class StatusPanelSectionPreference
+    {
+        public string Id { get; set; } = string.Empty;
+        public bool Visible { get; set; } = true;
+        public int Order { get; set; }
+    }
+
+    public const string StatusPanelTrader = "trader";
+    public const string StatusPanelHolds = "holds";
+    public const string StatusPanelShipInfo = "ship";
+
+    private static readonly string[] DefaultStatusPanelSectionOrder =
+    [
+        StatusPanelTrader,
+        StatusPanelHolds,
+        StatusPanelShipInfo,
+    ];
+
     public List<string> RecentFiles { get; } = [];
     public List<MacroBinding> MacroBindings { get; } = [];
     public Dictionary<string, DeckPanelLayout> CommandDeckPanels { get; }
         = new(StringComparer.OrdinalIgnoreCase);
+    public List<StatusPanelSectionPreference> StatusPanelSections { get; } = [];
 
     public string ProgramDirectory { get; set; } = string.Empty;
     public string ScriptsDirectory { get; set; } = string.Empty;
@@ -95,6 +114,8 @@ public class AppPreferences
     {
         try
         {
+            EnsureStatusPanelSections();
+
             if (CommandDeckLayoutVersion < CurrentCommandDeckLayoutVersion)
                 CommandDeckLayoutVersion = CurrentCommandDeckLayoutVersion;
 
@@ -144,7 +165,15 @@ public class AppPreferences
                             new XAttribute("BodyHeight", layout.BodyHeight.ToString(CultureInfo.InvariantCulture)),
                             new XAttribute("ZIndex", layout.ZIndex),
                             new XAttribute("Closed", layout.Closed),
-                            new XAttribute("Minimized", layout.Minimized))))
+                            new XAttribute("Minimized", layout.Minimized)))),
+                new XElement("StatusPanelSections",
+                    StatusPanelSections
+                        .OrderBy(section => section.Order)
+                        .ThenBy(section => GetDefaultStatusPanelSectionIndex(section.Id))
+                        .Select(section => new XElement("Section",
+                            new XAttribute("Id", NormalizeStatusPanelSectionId(section.Id)),
+                            new XAttribute("Visible", section.Visible),
+                            new XAttribute("Order", section.Order))))
             );
 
             Core.SharedConfigFile.ReplaceSection(document, Core.SharedConfigFile.MtcPrefsSectionName, section);
@@ -256,6 +285,23 @@ public class AppPreferences
                 };
             }
 
+            foreach (XElement section in root.Element("StatusPanelSections")?.Elements("Section")
+                                      ?? Enumerable.Empty<XElement>())
+            {
+                string id = NormalizeStatusPanelSectionId((string?)section.Attribute("Id"));
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                prefs.StatusPanelSections.Add(new StatusPanelSectionPreference
+                {
+                    Id = id,
+                    Visible = ParseBool(section.Attribute("Visible"), defaultValue: true),
+                    Order = ParseInt(section.Attribute("Order")),
+                });
+            }
+
+            prefs.EnsureStatusPanelSections();
+
             string? legacyScriptsDirectory = NormalizeDirectoryValue((string?)root.Element("ScriptsDirectory"));
             if (!string.IsNullOrWhiteSpace(legacyScriptsDirectory) &&
                 !prefs.HasConfiguredSharedPaths)
@@ -272,6 +318,55 @@ public class AppPreferences
 
         return prefs;
     }
+
+    public IReadOnlyList<StatusPanelSectionPreference> GetOrderedStatusPanelSections()
+    {
+        EnsureStatusPanelSections();
+        return StatusPanelSections
+            .OrderBy(section => section.Order)
+            .ThenBy(section => GetDefaultStatusPanelSectionIndex(section.Id))
+            .Select(section => new StatusPanelSectionPreference
+            {
+                Id = section.Id,
+                Visible = section.Visible,
+                Order = section.Order,
+            })
+            .ToList();
+    }
+
+    public void SetStatusPanelSections(IEnumerable<StatusPanelSectionPreference> sections)
+    {
+        StatusPanelSections.Clear();
+
+        int order = 0;
+        foreach (StatusPanelSectionPreference section in sections ?? Enumerable.Empty<StatusPanelSectionPreference>())
+        {
+            string normalizedId = NormalizeStatusPanelSectionId(section.Id);
+            if (string.IsNullOrWhiteSpace(normalizedId))
+                continue;
+
+            if (StatusPanelSections.Any(existing => string.Equals(existing.Id, normalizedId, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            StatusPanelSections.Add(new StatusPanelSectionPreference
+            {
+                Id = normalizedId,
+                Visible = section.Visible,
+                Order = order++,
+            });
+        }
+
+        EnsureStatusPanelSections();
+    }
+
+    public static string GetStatusPanelSectionLabel(string id)
+        => NormalizeStatusPanelSectionId(id) switch
+        {
+            StatusPanelTrader => "Trader",
+            StatusPanelHolds => "Holds",
+            StatusPanelShipInfo => "Ship Info",
+            _ => id,
+        };
 
     private static XDocument LoadLegacyDocument()
     {
@@ -335,6 +430,71 @@ public class AppPreferences
             : "F1";
     }
 
+    private void EnsureStatusPanelSections()
+    {
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalizedSections = new List<StatusPanelSectionPreference>();
+
+        foreach (StatusPanelSectionPreference section in StatusPanelSections)
+        {
+            string normalizedId = NormalizeStatusPanelSectionId(section.Id);
+            if (string.IsNullOrWhiteSpace(normalizedId) || !seenIds.Add(normalizedId))
+                continue;
+
+            normalizedSections.Add(new StatusPanelSectionPreference
+            {
+                Id = normalizedId,
+                Visible = section.Visible,
+                Order = section.Order,
+            });
+        }
+
+        foreach (string defaultId in DefaultStatusPanelSectionOrder)
+        {
+            if (seenIds.Add(defaultId))
+            {
+                normalizedSections.Add(new StatusPanelSectionPreference
+                {
+                    Id = defaultId,
+                    Visible = true,
+                    Order = int.MaxValue,
+                });
+            }
+        }
+
+        StatusPanelSections.Clear();
+        int order = 0;
+        foreach (StatusPanelSectionPreference section in normalizedSections
+                     .OrderBy(section => section.Order)
+                     .ThenBy(section => GetDefaultStatusPanelSectionIndex(section.Id)))
+        {
+            section.Order = order++;
+            StatusPanelSections.Add(section);
+        }
+    }
+
+    private static string NormalizeStatusPanelSectionId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string normalized = value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            StatusPanelTrader => StatusPanelTrader,
+            StatusPanelHolds => StatusPanelHolds,
+            StatusPanelShipInfo => StatusPanelShipInfo,
+            _ => string.Empty,
+        };
+    }
+
+    private static int GetDefaultStatusPanelSectionIndex(string? id)
+    {
+        string normalizedId = NormalizeStatusPanelSectionId(id);
+        int index = Array.IndexOf(DefaultStatusPanelSectionOrder, normalizedId);
+        return index >= 0 ? index : int.MaxValue;
+    }
+
     private static double ParseDouble(XAttribute? attribute)
         => double.TryParse(attribute?.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double value)
             ? value
@@ -347,4 +507,11 @@ public class AppPreferences
 
     private static bool ParseBool(XAttribute? attribute)
         => bool.TryParse(attribute?.Value, out bool value) && value;
+
+    private static bool ParseBool(XAttribute? attribute, bool defaultValue)
+        => attribute == null
+            ? defaultValue
+            : bool.TryParse(attribute.Value, out bool value)
+                ? value
+                : defaultValue;
 }

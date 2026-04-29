@@ -13,14 +13,21 @@ namespace MTC;
 
 public sealed class MacroSettingsDialog : Window
 {
-    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(20, 20, 20));
-    private static readonly IBrush BdInput = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(170, 170, 170));
-    private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(200, 200, 200));
+    private const string RowColumns = "128,*,78";
+
+    private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(5, 24, 30));
+    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(8, 45, 56));
+    private static readonly IBrush BgPanelSoft = new SolidColorBrush(Color.FromRgb(7, 33, 41));
+    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(4, 22, 28));
+    private static readonly IBrush BdInput = new SolidColorBrush(Color.FromRgb(9, 126, 149));
+    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(230, 243, 246));
+    private static readonly IBrush FgMuted = new SolidColorBrush(Color.FromRgb(150, 198, 209));
+    private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(0, 239, 239));
     private static readonly IBrush FgError = new SolidColorBrush(Color.FromRgb(255, 128, 128));
-    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
-    private static readonly IBrush AccentBorder = new SolidColorBrush(Color.FromRgb(64, 144, 255));
+    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(10, 93, 109));
+    private static readonly IBrush BgButtonSoft = new SolidColorBrush(Color.FromRgb(9, 63, 76));
+    private static readonly IBrush AccentBorder = new SolidColorBrush(Color.FromRgb(18, 214, 214));
+    private static readonly IBrush AccentFill = new SolidColorBrush(Color.FromRgb(9, 58, 69));
 
     private sealed class MacroRowState
     {
@@ -38,6 +45,7 @@ public sealed class MacroSettingsDialog : Window
         IsVisible = false,
         TextWrapping = TextWrapping.Wrap,
     };
+    private readonly Button _removeButton;
 
     private MacroRowState? _selectedRow;
     private readonly Func<string, int, Task<string?>> _playMacroAsync;
@@ -48,53 +56,123 @@ public sealed class MacroSettingsDialog : Window
     {
         _playMacroAsync = playMacroAsync;
         Title = "Macros";
-        Width = 720;
+        Width = 780;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = BgPanel;
+        Background = BgWindow;
 
         var btnAdd = new Button
         {
-            Content = "+",
-            Width = 34,
+            Content = BuildActionButtonContent("+", "Add"),
+            MinWidth = 104,
             Background = BgButton,
             Foreground = FgNormal,
             FontWeight = FontWeight.Bold,
+            BorderBrush = AccentBorder,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 8),
         };
 
-        var btnRemove = new Button
+        _removeButton = new Button
         {
-            Content = "-",
-            Width = 34,
-            Background = BgButton,
+            Content = BuildActionButtonContent("−", "Remove"),
+            MinWidth = 120,
+            Background = BgButtonSoft,
             Foreground = FgNormal,
             FontWeight = FontWeight.Bold,
-            Margin = new Thickness(8, 0, 0, 0),
+            BorderBrush = BdInput,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 8),
         };
 
         btnAdd.Click += (_, _) =>
         {
             AddRow(new AppPreferences.MacroBinding { Hotkey = GetNextAvailableHotkey(), Macro = string.Empty });
             ClearError();
+            UpdateActionState();
         };
 
-        btnRemove.Click += (_, _) =>
+        _removeButton.Click += (_, _) =>
         {
             RemoveSelectedRow();
             ClearError();
+            UpdateActionState();
         };
 
-        var controlsRow = new StackPanel
+        var introCard = new Border
+        {
+            Background = BgPanel,
+            BorderBrush = AccentBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(16, 14),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Hotkey Macros",
+                        Foreground = FgLabel,
+                        FontWeight = FontWeight.Bold,
+                        FontSize = 22,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Bind function keys to quick text bursts, native Mombot commands, or favorite scripts.",
+                        Foreground = FgNormal,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Text sends directly to the server. Prefix > to run a native Mombot command, prefix $ to load a TWX script, and use * anywhere to send Enter.",
+                        Foreground = FgMuted,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                },
+            },
+        };
+
+        var listTitle = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+        };
+
+        listTitle.Children.Add(new StackPanel
+        {
+            Spacing = 2,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Macro List",
+                    Foreground = FgLabel,
+                    FontWeight = FontWeight.Bold,
+                    FontSize = 18,
+                },
+                new TextBlock
+                {
+                    Text = "Select a row to edit it, then test it from the same line.",
+                    Foreground = FgMuted,
+                },
+            },
+        });
+
+        var listActions = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 0,
-            Children = { btnAdd, btnRemove },
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Children = { btnAdd, _removeButton },
         };
+        Grid.SetColumn(listActions, 1);
+        listTitle.Children.Add(listActions);
 
         var headerRow = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("130,*,72"),
+            ColumnDefinitions = new ColumnDefinitions(RowColumns),
             Margin = new Thickness(0, 2, 0, 4),
         };
         headerRow.Children.Add(new TextBlock
@@ -103,22 +181,27 @@ public sealed class MacroSettingsDialog : Window
             Foreground = FgLabel,
             FontWeight = FontWeight.Bold,
             Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         });
         var macroHeader = new TextBlock
         {
             Text = "Macro",
             Foreground = FgLabel,
             FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         Grid.SetColumn(macroHeader, 1);
         headerRow.Children.Add(macroHeader);
-
-        var hintText = new TextBlock
+        var runHeader = new TextBlock
         {
-            Text = "'*' sends a carriage return.",
-            Foreground = FgNormal,
-            Margin = new Thickness(0, 0, 0, 8),
+            Text = "Test",
+            Foreground = FgLabel,
+            FontWeight = FontWeight.Bold,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
         };
+        Grid.SetColumn(runHeader, 2);
+        headerRow.Children.Add(runHeader);
 
         foreach (AppPreferences.MacroBinding binding in defaults)
             AddRow(new AppPreferences.MacroBinding { Hotkey = NormalizeHotkey(binding.Hotkey), Macro = binding.Macro ?? string.Empty });
@@ -132,6 +215,27 @@ public sealed class MacroSettingsDialog : Window
             MaxHeight = 360,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var listCard = new Border
+        {
+            Background = BgPanelSoft,
+            BorderBrush = BdInput,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    listTitle,
+                    headerRow,
+                    rowsScroll,
+                    _errorText,
+                },
+            },
         };
 
         var btnSave = new Button
@@ -140,16 +244,22 @@ public sealed class MacroSettingsDialog : Window
             MinWidth = 80,
             Background = BgButton,
             Foreground = FgNormal,
+            BorderBrush = AccentBorder,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 0, 8, 0),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 8),
         };
 
         var btnCancel = new Button
         {
             Content = "Cancel",
             MinWidth = 80,
-            Background = BgButton,
+            Background = BgButtonSoft,
             Foreground = FgNormal,
+            BorderBrush = BdInput,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 8),
         };
 
         btnSave.Click += (_, _) =>
@@ -177,17 +287,16 @@ public sealed class MacroSettingsDialog : Window
         Content = new StackPanel
         {
             Margin = new Thickness(16),
-            Spacing = 6,
+            Spacing = 12,
             Children =
             {
-                controlsRow,
-                headerRow,
-                hintText,
-                rowsScroll,
-                _errorText,
+                introCard,
+                listCard,
                 buttons,
             },
         };
+
+        UpdateActionState();
     }
 
     private void AddRow(AppPreferences.MacroBinding binding)
@@ -196,7 +305,7 @@ public sealed class MacroSettingsDialog : Window
         {
             ItemsSource = TerminalControl.SupportedMacroHotkeys,
             SelectedItem = NormalizeHotkey(binding.Hotkey),
-            Width = 110,
+            Width = 108,
             Background = BgInput,
             Foreground = FgNormal,
             BorderBrush = BdInput,
@@ -206,7 +315,7 @@ public sealed class MacroSettingsDialog : Window
         var macroTextBox = new TextBox
         {
             Text = binding.Macro ?? string.Empty,
-            Watermark = "Macro text",
+            Watermark = "Text burst, >command, or $scriptname",
             Background = BgInput,
             Foreground = FgNormal,
             BorderBrush = BdInput,
@@ -215,7 +324,7 @@ public sealed class MacroSettingsDialog : Window
 
         var rowGrid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("130,*,72"),
+            ColumnDefinitions = new ColumnDefinitions(RowColumns),
             ColumnSpacing = 10,
         };
         rowGrid.Children.Add(hotkeyCombo);
@@ -225,9 +334,11 @@ public sealed class MacroSettingsDialog : Window
         var playButton = new Button
         {
             Content = "Play",
-            Width = 62,
+            Width = 68,
             Background = BgButton,
             Foreground = FgNormal,
+            BorderBrush = AccentBorder,
+            CornerRadius = new CornerRadius(8),
             IsEnabled = !string.IsNullOrWhiteSpace(binding.Macro),
             HorizontalAlignment = HorizontalAlignment.Right,
         };
@@ -236,10 +347,11 @@ public sealed class MacroSettingsDialog : Window
 
         var border = new Border
         {
+            Background = AccentFill,
             BorderBrush = BdInput,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(8),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(10),
             Child = rowGrid,
         };
 
@@ -283,6 +395,7 @@ public sealed class MacroSettingsDialog : Window
         if (_rows.Count == 0)
         {
             _selectedRow = null;
+            UpdateActionState();
             return;
         }
 
@@ -297,7 +410,10 @@ public sealed class MacroSettingsDialog : Window
             bool selected = ReferenceEquals(row, state);
             row.Border.BorderBrush = selected ? AccentBorder : BdInput;
             row.Border.BorderThickness = selected ? new Thickness(2) : new Thickness(1);
+            row.Border.Background = selected ? BgPanel : AccentFill;
         }
+
+        UpdateActionState();
     }
 
     private bool TryBuildResult(out IReadOnlyList<AppPreferences.MacroBinding> bindings, out string? error)
@@ -375,6 +491,35 @@ public sealed class MacroSettingsDialog : Window
         string? error = await _playMacroAsync(updatedMacro, dialog.PlayCount);
         if (!string.IsNullOrWhiteSpace(error))
             ShowError(error);
+    }
+
+    private void UpdateActionState()
+    {
+        _removeButton.IsEnabled = _rows.Count > 0;
+    }
+
+    private static object BuildActionButtonContent(string symbol, string label)
+    {
+        var layout = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        layout.Children.Add(new TextBlock
+        {
+            Text = symbol,
+            FontWeight = FontWeight.Bold,
+            FontSize = 18,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        layout.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return layout;
     }
 
     private static string NormalizeHotkey(string? hotkey)
