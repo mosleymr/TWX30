@@ -181,6 +181,14 @@ public class PreferencesDialog : Window
             Margin = new Thickness(0, 4, 0, 0),
         };
 
+        var chkEnableRedAlertMode = new CheckBox
+        {
+            Content = "Enable Red Alert Mode",
+            IsChecked = prefs.EnableRedAlertMode,
+            Foreground = FgNormal,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
         var chkPreparedVm = new CheckBox
         {
             Content = "Use prepared VM",
@@ -209,6 +217,12 @@ public class PreferencesDialog : Window
         {
             Spacing = 2,
             Children = { chkDebug, chkVerbose, chkDebugPortHaggle, chkDebugPlanetHaggle },
+        });
+
+        var alertsRow = BuildRow("Alerts:", new StackPanel
+        {
+            Spacing = 2,
+            Children = { chkEnableRedAlertMode },
         });
 
         var vmRow = BuildRow("Virtual Machine:", new StackPanel
@@ -247,6 +261,7 @@ public class PreferencesDialog : Window
             prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
             prefs.DebugPortHaggleEnabled = chkDebugPortHaggle.IsChecked == true;
             prefs.DebugPlanetHaggleEnabled = chkDebugPlanetHaggle.IsChecked == true;
+            prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
             prefs.Save();
@@ -268,7 +283,7 @@ public class PreferencesDialog : Window
         {
             Margin   = new Thickness(16),
             Spacing  = 4,
-            Children = { programDirectoryRow, scriptsRow, debugRow, vmRow, buttons },
+            Children = { programDirectoryRow, scriptsRow, debugRow, alertsRow, vmRow, buttons },
         };
     }
 

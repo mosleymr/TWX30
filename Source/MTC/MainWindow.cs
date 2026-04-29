@@ -291,6 +291,8 @@ public class MainWindow : Window
     private FinderPrewarmKey? _lastFinderPrewarmKey;
     private string _currentShipType = string.Empty;
     private string _currentShipClass = string.Empty;
+    private string _currentComputerShipType = string.Empty;
+    private bool _awaitingComputerShipTypeLine;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -642,6 +644,7 @@ public class MainWindow : Window
         PositionChanged += (_, _) => NotifyTerminalWindowMove();
 
         ApplyDebugLoggingPreferences();
+        ApplyRedAlertPreference();
         RebuildRecentMenu();
         RebuildProxyMenu();
         RebuildScriptsMenu();
@@ -4610,6 +4613,56 @@ public class MainWindow : Window
         });
     }
 
+    private void ObserveComputerShipTypeLine(string line)
+    {
+        string trimmed = line.Trim();
+
+        if (_awaitingComputerShipTypeLine)
+        {
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return;
+
+            _awaitingComputerShipTypeLine = false;
+
+            if (!LooksLikeComputerShipTypeTitle(trimmed))
+                return;
+
+            if (string.Equals(_currentComputerShipType, trimmed, StringComparison.Ordinal))
+                return;
+
+            _currentComputerShipType = trimmed;
+            Dispatcher.UIThread.Post(RefreshInfoPanels);
+            return;
+        }
+
+        if (line.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase) &&
+            trimmed.EndsWith(";", StringComparison.Ordinal))
+        {
+            _awaitingComputerShipTypeLine = true;
+        }
+        else if (!string.IsNullOrWhiteSpace(trimmed) &&
+                 TryGetMombotPromptNameFromLine(trimmed, out _))
+        {
+            _awaitingComputerShipTypeLine = false;
+        }
+    }
+
+    private static bool LooksLikeComputerShipTypeTitle(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        if (line.Contains(':', StringComparison.Ordinal) ||
+            line.Contains("[TL=", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("<Computer", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("activated", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private void OnGenesisTorpsChanged(int delta)
     {
         if (delta == 0)
@@ -4780,14 +4833,8 @@ public class MainWindow : Window
 
     private string GetShipInfoPanelTitle()
     {
-        if (!string.IsNullOrWhiteSpace(_state.ShipName) && _state.ShipName != "-")
-            return _state.ShipName;
-
-        if (!string.IsNullOrWhiteSpace(_currentShipClass))
-            return _currentShipClass;
-
-        if (!string.IsNullOrWhiteSpace(_currentShipType))
-            return _currentShipType;
+        if (!string.IsNullOrWhiteSpace(_currentComputerShipType))
+            return _currentComputerShipType;
 
         return "Ship Info";
     }
@@ -5619,6 +5666,7 @@ public class MainWindow : Window
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
         ApplyDebugLoggingPreferences();
+        ApplyRedAlertPreference();
         RebuildScriptsMenu();
         Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
     }
@@ -6244,6 +6292,8 @@ public class MainWindow : Window
         _state.ShipName       = string.IsNullOrEmpty(p.ShipName) ? "-" : p.ShipName;
         _currentShipType      = string.Empty;
         _currentShipClass     = string.Empty;
+        _currentComputerShipType = string.Empty;
+        _awaitingComputerShipTypeLine = false;
         _state.HoldsTotal     = p.HoldsTotal;
         _state.FuelOre        = p.FuelOre;
         _state.Organics       = p.Organics;
@@ -6729,6 +6779,7 @@ public class MainWindow : Window
                         interpreter.TextEvent(scriptRemainder, false);
                         if (!string.IsNullOrWhiteSpace(strippedRemainder))
                         {
+                            ObserveComputerShipTypeLine(strippedRemainder);
                             SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
                             _ = HandleEmbeddedKeepaliveWatchLineAsync(strippedRemainder);
                             _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
@@ -6756,6 +6807,7 @@ public class MainWindow : Window
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
                     if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                         Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                    ObserveComputerShipTypeLine(lineStripped);
                 }
 
                 gi.History.ProcessLine(lineStripped);
@@ -6777,7 +6829,9 @@ public class MainWindow : Window
                     _ = HandleNativeMombotWatchLineAsync(lineStripped);
                 }
 
-                if (!string.IsNullOrWhiteSpace(lineStripped) && _mombot.ObserveServerLine(lineStripped))
+                if (_appPrefs.EnableRedAlertMode &&
+                    !string.IsNullOrWhiteSpace(lineStripped) &&
+                    _mombot.ObserveServerLine(lineStripped))
                 {
                     Dispatcher.UIThread.Post(() =>
                     {
@@ -7673,8 +7727,8 @@ public class MainWindow : Window
         ApplyStatusToggleFrameStyle(_statusBotFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusHaggleFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
-        ApplyStatusToggleFrameStyle(_statusRedAlertFrame, true);
-        _statusRedAlertFrame.IsVisible = _redAlertEnabled;
+        ApplyStatusToggleFrameStyle(_statusRedAlertFrame, _appPrefs.EnableRedAlertMode);
+        _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
 
         ApplyStatusMacrosButtonStyle(_statusMacrosButton, _macroSettingsDialog != null);
         ApplyStatusMapButtonStyle(_statusMapButton, _mapWindow != null);
@@ -7935,11 +7989,44 @@ public class MainWindow : Window
     private static void SetRedAlertVars(string value)
         => PersistMombotVars(value, "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
 
+    private void ApplyRedAlertPreference()
+    {
+        if (_appPrefs.EnableRedAlertMode)
+        {
+            SyncRedAlertFromMombotVar();
+            return;
+        }
+
+        if (IsMombotTruthy(ReadCurrentMombotVar("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert")))
+            SetRedAlertVars("FALSE");
+
+        SetRedAlertEnabled(false);
+    }
+
     private void SyncRedAlertFromMombotVar()
-        => SetRedAlertEnabled(IsMombotTruthy(ReadCurrentMombotVar("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert")));
+    {
+        bool requested = IsMombotTruthy(ReadCurrentMombotVar("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert"));
+        if (!_appPrefs.EnableRedAlertMode)
+        {
+            if (requested)
+                SetRedAlertVars("FALSE");
+
+            SetRedAlertEnabled(false);
+            return;
+        }
+
+        SetRedAlertEnabled(requested);
+    }
 
     internal void TriggerRedAlert()
     {
+        if (!_appPrefs.EnableRedAlertMode)
+        {
+            SetRedAlertVars("FALSE");
+            SetRedAlertEnabled(false);
+            return;
+        }
+
         RestartRedAlertTimer();
         SetRedAlertVars("TRUE");
         SetRedAlertEnabled(true);
@@ -7954,19 +8041,21 @@ public class MainWindow : Window
 
     private void SetRedAlertEnabled(bool enabled)
     {
-        if (_redAlertEnabled == enabled)
+        bool effectiveEnabled = _appPrefs.EnableRedAlertMode && enabled;
+
+        if (_redAlertEnabled == effectiveEnabled)
         {
-            _statusRedAlertFrame.IsVisible = _redAlertEnabled;
-            ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _redAlertEnabled);
+            _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
+            ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _appPrefs.EnableRedAlertMode && _redAlertEnabled);
             return;
         }
 
-        _redAlertEnabled = enabled;
-        if (enabled)
+        _redAlertEnabled = effectiveEnabled;
+        if (_redAlertEnabled)
             RestartRedAlertTimer();
         else
             _redAlertTimer.Stop();
-        ApplyRedAlertPalette(enabled);
+        ApplyRedAlertPalette(_redAlertEnabled);
         Background = BgWindow;
         UpdateTerminalLiveSelector();
         RefreshStatusBar();

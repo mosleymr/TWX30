@@ -83,7 +83,7 @@ public sealed class MacroPlayDialog : Window
                     },
                     new TextBlock
                     {
-                        Text = "Use * anywhere to send Enter. Quick macro playback stays fast, but saved hotkeys give you one-touch reruns.",
+                        Text = "Use * anywhere to send Enter.",
                         Foreground = FgMuted,
                         TextWrapping = TextWrapping.Wrap,
                     },

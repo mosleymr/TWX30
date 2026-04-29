@@ -64,6 +64,7 @@ public class AppPreferences
     public bool VerboseDebugLogging { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
+    public bool EnableRedAlertMode { get; set; } = true;
     public bool ShowHaggleDetails { get; set; }
     public bool ShowBottomBar { get; set; } = true;
     public bool PreparedVmEnabled { get; set; } = true;
@@ -137,6 +138,7 @@ public class AppPreferences
                 new XElement("VerboseDebugLogging", VerboseDebugLogging),
                 new XElement("DebugPortHaggleEnabled", DebugPortHaggleEnabled),
                 new XElement("DebugPlanetHaggleEnabled", DebugPlanetHaggleEnabled),
+                new XElement("EnableRedAlertMode", EnableRedAlertMode),
                 new XElement("ShowHaggleDetails", ShowHaggleDetails),
                 new XElement("ShowBottomBar", ShowBottomBar),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
@@ -220,6 +222,8 @@ public class AppPreferences
                 prefs.DebugPortHaggleEnabled = debugPortHaggleEnabled;
             if (bool.TryParse((string?)root.Element("DebugPlanetHaggleEnabled"), out bool debugPlanetHaggleEnabled))
                 prefs.DebugPlanetHaggleEnabled = debugPlanetHaggleEnabled;
+            if (bool.TryParse((string?)root.Element("EnableRedAlertMode"), out bool enableRedAlertMode))
+                prefs.EnableRedAlertMode = enableRedAlertMode;
             if (bool.TryParse((string?)root.Element("ShowHaggleDetails"), out bool showHaggleDetails))
                 prefs.ShowHaggleDetails = showHaggleDetails;
             if (bool.TryParse((string?)root.Element("ShowBottomBar"), out bool showBottomBar))
