@@ -289,6 +289,8 @@ public class MainWindow : Window
     private bool _mombotStartupFinalizeRunning;
     private bool _nativeBotAutoStartInFlight;
     private FinderPrewarmKey? _lastFinderPrewarmKey;
+    private string _currentShipType = string.Empty;
+    private string _currentShipClass = string.Empty;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,
@@ -332,6 +334,7 @@ public class MainWindow : Window
     private Border? _holdsEquipmentSegment;
     private Border? _holdsColonistsSegment;
     private Border? _holdsEmptySegment;
+    private TextBlock _shipInfoHeaderText = new();
     private TextBlock _valFighters  = new();
     private TextBlock _valShields   = new();
     private TextBlock _valTrnWarp   = new();
@@ -3373,11 +3376,20 @@ public class MainWindow : Window
     {
         var panel = new StackPanel { Background = Brushes.Transparent, Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 0, 3) };
 
+        _shipInfoHeaderText.Text = "Ship Info";
+        _shipInfoHeaderText.Foreground = HudAccent;
+        _shipInfoHeaderText.FontFamily = HudTitleFont;
+        _shipInfoHeaderText.FontSize = 14;
+        _shipInfoHeaderText.FontWeight = Avalonia.Media.FontWeight.SemiBold;
+        _shipInfoHeaderText.Margin = new Thickness(10, 6, 8, 6);
+        _shipInfoHeaderText.TextTrimming = TextTrimming.CharacterEllipsis;
+        _shipInfoHeaderText.MaxLines = 1;
+
         // Title header
         panel.Children.Add(new Border
         {
             Background = HudHeader,
-            Child = new TextBlock { Text = "Ship Info", Foreground = HudAccent, FontFamily = HudTitleFont, FontSize = 14, FontWeight = Avalonia.Media.FontWeight.SemiBold, Margin = new Thickness(10, 6, 8, 6) },
+            Child = _shipInfoHeaderText,
         });
         panel.Children.Add(new Border { Background = HudInnerEdge, Height = 1 });
 
@@ -4553,6 +4565,8 @@ public class MainWindow : Window
             _state.TraderName   = string.IsNullOrEmpty(s.TraderName) ? _state.TraderName : s.TraderName;
             _state.Corp         = s.Corp;
             _state.ShipName     = string.IsNullOrEmpty(s.ShipName) ? _state.ShipName : s.ShipName;
+            _currentShipType    = s.ShipType;
+            _currentShipClass   = s.ShipClass;
 
             _state.Fighters     = s.Fighters;
             _state.Shields      = s.Shields;
@@ -4643,6 +4657,7 @@ public class MainWindow : Window
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
         string turnsDisplay = GetTurnsDisplayText();
         bool currentSectorBusted = IsCurrentSectorBusted();
+        _shipInfoHeaderText.Text = GetShipInfoPanelTitle();
         _valName.Text      = traderName;
         _deckValName.Text  = traderName;
         _valSector.Text    = _state.Sector.ToString();
@@ -4680,10 +4695,16 @@ public class MainWindow : Window
         _deckValEmpty.Text = _valEmpty.Text;
         UpdateHoldsStackedBar(_state.FuelOre, _state.Organics, _state.Equipment, _state.Colonists, _state.HoldsEmpty, holdsTotal);
         UpdateHoldsSegmentTooltips(_state.FuelOre, _state.Organics, _state.Equipment, _state.Colonists, _state.HoldsEmpty);
+        IBrush fightersBrush = GetShipCapacityBrush(_state.Fighters, GetCurrentShipMaxFighters());
+        IBrush shieldsBrush = GetShipCapacityBrush(_state.Shields, GetCurrentShipMaxShields());
         _valFighters.Text  = _state.Fighters.ToString("N0");
         _deckValFighters.Text = _valFighters.Text;
+        _valFighters.Foreground = fightersBrush;
+        _deckValFighters.Foreground = fightersBrush;
         _valShields.Text   = _state.Shields.ToString("N0");
         _deckValShields.Text = _valShields.Text;
+        _valShields.Foreground = shieldsBrush;
+        _deckValShields.Foreground = shieldsBrush;
         _valTrnWarp.Text   = _state.TurnsPerWarp.ToString();
         _deckValTrnWarp.Text = _valTrnWarp.Text;
         _valEther.Text     = _state.Etheral.ToString();
@@ -4755,6 +4776,56 @@ public class MainWindow : Window
         }
 
         return _state.Turns.ToString();
+    }
+
+    private string GetShipInfoPanelTitle()
+    {
+        if (!string.IsNullOrWhiteSpace(_state.ShipName) && _state.ShipName != "-")
+            return _state.ShipName;
+
+        if (!string.IsNullOrWhiteSpace(_currentShipClass))
+            return _currentShipClass;
+
+        if (!string.IsNullOrWhiteSpace(_currentShipType))
+            return _currentShipType;
+
+        return "Ship Info";
+    }
+
+    private static int? ParsePositiveIntOrNull(string value)
+    {
+        return int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) && parsed > 0
+            ? parsed
+            : null;
+    }
+
+    private int? GetCurrentShipMaxFighters()
+    {
+        return ParsePositiveIntOrNull(ReadCurrentMombotVar(
+            "0",
+            "$SHIP~SHIP_FIGHTERS_MAX",
+            "$SHIP~ship_fighters_max"));
+    }
+
+    private int? GetCurrentShipMaxShields()
+    {
+        return ParsePositiveIntOrNull(ReadCurrentMombotVar(
+            "0",
+            "$SHIP~SHIP_SHIELD_MAX",
+            "$SHIP~ship_shield_max"));
+    }
+
+    private static IBrush GetShipCapacityBrush(int currentValue, int? maxValue)
+    {
+        if (!maxValue.HasValue || maxValue.Value <= 0)
+            return HudText;
+
+        double ratio = Math.Clamp(currentValue / (double)maxValue.Value, 0d, 1d);
+        if (ratio < 0.25d)
+            return HudAccentWarn;
+        if (ratio < 0.5d)
+            return HudAccentHot;
+        return HudText;
     }
 
     private string? GetNativeBotModeStatusText()
@@ -6171,6 +6242,8 @@ public class MainWindow : Window
         _state.Corp           = p.Corp;
         // Ship
         _state.ShipName       = string.IsNullOrEmpty(p.ShipName) ? "-" : p.ShipName;
+        _currentShipType      = string.Empty;
+        _currentShipClass     = string.Empty;
         _state.HoldsTotal     = p.HoldsTotal;
         _state.FuelOre        = p.FuelOre;
         _state.Organics       = p.Organics;
@@ -6213,9 +6286,18 @@ public class MainWindow : Window
         var varsToLoad = new Dictionary<string, string>(config.Variables, StringComparer.OrdinalIgnoreCase);
         varsToLoad.Remove("$gfile_chk");
         varsToLoad.Remove("$doRelog");
+        ApplySessionStartupVarDefaults(varsToLoad);
 
         Core.ScriptRef.ClearCurrentGameVars();
         Core.ScriptRef.LoadVarsForGame(varsToLoad);
+    }
+
+    private static void ApplySessionStartupVarDefaults(IDictionary<string, string> vars)
+    {
+        vars["$BOT~REDALERT"] = "FALSE";
+        vars["$BOT~redalert"] = "FALSE";
+        vars["$bot~redalert"] = "FALSE";
+        vars["$redalert"] = "FALSE";
     }
 
     private static EmbeddedGameConfig NormalizeEmbeddedMombotConfig(EmbeddedGameConfig config)
@@ -6393,6 +6475,7 @@ public class MainWindow : Window
         var varsToLoad = new System.Collections.Generic.Dictionary<string, string>(gameConfig.Variables, StringComparer.OrdinalIgnoreCase);
         varsToLoad.Remove("$gfile_chk");
         varsToLoad.Remove("$doRelog");
+        ApplySessionStartupVarDefaults(varsToLoad);
         Core.ScriptRef.LoadVarsForGame(varsToLoad);
 
         // When savevar is called, persist the value into the TWXP game config JSON.
@@ -7850,7 +7933,7 @@ public class MainWindow : Window
     }
 
     private static void SetRedAlertVars(string value)
-        => SetMombotCurrentVars(value, "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
+        => PersistMombotVars(value, "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
 
     private void SyncRedAlertFromMombotVar()
         => SetRedAlertEnabled(IsMombotTruthy(ReadCurrentMombotVar("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert")));
@@ -11130,7 +11213,7 @@ public class MainWindow : Window
         MirrorMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");
-        SetMombotCurrentVars("FALSE", "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
+        SetRedAlertVars("FALSE");
         PersistMombotVars(shipCapRelative, "$cap_file");
         PersistMombotVars(planetFileRelative, "$planet_file");
 
@@ -12582,7 +12665,11 @@ public class MainWindow : Window
             return;
         }
 
-        var dialog = new MacroPlayDialog(macroText, ValidateTemporaryMacroText);
+        var dialog = new MacroPlayDialog(
+            macroText,
+            ValidateTemporaryMacroText,
+            allowHotkeyAssignment: true,
+            existingBindings: _appPrefs.MacroBindings);
         bool accepted = await dialog.ShowDialog<bool>(this);
         if (!accepted)
         {
@@ -12601,6 +12688,12 @@ public class MainWindow : Window
         if (updatedMacroBytes.Length > 0)
             _temporaryMacroChunks.Add(updatedMacroBytes);
         UpdateTemporaryMacroControls();
+
+        if (dialog.AssignToHotkey)
+        {
+            UpsertConfiguredMacroBinding(dialog.AssignedHotkey, dialog.MacroText);
+            ShowMacroNotice($"saved quick macro to {dialog.AssignedHotkey}");
+        }
 
         string? error = await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, dialog.PlayCount);
         if (!string.IsNullOrWhiteSpace(error))
@@ -12807,6 +12900,27 @@ public class MainWindow : Window
 
         scriptReference = string.Empty;
         return false;
+    }
+
+    private void UpsertConfiguredMacroBinding(string hotkey, string macro)
+    {
+        string normalizedHotkey = NormalizeConfiguredMacroHotkey(hotkey);
+        _appPrefs.MacroBindings.RemoveAll(binding =>
+            string.Equals(binding.Hotkey, normalizedHotkey, StringComparison.OrdinalIgnoreCase));
+        _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
+        {
+            Hotkey = normalizedHotkey,
+            Macro = macro,
+        });
+        _appPrefs.Save();
+    }
+
+    private static string NormalizeConfiguredMacroHotkey(string? hotkey)
+    {
+        string candidate = string.IsNullOrWhiteSpace(hotkey) ? "F1" : hotkey.Trim().ToUpperInvariant();
+        return TerminalControl.SupportedMacroHotkeys.Contains(candidate, StringComparer.OrdinalIgnoreCase)
+            ? candidate
+            : "F1";
     }
 
     private async Task PromptAndPlayConfiguredMacroAsync(AppPreferences.MacroBinding binding)

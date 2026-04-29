@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Core = TWXProxy.Core;
 
@@ -5,6 +6,9 @@ namespace MTC.mombot;
 
 internal sealed class mombotWatcher
 {
+    private const string UnderAttackLead = "Shipboard Computers";
+    private const string UnderAttackTail = "is powering up weapons systems!";
+
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;
 
@@ -32,10 +36,34 @@ internal sealed class mombotWatcher
         _database = null;
     }
 
-    public void ObserveServerLine(string line)
+    public bool ObserveServerLine(string line)
     {
-        _ = line;
         _ = _database;
-        // Intentionally left as a placeholder for the MTC-local watcher port.
+
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        if (line.Contains(UnderAttackLead, StringComparison.Ordinal) ||
+            line.Contains(UnderAttackTail, StringComparison.Ordinal))
+        {
+            SetRedAlertVars("TRUE");
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void SetRedAlertVars(string value)
+    {
+        PersistCurrentGameVar("$BOT~REDALERT", value);
+        PersistCurrentGameVar("$BOT~redalert", value);
+        PersistCurrentGameVar("$bot~redalert", value);
+        PersistCurrentGameVar("$redalert", value);
+    }
+
+    private static void PersistCurrentGameVar(string name, string value)
+    {
+        Core.ScriptRef.SetCurrentGameVar(name, value);
+        Core.ScriptRef.OnVariableSaved?.Invoke(name, value);
     }
 }

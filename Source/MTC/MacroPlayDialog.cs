@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -10,37 +12,83 @@ namespace MTC;
 
 public sealed class MacroPlayDialog : Window
 {
-    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(20, 20, 20));
-    private static readonly IBrush BdInput = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(170, 170, 170));
-    private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(200, 200, 200));
+    private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(5, 24, 30));
+    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(8, 45, 56));
+    private static readonly IBrush BgPanelSoft = new SolidColorBrush(Color.FromRgb(7, 33, 41));
+    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(4, 22, 28));
+    private static readonly IBrush BdInput = new SolidColorBrush(Color.FromRgb(9, 126, 149));
+    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(230, 243, 246));
+    private static readonly IBrush FgMuted = new SolidColorBrush(Color.FromRgb(150, 198, 209));
+    private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(0, 239, 239));
     private static readonly IBrush FgError = new SolidColorBrush(Color.FromRgb(255, 128, 128));
-    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
+    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(10, 93, 109));
+    private static readonly IBrush BgButtonSoft = new SolidColorBrush(Color.FromRgb(9, 63, 76));
+    private static readonly IBrush AccentBorder = new SolidColorBrush(Color.FromRgb(18, 214, 214));
+    private static readonly IBrush AccentFill = new SolidColorBrush(Color.FromRgb(9, 58, 69));
 
     private readonly Func<string, string?>? _macroValidator;
+    private readonly IReadOnlyList<AppPreferences.MacroBinding> _existingBindings;
     private readonly TextBox _macroTextBox;
     private readonly TextBox _countTextBox;
     private readonly TextBlock _errorText;
+    private readonly CheckBox? _assignHotkeyCheckBox;
+    private readonly ComboBox? _hotkeyCombo;
+    private readonly TextBlock? _hotkeyHint;
 
     public int PlayCount { get; private set; } = 1;
     public string MacroText { get; private set; } = string.Empty;
+    public bool AssignToHotkey { get; private set; }
+    public string AssignedHotkey { get; private set; } = string.Empty;
 
-    public MacroPlayDialog(string macro, Func<string, string?>? macroValidator = null)
+    public MacroPlayDialog(
+        string macro,
+        Func<string, string?>? macroValidator = null,
+        bool allowHotkeyAssignment = false,
+        IReadOnlyList<AppPreferences.MacroBinding>? existingBindings = null,
+        string? preferredHotkey = null)
     {
         _macroValidator = macroValidator;
+        _existingBindings = existingBindings ?? Array.Empty<AppPreferences.MacroBinding>();
         Title = "Play Macro";
         Width = 640;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = BgPanel;
+        Background = BgWindow;
 
-        var macroLabel = new TextBlock
+        var introCard = new Border
         {
-            Text = "Macro",
-            Foreground = FgLabel,
-            FontWeight = FontWeight.Bold,
+            Background = BgPanel,
+            BorderBrush = AccentBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(16, 14),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Play Macro",
+                        Foreground = FgLabel,
+                        FontWeight = FontWeight.Bold,
+                        FontSize = 22,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Tune the macro text, choose how many bursts to send, and optionally pin it to a function key for later.",
+                        Foreground = FgNormal,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    new TextBlock
+                    {
+                        Text = "Use * anywhere to send Enter. Quick macro playback stays fast, but saved hotkeys give you one-touch reruns.",
+                        Foreground = FgMuted,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                },
+            },
         };
 
         _macroTextBox = new TextBox
@@ -54,12 +102,27 @@ public sealed class MacroPlayDialog : Window
             BorderBrush = BdInput,
         };
 
-        var countLabel = new TextBlock
+        var editorCard = new Border
         {
-            Text = "Times to play (1-1000)",
-            Foreground = FgLabel,
-            FontWeight = FontWeight.Bold,
-            Margin = new Thickness(0, 8, 0, 0),
+            Background = BgPanelSoft,
+            BorderBrush = BdInput,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Macro Text",
+                        Foreground = FgLabel,
+                        FontWeight = FontWeight.Bold,
+                    },
+                    _macroTextBox,
+                },
+            },
         };
 
         _countTextBox = new TextBox
@@ -70,6 +133,88 @@ public sealed class MacroPlayDialog : Window
             Foreground = FgNormal,
             BorderBrush = BdInput,
             HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        var controlsGrid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions(allowHotkeyAssignment ? "Auto,20,*" : "Auto"),
+            RowDefinitions = new RowDefinitions(allowHotkeyAssignment ? "Auto,Auto" : "Auto"),
+        };
+
+        var countPanel = new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Times to Play (1-1000)",
+                    Foreground = FgLabel,
+                    FontWeight = FontWeight.Bold,
+                },
+                _countTextBox,
+            },
+        };
+        controlsGrid.Children.Add(countPanel);
+
+        if (allowHotkeyAssignment)
+        {
+            _assignHotkeyCheckBox = new CheckBox
+            {
+                Content = "Assign to function key",
+                Foreground = FgNormal,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsChecked = false,
+            };
+
+            _hotkeyCombo = new ComboBox
+            {
+                ItemsSource = TerminalControl.SupportedMacroHotkeys,
+                SelectedItem = NormalizeHotkey(preferredHotkey ?? GetSuggestedHotkey()),
+                Width = 92,
+                Background = BgInput,
+                Foreground = FgNormal,
+                BorderBrush = BdInput,
+                IsEnabled = false,
+                HorizontalAlignment = HorizontalAlignment.Left,
+            };
+
+            _hotkeyHint = new TextBlock
+            {
+                Foreground = FgMuted,
+                TextWrapping = TextWrapping.Wrap,
+                IsVisible = false,
+            };
+
+            var assignPanel = new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    _assignHotkeyCheckBox,
+                    _hotkeyCombo,
+                },
+            };
+            Grid.SetColumn(assignPanel, 2);
+            controlsGrid.Children.Add(assignPanel);
+
+            Grid.SetColumn(_hotkeyHint, 2);
+            Grid.SetRow(_hotkeyHint, 1);
+            controlsGrid.Children.Add(_hotkeyHint);
+
+            _assignHotkeyCheckBox.IsCheckedChanged += (_, _) => UpdateHotkeyUi();
+            _hotkeyCombo.SelectionChanged += (_, _) => UpdateHotkeyUi();
+            UpdateHotkeyUi();
+        }
+
+        var controlsCard = new Border
+        {
+            Background = BgPanelSoft,
+            BorderBrush = BdInput,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Child = controlsGrid,
         };
 
         _errorText = new TextBlock
@@ -85,16 +230,22 @@ public sealed class MacroPlayDialog : Window
             MinWidth = 80,
             Background = BgButton,
             Foreground = FgNormal,
+            BorderBrush = AccentBorder,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 0, 8, 0),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 8),
         };
 
         var btnCancel = new Button
         {
             Content = "Cancel",
             MinWidth = 80,
-            Background = BgButton,
+            Background = BgButtonSoft,
             Foreground = FgNormal,
+            BorderBrush = BdInput,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(14, 8),
         };
 
         btnGo.Click += (_, _) => TryAccept();
@@ -111,13 +262,12 @@ public sealed class MacroPlayDialog : Window
         Content = new StackPanel
         {
             Margin = new Thickness(16),
-            Spacing = 6,
+            Spacing = 12,
             Children =
             {
-                macroLabel,
-                _macroTextBox,
-                countLabel,
-                _countTextBox,
+                introCard,
+                editorCard,
+                controlsCard,
                 _errorText,
                 buttons,
             },
@@ -164,6 +314,10 @@ public sealed class MacroPlayDialog : Window
 
         MacroText = macroText;
         PlayCount = count;
+        AssignToHotkey = _assignHotkeyCheckBox?.IsChecked == true;
+        AssignedHotkey = AssignToHotkey
+            ? NormalizeHotkey(_hotkeyCombo?.SelectedItem as string)
+            : string.Empty;
         Close(true);
     }
 
@@ -175,5 +329,44 @@ public sealed class MacroPlayDialog : Window
             _countTextBox.Focus(NavigationMethod.Tab);
             _countTextBox.SelectAll();
         }, DispatcherPriority.Input);
+    }
+
+    private void UpdateHotkeyUi()
+    {
+        if (_assignHotkeyCheckBox == null || _hotkeyCombo == null || _hotkeyHint == null)
+            return;
+
+        bool assign = _assignHotkeyCheckBox.IsChecked == true;
+        _hotkeyCombo.IsEnabled = assign;
+
+        string hotkey = NormalizeHotkey(_hotkeyCombo.SelectedItem as string);
+        AppPreferences.MacroBinding? existing = _existingBindings
+            .LastOrDefault(binding =>
+                string.Equals(NormalizeHotkey(binding.Hotkey), hotkey, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(binding.Macro));
+
+        _hotkeyHint.Text = existing == null
+            ? $"Save this macro to {hotkey} for one-touch playback."
+            : $"{hotkey} already has a saved macro and will be replaced.";
+        _hotkeyHint.IsVisible = assign;
+    }
+
+    private string GetSuggestedHotkey()
+    {
+        HashSet<string> usedHotkeys = _existingBindings
+            .Where(binding => !string.IsNullOrWhiteSpace(binding.Macro))
+            .Select(binding => NormalizeHotkey(binding.Hotkey))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return TerminalControl.SupportedMacroHotkeys
+            .FirstOrDefault(hotkey => !usedHotkeys.Contains(hotkey)) ?? "F1";
+    }
+
+    private static string NormalizeHotkey(string? hotkey)
+    {
+        string candidate = string.IsNullOrWhiteSpace(hotkey) ? "F1" : hotkey.Trim().ToUpperInvariant();
+        return TerminalControl.SupportedMacroHotkeys.Contains(candidate, StringComparer.OrdinalIgnoreCase)
+            ? candidate
+            : "F1";
     }
 }

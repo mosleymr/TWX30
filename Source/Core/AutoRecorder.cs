@@ -357,8 +357,8 @@ namespace TWXProxy.Core
             @"^You have ([\d,]+) fighters\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        private static readonly Regex _rxDockCurrentShields = new(
-            @"^You have ([\d,]+) shields?\.$",
+        private static readonly Regex _rxCurrentShields = new(
+            @"^You have ([\d,]+) shields?(?:[.,].*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxDockPurchasePrompt = new(
@@ -386,7 +386,7 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxPlanetFighterTransferQuantity = new(
-            @"^How many Fighters do you want to (take|leave)\s+\(([\d,]+)\s+Max\)\s+\[([\d,]+)\]\s+\?\s*([\d,]+)?\s*$",
+            @"^How many Fighters do you want to (take|leave)\s+\(([\d,]+)\s+(?:Max|on board)\)\s+\[([\d,]+)\]\s+\?\s*([\d,]+)?\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxPlanetProductDirection = new(
@@ -1479,6 +1479,16 @@ namespace TWXProxy.Core
                 return true;
             }
 
+            var shields = _rxCurrentShields.Match(trimmedLine);
+            if (shields.Success)
+            {
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    Shields = ParseCommaInt(shields.Groups[1].Value)
+                });
+                return true;
+            }
+
             if (_dockArea == DockArea.ShipyardCommerce)
             {
                 var fighters = _rxDockCurrentFighters.Match(trimmedLine);
@@ -1491,15 +1501,6 @@ namespace TWXProxy.Core
                     return true;
                 }
 
-                var shields = _rxDockCurrentShields.Match(trimmedLine);
-                if (shields.Success)
-                {
-                    EmitShipStatusDelta(new ShipStatusDelta
-                    {
-                        Shields = ParseCommaInt(shields.Groups[1].Value)
-                    });
-                    return true;
-                }
             }
 
             if (trimmedLine.StartsWith("Ok!  We'll get that sent over to your ship, installation is free!", StringComparison.OrdinalIgnoreCase) ||

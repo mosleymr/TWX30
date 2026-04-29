@@ -372,17 +372,18 @@ internal sealed class mombotService
         if (!Enabled || string.IsNullOrWhiteSpace(line))
             return false;
 
+        bool watcherHandled = false;
         if (Watcher.IsAttached)
-            Watcher.ObserveServerLine(line);
+            watcherHandled = Watcher.ObserveServerLine(line);
 
         if (TryHandlePageLogin(line))
             return true;
 
         if (!TryParseIncomingCommand(line, out mombotCommandContext? context))
-            return false;
+            return watcherHandled;
 
         if (context == null)
-            return false;
+            return watcherHandled;
 
         if (context.CommandLine.Length == 0)
         {
@@ -392,10 +393,10 @@ internal sealed class mombotService
         }
 
         if (!IsAuthorized(context))
-            return false;
+            return watcherHandled;
 
         if (IsBlockedRemoteControlCommand(context))
-            return false;
+            return watcherHandled;
 
         ExecuteCommandLine(
             context.CommandLine,
@@ -444,6 +445,7 @@ internal sealed class mombotService
             selfCommand,
             route,
             userName);
+        ApplyDispatchContextVars(dispatchContext);
         string canonical = dispatchContext.CommandName;
 
         if (ShouldHandleNatively(canonical))
@@ -700,6 +702,22 @@ internal sealed class mombotService
             Core.Script? script = _interpreter.GetScript(i);
             script?.SetScriptVarIgnoreCase(name, value);
         }
+    }
+
+    private void ApplyDispatchContextVars(mombotCommandContext context)
+    {
+        string selfValue = context.SelfCommand ? "1" : "0";
+        string caller = string.IsNullOrWhiteSpace(context.UserName) ? "self" : context.UserName;
+
+        ApplySessionVar("$BOT~SELF_COMMAND", selfValue);
+        ApplySessionVar("$SWITCHBOARD~SELF_COMMAND", selfValue);
+        ApplySessionVar("$switchboard~self_command", selfValue);
+        ApplySessionVar("$bot~self_command", selfValue);
+        ApplySessionVar("$self_command", selfValue);
+
+        ApplySessionVar("$BOT~COMMAND_CALLER", caller);
+        ApplySessionVar("$bot~command_caller", caller);
+        ApplySessionVar("$command_caller", caller);
     }
 
     private void NormalizeConfig()
