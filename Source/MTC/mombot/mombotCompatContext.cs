@@ -96,6 +96,7 @@ internal sealed class mombotCompatContext
         };
 
         SetVars(vars, context.CommandName, "$BOT~COMMAND", "$bot~command", "$command");
+        SetVars(vars, context.CommandName, "$SWITCHBOARD~COMMAND", "$switchboard~command");
         SetVars(
             vars,
             string.Equals(context.TypedCommandName, context.CommandName, StringComparison.OrdinalIgnoreCase)
@@ -105,14 +106,18 @@ internal sealed class mombotCompatContext
             "$bot~command_typed",
             "$command_typed");
         string userCommandLine = userCommandLineOverride ?? context.TypedParameterLine;
+        string onlyHelp = IsOnlyHelpCommand(context) ? "1" : "0";
         SetVars(vars, userCommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
+        SetVars(vars, userCommandLine, "$SWITCHBOARD~USER_COMMAND_LINE", "$switchboard~user_command_line");
         SetVars(vars, botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetVars(vars, context.SelfCommand ? "1" : "0", "$BOT~SELF_COMMAND", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$bot~self_command", "$self_command");
+        SetVars(vars, onlyHelp, "$BOT~ONLY_HELP", "$bot~only_help", "$only_help", "$SWITCHBOARD~ONLY_HELP", "$switchboard~only_help");
         SetVars(vars, teamName, "$BOT~BOT_TEAM_NAME", "$BOT~bot_team_name", "$bot~bot_team_name", "$bot_team_name");
         SetVars(vars, subspace, "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
         SetVars(vars, botPassword, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
         SetVars(vars, loginPassword, "$BOT~PASSWORD", "$password");
         SetVars(vars, string.IsNullOrWhiteSpace(mode) ? "General" : mode, "$BOT~MODE", "$bot~mode", "$mode");
+        SetVars(vars, string.IsNullOrWhiteSpace(mode) ? "General" : mode, "$SWITCHBOARD~MODE", "$switchboard~mode");
         SetVars(vars, context.Route, "$USER_INTERFACE~ROUTING");
         SetVars(vars, loginUserName, "$BOT~USERNAME", "$username");
         SetVars(vars, serverName, "$BOT~SERVERNAME", "$servername");
@@ -133,7 +138,7 @@ internal sealed class mombotCompatContext
         SetVars(vars, safeShip, "$BOT~SAFE_SHIP", "$bot~safe_ship", "$safe_ship");
         SetVars(vars, safePlanet, "$BOT~SAFE_PLANET", "$bot~safe_planet", "$safe_planet");
         SetVars(vars, botIsDeaf, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
-        SetVars(vars, silentRunning, "$BOT~SILENT_RUNNING", "$bot~silent_running", "$silent_running");
+        SetVars(vars, silentRunning, "$BOT~SILENT_RUNNING", "$bot~silent_running", "$silent_running", "$SWITCHBOARD~SILENT_RUNNING", "$switchboard~silent_running");
         SetVars(vars, botTurnLimit, "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
         SetVars(vars, unlimitedGame, "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
         SetVars(vars, planetFile, "$PLANET~PLANET_FILE", "$PLANET~planet_file", "$planet~planet_file");
@@ -183,6 +188,16 @@ internal sealed class mombotCompatContext
         }
 
         return vars;
+    }
+
+    private static bool IsOnlyHelpCommand(mombotCommandContext context)
+    {
+        if (context.Parameters.Count == 0)
+            return false;
+
+        string first = context.Parameters[0]?.Trim() ?? string.Empty;
+        return string.Equals(first, "help", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(first, "?", StringComparison.OrdinalIgnoreCase);
     }
 
     public void ApplyToSession(

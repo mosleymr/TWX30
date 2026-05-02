@@ -533,17 +533,17 @@ internal sealed class mombotService
             ApplySessionVar("$LAST_LOADED_MODULE", module.ScriptReference);
         }
 
-        Compat.ApplyToSession(
-            _interpreter,
+        IReadOnlyDictionary<string, string> initialVars = Compat.BuildVariableSnapshot(
             _database,
             _config,
             Settings,
             context,
             lastLoadedModule: effectiveLastLoadedModule,
             userCommandLineOverride: moduleUserCommandLine);
+        Compat.ApplyVariableSnapshot(_interpreter, initialVars);
 
         StopScriptByName(module.ScriptReference);
-        if (!TryLoadScript(module.ScriptReference, out string? error))
+        if (!TryLoadScriptAtLabel(module.ScriptReference, string.Empty, initialVars, out string? error))
         {
             string message = $"mombot: failed to load '{module.ScriptReference}': {error}";
             PublishMessage(message);
