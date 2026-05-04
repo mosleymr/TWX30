@@ -6,6 +6,9 @@ on:
       - "Source/bin/MTC/osx-arm64/MTC"
       - "Source/bin/MTC/osx-x64/MTC"
       - "Source/bin/MTC/win-x64/MTC.exe"
+      - "releases/MTC/osx-arm64/MTC"
+      - "releases/MTC/osx-x64/MTC"
+      - "releases/MTC/win-x64/MTC.exe"
   workflow_dispatch:
 
 permissions:
@@ -27,10 +30,18 @@ jobs:
           import os
 
           watched = {
-              "Source/bin/MTC/osx-arm64/MTC": "macOS Apple Silicon",
-              "Source/bin/MTC/osx-x64/MTC": "macOS Intel",
-              "Source/bin/MTC/win-x64/MTC.exe": "Windows x64",
+              "Source/bin/MTC/osx-arm64/MTC": ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
+              "Source/bin/MTC/osx-x64/MTC": ("macOS Intel", "releases/MTC/osx-x64/MTC"),
+              "Source/bin/MTC/win-x64/MTC.exe": ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
+              "releases/MTC/osx-arm64/MTC": ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
+              "releases/MTC/osx-x64/MTC": ("macOS Intel", "releases/MTC/osx-x64/MTC"),
+              "releases/MTC/win-x64/MTC.exe": ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
           }
+          default_downloads = [
+              ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
+              ("macOS Intel", "releases/MTC/osx-x64/MTC"),
+              ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
+          ]
 
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
               event = json.load(handle)
@@ -43,7 +54,7 @@ jobs:
                           changed.append(path)
 
           if not changed:
-              changed = list(watched.keys())
+              changed = [path for _, path in default_downloads]
 
           repo = os.environ["REPOSITORY"]
           sha = os.environ["SHA"]
@@ -60,9 +71,13 @@ jobs:
           summary = (head_commit.get("message") or "Standalone MTC binaries updated").strip().splitlines()[0]
 
           download_lines = []
+          seen_download_paths = set()
           for path in changed:
-              label = watched.get(path, path)
-              url = f"https://github.com/{repo}/raw/{sha}/{path}"
+              label, download_path = watched.get(path, (path, path))
+              if download_path in seen_download_paths:
+                  continue
+              seen_download_paths.add(download_path)
+              url = f"https://github.com/{repo}/raw/{sha}/{download_path}"
               download_lines.append(f"- **{label}**: [Download]({url})")
 
           payload = {
