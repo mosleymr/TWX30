@@ -130,13 +130,24 @@ From `Source/`:
 
 # Avalonia client release binaries: Source/bin/MTC/<rid>
 ./build-mtc.sh
+
+# Build MTC, copy the three standalone binaries into /releases/MTC, commit
+# only those binaries, and push the current branch to GitHub
+./publish-github-mtc-binaries.sh
 ```
+
+`./build-twxc.sh` is the default TWXC build/install path. It publishes standalone binaries for all
+three release targets into `Source/TWXC/publish/<rid>/`, and on macOS it also installs the current-host
+standalone compiler to `/usr/local/bin/twxc`.
 
 ### Run
 
 ```bash
-# Compile a script
-dotnet run --project TWXC/TWXC.csproj -- myscript.ts
+# Compile a script with the installed standalone compiler
+/usr/local/bin/twxc myscript.ts
+
+# Or run the published current-host standalone directly
+./TWXC/publish/<current-rid>/twxc myscript.ts
 
 # Decompile a script into the current directory (default)
 dotnet run --project TWXD/TWXD.csproj -- myscript.cts

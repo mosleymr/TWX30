@@ -111,14 +111,17 @@ public class ProxyService : IProxyService
             gameInstance.Logger.BinaryLogs = config.LogBinary;
             gameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
             gameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
-            gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled);
+            gameInstance.SetNativeHaggleEnabled(config.NativeHaggleEnabled, TWXProxy.Core.NativeHaggleChangeSource.Config);
             string portHaggleMode = await _configService.GetPortHaggleModeAsync();
             string planetHaggleMode = await _configService.GetPlanetHaggleModeAsync();
             if (string.IsNullOrWhiteSpace(portHaggleMode) && !string.IsNullOrWhiteSpace(config.NativeHaggleMode))
                 portHaggleMode = TWXProxy.Core.NativeHaggleModes.Normalize(config.NativeHaggleMode);
             gameInstance.SetNativeHaggleModes(portHaggleMode, planetHaggleMode);
-            gameInstance.NativeHaggleChanged += enabled =>
+            gameInstance.NativeHaggleChanged += (enabled, source) =>
             {
+                if (source != TWXProxy.Core.NativeHaggleChangeSource.User)
+                    return;
+
                 if (config.NativeHaggleEnabled == enabled)
                     return;
 

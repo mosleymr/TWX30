@@ -23,16 +23,16 @@ namespace TWXProxy.Core
             string label = parameters[1].Value;
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
-            GlobalModules.DebugLog($"[SETTEXTLINETRIGGER] name='{name}', label='{label}', value='{value}'\n");
+            GlobalModules.TriggerDebugLog($"[SETTEXTLINETRIGGER] name='{name}', label='{label}', value='{value}'\n");
 
             try
             {
                 scriptObj.SetTextLineTrigger(name, label, value);
-                GlobalModules.DebugLog($"[SETTEXTLINETRIGGER] Trigger registered successfully\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTLINETRIGGER] Trigger registered successfully\n");
             }
             catch (Exception ex)
             {
-                GlobalModules.DebugLog($"[SETTEXTLINETRIGGER] ERROR: {ex.Message}\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTLINETRIGGER] ERROR: {ex.Message}\n");
                 throw new Exception($"Error setting text line trigger: {ex.Message}");
             }
 
@@ -53,15 +53,15 @@ namespace TWXProxy.Core
             string label = parameters[1].Value;
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
-            GlobalModules.DebugLog($"[SETTEXTOUTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
+            GlobalModules.TriggerDebugLog($"[SETTEXTOUTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
             try
             {
                 scriptObj.SetTextOutTrigger(name, label, value);
-                GlobalModules.DebugLog($"[SETTEXTOUTTRIGGER] Trigger registered successfully\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTOUTTRIGGER] Trigger registered successfully\n");
             }
             catch (Exception ex)
             {
-                GlobalModules.DebugLog($"[SETTEXTOUTTRIGGER] ERROR: {ex.Message}\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTOUTTRIGGER] ERROR: {ex.Message}\n");
                 throw new Exception($"Error setting text out trigger: {ex.Message}");
             }
 
@@ -81,16 +81,16 @@ namespace TWXProxy.Core
             string label = parameters[1].Value;
             string value = parameters.Length > 2 ? parameters[2].Value : string.Empty;
 
-            GlobalModules.DebugLog($"[SETTEXTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
+            GlobalModules.TriggerDebugLog($"[SETTEXTTRIGGER] name='{name}', label='{label}', value='{value}'\n");
 
             try
             {
                 scriptObj.SetTextTrigger(name, label, value);
-                GlobalModules.DebugLog($"[SETTEXTTRIGGER] Trigger registered successfully\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTTRIGGER] Trigger registered successfully\n");
             }
             catch (Exception ex)
             {
-                GlobalModules.DebugLog($"[SETTEXTTRIGGER] ERROR: {ex.Message}\n");
+                GlobalModules.TriggerDebugLog($"[SETTEXTTRIGGER] ERROR: {ex.Message}\n");
                 throw new Exception($"Error setting text trigger: {ex.Message}");
             }
 

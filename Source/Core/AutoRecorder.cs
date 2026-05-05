@@ -353,12 +353,28 @@ namespace TWXProxy.Core
             @"^You have ([\d,]+) credits\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxLiveCredits = new(
+            @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?(?:, and the Treasury has [\d,]+)?\.?$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         private static readonly Regex _rxDockCurrentFighters = new(
             @"^You have ([\d,]+) fighters\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxCurrentShields = new(
             @"^You have ([\d,]+) shields?(?:[.,].*)?$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxInfoTurnsToWarp = new(
+            @"^Turns to Warp\s*:\s*([\d,]+)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxComputerTurnsPerWarp = new(
+            @"\bTurns Per Warp\s*:\s*([\d,]+)\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxTurnsDeducted = new(
+            @"^(?:One|[\d,]+)\s+turns?\s+deducted,\s+([\d,]+)\s+turns?\s+left\.?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxDockPurchasePrompt = new(
@@ -516,7 +532,10 @@ namespace TWXProxy.Core
             if (TryProcessGenesisTorpedoState(trimmedLine))
                 return;
 
-            if (TryProcessPrompt(db, rawLine, trimmedLine))
+            if (TryProcessPrompt(db, rawLine, trimmedLine, ansiLine))
+                return;
+
+            if (TryProcessLiveShipStatus(trimmedLine))
                 return;
 
             if (TryProcessDockStatus(trimmedLine))
@@ -1243,12 +1262,12 @@ namespace TWXProxy.Core
                 return;
 
             string trimmedLine = rawLine.Trim();
-            TryProcessPrompt(ScriptRef.ActiveDatabase, rawLine, trimmedLine);
+            TryProcessPrompt(ScriptRef.ActiveDatabase, rawLine, trimmedLine, ansiLine);
         }
 
         // ── Private helpers ────────────────────────────────────────────────────
 
-        private bool TryProcessPrompt(ModDatabase? db, string rawLine, string trimmedLine)
+        private bool TryProcessPrompt(ModDatabase? db, string rawLine, string trimmedLine, string? ansiLine = null)
         {
             if (string.IsNullOrEmpty(trimmedLine))
                 return false;
@@ -1295,11 +1314,13 @@ namespace TWXProxy.Core
                 return true;
             }
 
+            bool probeConsumed = TryProcessEtherProbeConsumed(trimmedLine, ansiLine);
+
             if (trimmedLine.StartsWith("Citadel treasury contains", StringComparison.OrdinalIgnoreCase) ||
                 trimmedLine.StartsWith("Stop in this sector", StringComparison.OrdinalIgnoreCase) ||
                 trimmedLine.StartsWith("Engage the Autopilot?", StringComparison.OrdinalIgnoreCase) ||
                 trimmedLine.StartsWith("Probe entering sector :", StringComparison.OrdinalIgnoreCase) ||
-                trimmedLine.StartsWith("Probe Self Destructs", StringComparison.OrdinalIgnoreCase))
+                probeConsumed)
             {
                 FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db);
@@ -1366,6 +1387,34 @@ namespace TWXProxy.Core
             }
 
             return false;
+        }
+
+        private bool TryProcessEtherProbeConsumed(string trimmedLine, string? ansiLine)
+        {
+            if (!IsEtherProbeConsumedLine(trimmedLine))
+            {
+                string normalizedAnsiLine = string.IsNullOrWhiteSpace(ansiLine)
+                    ? string.Empty
+                    : NormalizeRecorderLine(ansiLine.TrimEnd('\r', '\n')).Trim();
+                if (!IsEtherProbeConsumedLine(normalizedAnsiLine))
+                    return false;
+            }
+
+            EmitShipStatusDelta(new ShipStatusDelta
+            {
+                EtherProbesDelta = -1
+            });
+            GlobalModules.DebugLog($"[AutoRecorder] Ether probe consumed: '{trimmedLine}'\n");
+            return true;
+        }
+
+        private static bool IsEtherProbeConsumedLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return false;
+
+            return line.StartsWith("Probe Destroyed!", StringComparison.OrdinalIgnoreCase) ||
+                   line.StartsWith("Probe Self Destructs", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool TryProcessDockPrompt(string trimmedLine)
@@ -1476,16 +1525,6 @@ namespace TWXProxy.Core
                     Credits = ParseCommaLong(credits.Groups[1].Value)
                 });
                 ResetPendingDockPurchase();
-                return true;
-            }
-
-            var shields = _rxCurrentShields.Match(trimmedLine);
-            if (shields.Success)
-            {
-                EmitShipStatusDelta(new ShipStatusDelta
-                {
-                    Shields = ParseCommaInt(shields.Groups[1].Value)
-                });
                 return true;
             }
 
@@ -1615,6 +1654,66 @@ namespace TWXProxy.Core
             {
                 ResetPendingPlanetFighterTransfer();
                 return false;
+            }
+
+            return false;
+        }
+
+        private bool TryProcessLiveShipStatus(string trimmedLine)
+        {
+            var credits = _rxLiveCredits.Match(trimmedLine);
+            if (credits.Success)
+            {
+                var delta = new ShipStatusDelta
+                {
+                    Credits = ParseCommaLong(credits.Groups[1].Value)
+                };
+
+                if (credits.Groups[2].Success && int.TryParse(credits.Groups[2].Value, out int emptyHolds))
+                    delta.HoldsEmpty = emptyHolds;
+
+                EmitShipStatusDelta(delta);
+                return true;
+            }
+
+            var shields = _rxCurrentShields.Match(trimmedLine);
+            if (shields.Success)
+            {
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    Shields = ParseCommaInt(shields.Groups[1].Value)
+                });
+                return true;
+            }
+
+            var turnsToWarp = _rxInfoTurnsToWarp.Match(trimmedLine);
+            if (turnsToWarp.Success)
+            {
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    TurnsPerWarp = ParseCommaInt(turnsToWarp.Groups[1].Value)
+                });
+                return true;
+            }
+
+            var turnsPerWarp = _rxComputerTurnsPerWarp.Match(trimmedLine);
+            if (turnsPerWarp.Success)
+            {
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    TurnsPerWarp = ParseCommaInt(turnsPerWarp.Groups[1].Value)
+                });
+                return true;
+            }
+
+            var turnsDeducted = _rxTurnsDeducted.Match(trimmedLine);
+            if (turnsDeducted.Success)
+            {
+                EmitShipStatusDelta(new ShipStatusDelta
+                {
+                    Turns = ParseCommaInt(turnsDeducted.Groups[1].Value)
+                });
+                return true;
             }
 
             return false;
@@ -2430,7 +2529,9 @@ namespace TWXProxy.Core
                 return true;
             }
 
-            if (normalized.Contains("ether probe", StringComparison.Ordinal))
+            if (normalized.Contains("ether probe", StringComparison.Ordinal) ||
+                normalized.Equals("probe", StringComparison.Ordinal) ||
+                normalized.Equals("probes", StringComparison.Ordinal))
             {
                 delta = new ShipStatusDelta { EtherProbesDelta = quantity };
                 return true;

@@ -104,7 +104,7 @@ internal sealed class StatusPanelConfigDialog : Window
                                 },
                                 new TextBlock
                                 {
-                                    Text = "Show or hide the left-side Trader, Holds, and Ship Info sections, then move them up or down to change their order.",
+                                    Text = "Show or hide the left-side Trader, Online, and Ship Info sections, then move them up or down to change their order.",
                                     Foreground = FgMuted,
                                     TextWrapping = TextWrapping.Wrap,
                                 },

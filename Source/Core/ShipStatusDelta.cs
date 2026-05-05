@@ -7,6 +7,7 @@ namespace TWXProxy.Core;
 public sealed class ShipStatusDelta
 {
     public int? CurrentSector { get; set; }
+    public int? Turns { get; set; }
 
     public long? Credits { get; set; }
 
@@ -41,6 +42,7 @@ public sealed class ShipStatusDelta
     public bool? PlanetScanner { get; set; }
     public bool? PsychProbe { get; set; }
     public string? LRSType { get; set; }
+    public int? TurnsPerWarp { get; set; }
     public int? TransWarp1 { get; set; }
     public int? TransWarp2 { get; set; }
 
@@ -48,6 +50,7 @@ public sealed class ShipStatusDelta
     {
         return Credits.HasValue ||
                CurrentSector.HasValue ||
+               Turns.HasValue ||
                Fighters.HasValue || FightersDelta != 0 ||
                Shields.HasValue || ShieldsDelta != 0 ||
                TotalHolds.HasValue || TotalHoldsDelta != 0 ||
@@ -69,6 +72,7 @@ public sealed class ShipStatusDelta
                PlanetScanner.HasValue ||
                PsychProbe.HasValue ||
                LRSType != null ||
+               TurnsPerWarp.HasValue ||
                TransWarp1.HasValue ||
                TransWarp2.HasValue;
     }
@@ -77,6 +81,12 @@ public sealed class ShipStatusDelta
     {
         if (CurrentSector.HasValue)
             status.CurrentSector = ClampNonNegative(CurrentSector.Value);
+
+        if (Turns.HasValue)
+        {
+            status.Turns = ClampNonNegative(Turns.Value);
+            status.UnlimitedGame = false;
+        }
 
         if (Credits.HasValue)
             status.Credits = Credits.Value;
@@ -119,6 +129,8 @@ public sealed class ShipStatusDelta
             status.PsychProbe = PsychProbe.Value;
         if (LRSType != null)
             status.LRSType = LRSType;
+        if (TurnsPerWarp.HasValue)
+            status.TurnsPerWarp = ClampNonNegative(TurnsPerWarp.Value);
         if (TransWarp1.HasValue)
             status.TransWarp1 = ClampNonNegative(TransWarp1.Value);
         if (TransWarp2.HasValue)

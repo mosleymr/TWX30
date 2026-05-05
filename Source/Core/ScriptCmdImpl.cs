@@ -217,22 +217,19 @@ namespace TWXProxy.Core
         {
             if (_activeGameInstance != null)
             {
-                Task.Run(async () =>
-                {
-                    if (!string.IsNullOrEmpty(prompt))
-                        await _activeGameInstance.SendMessageAsync($"\r\n{prompt}\r\n");
+                if (!string.IsNullOrEmpty(prompt))
+                    _activeGameInstance.Broadcast($"\r\n{prompt}\r\n", broadcastDeaf: true);
 
-                    await _activeGameInstance.SendMessageAsync("> ");
-                });
+                _activeGameInstance.Broadcast("> ", broadcastDeaf: true);
                 return;
             }
 
             if (GlobalModules.TWXServer != null)
             {
                 if (!string.IsNullOrEmpty(prompt))
-                    GlobalModules.TWXServer.Broadcast($"\r\n{prompt}\r\n");
+                    GlobalModules.TWXServer.Broadcast($"\r\n{prompt}\r\n", broadcastDeaf: true);
 
-                GlobalModules.TWXServer.Broadcast("> ");
+                GlobalModules.TWXServer.Broadcast("> ", broadcastDeaf: true);
                 return;
             }
 
@@ -1086,7 +1083,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdPause(object script, CmdParam[] parameters)
         {
             // CMD: pause
-            GlobalModules.DebugLog($"[PAUSE] pause command executed\n");
+            GlobalModules.TriggerDebugLog($"[PAUSE] pause command executed\n");
             return CmdAction.Pause;
         }
 
@@ -1603,6 +1600,8 @@ namespace TWXProxy.Core
                 // Send prompt to client via active game instance
                 if (_activeGameInstance != null)
                 {
+                    GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
+
                     // Clear any accumulated input before prompting
                     _activeGameInstance.ClearInputBuffer();
 
@@ -1620,6 +1619,8 @@ namespace TWXProxy.Core
                 }
                 else if (GlobalModules.TWXMenu != null)
                 {
+                    GlobalModules.TWXMenu.SuspendMenuForInput(clearDisplay: false);
+
                     // Fallback to UI mode if no game instance
                     QueueScriptInputPrompt(prompt);
 
@@ -1665,6 +1666,7 @@ namespace TWXProxy.Core
                 {
                     // Network proxy mode: reuse the getInput pipeline.
                     // singleKey → keypress mode (char fires immediately, no Enter).
+                    GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
                     _activeGameInstance.ClearInputBuffer();
                     QueueScriptInputPrompt();
                     scriptObj.SetWaitingForInput(parameters[0], singleKey);
@@ -1674,6 +1676,7 @@ namespace TWXProxy.Core
 
                 // Fallback: UI / console mode (original desktop TWX behaviour)
                 scriptObj.Locked = true;
+                GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
                 QueueScriptInputPrompt();
 
                 if (GlobalModules.TWXMenu != null)

@@ -812,7 +812,7 @@ namespace TWXProxy.Core
 
         private async Task ToggleNativeHaggleAsync()
         {
-            bool enabled = _gameInstance.ToggleNativeHaggle();
+            bool enabled = _gameInstance.ToggleNativeHaggle(NativeHaggleChangeSource.User);
             await _gameInstance.SendMessageAsync($"\r\nNative haggle {(enabled ? "enabled" : "disabled")}.\r\n");
             await ExitMenuAsync();
         }

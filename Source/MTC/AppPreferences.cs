@@ -13,6 +13,8 @@ public class AppPreferences
 {
     public const int MaxRecentFiles = 5;
     public const int CurrentCommandDeckLayoutVersion = 4;
+    public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
+    public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
 
     public sealed class MacroBinding
     {
@@ -40,13 +42,14 @@ public class AppPreferences
     }
 
     public const string StatusPanelTrader = "trader";
-    public const string StatusPanelHolds = "holds";
+    public const string StatusPanelOnline = "online";
+    public const string StatusPanelHolds = "holds"; // legacy-only; folded into Ship Info
     public const string StatusPanelShipInfo = "ship";
 
     private static readonly string[] DefaultStatusPanelSectionOrder =
     [
         StatusPanelTrader,
-        StatusPanelHolds,
+        StatusPanelOnline,
         StatusPanelShipInfo,
     ];
 
@@ -62,6 +65,7 @@ public class AppPreferences
 
     public bool DebugLoggingEnabled { get; set; }
     public bool VerboseDebugLogging { get; set; }
+    public bool TriggerDebugLogging { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
     public bool EnableRedAlertMode { get; set; } = true;
@@ -69,6 +73,8 @@ public class AppPreferences
     public bool ShowBottomBar { get; set; } = true;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
+    public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
+    public int MombotHotkeyPrewarmLimitKb { get; set; } = DefaultMombotHotkeyPrewarmLimitKb;
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }
@@ -136,6 +142,7 @@ public class AppPreferences
                 Core.SharedConfigFile.MtcPrefsSectionName,
                 new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
                 new XElement("VerboseDebugLogging", VerboseDebugLogging),
+                new XElement("TriggerDebugLogging", TriggerDebugLogging),
                 new XElement("DebugPortHaggleEnabled", DebugPortHaggleEnabled),
                 new XElement("DebugPlanetHaggleEnabled", DebugPlanetHaggleEnabled),
                 new XElement("EnableRedAlertMode", EnableRedAlertMode),
@@ -143,6 +150,8 @@ public class AppPreferences
                 new XElement("ShowBottomBar", ShowBottomBar),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
+                new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
+                new XElement("MombotHotkeyPrewarmLimitKb", MombotHotkeyPrewarmLimitKb),
                 new XElement("PortHaggleMode", PortHaggleMode),
                 new XElement("PlanetHaggleMode", PlanetHaggleMode),
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
@@ -218,6 +227,8 @@ public class AppPreferences
                 prefs.DebugLoggingEnabled = debugEnabled;
             if (bool.TryParse((string?)root.Element("VerboseDebugLogging"), out bool verboseEnabled))
                 prefs.VerboseDebugLogging = verboseEnabled;
+            if (bool.TryParse((string?)root.Element("TriggerDebugLogging"), out bool triggerDebugEnabled))
+                prefs.TriggerDebugLogging = triggerDebugEnabled;
             if (bool.TryParse((string?)root.Element("DebugPortHaggleEnabled"), out bool debugPortHaggleEnabled))
                 prefs.DebugPortHaggleEnabled = debugPortHaggleEnabled;
             if (bool.TryParse((string?)root.Element("DebugPlanetHaggleEnabled"), out bool debugPlanetHaggleEnabled))
@@ -232,6 +243,10 @@ public class AppPreferences
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
+            if (int.TryParse((string?)root.Element("PreparedScriptCacheLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int preparedCacheLimitKb))
+                prefs.PreparedScriptCacheLimitKb = NormalizeMemoryLimitKb(preparedCacheLimitKb, DefaultPreparedScriptCacheLimitKb);
+            if (int.TryParse((string?)root.Element("MombotHotkeyPrewarmLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int hotkeyPrewarmLimitKb))
+                prefs.MombotHotkeyPrewarmLimitKb = NormalizeMemoryLimitKb(hotkeyPrewarmLimitKb, DefaultMombotHotkeyPrewarmLimitKb);
             if (bool.TryParse((string?)root.Element("CommandDeckSkinEnabled"), out bool commandDeckEnabled))
                 prefs.CommandDeckSkinEnabled = commandDeckEnabled;
             if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
@@ -346,7 +361,8 @@ public class AppPreferences
         foreach (StatusPanelSectionPreference section in sections ?? Enumerable.Empty<StatusPanelSectionPreference>())
         {
             string normalizedId = NormalizeStatusPanelSectionId(section.Id);
-            if (string.IsNullOrWhiteSpace(normalizedId))
+            if (string.IsNullOrWhiteSpace(normalizedId) ||
+                string.Equals(normalizedId, StatusPanelHolds, StringComparison.OrdinalIgnoreCase))
                 continue;
 
             if (StatusPanelSections.Any(existing => string.Equals(existing.Id, normalizedId, StringComparison.OrdinalIgnoreCase)))
@@ -367,6 +383,7 @@ public class AppPreferences
         => NormalizeStatusPanelSectionId(id) switch
         {
             StatusPanelTrader => "Trader",
+            StatusPanelOnline => "Online",
             StatusPanelHolds => "Holds",
             StatusPanelShipInfo => "Ship Info",
             _ => id,
@@ -388,6 +405,9 @@ public class AppPreferences
 
         return Core.SharedConfigFile.CreateEmptyDocument();
     }
+
+    public static int NormalizeMemoryLimitKb(int value, int defaultValue)
+        => value > 0 ? value : defaultValue;
 
     private static string? ResolveRecentFilePath(string? path, string programDirectory)
     {
@@ -438,12 +458,20 @@ public class AppPreferences
     {
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var normalizedSections = new List<StatusPanelSectionPreference>();
+        bool legacyHoldsVisible = false;
 
         foreach (StatusPanelSectionPreference section in StatusPanelSections)
         {
             string normalizedId = NormalizeStatusPanelSectionId(section.Id);
             if (string.IsNullOrWhiteSpace(normalizedId) || !seenIds.Add(normalizedId))
                 continue;
+
+            if (string.Equals(normalizedId, StatusPanelHolds, StringComparison.OrdinalIgnoreCase))
+            {
+                legacyHoldsVisible |= section.Visible;
+                seenIds.Remove(normalizedId);
+                continue;
+            }
 
             normalizedSections.Add(new StatusPanelSectionPreference
             {
@@ -452,6 +480,11 @@ public class AppPreferences
                 Order = section.Order,
             });
         }
+
+        StatusPanelSectionPreference? shipSection = normalizedSections.FirstOrDefault(section =>
+            string.Equals(section.Id, StatusPanelShipInfo, StringComparison.OrdinalIgnoreCase));
+        if (shipSection != null && legacyHoldsVisible)
+            shipSection.Visible = true;
 
         foreach (string defaultId in DefaultStatusPanelSectionOrder)
         {
@@ -464,6 +497,18 @@ public class AppPreferences
                     Order = int.MaxValue,
                 });
             }
+        }
+
+        StatusPanelSectionPreference? onlineSection = normalizedSections.FirstOrDefault(section =>
+            string.Equals(section.Id, StatusPanelOnline, StringComparison.OrdinalIgnoreCase));
+        shipSection = normalizedSections.FirstOrDefault(section =>
+            string.Equals(section.Id, StatusPanelShipInfo, StringComparison.OrdinalIgnoreCase));
+        if (onlineSection != null &&
+            shipSection != null &&
+            onlineSection.Order > shipSection.Order)
+        {
+            onlineSection.Order = shipSection.Order;
+            shipSection.Order = shipSection.Order + 1;
         }
 
         StatusPanelSections.Clear();
@@ -486,6 +531,7 @@ public class AppPreferences
         return normalized switch
         {
             StatusPanelTrader => StatusPanelTrader,
+            StatusPanelOnline => StatusPanelOnline,
             StatusPanelHolds => StatusPanelHolds,
             StatusPanelShipInfo => StatusPanelShipInfo,
             _ => string.Empty,

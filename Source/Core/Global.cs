@@ -23,9 +23,11 @@ received this source in.
 */
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 
 namespace TWXProxy.Core
 {
@@ -143,6 +145,7 @@ namespace TWXProxy.Core
         /// Set to true only when diagnosing deep variable-evaluation bugs.
         /// </summary>
         public static bool VerboseDebugMode { get; set; } = false;
+        public static bool TriggerDebugMode { get; set; } = false;
         public static bool PortHaggleDebugMode { get; set; } = false;
         public static bool PlanetHaggleDebugMode { get; set; } = false;
 
@@ -171,10 +174,23 @@ namespace TWXProxy.Core
         /// </summary>
         public static bool EnableSourceScriptCache { get; set; } = true;
 
+        public const long DefaultPreparedScriptCacheLimitBytes = 512 * 1024;
+        public const long DefaultMombotHotkeyPrewarmLimitBytes = 256 * 1024;
+
+        public static long PreparedScriptCacheLimitBytes { get; set; } = DefaultPreparedScriptCacheLimitBytes;
+        public static long MombotHotkeyPrewarmLimitBytes { get; set; } = DefaultMombotHotkeyPrewarmLimitBytes;
+
         public static string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
         public static string PortHaggleDebugLogPath { get; set; } = "/tmp/twxp_haggle_debug.log";
         public static string PlanetHaggleDebugLogPath { get; set; } = "/tmp/twxp_neg_debug.log";
         private static readonly object _debugLock = new object();
+        private static readonly object _debugWorkerLock = new object();
+        private static readonly ConcurrentQueue<string> _pendingDebugMessages = new();
+        private static readonly AutoResetEvent _debugQueueSignal = new AutoResetEvent(false);
+        private static Thread? _debugWorkerThread = null;
+        private static long _pendingDebugMessageCount = 0;
+        private static int _droppedDebugMessageCount = 0;
+        private const int MaxPendingDebugMessages = 16384;
         private static StreamWriter? _debugWriter = null;
         private static StreamWriter? _portHaggleWriter = null;
         private static StreamWriter? _planetHaggleWriter = null;
@@ -210,7 +226,7 @@ namespace TWXProxy.Core
             _debugWriter?.Dispose();
             _debugWriter = new StreamWriter(DebugLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
             {
-                AutoFlush = true
+                AutoFlush = false
             };
 
             if (resetFile || !fileExists || existingLength == 0)
@@ -225,13 +241,113 @@ namespace TWXProxy.Core
             }
         }
 
-        private static void WriteLogMessage(string message)
+        private static void EnsureDebugWorker()
+        {
+            lock (_debugWorkerLock)
+            {
+                if (_debugWorkerThread != null)
+                    return;
+
+                _debugWorkerThread = new Thread(DebugWriterLoop)
+                {
+                    IsBackground = true,
+                    Name = "TWX Debug Log Writer",
+                };
+                _debugWorkerThread.Start();
+            }
+        }
+
+        private static void DebugWriterLoop()
+        {
+            while (true)
+            {
+                _debugQueueSignal.WaitOne(250);
+                try
+                {
+                    DrainQueuedDebugMessages(flushWriter: true);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void ClearQueuedDebugMessages()
+        {
+            while (_pendingDebugMessages.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _pendingDebugMessageCount);
+            }
+
+            Interlocked.Exchange(ref _droppedDebugMessageCount, 0);
+        }
+
+        private static void EmitDroppedDebugMessageSummaryUnsafe()
+        {
+            int dropped = Interlocked.Exchange(ref _droppedDebugMessageCount, 0);
+            if (dropped <= 0)
+                return;
+
+            EnsureLogWriter(resetFile: false);
+            _debugWriter?.Write(
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [DEBUG LOG] Dropped {dropped} messages because the async debug queue hit its backlog limit.\n");
+        }
+
+        private static void DrainQueuedDebugMessages(bool flushWriter)
         {
             lock (_debugLock)
             {
-                EnsureLogWriter(resetFile: false);
-                _debugWriter?.Write($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+                if (!LogWriterEnabled && _debugWriter == null)
+                {
+                    ClearQueuedDebugMessages();
+                    return;
+                }
+
+                if ((_debugWriter != null || LogWriterEnabled) &&
+                    (! _pendingDebugMessages.IsEmpty || Volatile.Read(ref _droppedDebugMessageCount) > 0))
+                {
+                    EnsureLogWriter(resetFile: false);
+                    EmitDroppedDebugMessageSummaryUnsafe();
+                }
+                else if (!LogWriterEnabled)
+                {
+                    ClearQueuedDebugMessages();
+                }
+
+                bool wrote = false;
+                while (_pendingDebugMessages.TryDequeue(out string? entry))
+                {
+                    Interlocked.Decrement(ref _pendingDebugMessageCount);
+                    if (_debugWriter == null)
+                        continue;
+
+                    _debugWriter.Write(entry);
+                    wrote = true;
+                }
+
+                if (flushWriter && (wrote || _debugWriter != null))
+                    _debugWriter?.Flush();
             }
+        }
+
+        private static void WriteLogMessage(string message)
+        {
+            if (!LogWriterEnabled)
+                return;
+
+            EnsureDebugWorker();
+
+            long queuedMessageCount = Interlocked.Increment(ref _pendingDebugMessageCount);
+            if (queuedMessageCount > MaxPendingDebugMessages)
+            {
+                Interlocked.Decrement(ref _pendingDebugMessageCount);
+                Interlocked.Increment(ref _droppedDebugMessageCount);
+                _debugQueueSignal.Set();
+                return;
+            }
+
+            _pendingDebugMessages.Enqueue($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+            _debugQueueSignal.Set();
         }
 
         private static StreamWriter? CreateAppendWriter(string path, string header)
@@ -273,7 +389,7 @@ namespace TWXProxy.Core
             }
         }
 
-        public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled)
+        public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled, bool triggerEnabled)
         {
             lock (_debugLock)
             {
@@ -283,21 +399,26 @@ namespace TWXProxy.Core
                 bool pathChanged = !string.Equals(DebugLogPath, resolvedPath, StringComparison.Ordinal);
                 bool enabledChanged = DebugMode != enabled;
                 bool verboseChanged = VerboseDebugMode != verboseEnabled;
+                bool triggerChanged = TriggerDebugMode != triggerEnabled;
                 bool writerStateMatches = (_debugWriter != null) == (enabled || EnableVmMetrics);
 
-                if (!pathChanged && !enabledChanged && !verboseChanged && writerStateMatches)
+                if (!pathChanged && !enabledChanged && !verboseChanged && !triggerChanged && writerStateMatches)
                     return;
 
-                DebugLogPath = resolvedPath;
-
-                DebugMode = enabled;
-                VerboseDebugMode = verboseEnabled;
-
+                DrainQueuedDebugMessages(flushWriter: true);
                 _debugWriter?.Dispose();
                 _debugWriter = null;
 
+                DebugLogPath = resolvedPath;
+                DebugMode = enabled;
+                VerboseDebugMode = verboseEnabled;
+                TriggerDebugMode = triggerEnabled;
+
                 if (!LogWriterEnabled)
+                {
+                    ClearQueuedDebugMessages();
                     return;
+                }
 
                 try
                 {
@@ -356,7 +477,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void InitializeDebugLog()
         {
-            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode);
+            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode);
             ConfigureHaggleDebugLogging(PortHaggleDebugLogPath, PortHaggleDebugMode, PlanetHaggleDebugLogPath, PlanetHaggleDebugMode);
         }
 
@@ -368,9 +489,9 @@ namespace TWXProxy.Core
             if (!LogWriterEnabled && !PortHaggleDebugMode && !PlanetHaggleDebugMode) return;
             try
             {
+                DrainQueuedDebugMessages(flushWriter: true);
                 lock (_debugLock)
                 {
-                    _debugWriter?.Flush();
                     _portHaggleWriter?.Flush();
                     _planetHaggleWriter?.Flush();
                 }
@@ -393,6 +514,25 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Console.WriteLine($"[DEBUG LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        /// <summary>
+        /// Write high-volume trigger and trigger-adjacent diagnostics when trigger
+        /// debugging is explicitly enabled. This category stays off by default so
+        /// script trigger storms do not swamp the shared debug log.
+        /// </summary>
+        public static void TriggerDebugLog(string message)
+        {
+            if (!DebugMode || !TriggerDebugMode) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[TRIGGER DEBUG LOG ERROR] {ex.Message}: {message}");
             }
         }
 

@@ -24,11 +24,20 @@ public class AnsiParser
         SosEntry,       // inside SOS/PM/APC (ESC X / ^ / _) – ignored
     }
 
+    private enum LegacyPromptClearState
+    {
+        None,
+        Saw255D,
+        Saw255D255B,
+    }
+
     private readonly TerminalBuffer _buf;
     private State    _state      = State.Ground;
     private string   _csiParam   = "";
     private char     _csiIntermediate = '\0';
     private byte?    _pendingUtf8Latin1Lead;
+    private bool     _pendingPromptProbeByte;
+    private LegacyPromptClearState _legacyPromptClearState;
 
     // Saved cursor
     private int _savedRow, _savedCol;
@@ -125,16 +134,46 @@ public class AnsiParser
 
     private void ProcessByte(byte b)
     {
+        if (_legacyPromptClearState != LegacyPromptClearState.None &&
+            _state == State.Ground &&
+            b != 0x1B)
+        {
+            FlushPendingLegacyPromptClear();
+        }
+
+        if (_pendingPromptProbeByte)
+        {
+            _pendingPromptProbeByte = false;
+            if (b == 0x08)
+                return;
+
+            HandleControlChar(0x91);
+        }
+
         char c = (char)b;
 
         switch (_state)
         {
             case State.Ground:
+                // Mombot uses #145#8 as a non-visual prompt probe. Preserve it for the
+                // script/runtime side, but never let the terminal render or backspace it.
+                if (b == 0x91)
+                {
+                    _pendingPromptProbeByte = true;
+                    return;
+                }
+
                 if (b == 0x1B) { _state = State.Escape; return; }
                 HandleControlChar(b);
                 break;
 
             case State.Escape:
+                if (TryRecoverFromMalformedEscapeControlChar(b))
+                    break;
+
+                if (_legacyPromptClearState != LegacyPromptClearState.None && b != (byte)'[')
+                    FlushPendingLegacyPromptClear();
+
                 _state = State.Ground;
                 switch (b)
                 {
@@ -154,6 +193,9 @@ public class AnsiParser
 
             case State.CsiEntry:
             case State.CsiParam:
+                if (TryRecoverFromMalformedEscapeControlChar(b))
+                    break;
+
                 _state = State.CsiParam;
                 if (b >= 0x30 && b <= 0x3F)          // parameter / subparam bytes
                 {
@@ -179,6 +221,19 @@ public class AnsiParser
                 if (b == 0x1B) _state = State.Escape;  // ESC \ terminates (ST)
                 break;
         }
+    }
+
+    private bool TryRecoverFromMalformedEscapeControlChar(byte b)
+    {
+        if (b is not (0x08 or 0x09 or 0x0A or 0x0B or 0x0C or 0x0D))
+            return false;
+
+        _state = State.Ground;
+        if (_legacyPromptClearState != LegacyPromptClearState.None)
+            FlushPendingLegacyPromptClear();
+
+        HandleControlChar(b);
+        return true;
     }
 
     private void HandleControlChar(byte b)
@@ -216,6 +271,34 @@ public class AnsiParser
     private void DispatchCsi(string param, char intermediate, char finalChar)
     {
         int[] ps = ParseParams(param);
+
+        if (_legacyPromptClearState != LegacyPromptClearState.None)
+        {
+            if (_legacyPromptClearState == LegacyPromptClearState.Saw255D &&
+                IsLegacySingleParam(ps, param, 255) &&
+                finalChar == 'B')
+            {
+                _legacyPromptClearState = LegacyPromptClearState.Saw255D255B;
+                return;
+            }
+
+            if (_legacyPromptClearState == LegacyPromptClearState.Saw255D255B &&
+                IsLegacyEraseToEndOfLine(ps, param) &&
+                finalChar == 'K')
+            {
+                ApplyLegacyPromptClear();
+                _legacyPromptClearState = LegacyPromptClearState.None;
+                return;
+            }
+
+            FlushPendingLegacyPromptClear();
+        }
+
+        if (IsLegacySingleParam(ps, param, 255) && finalChar == 'D')
+        {
+            _legacyPromptClearState = LegacyPromptClearState.Saw255D;
+            return;
+        }
 
         switch (finalChar)
         {
@@ -436,7 +519,44 @@ public class AnsiParser
 
     private void RestoreCursor() => _buf.SetCursor(_savedRow, _savedCol);
 
+    private void FlushPendingLegacyPromptClear()
+    {
+        switch (_legacyPromptClearState)
+        {
+            case LegacyPromptClearState.Saw255D:
+                _buf.MoveCursorRelative(0, -255);
+                break;
+            case LegacyPromptClearState.Saw255D255B:
+                _buf.MoveCursorRelative(0, -255);
+                _buf.MoveCursorRelative(255, 0);
+                break;
+        }
+
+        _legacyPromptClearState = LegacyPromptClearState.None;
+    }
+
+    private void ApplyLegacyPromptClear()
+    {
+        _buf.SetCursor(_buf.Rows - 1, 0);
+        _buf.EraseLine(_buf.CursorRow, 0, _buf.Columns - 1);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static bool IsLegacySingleParam(int[] ps, string rawParam, int value)
+    {
+        string normalized = rawParam.TrimStart('?');
+        if (normalized.Contains(';', StringComparison.Ordinal))
+            return false;
+
+        return ps.Length == 1 && ps[0] == value;
+    }
+
+    private static bool IsLegacyEraseToEndOfLine(int[] ps, string rawParam)
+    {
+        string normalized = rawParam.TrimStart('?');
+        return string.IsNullOrEmpty(normalized) || (ps.Length == 1 && ps[0] == 0);
+    }
 
     private static int[] ParseParams(string s)
     {

@@ -191,7 +191,7 @@ namespace TWXProxy.Core
         void RemoveScriptMenus(object script);
         MenuItem? GetMenuByName(string menuName);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
-        void SuspendMenuForInput();
+        void SuspendMenuForInput(bool clearDisplay = true);
         void RestoreSuspendedMenuIfNeeded();
         bool HasSuspendedMenu { get; }
     }
@@ -435,7 +435,7 @@ namespace TWXProxy.Core
 
         public bool HasSuspendedMenu => _suspendedMenuStack is { Count: > 0 };
 
-        public void SuspendMenuForInput()
+        public void SuspendMenuForInput(bool clearDisplay = true)
         {
             if (_menuStack.Count == 0)
                 return;
@@ -443,7 +443,8 @@ namespace TWXProxy.Core
             _suspendedMenuStack = _menuStack.Reverse().ToList();
             _menuStack.Clear();
             GlobalModules.DebugLog($"[Menu] Suspended menu stack for GETINPUT (depth={_suspendedMenuStack.Count})\n");
-            ClearMenuDisplay(restoreCurrentLine: false);
+            if (clearDisplay)
+                ClearMenuDisplay(restoreCurrentLine: false);
         }
 
         public void RestoreSuspendedMenuIfNeeded()
@@ -711,7 +712,7 @@ namespace TWXProxy.Core
                             {
                                 GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Handler paused for GETINPUT\n");
                                 if (!matchingItem.CloseMenu)
-                                    SuspendMenuForInput();
+                                    SuspendMenuForInput(clearDisplay: false);
                                 break; // Exit - will resume later when input received
                             }
                             

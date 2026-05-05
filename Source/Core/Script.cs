@@ -1146,7 +1146,7 @@ namespace TWXProxy.Core
 
         public bool TextOutEvent(string text, Script? startScript)
         {
-            GlobalModules.DebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
+            GlobalModules.TriggerDebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
             // Trigger matching text out triggers in active scripts
             int i = 0;
 
@@ -1211,8 +1211,7 @@ namespace TWXProxy.Core
         public void TextLineEvent(string text, bool forceTrigger)
         {
             // Trigger matching textline triggers in active scripts
-            if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[ModInterpreter.TextLineEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
+            GlobalModules.TriggerDebugLog($"[ModInterpreter.TextLineEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
             int i = 0;
 
             while (i < _scriptList.Count)
@@ -1782,13 +1781,11 @@ namespace TWXProxy.Core
             bool result = false;
             handled = false;
 
-            if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[CheckTriggers] Text='{text}', triggerCount={triggerList.Count}, TriggersActive={TriggersActive}, Locked={Locked}, textOut={textOutTrigger}, force={forceTrigger}\n");
+            GlobalModules.TriggerDebugLog($"[CheckTriggers] Text='{text}', triggerCount={triggerList.Count}, TriggersActive={TriggersActive}, Locked={Locked}, textOut={textOutTrigger}, force={forceTrigger}\n");
 
             if ((!textOutTrigger && !forceTrigger && !TriggersActive) || Locked)
             {
-                if (GlobalModules.VerboseDebugMode)
-                    GlobalModules.DebugLog($"[CheckTriggers] BLOCKED: TriggersActive={TriggersActive}, Locked={Locked}\n");
+                GlobalModules.TriggerDebugLog($"[CheckTriggers] BLOCKED: TriggersActive={TriggersActive}, Locked={Locked}\n");
                 return false; // triggers are not enabled or locked in stasis (waiting on menu?)
             }
 
@@ -1796,13 +1793,11 @@ namespace TWXProxy.Core
 
             while (i < triggerList.Count)
             {
-                if (GlobalModules.VerboseDebugMode)
-                    GlobalModules.DebugLog($"[CheckTriggers] Checking trigger {i}: value='{triggerList[i].Value}', label='{triggerList[i].LabelName}'\n");
+                GlobalModules.TriggerDebugLog($"[CheckTriggers] Checking trigger {i}: value='{triggerList[i].Value}', label='{triggerList[i].LabelName}'\n");
                 if (text.Contains(triggerList[i].Value) || string.IsNullOrEmpty(triggerList[i].Value))
                 {
                     _lastLineHandled = true;
-                    if (GlobalModules.VerboseDebugMode)
-                        GlobalModules.DebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
+                    GlobalModules.TriggerDebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
                     // Save trigger values
                     int lifeCycle = triggerList[i].LifeCycle;
                     string labelName = triggerList[i].LabelName;
@@ -1846,20 +1841,17 @@ namespace TWXProxy.Core
                             // Set CURRENTLINE to the text that triggered this handler
                             // This allows the handler to parse the triggering line
                             string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
                             ScriptRef.SetCurrentLine(currentLine);
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
                             
                             GotoLabel(labelName);
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
                         }
                         catch (Exception ex)
                         {
                             // Script is not in execution - error handling for gotos outside execute loop
-                            GlobalModules.DebugLog($"[CheckTriggers] GotoLabel FAILED: {ex.Message}\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel FAILED: {ex.Message}\n");
                             // TWXServer.Broadcast($"{AnsiCodes.ANSI_15}Script run-time error (trigger activation): {AnsiCodes.ANSI_7}{ex.Message}\r\n");
                             SelfTerminate();
                             result = true;
@@ -1868,8 +1860,7 @@ namespace TWXProxy.Core
 
                     if (!result)
                     {
-                        if (GlobalModules.VerboseDebugMode)
-                            GlobalModules.DebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
                         TriggersActive = false;
 
                         // Save the current pause state before running the handler.
@@ -1894,14 +1885,12 @@ namespace TWXProxy.Core
 
                         if (Execute())
                         {
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
                             result = true; // script was self-terminated
                         }
                         else
                         {
-                            if (GlobalModules.VerboseDebugMode)
-                                GlobalModules.DebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
 
                             bool handlerPaused = _paused; // did the handler itself pause (e.g. its own waitOn)?
 
@@ -1910,7 +1899,7 @@ namespace TWXProxy.Core
                                 // Persistent trigger (LifeCycle==0) fired while the outer script
                                 // was mid-waitOn.  Restore the pre-trigger IP and waitFor state
                                 // so the outer waitOn resumes from the correct bytecode spot.
-                                GlobalModules.DebugLog($"[CheckTriggers] Persistent trigger fired mid-waitOn; restoring outer IP and waitFor state\n");
+                                GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger fired mid-waitOn; restoring outer IP and waitFor state\n");
                                 _codePos      = savedCodePos;
                                 _waitForActive = outerWaitActive;  // true
                                 _waitText      = savedWaitText;
@@ -1921,7 +1910,7 @@ namespace TWXProxy.Core
                             {
                                 // Handler registered its own waitOn/pause and paused.
                                 // Leave the handler's pause as the effective state.
-                                GlobalModules.DebugLog($"[CheckTriggers] Handler paused itself (new waitOn); leaving handler pause in place\n");
+                                GlobalModules.TriggerDebugLog($"[CheckTriggers] Handler paused itself (new waitOn); leaving handler pause in place\n");
                             }
                             else if (wasPaused)
                             {
@@ -1930,7 +1919,7 @@ namespace TWXProxy.Core
                                 {
                                     // One-shot trigger (waitOn): the outer pause is consumed by
                                     // this trigger firing.  Script continues from here.
-                                    GlobalModules.DebugLog($"[CheckTriggers] One-shot trigger satisfied outer pause — script continues\n");
+                                    GlobalModules.TriggerDebugLog($"[CheckTriggers] One-shot trigger satisfied outer pause — script continues\n");
                                     // _paused already false — nothing to do
                                 }
                                 else
@@ -1938,7 +1927,7 @@ namespace TWXProxy.Core
                                     // Persistent trigger (setTextLineTrigger): handler ran to
                                     // completion without setting its own waitOn.  Restore the
                                     // outer pause so the main script keeps waiting.
-                                    GlobalModules.DebugLog($"[CheckTriggers] Persistent trigger handler done; restoring outer pause\n");
+                                    GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger handler done; restoring outer pause\n");
                                     _paused = true;
                                     _pausedReason = savedPauseReason;
                                     _resetLoopDetectionOnNextExecute = true;
@@ -1950,8 +1939,7 @@ namespace TWXProxy.Core
 
                     if (result)
                     {
-                        if (GlobalModules.VerboseDebugMode)
-                            GlobalModules.DebugLog($"[CheckTriggers] Returning true from CheckTriggers\n");
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Returning true from CheckTriggers\n");
                         return result;
                     }
 
@@ -1963,8 +1951,7 @@ namespace TWXProxy.Core
                 }
             }
 
-            if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[CheckTriggers] Finished checking all triggers, returning {result}\n");
+            GlobalModules.TriggerDebugLog($"[CheckTriggers] Finished checking all triggers, returning {result}\n");
             return result;
         }
 
@@ -2260,7 +2247,7 @@ namespace TWXProxy.Core
             if (TriggerExists(name))
                 throw new Exception($"Trigger already exists: '{name}'");
 
-            GlobalModules.DebugLog($"[SETEVENTTRIGGER] name='{name}' label='{labelName}' event='{value}' param='{param}'\n");
+            GlobalModules.TriggerDebugLog($"[SETEVENTTRIGGER] name='{name}' label='{labelName}' event='{value}' param='{param}'\n");
 
             var trigger = new Trigger
             {

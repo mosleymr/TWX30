@@ -18,7 +18,8 @@ MTC.AppPaths.ResetStartupDebugLogs();
 GlobalModules.ConfigureDebugLogging(
     MTC.AppPaths.GetDebugLogPath(),
     prefs.DebugLoggingEnabled,
-    prefs.VerboseDebugLogging);
+    prefs.VerboseDebugLogging,
+    prefs.TriggerDebugLogging);
 GlobalModules.ConfigureHaggleDebugLogging(
     MTC.AppPaths.GetPortHaggleDebugLogPath(),
     prefs.DebugPortHaggleEnabled,

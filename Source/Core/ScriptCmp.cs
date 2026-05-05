@@ -28,6 +28,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -393,8 +394,38 @@ namespace TWXProxy.Core
         public int ReachableLabelCount { get; set; }
     }
 
+    public enum ScriptCacheKind
+    {
+        Source,
+        Compiled
+    }
+
+    public sealed record ScriptCacheEntrySnapshot(
+        ScriptCacheKind Kind,
+        string ScriptPath,
+        string DisplayName,
+        long EstimatedBytes,
+        int CompiledBytes,
+        long PreparedTemplateBytes,
+        int PreparedInstructionCount,
+        int DependencyCount);
+
+    public sealed record ScriptCacheSnapshot(IReadOnlyList<ScriptCacheEntrySnapshot> Entries)
+    {
+        public long TotalEstimatedBytes => Entries.Sum(static entry => entry.EstimatedBytes);
+    }
+
     public class ScriptCmp : IDisposable
     {
+        private sealed class ObjectReferenceComparer : IEqualityComparer<object>
+        {
+            public static readonly ObjectReferenceComparer Instance = new();
+
+            public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+
+            public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
         private static readonly Regex DynamicNamespaceRegex =
             new(@":([A-Za-z0-9_]+)~", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -425,6 +456,7 @@ namespace TWXProxy.Core
             public int EndLineIndexExclusive { get; set; }
             public List<string> References { get; } = new();
             public bool FallsThrough { get; set; }
+            public bool HasDynamicTargets { get; set; }
         }
 
         private sealed class TrimFileInfo
@@ -440,10 +472,33 @@ namespace TWXProxy.Core
             public string TrimDisabledReason { get; set; } = string.Empty;
         }
 
+        private sealed class DynamicReachabilityHints
+        {
+            public HashSet<string> PinnedNamespaces { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> PinnedLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public bool PinRootLabels { get; set; }
+
+            public bool HasAnyHints =>
+                PinRootLabels || PinnedNamespaces.Count > 0 || PinnedLabels.Count > 0;
+        }
+
+        private sealed class StrictNamespaceReference
+        {
+            public required string ReferenceName { get; init; }
+            public required string ReferenceKind { get; init; }
+            public string? CommandName { get; init; }
+            public required string ScriptName { get; init; }
+            public required int LineNumber { get; init; }
+            public required byte ScriptId { get; init; }
+        }
+
         private static readonly object _sourceCacheLock = new();
         private static readonly Dictionary<string, SourceScriptCacheEntry> _sourceScriptCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly object _compiledCacheLock = new();
         private static readonly Dictionary<string, CompiledScriptCacheEntry> _compiledScriptCache = new(StringComparer.OrdinalIgnoreCase);
+        private const int ObjectHeaderBytes = 16;
+        private const int ArrayHeaderBytes = 24;
+        private const int ReferenceSizeBytes = 8;
 
         private Stack<ConditionStruct> _ifStack;
         private List<CmdParam> _paramList;
@@ -465,6 +520,8 @@ namespace TWXProxy.Core
         private ScriptRef? _scriptRef;
         private PreparedScriptProgram? _preparedProgram;
         private readonly List<SourceDependencyStamp> _sourceDependencies = new();
+        private readonly List<StrictNamespaceReference> _strictNamespaceReferences = new();
+        private readonly HashSet<string> _compiledIncludePaths = new(StringComparer.OrdinalIgnoreCase);
         private string? _sourceCacheKey;
         private Dictionary<string, List<string>>? _trimmedIncludeSources;
         public bool LastSourceCacheHit { get; private set; }
@@ -476,6 +533,8 @@ namespace TWXProxy.Core
         public int LastDependencyCount { get; private set; }
         public bool TrimIncludes { get; set; }
         public bool PruneBytecode { get; set; }
+        public bool StrictIncludes { get; set; }
+        public bool PruneIncludeBranches { get; set; }
         public BytecodePruneReport? LastBytecodePruneReport { get; private set; }
 
         public ScriptCmp(ScriptRef? scriptRef = null, string scriptDirectory = "")
@@ -513,6 +572,8 @@ namespace TWXProxy.Core
 
             _code = Array.Empty<byte>();
             _includeScriptList.Clear();
+            _strictNamespaceReferences.Clear();
+            _compiledIncludePaths.Clear();
             _preparedProgram = null;
             _trimmedIncludeSources = null;
         }
@@ -789,12 +850,18 @@ namespace TWXProxy.Core
             _lineCount = 0;
             _cmdCount = 0;
             _includeScriptList.Clear();
+            _strictNamespaceReferences.Clear();
+            _compiledIncludePaths.Clear();
             _sourceDependencies.Clear();
             _trimmedIncludeSources = null;
-            _sourceCacheKey = BuildSourceCacheKey(fullPath, fullDescPath, TrimIncludes, PruneBytecode);
+            _sourceCacheKey = BuildSourceCacheKey(fullPath, fullDescPath, TrimIncludes, PruneBytecode, StrictIncludes, PruneIncludeBranches);
 
             if (TryLoadFromSourceCache(_sourceCacheKey, fullPath))
+            {
+                if (StrictIncludes)
+                    ValidateCompiledStaticLabelReferences();
                 return;
+            }
 
             AddSourceDependency(fullPath);
             if (!string.IsNullOrWhiteSpace(fullDescPath) && File.Exists(fullDescPath))
@@ -814,8 +881,12 @@ namespace TWXProxy.Core
             }
 
             CompileFromStrings(scriptText, Path.GetFileName(fullPath));
+            if (StrictIncludes)
+                ValidateStrictNamespaceReferences();
             if (PruneBytecode)
                 PruneCompiledBytecode();
+            if (StrictIncludes)
+                ValidateCompiledStaticLabelReferences();
             LastCompileTicks = Stopwatch.GetTimestamp() - compileStart;
             LastDependencyCount = _sourceDependencies.Count;
             StoreSourceCacheEntry();
@@ -1440,6 +1511,8 @@ namespace TWXProxy.Core
                 return;
 
             string cmdName = paramLine[0].ToUpperInvariant();
+            if (StrictIncludes && paramLine.Count > 1 && (cmdName == "GOTO" || cmdName == "GOSUB"))
+                TrackStrictNamespaceReference(paramLine[1], lineNumber, scriptID, "label", cmdName);
 
             // Look up command in ScriptRef
             int cmdID = -1;
@@ -1477,6 +1550,219 @@ namespace TWXProxy.Core
             AppendCode(cmdCode.ToArray());
 
             _cmdCount++;
+        }
+
+        private void TrackStrictNamespaceReference(string referenceName, int lineNumber, byte scriptID, string referenceKind, string? commandName = null)
+        {
+            if (!StrictIncludes)
+                return;
+
+            string target = referenceName.Trim();
+            if (!LooksLikeStaticNamespaceReference(target, referenceKind))
+                return;
+
+            _strictNamespaceReferences.Add(new StrictNamespaceReference
+            {
+                ReferenceName = target,
+                ReferenceKind = referenceKind,
+                CommandName = commandName,
+                ScriptName = _scriptFile,
+                LineNumber = lineNumber,
+                ScriptId = scriptID
+            });
+        }
+
+        private static bool LooksLikeStaticNamespaceReference(string value, string referenceKind)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return referenceKind switch
+            {
+                // Strict include validation is intentionally control-flow oriented:
+                // namespaced variables do not require the include source to be present,
+                // but labels do because execution can transfer into them.
+                "label" => value.StartsWith(':') && !string.IsNullOrWhiteSpace(value.TrimStart(':')),
+                _ => false
+            };
+        }
+
+        private bool TryNormalizeStaticLabelReferenceForLookup(string label, byte scriptId, out string normalizedLabel)
+        {
+            normalizedLabel = string.Empty;
+
+            if (string.IsNullOrWhiteSpace(label))
+                return false;
+
+            string candidate = label.Trim();
+            if (!candidate.StartsWith(':'))
+                return false;
+
+            candidate = candidate.ToUpperInvariant();
+
+            if (!candidate.Contains('~'))
+            {
+                if (scriptId > 0 && scriptId < _includeScriptList.Count)
+                    candidate = ":" + _includeScriptList[scriptId] + "~" + candidate.Substring(1);
+            }
+            else if (candidate.StartsWith(":~", StringComparison.Ordinal))
+            {
+                candidate = ":" + candidate.Substring(2);
+            }
+
+            if (candidate.Length <= 1)
+                return false;
+
+            normalizedLabel = candidate.Substring(1);
+            return true;
+        }
+
+        private void ValidateStrictNamespaceReferences()
+        {
+            if (_strictNamespaceReferences.Count == 0)
+                return;
+
+            var includedNamespaces = new HashSet<string>(
+                _includeScriptList.Skip(1).Where(name => !string.IsNullOrWhiteSpace(name)),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (StrictNamespaceReference reference in _strictNamespaceReferences)
+            {
+                string referenceBody = reference.ReferenceKind switch
+                {
+                    "label" => reference.ReferenceName.TrimStart(':'),
+                    "variable" => reference.ReferenceName.TrimStart('$'),
+                    "program variable" => reference.ReferenceName.TrimStart('%'),
+                    _ => reference.ReferenceName
+                };
+
+                if (reference.ReferenceKind == "label" &&
+                    TryNormalizeStaticLabelReferenceForLookup(reference.ReferenceName, reference.ScriptId, out string normalizedLabel) &&
+                    FindLabel(normalizedLabel) < 0)
+                {
+                    string missingLabelSubject = reference.CommandName != null
+                        ? $"{reference.CommandName} target '{reference.ReferenceName}'"
+                        : $"{reference.ReferenceKind} '{reference.ReferenceName}'";
+
+                    throw new Exception(
+                        $"Error on line {reference.LineNumber} in '{reference.ScriptName}': " +
+                        $"Strict includes: {missingLabelSubject} references a label that was not defined " +
+                        "in the compiled source/include closure.");
+                }
+
+                int separatorIndex = referenceBody.IndexOf('~');
+                if (separatorIndex < 0)
+                    continue;
+
+                string targetNamespace = referenceBody.Substring(0, separatorIndex);
+                if (string.IsNullOrWhiteSpace(targetNamespace))
+                    continue;
+
+                string localNamespace = GetScriptNamespace(reference.ScriptId);
+                bool isLocalNamespace = !string.IsNullOrWhiteSpace(localNamespace) &&
+                                        string.Equals(targetNamespace, localNamespace, StringComparison.OrdinalIgnoreCase);
+                if (isLocalNamespace || includedNamespaces.Contains(targetNamespace))
+                    continue;
+
+                string subject = reference.CommandName != null
+                    ? $"{reference.CommandName} target '{reference.ReferenceName}'"
+                    : $"{reference.ReferenceKind} '{reference.ReferenceName}'";
+
+                throw new Exception(
+                    $"Error on line {reference.LineNumber} in '{reference.ScriptName}': " +
+                    $"Strict includes: {subject} references namespace '{targetNamespace}', " +
+                    "which is not local and was not brought in by an INCLUDE statement.");
+            }
+        }
+
+        private void ValidateCompiledStaticLabelReferences()
+        {
+            if (_code.Length == 0)
+                return;
+
+            PreparedScriptProgram prepared;
+            try
+            {
+                prepared = PreparedScriptDecoder.Decode(this);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(
+                    $"Strict includes: failed to decode final bytecode for label validation: {ex.Message}",
+                    ex);
+            }
+
+            foreach (PreparedInstruction instruction in prepared.Instructions)
+            {
+                if (instruction.IsLabel)
+                    continue;
+
+                string commandName = instruction.CommandName.ToUpperInvariant();
+                switch (commandName)
+                {
+                    case "GOTO":
+                    case "GOSUB":
+                        ValidateCompiledStaticLabelTarget(instruction, 0, commandName);
+                        break;
+
+                    case "BRANCH":
+                        ValidateCompiledStaticLabelTarget(instruction, 1, commandName);
+                        break;
+
+                    case "SETTEXTTRIGGER":
+                    case "SETTEXTLINETRIGGER":
+                    case "SETTEXTOUTTRIGGER":
+                    case "SETDELAYTRIGGER":
+                    case "SETEVENTTRIGGER":
+                        ValidateCompiledStaticLabelTarget(instruction, 1, commandName);
+                        break;
+
+                    case "ADDMENU":
+                        if (!IsExplicitEmptyCompiledTarget(instruction, 4))
+                            ValidateCompiledStaticLabelTarget(instruction, 4, commandName);
+                        break;
+                }
+            }
+        }
+
+        private void ValidateCompiledStaticLabelTarget(PreparedInstruction instruction, int paramIndex, string commandName)
+        {
+            if (paramIndex < 0 || paramIndex >= instruction.Params.Length)
+                return;
+
+            PreparedParam param = instruction.Params[paramIndex];
+            if (param.ParamType != ScriptConstants.PARAM_CONST && param.ParamType != ScriptConstants.PARAM_CHAR)
+                return;
+
+            if (!TryResolveReachabilityLabel(instruction, param, out string qualifiedLabel))
+                return;
+
+            if (FindLabel(qualifiedLabel) >= 0)
+                return;
+
+            string sourceName = instruction.ScriptId < _includeScriptList.Count
+                ? _includeScriptList[instruction.ScriptId]
+                : Path.GetFileName(_scriptFile);
+
+            throw new Exception(
+                $"Error on line {instruction.LineNumber} in '{sourceName}': " +
+                $"Strict includes: final bytecode {commandName} target '{param.LiteralValue}' " +
+                $"resolves to missing label '{qualifiedLabel}'.");
+        }
+
+        private static bool IsExplicitEmptyCompiledTarget(PreparedInstruction instruction, int paramIndex)
+        {
+            if (paramIndex < 0 || paramIndex >= instruction.Params.Length)
+                return false;
+
+            PreparedParam param = instruction.Params[paramIndex];
+            if (param.ParamType == ScriptConstants.PARAM_CONST)
+                return string.IsNullOrWhiteSpace(param.LiteralValue);
+
+            if (param.ParamType == ScriptConstants.PARAM_CHAR)
+                return param.CharCode == 0;
+
+            return false;
         }
 
         private static string CanonicalizeTriggerName(string cmdName, int paramIndex, string param)
@@ -1578,6 +1864,10 @@ namespace TWXProxy.Core
                         ? "$" + _includeScriptList[scriptID] + "~" + varName
                         : "$" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
                 }
+                else
+                {
+                    TrackStrictNamespaceReference(varName, lineNumber, scriptID, "variable");
+                }
 
                 // Find or create variable
                 int id = FindOrCreateVariable(varName);
@@ -1603,6 +1893,10 @@ namespace TWXProxy.Core
                     varName = varName.Length > 1 && char.IsDigit(varName[1])
                         ? "%" + _includeScriptList[scriptID] + "~" + varName
                         : "%" + _includeScriptList[scriptID] + "~" + varName.Substring(1);
+                }
+                else
+                {
+                    TrackStrictNamespaceReference(varName, lineNumber, scriptID, "program variable");
                 }
 
                 // Find or create variable
@@ -1804,6 +2098,14 @@ namespace TWXProxy.Core
                                 ? "%" + _includeScriptList[scriptID] + "~" + indexVarName
                                 : "%" + _includeScriptList[scriptID] + "~" + indexVarName.Substring(1);
                     }
+                    else if (indexVarName.StartsWith("$"))
+                    {
+                        TrackStrictNamespaceReference(indexVarName, lineNumber, scriptID, "variable");
+                    }
+                    else if (indexVarName.StartsWith("%"))
+                    {
+                        TrackStrictNamespaceReference(indexVarName, lineNumber, scriptID, "program variable");
+                    }
 
                     int indexId = FindOrCreateVariable(indexVarName);
                     WriteCodeBytes(cmdCode, BitConverter.GetBytes(indexId));
@@ -1941,6 +2243,9 @@ namespace TWXProxy.Core
         {
             string fullPath = ResolveIncludePath(filename);
             AddSourceDependency(fullPath);
+            if (!_compiledIncludePaths.Add(fullPath))
+                return;
+
             List<string> scriptText;
             if (TrimIncludes &&
                 _trimmedIncludeSources != null &&
@@ -2078,41 +2383,59 @@ namespace TWXProxy.Core
                 return false;
 
             string cmd = tokens[0].ToUpperInvariant();
-            if (cmd == "RETURN" || cmd == "HALT" || cmd == "STOP")
+            if (cmd == "RETURN" || cmd == "HALT")
                 return true;
 
             return cmd == "GOTO" && tokens.Count >= 2 && tokens[1].StartsWith(":", StringComparison.Ordinal);
         }
 
-        private static string NormalizeTrimLabelToken(string token, string currentNamespace)
+        private static bool TryNormalizeSourceLabelToken(string token, string currentNamespace, bool allowRootLocal, out string normalizedLabel)
         {
+            normalizedLabel = string.Empty;
             if (string.IsNullOrWhiteSpace(token))
-                return string.Empty;
+                return false;
 
             token = token.Trim();
             if (token.StartsWith('"') && token.EndsWith('"') && token.Length >= 2)
                 token = token.Substring(1, token.Length - 2);
 
             if (!token.StartsWith(":", StringComparison.Ordinal))
-                return string.Empty;
+                return false;
 
             string label = token.Substring(1);
             if (string.IsNullOrWhiteSpace(label))
-                return string.Empty;
+                return false;
 
             if (label.StartsWith(":", StringComparison.Ordinal))
-                return string.Empty;
+                return false;
 
             if (label.Contains('~'))
-                return label.ToUpperInvariant();
+            {
+                normalizedLabel = label.ToUpperInvariant();
+                return true;
+            }
 
             if (string.IsNullOrEmpty(currentNamespace))
-                return string.Empty;
+            {
+                if (!allowRootLocal)
+                    return false;
 
-            return (currentNamespace + "~" + label).ToUpperInvariant();
+                normalizedLabel = label.ToUpperInvariant();
+                return true;
+            }
+
+            normalizedLabel = (currentNamespace + "~" + label).ToUpperInvariant();
+            return true;
         }
 
-        private List<string> ExtractQualifiedLabelReferences(IEnumerable<string> lines, string currentNamespace, out bool dynamicTargets)
+        private static string NormalizeTrimLabelToken(string token, string currentNamespace, bool allowRootLocal = false)
+        {
+            return TryNormalizeSourceLabelToken(token, currentNamespace, allowRootLocal, out string normalizedLabel)
+                ? normalizedLabel
+                : string.Empty;
+        }
+
+        private List<string> ExtractQualifiedLabelReferences(IEnumerable<string> lines, string currentNamespace, out bool dynamicTargets, bool allowRootLocal = false)
         {
             var references = new List<string>();
             dynamicTargets = false;
@@ -2164,7 +2487,7 @@ namespace TWXProxy.Core
                 if (string.IsNullOrEmpty(target) || target == "\"\"")
                     continue;
 
-                string normalized = NormalizeTrimLabelToken(target, currentNamespace);
+                string normalized = NormalizeTrimLabelToken(target, currentNamespace, allowRootLocal);
                 if (!string.IsNullOrEmpty(normalized))
                 {
                     references.Add(normalized);
@@ -2317,9 +2640,14 @@ namespace TWXProxy.Core
 
                 if (dynamicTargets)
                 {
-                    info.TrimDisabled = true;
-                    info.TrimDisabledReason = "Dynamic or unsupported label targets";
-                    return;
+                    if (!PruneIncludeBranches)
+                    {
+                        info.TrimDisabled = true;
+                        info.TrimDisabledReason = "Dynamic or unsupported label targets";
+                        return;
+                    }
+
+                    block.HasDynamicTargets = true;
                 }
 
                 bool fallsThrough = true;
@@ -2366,21 +2694,16 @@ namespace TWXProxy.Core
             foreach (TrimFileInfo info in includeFiles)
                 AnalyzeTrimFile(info);
 
+            DynamicReachabilityHints? dynamicHints = PruneIncludeBranches
+                ? BuildDynamicReachabilityHints()
+                : null;
             var namespaceMap = includeFiles.ToDictionary(f => f.Namespace, f => f, StringComparer.OrdinalIgnoreCase);
             var reachableLabelsByFile = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var expandedFullFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var workQueue = new Queue<(TrimFileInfo File, string Label)>();
 
-            void EnqueueLabel(string qualifiedLabel)
+            void EnqueueEntireFile(TrimFileInfo file)
             {
-                int tilde = qualifiedLabel.IndexOf('~');
-                if (tilde <= 0)
-                    return;
-
-                string ns = qualifiedLabel.Substring(0, tilde);
-                if (!namespaceMap.TryGetValue(ns, out TrimFileInfo? file))
-                    return;
-
                 if (file.TrimDisabled)
                 {
                     if (!expandedFullFiles.Add(file.FullPath))
@@ -2398,16 +2721,90 @@ namespace TWXProxy.Core
                     reachableLabelsByFile[file.FullPath] = labels;
                 }
 
+                foreach (TrimBlock block in file.Blocks)
+                {
+                    if (labels.Add(block.Label))
+                        workQueue.Enqueue((file, block.Label));
+                }
+            }
+
+            void EnqueueLabel(string qualifiedLabel)
+            {
+                int tilde = qualifiedLabel.IndexOf('~');
+                if (tilde <= 0)
+                    return;
+
+                string ns = qualifiedLabel.Substring(0, tilde);
+                if (!namespaceMap.TryGetValue(ns, out TrimFileInfo? file))
+                    return;
+
+                if (file.TrimDisabled)
+                {
+                    EnqueueEntireFile(file);
+                    return;
+                }
+
+                if (!reachableLabelsByFile.TryGetValue(file.FullPath, out HashSet<string>? labels))
+                {
+                    labels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    reachableLabelsByFile[file.FullPath] = labels;
+                }
+
                 if (labels.Add(qualifiedLabel))
                     workQueue.Enqueue((file, qualifiedLabel));
             }
 
-            List<string> rootRefs = ExtractQualifiedLabelReferences(files[rootFull].Lines, string.Empty, out bool rootDynamicTargets);
+            void EnqueueDynamicHints()
+            {
+                if (dynamicHints == null)
+                    return;
+
+                foreach (string pinnedLabel in dynamicHints.PinnedLabels)
+                    EnqueueLabel(pinnedLabel);
+
+                foreach (string pinnedNamespace in dynamicHints.PinnedNamespaces)
+                {
+                    if (namespaceMap.TryGetValue(pinnedNamespace, out TrimFileInfo? pinnedFile))
+                        EnqueueEntireFile(pinnedFile);
+                }
+            }
+
+            List<string> rootRefs = ExtractQualifiedLabelReferences(
+                files[rootFull].Lines,
+                string.Empty,
+                out bool rootDynamicTargets,
+                allowRootLocal: PruneIncludeBranches);
+            HashSet<string> pinnedNamespaces = new(StringComparer.OrdinalIgnoreCase);
+            bool pinRootLabels = false;
             if (rootDynamicTargets)
-                return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            {
+                if (dynamicHints != null)
+                {
+                    pinnedNamespaces = dynamicHints.PinnedNamespaces;
+                    pinRootLabels = dynamicHints.PinRootLabels;
+                }
+                else
+                {
+                    pinnedNamespaces = BuildPinnedDynamicNamespaces(out pinRootLabels);
+                }
+
+                // If the root script has dynamic targets and we cannot infer any
+                // include namespaces to preserve, fall back to the current safe
+                // behavior and skip source trimming for this artifact.
+                if (pinnedNamespaces.Count == 0 && !pinRootLabels)
+                    return new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            }
 
             foreach (string rootRef in rootRefs)
                 EnqueueLabel(rootRef);
+
+            EnqueueDynamicHints();
+
+            foreach (string pinnedNamespace in pinnedNamespaces)
+            {
+                if (namespaceMap.TryGetValue(pinnedNamespace, out TrimFileInfo? file))
+                    EnqueueEntireFile(file);
+            }
 
             while (workQueue.Count > 0)
             {
@@ -2417,6 +2814,9 @@ namespace TWXProxy.Core
 
                 foreach (string nextRef in block.References)
                     EnqueueLabel(nextRef);
+
+                if (block.HasDynamicTargets)
+                    EnqueueDynamicHints();
 
                 if (!block.FallsThrough)
                     continue;
@@ -2475,7 +2875,20 @@ namespace TWXProxy.Core
             {
                 PreparedScriptProgram prepared = PreparedScriptDecoder.Decode(this);
                 PreparedInstruction[] instructions = prepared.Instructions;
-                HashSet<string> pinnedNamespaces = BuildPinnedDynamicNamespaces(out bool pinRootLabels);
+                DynamicReachabilityHints? dynamicHints = PruneIncludeBranches
+                    ? BuildDynamicReachabilityHints()
+                    : null;
+                HashSet<string> pinnedNamespaces;
+                bool pinRootLabels;
+                if (dynamicHints != null)
+                {
+                    pinnedNamespaces = dynamicHints.PinnedNamespaces;
+                    pinRootLabels = dynamicHints.PinRootLabels;
+                }
+                else
+                {
+                    pinnedNamespaces = BuildPinnedDynamicNamespaces(out pinRootLabels);
+                }
                 report.OriginalInstructionCount = instructions.Length;
                 if (instructions.Length == 0)
                 {
@@ -2517,10 +2930,14 @@ namespace TWXProxy.Core
                             continue;
 
                         string labelName = label.Name;
-                        int tildeIndex = labelName.IndexOf('~');
-                        bool keepLabel = tildeIndex > 0
-                            ? pinnedNamespaces.Contains(labelName.Substring(0, tildeIndex))
-                            : pinRootLabels;
+                        bool keepLabel = dynamicHints?.PinnedLabels.Contains(labelName) == true;
+                        if (!keepLabel)
+                        {
+                            int tildeIndex = labelName.IndexOf('~');
+                            keepLabel = tildeIndex > 0
+                                ? pinnedNamespaces.Contains(labelName.Substring(0, tildeIndex))
+                                : pinRootLabels;
+                        }
 
                         if (!keepLabel)
                             continue;
@@ -2549,6 +2966,15 @@ namespace TWXProxy.Core
                         return false;
 
                     EnqueueInstruction(instructionIndex);
+                    return true;
+                }
+
+                bool TryEnqueueDynamicFallback()
+                {
+                    if (dynamicHints == null || !dynamicHints.HasAnyHints)
+                        return false;
+
+                    EnqueuePinnedLabelSets();
                     return true;
                 }
 
@@ -2625,18 +3051,18 @@ namespace TWXProxy.Core
                     {
                         case "GOTO":
                             if (!TryEnqueueLabelTarget(instruction, 0))
-                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                                unsupportedFlow = !(TryEnqueueDynamicFallback() || IsPinnedNamespace(instruction.ScriptId));
                             fallThrough = false;
                             break;
 
                         case "GOSUB":
                             if (!TryEnqueueLabelTarget(instruction, 0))
-                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                                unsupportedFlow = !(TryEnqueueDynamicFallback() || IsPinnedNamespace(instruction.ScriptId));
                             break;
 
                         case "BRANCH":
                             if (!TryEnqueueLabelTarget(instruction, 1))
-                                unsupportedFlow = !IsPinnedNamespace(instruction.ScriptId);
+                                unsupportedFlow = !(TryEnqueueDynamicFallback() || IsPinnedNamespace(instruction.ScriptId));
                             break;
 
                         case "SETTEXTTRIGGER":
@@ -2645,20 +3071,23 @@ namespace TWXProxy.Core
                         case "SETDELAYTRIGGER":
                         case "SETEVENTTRIGGER":
                             if (!TryEnqueueLabelTarget(instruction, 1))
-                                EnqueueNamespaceFallback(instruction, 1);
+                            {
+                                if (!TryEnqueueDynamicFallback())
+                                    EnqueueNamespaceFallback(instruction, 1);
+                            }
                             break;
 
                         case "ADDMENU":
                             if (!IsExplicitEmptyTarget(instruction, 4) &&
                                 !TryEnqueueLabelTarget(instruction, 4))
                             {
-                                EnqueueNamespaceFallback(instruction, 4);
+                                if (!TryEnqueueDynamicFallback())
+                                    EnqueueNamespaceFallback(instruction, 4);
                             }
                             break;
 
                         case "RETURN":
                         case "HALT":
-                        case "STOP":
                             fallThrough = false;
                             break;
                     }
@@ -2817,6 +3246,114 @@ namespace TWXProxy.Core
             return TryQualifyCompiledLabelToken(instruction.ScriptId, param.LiteralValue, out qualifiedLabel);
         }
 
+        private DynamicReachabilityHints BuildDynamicReachabilityHints()
+        {
+            var hints = new DynamicReachabilityHints();
+            var dynamicTargetVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var fallbackNamespacesByVariable = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var literalLabelsByVariable = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var aliasSourcesByVariable = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var opaqueAssignedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string rootPath = Path.GetFullPath(_scriptFile);
+
+            foreach (SourceDependencyStamp dependency in _sourceDependencies)
+            {
+                if (!dependency.Path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                List<string> lines = LoadSourceLines(dependency.Path);
+                string currentNamespace = dependency.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase)
+                    ? string.Empty
+                    : Path.GetFileNameWithoutExtension(dependency.Path).ToUpperInvariant();
+
+                foreach (string rawLine in lines)
+                {
+                    string line = rawLine.TrimStart();
+                    if (string.IsNullOrEmpty(line) || line[0] == '\'')
+                        continue;
+
+                    List<string> tokens = TokenizeSourceLine(line);
+                    if (tokens.Count == 0)
+                        continue;
+
+                    if (TryGetDynamicControlTarget(tokens, currentNamespace, out string targetToken, allowRootLocal: true))
+                    {
+                        if (TryNormalizeSourceVariableToken(targetToken, currentNamespace, out string normalizedVariable))
+                        {
+                            dynamicTargetVariables.Add(normalizedVariable);
+                            AddToLookup(fallbackNamespacesByVariable, normalizedVariable, currentNamespace);
+                        }
+                        else
+                        {
+                            AddDynamicFallbackScope(hints, currentNamespace);
+                            foreach (Match match in DynamicNamespaceRegex.Matches(targetToken))
+                            {
+                                if (match.Groups.Count > 1 && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                                    hints.PinnedNamespaces.Add(match.Groups[1].Value.ToUpperInvariant());
+                            }
+                        }
+                    }
+
+                    if (TryGetLiteralLabelAssignment(tokens, currentNamespace, out string literalVariable, out string qualifiedLabel, allowRootLocal: true))
+                    {
+                        AddToLookup(literalLabelsByVariable, literalVariable, qualifiedLabel);
+                    }
+                    else if (TryGetVariableAliasAssignment(tokens, currentNamespace, out string destinationVariable, out string sourceVariable))
+                    {
+                        AddToLookup(aliasSourcesByVariable, destinationVariable, sourceVariable);
+                    }
+                    else if (TryGetOpaqueVariableAssignment(tokens, currentNamespace, out string opaqueVariable))
+                    {
+                        opaqueAssignedVariables.Add(opaqueVariable);
+                    }
+                }
+            }
+
+            foreach (string dynamicVariable in dynamicTargetVariables)
+            {
+                var visitedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var pendingVariables = new Queue<string>();
+                pendingVariables.Enqueue(dynamicVariable);
+
+                bool resolvedAnyLabels = false;
+                bool needsFallback = false;
+
+                while (pendingVariables.Count > 0)
+                {
+                    string variable = pendingVariables.Dequeue();
+                    if (!visitedVariables.Add(variable))
+                        continue;
+
+                    if (literalLabelsByVariable.TryGetValue(variable, out HashSet<string>? labels))
+                    {
+                        foreach (string label in labels)
+                            hints.PinnedLabels.Add(label);
+                        resolvedAnyLabels = true;
+                    }
+
+                    if (opaqueAssignedVariables.Contains(variable))
+                        needsFallback = true;
+
+                    if (aliasSourcesByVariable.TryGetValue(variable, out HashSet<string>? aliases))
+                    {
+                        foreach (string alias in aliases)
+                            pendingVariables.Enqueue(alias);
+                    }
+                }
+
+                if (!resolvedAnyLabels || needsFallback)
+                {
+                    if (fallbackNamespacesByVariable.TryGetValue(dynamicVariable, out HashSet<string>? fallbackScopes))
+                    {
+                        foreach (string fallbackScope in fallbackScopes)
+                            AddDynamicFallbackScope(hints, fallbackScope);
+                    }
+                }
+            }
+
+            return hints;
+        }
+
         private HashSet<string> BuildPinnedDynamicNamespaces(out bool pinRootLabels)
         {
             pinRootLabels = false;
@@ -2863,6 +3400,41 @@ namespace TWXProxy.Core
             if (dynamicTargetVariables.Count == 0)
                 return pinned;
 
+            bool addedAliasSource;
+            do
+            {
+                addedAliasSource = false;
+
+                foreach (SourceDependencyStamp dependency in _sourceDependencies)
+                {
+                    if (!dependency.Path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    List<string> lines = LoadSourceLines(dependency.Path);
+                    string currentNamespace = dependency.Path.Equals(rootPath, StringComparison.OrdinalIgnoreCase)
+                        ? string.Empty
+                        : Path.GetFileNameWithoutExtension(dependency.Path).ToUpperInvariant();
+
+                    foreach (string rawLine in lines)
+                    {
+                        string line = rawLine.TrimStart();
+                        if (string.IsNullOrEmpty(line) || line[0] == '\'')
+                            continue;
+
+                        List<string> tokens = TokenizeSourceLine(line);
+                        if (!TryGetVariableAliasAssignment(tokens, currentNamespace, out string destinationVariable, out string sourceVariable))
+                            continue;
+
+                        if (!dynamicTargetVariables.Contains(destinationVariable))
+                            continue;
+
+                        if (dynamicTargetVariables.Add(sourceVariable))
+                            addedAliasSource = true;
+                    }
+                }
+            }
+            while (addedAliasSource);
+
             foreach (SourceDependencyStamp dependency in _sourceDependencies)
             {
                 if (!dependency.Path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
@@ -2901,7 +3473,7 @@ namespace TWXProxy.Core
             return pinned;
         }
 
-        private static bool TryGetDynamicControlTarget(List<string> tokens, string currentNamespace, out string targetToken)
+        private static bool TryGetDynamicControlTarget(List<string> tokens, string currentNamespace, out string targetToken, bool allowRootLocal = false)
         {
             targetToken = string.Empty;
             if (tokens.Count == 0 || tokens[0].StartsWith(":", StringComparison.Ordinal))
@@ -2939,7 +3511,7 @@ namespace TWXProxy.Core
             if (string.IsNullOrEmpty(targetToken) || targetToken == "\"\"")
                 return false;
 
-            return string.IsNullOrEmpty(NormalizeTrimLabelToken(targetToken, currentNamespace));
+            return string.IsNullOrEmpty(NormalizeTrimLabelToken(targetToken, currentNamespace, allowRootLocal));
         }
 
         private static bool TryNormalizeSourceVariableToken(string token, string currentNamespace, out string normalizedVariable)
@@ -2980,7 +3552,7 @@ namespace TWXProxy.Core
             return true;
         }
 
-        private static bool TryGetLiteralLabelAssignment(List<string> tokens, string currentNamespace, out string normalizedVariable, out string qualifiedLabel)
+        private static bool TryGetLiteralLabelAssignment(List<string> tokens, string currentNamespace, out string normalizedVariable, out string qualifiedLabel, bool allowRootLocal = false)
         {
             normalizedVariable = string.Empty;
             qualifiedLabel = string.Empty;
@@ -2994,8 +3566,63 @@ namespace TWXProxy.Core
             if (!TryNormalizeSourceVariableToken(tokens[1], currentNamespace, out normalizedVariable))
                 return false;
 
-            qualifiedLabel = NormalizeTrimLabelToken(tokens[2], currentNamespace);
+            qualifiedLabel = NormalizeTrimLabelToken(tokens[2], currentNamespace, allowRootLocal);
             return !string.IsNullOrEmpty(qualifiedLabel);
+        }
+
+        private static bool TryGetOpaqueVariableAssignment(List<string> tokens, string currentNamespace, out string normalizedVariable)
+        {
+            normalizedVariable = string.Empty;
+
+            if (tokens.Count < 3 || tokens[0].StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            if (!string.Equals(tokens[0], "SETVAR", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!TryNormalizeSourceVariableToken(tokens[1], currentNamespace, out normalizedVariable))
+                return false;
+
+            if (TryNormalizeSourceVariableToken(tokens[2], currentNamespace, out _))
+                return false;
+
+            return !TryNormalizeSourceLabelToken(tokens[2], currentNamespace, allowRootLocal: true, out _);
+        }
+
+        private static void AddToLookup(Dictionary<string, HashSet<string>> lookup, string key, string value)
+        {
+            if (!lookup.TryGetValue(key, out HashSet<string>? values))
+            {
+                values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                lookup[key] = values;
+            }
+
+            values.Add(value);
+        }
+
+        private static void AddDynamicFallbackScope(DynamicReachabilityHints hints, string currentNamespace)
+        {
+            if (string.IsNullOrEmpty(currentNamespace))
+                hints.PinRootLabels = true;
+            else
+                hints.PinnedNamespaces.Add(currentNamespace);
+        }
+
+        private static bool TryGetVariableAliasAssignment(List<string> tokens, string currentNamespace, out string destinationVariable, out string sourceVariable)
+        {
+            destinationVariable = string.Empty;
+            sourceVariable = string.Empty;
+
+            if (tokens.Count < 3 || tokens[0].StartsWith(":", StringComparison.Ordinal))
+                return false;
+
+            if (!string.Equals(tokens[0], "SETVAR", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!TryNormalizeSourceVariableToken(tokens[1], currentNamespace, out destinationVariable))
+                return false;
+
+            return TryNormalizeSourceVariableToken(tokens[2], currentNamespace, out sourceVariable);
         }
 
         private bool TryQualifyCompiledLabelToken(byte scriptId, string token, out string qualifiedLabel)
@@ -3154,14 +3781,16 @@ namespace TWXProxy.Core
             return ticks * 1000.0 / Stopwatch.Frequency;
         }
 
-        private static string BuildSourceCacheKey(string fullPath, string descFile, bool trimIncludes, bool pruneBytecode)
+        private static string BuildSourceCacheKey(string fullPath, string descFile, bool trimIncludes, bool pruneBytecode, bool strictIncludes, bool pruneIncludeBranches)
         {
             string descPart = string.IsNullOrWhiteSpace(descFile)
                 ? string.Empty
                 : Path.GetFullPath(descFile);
             return fullPath + "|" + descPart +
                    "|trim=" + (trimIncludes ? "1" : "0") +
-                   "|prune=" + (pruneBytecode ? "1" : "0");
+                   "|prune=" + (pruneBytecode ? "1" : "0") +
+                   "|strictIncludes=" + (strictIncludes ? "1" : "0") +
+                   "|pruneIncludeBranches=" + (pruneIncludeBranches ? "1" : "0");
         }
 
         private static SourceDependencyStamp CaptureDependencyStamp(string path)
@@ -3221,7 +3850,8 @@ namespace TWXProxy.Core
                 return false;
 
             var info = new FileInfo(entry.Path);
-            return info.LastWriteTimeUtc.Ticks == entry.LastWriteUtcTicks &&
+            return entry.Length <= GlobalModules.PreparedScriptCacheLimitBytes &&
+                   info.LastWriteTimeUtc.Ticks == entry.LastWriteUtcTicks &&
                    info.Length == entry.Length;
         }
 
@@ -3281,6 +3911,9 @@ namespace TWXProxy.Core
                 return;
 
             CompiledScriptStamp stamp = CaptureCompiledStamp(fullPath);
+            if (stamp.Length < 0 || stamp.Length > GlobalModules.PreparedScriptCacheLimitBytes)
+                return;
+
             var entry = new CompiledScriptCacheEntry
             {
                 Path = stamp.Path,
@@ -3433,6 +4066,69 @@ namespace TWXProxy.Core
             }
         }
 
+        public static ScriptCacheSnapshot CaptureCacheSnapshot()
+        {
+            var entries = new List<ScriptCacheEntrySnapshot>();
+
+            lock (_sourceCacheLock)
+            {
+                List<string>? invalidKeys = null;
+                foreach ((string cacheKey, SourceScriptCacheEntry entry) in _sourceScriptCache)
+                {
+                    if (!IsCacheEntryValid(entry))
+                    {
+                        invalidKeys ??= new List<string>();
+                        invalidKeys.Add(cacheKey);
+                        continue;
+                    }
+
+                    entries.Add(BuildSourceCacheSnapshot(entry));
+                }
+
+                if (invalidKeys != null)
+                {
+                    foreach (string invalidKey in invalidKeys)
+                        _sourceScriptCache.Remove(invalidKey);
+                }
+            }
+
+            lock (_compiledCacheLock)
+            {
+                List<string>? invalidKeys = null;
+                foreach ((string scriptPath, CompiledScriptCacheEntry entry) in _compiledScriptCache)
+                {
+                    if (!IsCompiledCacheEntryValid(entry))
+                    {
+                        invalidKeys ??= new List<string>();
+                        invalidKeys.Add(scriptPath);
+                        continue;
+                    }
+
+                    entries.Add(BuildCompiledCacheSnapshot(entry));
+                }
+
+                if (invalidKeys != null)
+                {
+                    foreach (string invalidKey in invalidKeys)
+                        _compiledScriptCache.Remove(invalidKey);
+                }
+            }
+
+            entries.Sort(static (left, right) =>
+            {
+                int byName = StringComparer.OrdinalIgnoreCase.Compare(left.DisplayName, right.DisplayName);
+                if (byName != 0)
+                    return byName;
+
+                int byKind = left.Kind.CompareTo(right.Kind);
+                return byKind != 0
+                    ? byKind
+                    : StringComparer.OrdinalIgnoreCase.Compare(left.ScriptPath, right.ScriptPath);
+            });
+
+            return new ScriptCacheSnapshot(entries);
+        }
+
         public static bool PrewarmCompiledScript(string filename, ScriptRef? scriptRef, string scriptDirectory, bool forceRefresh, out string? error)
         {
             error = null;
@@ -3470,6 +4166,218 @@ namespace TWXProxy.Core
                 error = ex.Message;
                 return false;
             }
+        }
+
+        private static ScriptCacheEntrySnapshot BuildSourceCacheSnapshot(SourceScriptCacheEntry entry)
+        {
+            string scriptPath = ExtractSourcePathFromCacheKey(entry.CacheKey);
+            string displayName = BuildCacheDisplayName(scriptPath);
+            long preparedBytes = EstimatePreparedTemplateBytes(entry.PreparedTemplate);
+            long estimatedBytes =
+                EstimateObjectInstanceBytes(ReferenceSizeBytes * 3) +
+                EstimateStringBytes(entry.CacheKey) +
+                EstimateByteArrayBytes(entry.CompiledBytes) +
+                EstimateDependencyListBytes(entry.Dependencies) +
+                preparedBytes;
+
+            return new ScriptCacheEntrySnapshot(
+                ScriptCacheKind.Source,
+                scriptPath,
+                displayName,
+                estimatedBytes,
+                entry.CompiledBytes.Length,
+                preparedBytes,
+                entry.PreparedTemplate?.Instructions.Length ?? 0,
+                entry.Dependencies.Count);
+        }
+
+        private static ScriptCacheEntrySnapshot BuildCompiledCacheSnapshot(CompiledScriptCacheEntry entry)
+        {
+            string displayName = BuildCacheDisplayName(entry.Path);
+            long preparedBytes = EstimatePreparedTemplateBytes(entry.PreparedTemplate);
+            long estimatedBytes =
+                EstimateObjectInstanceBytes(ReferenceSizeBytes * 3 + sizeof(long) * 2) +
+                EstimateStringBytes(entry.Path) +
+                EstimateByteArrayBytes(entry.CompiledBytes) +
+                preparedBytes;
+
+            return new ScriptCacheEntrySnapshot(
+                ScriptCacheKind.Compiled,
+                entry.Path,
+                displayName,
+                estimatedBytes,
+                entry.CompiledBytes.Length,
+                preparedBytes,
+                entry.PreparedTemplate?.Instructions.Length ?? 0,
+                0);
+        }
+
+        private static string ExtractSourcePathFromCacheKey(string cacheKey)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey))
+                return string.Empty;
+
+            int separator = cacheKey.IndexOf('|');
+            return separator < 0
+                ? cacheKey
+                : cacheKey[..separator];
+        }
+
+        private static string BuildCacheDisplayName(string scriptPath)
+        {
+            if (string.IsNullOrWhiteSpace(scriptPath))
+                return "(unknown)";
+
+            string fileName = Path.GetFileNameWithoutExtension(scriptPath);
+            fileName = fileName.TrimStart('_');
+            return string.IsNullOrWhiteSpace(fileName)
+                ? Path.GetFileName(scriptPath)
+                : fileName;
+        }
+
+        private static long EstimateDependencyListBytes(List<SourceDependencyStamp> dependencies)
+        {
+            long bytes = EstimateObjectInstanceBytes(ReferenceSizeBytes + sizeof(int) * 2);
+            bytes += EstimateValueTypeArrayBytes(ReferenceSizeBytes + sizeof(long) * 2, dependencies.Count);
+
+            foreach (SourceDependencyStamp dependency in dependencies)
+                bytes += EstimateStringBytes(dependency.Path);
+
+            return bytes;
+        }
+
+        private static long EstimatePreparedTemplateBytes(PreparedScriptProgram? preparedProgram)
+        {
+            if (preparedProgram == null)
+                return 0;
+
+            var visited = new HashSet<object>(ObjectReferenceComparer.Instance);
+            return EstimatePreparedProgramBytes(preparedProgram, visited);
+        }
+
+        private static long EstimatePreparedProgramBytes(PreparedScriptProgram preparedProgram, HashSet<object> visited)
+        {
+            if (!visited.Add(preparedProgram))
+                return 0;
+
+            long bytes = EstimateObjectInstanceBytes(ReferenceSizeBytes * 2 + sizeof(int));
+            bytes += EstimateValueTypeArrayBytes(sizeof(int), preparedProgram.Instructions.Length);
+
+            PreparedInstruction[] instructions = preparedProgram.Instructions;
+            if (visited.Add(instructions))
+                bytes += EstimateReferenceArrayBytes(instructions.Length);
+
+            foreach (PreparedInstruction instruction in instructions)
+                bytes += EstimatePreparedInstructionBytes(instruction, visited);
+
+            return bytes;
+        }
+
+        private static long EstimatePreparedInstructionBytes(PreparedInstruction instruction, HashSet<object> visited)
+        {
+            if (!visited.Add(instruction))
+                return 0;
+
+            long bytes = EstimateObjectInstanceBytes(
+                sizeof(int) * 3 +
+                sizeof(byte) +
+                sizeof(ushort) * 3 +
+                sizeof(bool) * 3 +
+                (ReferenceSizeBytes * 6));
+
+            bytes += EstimateStringBytes(instruction.CommandName, visited);
+            bytes += EstimatePreparedParamArrayBytes(instruction.Params, visited);
+            bytes += EstimateValueTypeArrayBytes(sizeof(int), instruction.DynamicParamIndexes.Length, instruction.DynamicParamIndexes, visited);
+
+            return bytes;
+        }
+
+        private static long EstimatePreparedParamArrayBytes(PreparedParam[] parameters, HashSet<object> visited)
+        {
+            long bytes = 0;
+            if (visited.Add(parameters))
+                bytes += EstimateReferenceArrayBytes(parameters.Length);
+
+            foreach (PreparedParam parameter in parameters)
+                bytes += EstimatePreparedParamBytes(parameter, visited);
+
+            return bytes;
+        }
+
+        private static long EstimatePreparedParamBytes(PreparedParam parameter, HashSet<object> visited)
+        {
+            if (!visited.Add(parameter))
+                return 0;
+
+            long bytes = EstimateObjectInstanceBytes(
+                sizeof(int) * 2 +
+                sizeof(ushort) +
+                sizeof(byte) +
+                sizeof(bool) * 2 +
+                sizeof(char) +
+                sizeof(double) +
+                (ReferenceSizeBytes * 7));
+
+            bytes += EstimateStringBytes(parameter.LiteralValue, visited);
+            bytes += EstimateStringBytes(parameter.ProgVarName, visited);
+            bytes += EstimatePreparedParamArrayBytes(parameter.Indexes, visited);
+
+            return bytes;
+        }
+
+        private static long EstimateStringBytes(string? value)
+        {
+            return EstimateStringBytes(value, null);
+        }
+
+        private static long EstimateStringBytes(string? value, HashSet<object>? visited)
+        {
+            if (string.IsNullOrEmpty(value))
+                return 0;
+
+            if (visited != null && !visited.Add(value))
+                return 0;
+
+            return AlignToPointerBoundary(ObjectHeaderBytes + sizeof(int) + sizeof(char) * value.Length + sizeof(char));
+        }
+
+        private static long EstimateByteArrayBytes(byte[]? bytes)
+        {
+            return bytes == null ? 0 : EstimateValueTypeArrayBytes(sizeof(byte), bytes.Length);
+        }
+
+        private static long EstimateReferenceArrayBytes(int length)
+        {
+            return EstimateArrayBytes(ReferenceSizeBytes, length);
+        }
+
+        private static long EstimateValueTypeArrayBytes(int elementSize, int length)
+        {
+            return EstimateArrayBytes(elementSize, length);
+        }
+
+        private static long EstimateValueTypeArrayBytes<T>(int elementSize, int length, T[] array, HashSet<object> visited)
+        {
+            if (!visited.Add(array))
+                return 0;
+
+            return EstimateArrayBytes(elementSize, length);
+        }
+
+        private static long EstimateArrayBytes(int elementSize, int length)
+        {
+            return AlignToPointerBoundary(ArrayHeaderBytes + (long)elementSize * Math.Max(0, length));
+        }
+
+        private static long EstimateObjectInstanceBytes(int fieldBytes)
+        {
+            return AlignToPointerBoundary(ObjectHeaderBytes + fieldBytes);
+        }
+
+        private static long AlignToPointerBoundary(long bytes)
+        {
+            long remainder = bytes & 7;
+            return remainder == 0 ? bytes : bytes + (8 - remainder);
         }
 
         private static List<string> SplitSourceLines(string text)

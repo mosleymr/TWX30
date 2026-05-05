@@ -97,6 +97,7 @@ public sealed class FloatingDeckPanel : Border
             Padding = new Thickness(14),
             Height = bodyHeight,
             MinHeight = _minBodyHeight,
+            ClipToBounds = true,
             Child = body,
         };
 

@@ -52,6 +52,8 @@ namespace TWXC
                 Console.WriteLine("   or: TWXC --precompile script [outfile]");
                 Console.WriteLine("   or: TWXC --trim-includes script [descfile]");
                 Console.WriteLine("   or: TWXC --prune-bytecode script [descfile]");
+                Console.WriteLine("   or: TWXC --prune-include-branches script [descfile]");
+                Console.WriteLine("   or: TWXC --strict-includes script [descfile]");
                 Console.WriteLine();
                 Console.WriteLine("script     - Filename of the script to be compiled, this is usually a .ts file.");
                 Console.WriteLine("[descfile] - Optional filename of a description text file to be included in the");
@@ -63,6 +65,13 @@ namespace TWXC
                 Console.WriteLine("--precompile - Produce a Pascal-compatible encrypted .inc include file.");
                 Console.WriteLine("--trim-includes - Experimentally compile only reachable labels from includes.");
                 Console.WriteLine("--prune-bytecode - Force post-compile unreachable-bytecode pruning (default behavior).");
+                Console.WriteLine("--prune-include-branches - Experimental stronger include-branch pruning.");
+                Console.WriteLine("                           Tracks direct label refs, triggers, and simple");
+                Console.WriteLine("                           variable-held literal labels such as");
+                Console.WriteLine("                           SETVAR $fn \":sub~myfunc\" + GOSUB $fn.");
+                Console.WriteLine("--strict-includes - Fail compilation when static labels referenced by");
+                Console.WriteLine("                    GOTO/GOSUB are missing, or when a non-local namespace");
+                Console.WriteLine("                    target was not brought in by INCLUDE.");
                 Console.WriteLine();
                 Console.WriteLine("If the target .cts file already exists and compilation succeeds,");
                 Console.WriteLine("TWXC replaces the existing file with the newly compiled output.");
@@ -74,6 +83,8 @@ namespace TWXC
             bool trimIncludes = false;
             bool compatMode = false;
             bool pruneBytecode = true;
+            bool strictIncludes = false;
+            bool pruneIncludeBranches = false;
             var positionalArgs = new System.Collections.Generic.List<string>();
             foreach (string arg in args)
             {
@@ -107,6 +118,20 @@ namespace TWXC
                     continue;
                 }
 
+                if (string.Equals(arg, "--strict-includes", StringComparison.OrdinalIgnoreCase))
+                {
+                    strictIncludes = true;
+                    continue;
+                }
+
+                if (string.Equals(arg, "--prune-include-branches", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, "--experimental-include-prune", StringComparison.OrdinalIgnoreCase))
+                {
+                    pruneIncludeBranches = true;
+                    trimIncludes = true;
+                    continue;
+                }
+
                 positionalArgs.Add(arg);
             }
 
@@ -115,6 +140,7 @@ namespace TWXC
                 if (positionalArgs.Count < 1 || positionalArgs.Count > 2)
                 {
                     Console.WriteLine("Usage: TWXC --precompile script [outfile]");
+                    Environment.ExitCode = 1;
                     return;
                 }
 
@@ -135,6 +161,7 @@ namespace TWXC
                 catch (Exception ex)
                 {
                     Console.WriteLine(ex.Message);
+                    Environment.ExitCode = 1;
                 }
 
                 return;
@@ -143,6 +170,7 @@ namespace TWXC
             if (positionalArgs.Count < 1 || positionalArgs.Count > 2)
             {
                 Console.WriteLine("Usage: TWXC script [descfile]");
+                Environment.ExitCode = 1;
                 return;
             }
 
@@ -150,6 +178,8 @@ namespace TWXC
             var scriptCmp = new ScriptCmp(scriptRef);
             scriptCmp.TrimIncludes = trimIncludes;
             scriptCmp.PruneBytecode = pruneBytecode;
+            scriptCmp.StrictIncludes = strictIncludes;
+            scriptCmp.PruneIncludeBranches = pruneIncludeBranches;
             bool compileOk = false;
             string fileOut = StripFileExtension(positionalArgs[0]);
             
@@ -164,6 +194,7 @@ namespace TWXC
             catch (Exception ex)
             {
                 Console.WriteLine(ex.Message);
+                Environment.ExitCode = 1;
             }
 
             if (compileOk)

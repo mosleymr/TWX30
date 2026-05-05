@@ -37,6 +37,9 @@ public static class ProxyGameOperations
     private static TunnelCacheKey? _lastTunnelCacheKey;
     private static IReadOnlyList<TunnelInfo> _lastTunnelCache = Array.Empty<TunnelInfo>();
 
+    private static bool ShouldKeepFinderCache(int maxSize)
+        => maxSize <= ModBubble.DefaultMaxBubbleSize;
+
     public static IReadOnlyList<RunningScriptInfo> GetRunningScripts(ModInterpreter? interpreter)
     {
         if (interpreter == null)
@@ -342,10 +345,13 @@ public static class ProxyGameOperations
             GlobalModules.TWXDatabase = database;
             GlobalModules.TWXBubble = bubble;
             IReadOnlyList<BubbleInfo> bubbles = bubble.GetBubbles();
-            lock (FinderCacheLock)
+            if (ShouldKeepFinderCache(effectiveMaxBubbleSize))
             {
-                _lastBubbleCacheKey = cacheKey;
-                _lastBubbleCache = bubbles;
+                lock (FinderCacheLock)
+                {
+                    _lastBubbleCacheKey = cacheKey;
+                    _lastBubbleCache = bubbles;
+                }
             }
             return bubbles;
         }
@@ -374,10 +380,13 @@ public static class ProxyGameOperations
             database,
             effectiveMaxDeadEndSize);
 
-        lock (FinderCacheLock)
+        if (ShouldKeepFinderCache(effectiveMaxDeadEndSize))
         {
-            _lastDeadEndCacheKey = cacheKey;
-            _lastDeadEndCache = deadEnds;
+            lock (FinderCacheLock)
+            {
+                _lastDeadEndCacheKey = cacheKey;
+                _lastDeadEndCache = deadEnds;
+            }
         }
 
         return deadEnds;
@@ -401,10 +410,13 @@ public static class ProxyGameOperations
             database,
             effectiveMaxTunnelSize);
 
-        lock (FinderCacheLock)
+        if (ShouldKeepFinderCache(effectiveMaxTunnelSize))
         {
-            _lastTunnelCacheKey = cacheKey;
-            _lastTunnelCache = tunnels;
+            lock (FinderCacheLock)
+            {
+                _lastTunnelCacheKey = cacheKey;
+                _lastTunnelCache = tunnels;
+            }
         }
 
         return tunnels;

@@ -47,6 +47,10 @@ internal sealed record mombotResolvedModule(
     string Type,
     bool Hidden);
 
+internal sealed record mombotPrewarmModule(
+    string CommandName,
+    string ScriptPath);
+
 internal sealed class mombotService
 {
     private static readonly string[] WarmModuleCommands =
@@ -220,6 +224,15 @@ internal sealed class mombotService
             if (!TryResolveCommandScriptReference(command, out mombotResolvedModule? module) || module == null)
                 continue;
 
+            var moduleInfo = new FileInfo(module.FullPath);
+            long hotkeyPrewarmLimitBytes = Core.GlobalModules.MombotHotkeyPrewarmLimitBytes;
+            if (moduleInfo.Exists && moduleInfo.Length > hotkeyPrewarmLimitBytes)
+            {
+                Core.GlobalModules.DebugLog(
+                    $"[mombot] hotkey prewarm skipped for '{module.FullPath}': script is {moduleInfo.Length} bytes, over {hotkeyPrewarmLimitBytes} byte memory cap\n");
+                continue;
+            }
+
             if (!Core.ScriptCmp.PrewarmCompiledScript(
                     module.FullPath,
                     _interpreter.ScriptRef,
@@ -234,6 +247,26 @@ internal sealed class mombotService
 
             Core.GlobalModules.DebugLog($"[mombot] hotkey prewarmed '{module.FullPath}'\n");
         }
+    }
+
+    public IReadOnlyList<mombotPrewarmModule> GetPrewarmModules()
+    {
+        var modules = new List<mombotPrewarmModule>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string command in WarmModuleCommands)
+        {
+            if (!TryResolveCommandScriptReference(command, out mombotResolvedModule? module) || module == null)
+                continue;
+
+            string fullPath = Path.GetFullPath(module.FullPath);
+            if (!seen.Add(fullPath))
+                continue;
+
+            modules.Add(new mombotPrewarmModule(command, fullPath));
+        }
+
+        return modules;
     }
 
     public bool TryLoadInstalledScriptAtLabel(string relativeReference, string entryLabel, out string? scriptReference, out string? error)

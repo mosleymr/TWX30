@@ -142,6 +142,17 @@ public class ShipInfoParser
             }
         }
 
+        {
+            var m = _rxTurnsDeducted.Match(trimmed);
+            if (m.Success)
+            {
+                _s.Turns = ParseInt(m.Groups[1].Value);
+                _s.UnlimitedGame = false;
+                Updated?.Invoke(_s);
+                return;
+            }
+        }
+
         // ── Live credits/holds lines seen during trading ──────────────────
         {
             var m = _rxCreditsAndEmptyHolds.Match(trimmed);
@@ -280,11 +291,15 @@ public class ShipInfoParser
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxCreditsAndEmptyHolds = new(
-        @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?\.",
+        @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?(?:, and the Treasury has [\d,]+)?\.?$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxTurnsRemaining = new(
         @"^You have ([\d,]+) turns? remaining\.?$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex _rxTurnsDeducted = new(
+        @"^(?:One|[\d,]+)\s+turns?\s+deducted,\s+([\d,]+)\s+turns?\s+left\.?$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxRankExp = new(

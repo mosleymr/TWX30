@@ -88,6 +88,8 @@ public class TerminalControl : Control
     /// <summary>Fractional scroll accumulator for smooth-scroll trackpads.</summary>
     private double _scrollAccumulator;
     private long   _scrollGenerationSeen;
+    private int _reportedColumns = -1;
+    private int _reportedRows = -1;
 
     private static readonly SolidColorBrush SelectionBrush =
         new(Color.FromArgb(100, 51, 153, 255));  // translucent blue
@@ -96,6 +98,7 @@ public class TerminalControl : Control
     /// Set by the owner to forward key bytes to the server.
     /// </summary>
     public Action<byte[]>? SendInput { get; set; }
+    public event Action<TerminalControl, int, int>? ViewportSizeChanged;
 
     public static IReadOnlyList<string> SupportedMacroHotkeys { get; } =
         MacroHotkeyDefinitions.Select(definition => definition.Name).ToArray();
@@ -105,6 +108,8 @@ public class TerminalControl : Control
     /// Set to true when a connection is established, false when disconnected.
     /// </summary>
     public bool IsConnected { get; set; }
+    public int Columns => _buffer.Columns;
+    public int Rows => _buffer.Rows;
 
     public TerminalControl(TerminalBuffer buffer)
     {
@@ -231,6 +236,14 @@ public class TerminalControl : Control
             InvalidateVisibleRowCache();
             _buffer.Resize(newCols, newRows);
         }
+
+        if (newCols != _reportedColumns || newRows != _reportedRows)
+        {
+            _reportedColumns = newCols;
+            _reportedRows = newRows;
+            ViewportSizeChanged?.Invoke(this, newCols, newRows);
+        }
+
         return finalSize;
     }
 

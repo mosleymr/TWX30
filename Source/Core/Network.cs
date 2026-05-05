@@ -29,6 +29,14 @@ using System.Threading.Tasks;
 
 namespace TWXProxy.Core
 {
+    public enum NativeHaggleChangeSource
+    {
+        Runtime = 0,
+        User,
+        Script,
+        Config,
+    }
+
     /// <summary>
     /// Represents a single game instance with server and local connections
     /// </summary>
@@ -86,6 +94,7 @@ namespace TWXProxy.Core
         private readonly List<ClientSession> _clients = new();
         private readonly object _clientLock = new();
         private readonly AsyncLocal<int?> _preferredClientIndex = new();
+        private NativeHaggleChangeSource _pendingNativeHaggleChangeSource = NativeHaggleChangeSource.Runtime;
         
         // ITWXServer / IModServer properties
         public bool StreamEnabled { get; set; }
@@ -95,6 +104,7 @@ namespace TWXProxy.Core
         public string ExternalAddress { get; set; } = string.Empty;
         public bool BroadCastMsgs { get; set; } = true;
         public bool LocalEcho { get; set; } = true;
+        public bool SuppressLegacyPromptProbeSends { get; set; }
         public int ClientCount
         {
             get
@@ -122,6 +132,7 @@ namespace TWXProxy.Core
         private readonly MenuHandler _directMenuHandler;
         private readonly NativeHaggleEngine _nativeHaggle = new();
         private readonly SemaphoreSlim _serverSendLock = new(1, 1);
+        private readonly SemaphoreSlim _localSendLock = new(1, 1);
         private readonly ModLog _log = new();
         private readonly ShipInfoParser _shipInfoParser = new();
         private readonly object _shipStatusLock = new();
@@ -179,9 +190,10 @@ namespace TWXProxy.Core
         public event EventHandler? ScriptLoaded;
         public event EventHandler? ScriptStopped;
         public event EventHandler? ClearInputBufferRequested;
-        public event Action<bool>? NativeHaggleChanged;
+        public event Action<bool, NativeHaggleChangeSource>? NativeHaggleChanged;
         public event Action? NativeHaggleStatsChanged;
         public event Action<ShipStatus>? ShipStatusUpdated;
+        public event EventHandler<ClientTypeChangedEventArgs>? ClientTypeChanged;
 
         public string GameName => _gameName;
         public bool IsRunning => _isRunning;
@@ -250,7 +262,11 @@ namespace TWXProxy.Core
             _commandChar = commandChar;
             _directMenuHandler = new MenuHandler(this, interpreter, _scriptDirectory, () => 0);
             _nativeHaggle.SetEnabled(true);
-            _nativeHaggle.EnabledChanged += enabled => NativeHaggleChanged?.Invoke(enabled);
+            _nativeHaggle.EnabledChanged += enabled =>
+            {
+                NativeHaggleChanged?.Invoke(enabled, _pendingNativeHaggleChangeSource);
+                _pendingNativeHaggleChangeSource = NativeHaggleChangeSource.Runtime;
+            };
             _nativeHaggle.StatsChanged += () => NativeHaggleStatsChanged?.Invoke();
             _log.ProgramDir = GlobalModules.ProgramDir;
             _log.SetLogIdentity(gameName);
@@ -448,6 +464,16 @@ namespace TWXProxy.Core
         {
             lock (_clientLock)
                 return _clients.ToList();
+        }
+
+        private bool HasOutputEligibleClient(bool broadcastDeaf = false)
+        {
+            lock (_clientLock)
+            {
+                return _clients.Any(client =>
+                    client.Type != ClientType.Rejected &&
+                    (broadcastDeaf || client.Type != ClientType.Deaf));
+            }
         }
 
         private void AddClientSession(ClientSession session)
@@ -985,7 +1011,8 @@ namespace TWXProxy.Core
                         {
                             EndServerDataDispatch();
                         }
-                        _log.RecordServerData(cleanData);
+                        if (HasOutputEligibleClient())
+                            _log.RecordServerData(cleanData);
                     }
 
                     if (cleanData.Length == 0)
@@ -1417,6 +1444,12 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task SendToServerAsync(byte[] data)
         {
+            if (ShouldSuppressLegacyPromptProbeSend(data))
+            {
+                GlobalModules.DebugLog("[SEND] Suppressed legacy #145 prompt probe during native-local Mombot execution.\n");
+                return;
+            }
+
             if (_serverStream != null && _serverClient?.Connected == true)
             {
                 await _serverSendLock.WaitAsync();
@@ -1435,46 +1468,77 @@ namespace TWXProxy.Core
             }
         }
 
+        private bool ShouldSuppressLegacyPromptProbeSend(byte[] data)
+        {
+            if (!SuppressLegacyPromptProbeSends || data.Length == 0)
+                return false;
+
+            if (data.Length == 1 && data[0] == 0x91)
+                return true;
+
+            return data.Length == 2 &&
+                   data[0] == 0x91 &&
+                   data[1] == 0x08;
+        }
+
         /// <summary>
         /// Send data to the local client
         /// </summary>
+        private static async Task WriteToClientAsync(ClientSession client, byte[] data, CancellationToken token = default)
+        {
+            byte[] payload = client.Type == ClientType.Stream ? ApplyStreamMask(data) : data;
+            await client.WriteStream.WriteAsync(payload, 0, payload.Length, token);
+            await client.WriteStream.FlushAsync(token);
+        }
+
         public async Task SendToLocalAsync(byte[] data, bool broadcastDeaf = false, CancellationToken token = default)
         {
-            IReadOnlyList<ClientSession> clients = GetClientSnapshot();
-            foreach (ClientSession client in clients)
+            await _localSendLock.WaitAsync(token);
+            try
             {
-                if (client.Type == ClientType.Rejected)
-                    continue;
-                if (!broadcastDeaf && client.Type == ClientType.Deaf)
-                    continue;
+                IReadOnlyList<ClientSession> clients = GetClientSnapshot();
+                foreach (ClientSession client in clients)
+                {
+                    if (client.Type == ClientType.Rejected)
+                        continue;
+                    if (!broadcastDeaf && client.Type == ClientType.Deaf)
+                        continue;
 
-                byte[] payload = client.Type == ClientType.Stream ? ApplyStreamMask(data) : data;
-
-                try
-                {
-                    await client.WriteStream.WriteAsync(payload, 0, payload.Length, token);
-                    await client.WriteStream.FlushAsync(token);
+                    try
+                    {
+                        await WriteToClientAsync(client, data, token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[SendToLocalAsync] Failed sending to client {client.RemoteAddress}: {ex.Message}");
+                    }
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    Log($"[SendToLocalAsync] Failed sending to client {client.RemoteAddress}: {ex.Message}");
-                }
+            }
+            finally
+            {
+                _localSendLock.Release();
             }
         }
 
         public async Task SendToClientAsync(int clientIndex, byte[] data, CancellationToken token = default)
         {
-            ClientSession? client = GetClientSession(clientIndex);
-            if (client == null || client.Type == ClientType.Rejected)
-                return;
+            await _localSendLock.WaitAsync(token);
+            try
+            {
+                ClientSession? client = GetClientSession(clientIndex);
+                if (client == null || client.Type == ClientType.Rejected)
+                    return;
 
-            byte[] payload = client.Type == ClientType.Stream ? ApplyStreamMask(data) : data;
-            await client.WriteStream.WriteAsync(payload, 0, payload.Length, token);
-            await client.WriteStream.FlushAsync(token);
+                await WriteToClientAsync(client, data, token);
+            }
+            finally
+            {
+                _localSendLock.Release();
+            }
         }
 
         private async Task SendPlaybackToLocalAsync(byte[] data, CancellationToken token)
@@ -1614,13 +1678,21 @@ namespace TWXProxy.Core
             RegisterBotConfig(config);
         }
 
-        public bool ToggleNativeHaggle()
+        public bool ToggleNativeHaggle(NativeHaggleChangeSource source = NativeHaggleChangeSource.User)
         {
-            return _nativeHaggle.Toggle();
+            SetNativeHaggleEnabled(!NativeHaggleEnabled, source);
+            return _nativeHaggle.Enabled;
         }
 
-        public void SetNativeHaggleEnabled(bool enabled)
+        public void SetNativeHaggleEnabled(bool enabled, NativeHaggleChangeSource source = NativeHaggleChangeSource.Runtime)
         {
+            if (_nativeHaggle.Enabled == enabled)
+            {
+                _pendingNativeHaggleChangeSource = NativeHaggleChangeSource.Runtime;
+                return;
+            }
+
+            _pendingNativeHaggleChangeSource = source;
             _nativeHaggle.SetEnabled(enabled);
         }
 
@@ -1890,9 +1962,22 @@ namespace TWXProxy.Core
 
         public void SetClientType(int index, ClientType type)
         {
-            ClientSession? client = GetClientSession(index);
-            if (client != null)
+            ClientType previousType;
+
+            lock (_clientLock)
+            {
+                if (index < 0 || index >= _clients.Count)
+                    return;
+
+                ClientSession client = _clients[index];
+                previousType = client.Type;
+                if (previousType == type)
+                    return;
+
                 client.Type = type;
+            }
+
+            ClientTypeChanged?.Invoke(this, new ClientTypeChangedEventArgs(index, previousType, type));
         }
 
         public void RegisterBot(string botName, string scriptFile, string description = "")
@@ -1971,6 +2056,7 @@ namespace TWXProxy.Core
             StopAsync().Wait();
             _cancellationSource?.Dispose();
             _serverSendLock.Dispose();
+            _localSendLock.Dispose();
             _log.Dispose();
         }
     }
@@ -2015,6 +2101,20 @@ namespace TWXProxy.Core
         public DisconnectEventArgs(string reason)
         {
             Reason = reason;
+        }
+    }
+
+    public class ClientTypeChangedEventArgs : EventArgs
+    {
+        public int ClientIndex { get; }
+        public ClientType PreviousType { get; }
+        public ClientType ClientType { get; }
+
+        public ClientTypeChangedEventArgs(int clientIndex, ClientType previousType, ClientType clientType)
+        {
+            ClientIndex = clientIndex;
+            PreviousType = previousType;
+            ClientType = clientType;
         }
     }
 

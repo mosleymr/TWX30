@@ -272,7 +272,7 @@ namespace TWXProxy.Core
                 return CmdAction.None;
             }
 
-            _activeGameInstance.SetNativeHaggleEnabled(enabled.Value);
+            _activeGameInstance.SetNativeHaggleEnabled(enabled.Value, NativeHaggleChangeSource.Script);
             GlobalModules.DebugLog($"[AUTOHAGGLE] Script set native haggle {(enabled.Value ? "ON" : "OFF")}\n");
             return CmdAction.None;
         }
