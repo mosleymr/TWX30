@@ -128,16 +128,19 @@ From `Source/`:
 # Decompiler: osx-arm64, osx-x64, win-x64, linux-x64
 ./build-twxd.sh
 
-# Avalonia client release binaries: ../bin/<rid>/MTC
+# Avalonia client local release binaries: ../bin/<rid>/MTC
 ./build-mtc.sh
 
-# Standalone proxy release binaries: ../bin/<rid>/twxp
+# Standalone proxy local release binaries: ../bin/<rid>/twxp
 ./build-twxp.sh
 
-# Build MTC into ../bin/<rid>, commit
-# only those binaries, and push the current branch to GitHub
-./publish-github-mtc-binaries.sh
+# Build all standalone binaries into ../bin/<rid>, package
+# ../bin/mtc-<rid>.zip, upload to SourceForge, and post Discord.
+./publish-sourceforge-bundles.sh --rebuild
 ```
+
+The top-level `bin/` directory is local/generated output and is not committed to GitHub. SourceForge is the
+only supported release route for MTC, TWXP, TWXC, and TWXD binary packages.
 
 `./build-twxc.sh` is the default TWXC build/install path. It publishes standalone binaries for all
 release targets into the top-level `bin/<rid>/` directory, and on macOS it also installs the current-host
