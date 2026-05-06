@@ -15,7 +15,7 @@
     <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
     <!-- Avalonia requires this to suppress WinExe warning on non-Windows -->
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
-    <RuntimeIdentifiers>osx-x64;osx-arm64;win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>osx-arm64;osx-x64;win-x64;linux-x64</RuntimeIdentifiers>
     <PublishTrimmed>false</PublishTrimmed>
   </PropertyGroup>
 

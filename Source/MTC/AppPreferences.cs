@@ -499,18 +499,6 @@ public class AppPreferences
             }
         }
 
-        StatusPanelSectionPreference? onlineSection = normalizedSections.FirstOrDefault(section =>
-            string.Equals(section.Id, StatusPanelOnline, StringComparison.OrdinalIgnoreCase));
-        shipSection = normalizedSections.FirstOrDefault(section =>
-            string.Equals(section.Id, StatusPanelShipInfo, StringComparison.OrdinalIgnoreCase));
-        if (onlineSection != null &&
-            shipSection != null &&
-            onlineSection.Order > shipSection.Order)
-        {
-            onlineSection.Order = shipSection.Order;
-            shipSection.Order = shipSection.Order + 1;
-        }
-
         StatusPanelSections.Clear();
         int order = 0;
         foreach (StatusPanelSectionPreference section in normalizedSections

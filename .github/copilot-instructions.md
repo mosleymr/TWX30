@@ -346,19 +346,16 @@ Connection modes:
 Publish self-contained single-file binaries for macOS arm64:
 ```sh
 # Compiler
-dotnet publish Source/TWXC/TWXC.csproj -c Release -r osx-arm64 \
-  --self-contained true -p:PublishSingleFile=true \
-  -o Source/TWXC/publish/osx-arm64
-sudo cp Source/TWXC/publish/osx-arm64/TWXC /usr/local/bin/twxc
+Source/build-twxc.sh    # produces bin/osx-arm64/twxc and installs it to /usr/local/bin/twxc
 
 # Decompiler
-dotnet publish Source/TWXD/TWXD.csproj -c Release -r osx-arm64 \
-  --self-contained true -p:PublishSingleFile=true \
-  -o Source/TWXD/publish/osx-arm64
-sudo cp Source/TWXD/publish/osx-arm64/TWXD /usr/local/bin/twxd
+Source/build-twxd.sh    # produces bin/osx-arm64/twxd
 
 # MTC terminal client
-./build-mtc.sh    # produces Source/MTC/publish/osx-arm64/MTC
+Source/build-mtc.sh     # produces bin/osx-arm64/MTC
+
+# TWXP standalone proxy
+Source/build-twxp.sh    # produces bin/osx-arm64/twxp
 ```
 
 Verify after install: `twxc ~/twx/scripts/somescript.ts` and check `.cts` output size.

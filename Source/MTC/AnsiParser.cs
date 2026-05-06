@@ -147,7 +147,8 @@ public class AnsiParser
             if (b == 0x08)
                 return;
 
-            HandleControlChar(0x91);
+            // #145 is a TWX/Mombot prompt probe, not terminal text. Suppress the
+            // probe itself even when a server/client does not pair it with BS.
         }
 
         char c = (char)b;

@@ -29,7 +29,7 @@ public class ConnectionProfile
     // ── Embedded proxy (native script engine inside MTC) ───────────────────
     /// <summary>When true MTC runs the TWX proxy engine in-process instead of using a bare telnet connection.</summary>
     public bool       EmbeddedProxy   { get; set; } = false;
-    /// <summary>Universe size in sectors — used to pre-size the database when the embedded proxy creates it for the first time.</summary>
+    /// <summary>Universe size in sectors — used to pre-size the game database when MTC or the embedded proxy creates it.</summary>
     public int        Sectors         { get; set; } = 1000;
     /// <summary>When true the embedded proxy automatically reconnects to the server after a disconnect.</summary>
     public bool       AutoReconnect   { get; set; } = false;
@@ -102,6 +102,7 @@ public class ConnectionProfile
                 new XElement("LocalTwxProxy",   LocalTwxProxy),
                 new XElement("TwxProxyDbPath",  TwxProxyDbPath),
                 new XElement("EmbeddedProxy",   EmbeddedProxy),
+                new XElement("Sectors",         Sectors),
                 new XElement("AutoReconnect",   AutoReconnect),
                 new XElement("UseLogin",        UseLogin),
                 new XElement("UseRLogin",       UseRLogin),
@@ -173,6 +174,7 @@ public class ConnectionProfile
         p.LocalTwxProxy   = B("LocalTwxProxy", true);
         p.TwxProxyDbPath  = S("TwxProxyDbPath");
         p.EmbeddedProxy   = B("EmbeddedProxy", false);
+        p.Sectors         = I("Sectors", 1000);
         p.AutoReconnect   = B("AutoReconnect",  false);
         p.UseLogin        = B("UseLogin", false);
         p.UseRLogin       = B("UseRLogin", false);

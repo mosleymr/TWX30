@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# build-twxc.sh — clean publish twxc for osx-arm64, osx-x64, and win-x64
-# Release binaries are written to Source/bin/TWXC/<rid> and mirrored to
-# Source/TWXC/publish/<rid>.
+# build-twxc.sh — clean publish standalone twxc binaries.
+# Final release binaries are written to TWX30/bin/<rid>.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BIN_ROOT="${REPO_ROOT}/bin"
+
+cd "${SCRIPT_DIR}"
 
 install_release_artifact() {
   local src="$1"
@@ -29,11 +32,16 @@ install_release_artifact() {
   mv -f "$tmp" "$dest"
 }
 
-RIDS=(
-  osx-arm64
-  osx-x64
-  win-x64
-)
+if [[ -n "${RID_LIST:-}" ]]; then
+  IFS=' ' read -r -a RIDS <<< "${RID_LIST}"
+else
+  RIDS=(
+    osx-arm64
+    osx-x64
+    win-x64
+    linux-x64
+  )
+fi
 
 HOST_ARCH="$(uname -m)"
 HOST_RID=""
@@ -48,6 +56,7 @@ esac
 
 INSTALL_DIR="/usr/local/bin"
 INSTALL_PATH="${INSTALL_DIR}/twxc"
+INSTALL_AFTER_BUILD="${TWXC_INSTALL_AFTER_BUILD:-1}"
 
 run_install_cmd() {
   if [[ -w "${INSTALL_DIR}" ]] || [[ ! -e "${INSTALL_PATH}" && -w "${INSTALL_DIR}" ]]; then
@@ -66,7 +75,6 @@ run_install_cmd() {
 
 echo "==> Cleaning..."
 rm -rf obj TWXC/bin TWXC/obj
-rm -rf TWXC/publish bin/TWXC
 
 for RID in "${RIDS[@]}"; do
   echo "==> Publishing ${RID}..."
@@ -83,10 +91,8 @@ for RID in "${RIDS[@]}"; do
 
   BIN_DIR="TWXC/bin/Release/net10.0/${RID}/publish"
   BIN="${BIN_DIR}/${BIN_NAME}"
-  DEST_DIR="TWXC/publish/${RID}"
+  DEST_DIR="${BIN_ROOT}/${RID}"
   DEST="${DEST_DIR}/${BIN_NAME}"
-  RELEASE_DIR="bin/TWXC/${RID}"
-  RELEASE_DEST="${RELEASE_DIR}/${BIN_NAME}"
 
   if [[ "${RID}" == osx-* ]]; then
     xattr -d com.apple.quarantine "${BIN}" 2>/dev/null || true
@@ -95,26 +101,12 @@ for RID in "${RIDS[@]}"; do
   fi
 
   install_release_artifact "${BIN}" "${DEST}" "${RID}"
-  install_release_artifact "${BIN}" "${RELEASE_DEST}" "${RID}"
 
-  if [[ "${RID}" == win-* ]]; then
-    if [[ -f "${BIN_DIR}/twxc.pdb" ]]; then
-      mkdir -p "${DEST_DIR}" "${RELEASE_DIR}"
-      cp "${BIN_DIR}/twxc.pdb" "${DEST_DIR}/twxc.pdb"
-      cp "${BIN_DIR}/twxc.pdb" "${RELEASE_DIR}/twxc.pdb"
-    fi
-    if [[ -f "bin/Release/net10.0/TWXProxy.pdb" ]]; then
-      mkdir -p "${DEST_DIR}" "${RELEASE_DIR}"
-      cp "bin/Release/net10.0/TWXProxy.pdb" "${DEST_DIR}/TWXProxy.pdb"
-      cp "bin/Release/net10.0/TWXProxy.pdb" "${RELEASE_DIR}/TWXProxy.pdb"
-    fi
-  fi
-
-  echo "==> Done ${RID}: $(ls -lh "${RELEASE_DEST}" | awk '{print $5, $6, $7, $8, $9}')"
+  echo "==> Done ${RID}: $(ls -lh "${DEST}" | awk '{print $5, $6, $7, $8, $9}')"
 done
 
-if [[ -n "${HOST_RID}" ]]; then
-  HOST_DEST="bin/TWXC/${HOST_RID}/twxc"
+if [[ -n "${HOST_RID}" && "${INSTALL_AFTER_BUILD}" != "0" ]]; then
+  HOST_DEST="${BIN_ROOT}/${HOST_RID}/twxc"
   if [[ -f "${HOST_DEST}" ]]; then
     echo "==> Installing ${HOST_RID} standalone to ${INSTALL_PATH}..."
     run_install_cmd mkdir -p "${INSTALL_DIR}"

@@ -8,7 +8,7 @@
     <AssemblyName>twxc</AssemblyName>
     <RootNamespace>TWXC</RootNamespace>
     <Version>3.0.1</Version>
-    <RuntimeIdentifiers>osx-arm64;osx-x64;win-x64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>osx-arm64;osx-x64;win-x64;linux-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <ItemGroup>

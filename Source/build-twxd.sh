@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# build-twxd.sh — clean publish twxd for osx-arm64, osx-x64, and win-x64
-# Release binaries are written to Source/bin/TWXD/<rid> and mirrored to
-# Source/TWXD/publish/<rid>.
+# build-twxd.sh — clean publish standalone twxd binaries.
+# Final release binaries are written to TWX30/bin/<rid>.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BIN_ROOT="${REPO_ROOT}/bin"
+
+cd "${SCRIPT_DIR}"
 
 install_release_artifact() {
   local src="$1"
@@ -29,15 +32,19 @@ install_release_artifact() {
   mv -f "$tmp" "$dest"
 }
 
-RIDS=(
-  osx-arm64
-  osx-x64
-  win-x64
-)
+if [[ -n "${RID_LIST:-}" ]]; then
+  IFS=' ' read -r -a RIDS <<< "${RID_LIST}"
+else
+  RIDS=(
+    osx-arm64
+    osx-x64
+    win-x64
+    linux-x64
+  )
+fi
 
 echo "==> Cleaning..."
 rm -rf obj TWXD/bin TWXD/obj
-rm -rf TWXD/publish bin/TWXD
 
 for RID in "${RIDS[@]}"; do
   echo "==> Publishing ${RID}..."
@@ -54,10 +61,8 @@ for RID in "${RIDS[@]}"; do
 
   BIN_DIR="TWXD/bin/Release/net10.0/${RID}/publish"
   BIN="${BIN_DIR}/${BIN_NAME}"
-  DEST_DIR="TWXD/publish/${RID}"
+  DEST_DIR="${BIN_ROOT}/${RID}"
   DEST="${DEST_DIR}/${BIN_NAME}"
-  RELEASE_DIR="bin/TWXD/${RID}"
-  RELEASE_DEST="${RELEASE_DIR}/${BIN_NAME}"
 
   if [[ "${RID}" == osx-* ]]; then
     xattr -d com.apple.quarantine "${BIN}" 2>/dev/null || true
@@ -66,20 +71,6 @@ for RID in "${RIDS[@]}"; do
   fi
 
   install_release_artifact "${BIN}" "${DEST}" "${RID}"
-  install_release_artifact "${BIN}" "${RELEASE_DEST}" "${RID}"
 
-  if [[ "${RID}" == win-* ]]; then
-    if [[ -f "${BIN_DIR}/twxd.pdb" ]]; then
-      mkdir -p "${DEST_DIR}" "${RELEASE_DIR}"
-      cp "${BIN_DIR}/twxd.pdb" "${DEST_DIR}/twxd.pdb"
-      cp "${BIN_DIR}/twxd.pdb" "${RELEASE_DIR}/twxd.pdb"
-    fi
-    if [[ -f "bin/Release/net10.0/TWXProxy.pdb" ]]; then
-      mkdir -p "${DEST_DIR}" "${RELEASE_DIR}"
-      cp "bin/Release/net10.0/TWXProxy.pdb" "${DEST_DIR}/TWXProxy.pdb"
-      cp "bin/Release/net10.0/TWXProxy.pdb" "${RELEASE_DIR}/TWXProxy.pdb"
-    fi
-  fi
-
-  echo "==> Done ${RID}: $(ls -lh "${RELEASE_DEST}" | awk '{print $5, $6, $7, $8, $9}')"
+  echo "==> Done ${RID}: $(ls -lh "${DEST}" | awk '{print $5, $6, $7, $8, $9}')"
 done

@@ -52,9 +52,13 @@ public class ProxyService : IProxyService
         if (_runningGames.ContainsKey(config.Id))
             return false;
 
+        GameFileLock? gameFileLock = null;
         try
         {
             NotifyStatusChanged(config.Id, GameStatus.Starting);
+            string configPath = ResolveGameDataFilePath(config);
+            string dbPath = ResolveDatabasePath(config);
+            gameFileLock = GameFileLock.Acquire("TWXP standalone proxy", configPath, dbPath);
 
             // Switch debug log to per-game file before anything else logs for this game
             AppPaths.EnsureDirectories();
@@ -135,20 +139,7 @@ public class ProxyService : IProxyService
             var sessionDb = new TWXProxy.Core.ModDatabase();
             try
             {
-                // Use the explicit DatabasePath from config only if it is an
-                // absolute path — a relative path would be resolved against the
-                // app's working directory (unpredictable on Mac Catalyst) and
-                // silently land in the wrong place or get bundled into the .app.
-                string sharedDbPath = AppPaths.DatabasePathForGame(config.Name);
                 string legacyDbPath = AppPaths.LegacyDatabasePathForGame(config.Name);
-                bool hasAbsoluteConfigPath = !string.IsNullOrWhiteSpace(config.DatabasePath)
-                    && Path.IsPathRooted(config.DatabasePath);
-                bool usesLegacyDefaultPath = hasAbsoluteConfigPath
-                    && PathsEqual(config.DatabasePath, legacyDbPath);
-
-                string dbPath = hasAbsoluteConfigPath && !usesLegacyDefaultPath
-                    ? config.DatabasePath
-                    : sharedDbPath;
 
                 Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
                 if (!File.Exists(dbPath) && File.Exists(legacyDbPath) && !PathsEqual(dbPath, legacyDbPath))
@@ -245,10 +236,12 @@ public class ProxyService : IProxyService
                 GameInstance = gameInstance,
                 Interpreter = interpreter,
                 Database = sessionDb,
+                FileLock = gameFileLock,
                 Status = GameStatus.Running,
                 ServerLineBuffer = new System.Text.StringBuilder(),
                 ServerAnsiLineBuffer = new System.Text.StringBuilder()
             };
+            gameFileLock = null;
             
             // Hook up server data handler to set CURRENTLINE/CURRENTANSILINE
             gameInstance.ServerDataReceived += (sender, e) =>
@@ -534,6 +527,7 @@ public class ProxyService : IProxyService
         }
         catch (Exception ex)
         {
+            gameFileLock?.Dispose();
             NotifyStatusChanged(config.Id, GameStatus.Error, ex.Message);
             return false;
         }
@@ -562,6 +556,7 @@ public class ProxyService : IProxyService
             if (instance.ModuleHost != null)
                 await instance.ModuleHost.DisposeAsync();
             instance.GameInstance.Dispose();
+            instance.FileLock.Dispose();
             
             _runningGames.Remove(gameId);
         }
@@ -780,6 +775,10 @@ public class ProxyService : IProxyService
         }
 
         GameConfig config = await GetRequiredConfigAsync(gameId);
+        using var gameLock = GameFileLock.Acquire(
+            "TWXP detached database access",
+            ResolveGameDataFilePath(config),
+            ResolveDatabasePath(config));
         using var database = OpenDetachedDatabase(config);
         await action(database);
         database.SaveDatabase();
@@ -787,16 +786,7 @@ public class ProxyService : IProxyService
 
     private ModDatabase OpenDetachedDatabase(GameConfig config)
     {
-        string sharedDbPath = AppPaths.DatabasePathForGame(config.Name);
-        string legacyDbPath = AppPaths.LegacyDatabasePathForGame(config.Name);
-        bool hasAbsoluteConfigPath = !string.IsNullOrWhiteSpace(config.DatabasePath)
-            && Path.IsPathRooted(config.DatabasePath);
-        bool usesLegacyDefaultPath = hasAbsoluteConfigPath
-            && PathsEqual(config.DatabasePath, legacyDbPath);
-
-        string dbPath = hasAbsoluteConfigPath && !usesLegacyDefaultPath
-            ? config.DatabasePath
-            : sharedDbPath;
+        string dbPath = ResolveDatabasePath(config);
 
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
@@ -852,12 +842,37 @@ public class ProxyService : IProxyService
         return Math.Max(1, (await GetRequiredConfigAsync(gameId)).BubbleSize);
     }
 
+    private static string ResolveGameDataFilePath(GameConfig config)
+    {
+        return string.IsNullOrWhiteSpace(config.GameDataFilePath)
+            ? AppPaths.GameDataFileFor(config.Name)
+            : config.GameDataFilePath;
+    }
+
+    private static string ResolveDatabasePath(GameConfig config)
+    {
+        // Use the explicit DatabasePath from config only if it is an absolute
+        // non-legacy path. Relative paths are resolved against the process cwd,
+        // which can silently land data in the wrong place.
+        string sharedDbPath = AppPaths.DatabasePathForGame(config.Name);
+        string legacyDbPath = AppPaths.LegacyDatabasePathForGame(config.Name);
+        bool hasAbsoluteConfigPath = !string.IsNullOrWhiteSpace(config.DatabasePath)
+            && Path.IsPathRooted(config.DatabasePath);
+        bool usesLegacyDefaultPath = hasAbsoluteConfigPath
+            && PathsEqual(config.DatabasePath, legacyDbPath);
+
+        return hasAbsoluteConfigPath && !usesLegacyDefaultPath
+            ? config.DatabasePath
+            : sharedDbPath;
+    }
+
     private class ProxyGameInstance
     {
         public required GameConfig Config { get; init; }
         public required TWXProxy.Core.GameInstance GameInstance { get; init; }
         public required TWXProxy.Core.ModInterpreter Interpreter { get; init; }
         public required TWXProxy.Core.ModDatabase Database { get; init; }
+        public required GameFileLock FileLock { get; init; }
         public ExpansionModuleHost? ModuleHost { get; set; }
         public GameStatus Status { get; set; }
         public string InputBuffer { get; set; } = string.Empty;

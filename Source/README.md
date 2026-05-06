@@ -122,22 +122,25 @@ dotnet build TWXP/TWXP.csproj -f net10.0-maccatalyst
 From `Source/`:
 
 ```bash
-# Compiler: osx-arm64, osx-x64, win-x64
+# Compiler: osx-arm64, osx-x64, win-x64, linux-x64
 ./build-twxc.sh
 
-# Decompiler: osx-arm64, osx-x64, win-x64
+# Decompiler: osx-arm64, osx-x64, win-x64, linux-x64
 ./build-twxd.sh
 
-# Avalonia client release binaries: Source/bin/MTC/<rid>
+# Avalonia client release binaries: ../bin/<rid>/MTC
 ./build-mtc.sh
 
-# Build MTC, copy the three standalone binaries into /releases/MTC, commit
+# Standalone proxy release binaries: ../bin/<rid>/twxp
+./build-twxp.sh
+
+# Build MTC into ../bin/<rid>, commit
 # only those binaries, and push the current branch to GitHub
 ./publish-github-mtc-binaries.sh
 ```
 
 `./build-twxc.sh` is the default TWXC build/install path. It publishes standalone binaries for all
-three release targets into `Source/TWXC/publish/<rid>/`, and on macOS it also installs the current-host
+release targets into the top-level `bin/<rid>/` directory, and on macOS it also installs the current-host
 standalone compiler to `/usr/local/bin/twxc`.
 
 ### Run
@@ -147,7 +150,7 @@ standalone compiler to `/usr/local/bin/twxc`.
 /usr/local/bin/twxc myscript.ts
 
 # Or run the published current-host standalone directly
-./TWXC/publish/<current-rid>/twxc myscript.ts
+../bin/<current-rid>/twxc myscript.ts
 
 # Decompile a script into the current directory (default)
 dotnet run --project TWXD/TWXD.csproj -- myscript.cts

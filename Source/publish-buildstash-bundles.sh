@@ -2,13 +2,17 @@
 # publish-buildstash-bundles.sh — upload TWX30 platform release bundles to Buildstash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BIN_ROOT="${REPO_ROOT}/bin"
+
+cd "${SCRIPT_DIR}"
 
 usage() {
   cat <<'EOF'
 Usage: ./publish-buildstash-bundles.sh [--rebuild] [--dry-run]
 
-Uploads the platform bundle zip files from Source/bin to Buildstash.
+Uploads the platform bundle zip files from TWX30/bin to Buildstash.
 
 Required environment:
   BUILDSTASH_API_KEY   Buildstash application API token (not required for --dry-run)
@@ -36,15 +40,19 @@ Optional per-platform overrides use rid with dashes replaced by underscores:
   BUILDSTASH_PLATFORM_osx_arm64
   BUILDSTASH_PLATFORM_osx_x64
   BUILDSTASH_PLATFORM_win_x64
+  BUILDSTASH_PLATFORM_linux_x64
   BUILDSTASH_ARCH_osx_arm64
   BUILDSTASH_ARCH_osx_x64
   BUILDSTASH_ARCH_win_x64
+  BUILDSTASH_ARCH_linux_x64
   BUILDSTASH_LABELS_osx_arm64
   BUILDSTASH_LABELS_osx_x64
   BUILDSTASH_LABELS_win_x64
+  BUILDSTASH_LABELS_linux_x64
   BUILDSTASH_NOTES_osx_arm64
   BUILDSTASH_NOTES_osx_x64
   BUILDSTASH_NOTES_win_x64
+  BUILDSTASH_NOTES_linux_x64
 EOF
 }
 
@@ -96,7 +104,7 @@ VERSION_PATCH="${BUILDSTASH_VERSION_PATCH:-$((10#$(date +%d)))}"
 VERSION_EXTRA="${BUILDSTASH_VERSION_EXTRA:-}"
 VERSION_META="${BUILDSTASH_VERSION_META:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
 BUILD_NUMBER="${BUILDSTASH_BUILD_NUMBER:-$(date +%Y%m%d%H%M%S)}"
-NOTES_PREFIX="${BUILDSTASH_NOTES_PREFIX:-TWX30 standalone release bundle containing MTC, TWXC, and TWXD.}"
+NOTES_PREFIX="${BUILDSTASH_NOTES_PREFIX:-TWX30 standalone release bundle containing MTC, TWXP, TWXC, and TWXD.}"
 REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
 BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -159,10 +167,11 @@ RID_LIST=(
   osx-arm64
   osx-x64
   win-x64
+  linux-x64
 )
 
 for RID in "${RID_LIST[@]}"; do
-  ZIP_PATH="bin/TWX30-${RID}.zip"
+  ZIP_PATH="${BIN_ROOT}/TWX30-${RID}.zip"
   if [[ ! -f "$ZIP_PATH" ]]; then
     echo "Missing bundle: $ZIP_PATH" >&2
     exit 1

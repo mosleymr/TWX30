@@ -3,12 +3,9 @@ name: Standalone MTC Updates to Discord
 on:
   push:
     paths:
-      - "Source/bin/MTC/osx-arm64/MTC"
-      - "Source/bin/MTC/osx-x64/MTC"
-      - "Source/bin/MTC/win-x64/MTC.exe"
-      - "releases/MTC/osx-arm64/MTC"
-      - "releases/MTC/osx-x64/MTC"
-      - "releases/MTC/win-x64/MTC.exe"
+      - "bin/osx-arm64/MTC"
+      - "bin/osx-x64/MTC"
+      - "bin/win-x64/MTC.exe"
   workflow_dispatch:
 
 permissions:
@@ -30,17 +27,14 @@ jobs:
           import os
 
           watched = {
-              "Source/bin/MTC/osx-arm64/MTC": ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
-              "Source/bin/MTC/osx-x64/MTC": ("macOS Intel", "releases/MTC/osx-x64/MTC"),
-              "Source/bin/MTC/win-x64/MTC.exe": ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
-              "releases/MTC/osx-arm64/MTC": ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
-              "releases/MTC/osx-x64/MTC": ("macOS Intel", "releases/MTC/osx-x64/MTC"),
-              "releases/MTC/win-x64/MTC.exe": ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
+              "bin/osx-arm64/MTC": ("macOS Apple Silicon", "bin/osx-arm64/MTC"),
+              "bin/osx-x64/MTC": ("macOS Intel", "bin/osx-x64/MTC"),
+              "bin/win-x64/MTC.exe": ("Windows x64", "bin/win-x64/MTC.exe"),
           }
           default_downloads = [
-              ("macOS Apple Silicon", "releases/MTC/osx-arm64/MTC"),
-              ("macOS Intel", "releases/MTC/osx-x64/MTC"),
-              ("Windows x64", "releases/MTC/win-x64/MTC.exe"),
+              ("macOS Apple Silicon", "bin/osx-arm64/MTC"),
+              ("macOS Intel", "bin/osx-x64/MTC"),
+              ("Windows x64", "bin/win-x64/MTC.exe"),
           ]
 
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:

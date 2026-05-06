@@ -73,7 +73,9 @@ public partial class MainWindow : Window
     private AppPreferences  _appPrefs = new();
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
+    private Core.GameFileLock?             _gameFileLock;
     private Core.ExpansionModuleHost?      _moduleHost;
+    private readonly Core.NativeHaggleEngine _standaloneNativeHaggle = new();
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
     private readonly object                _embeddedStopSync = new();
@@ -294,6 +296,7 @@ public partial class MainWindow : Window
     private bool _suppressingPendingNativeMombotEscapeSequence;
     private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;
+    private bool _pendingTerminalSyncMarkerUtf8LeadByte;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;
@@ -583,6 +586,7 @@ public partial class MainWindow : Window
         {
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
             HandlePotentialCommLine(ansiLine);
+            ProcessStandaloneNativeHaggleLine(strippedLine);
         };
 
         // Session logging for direct telnet mode is handled through the shared Core logger.
@@ -646,6 +650,15 @@ public partial class MainWindow : Window
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
+        _standaloneNativeHaggle.SetEnabled(true);
+        _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
+        _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
+        _standaloneNativeHaggle.EnabledChanged += _ => Dispatcher.UIThread.Post(() =>
+        {
+            UpdateHaggleToggleState();
+            RequestStatusBarRefresh();
+        });
+        _standaloneNativeHaggle.StatsChanged += () => Dispatcher.UIThread.Post(RequestStatusBarRefresh);
         bool resetCommandDeckLayout =
             _appPrefs.CommandDeckLayoutVersion < AppPreferences.CurrentCommandDeckLayoutVersion ||
             _appPrefs.CommandDeckPanels.Values.Any(layout => layout.Width <= 0 || layout.BodyHeight <= 0);
@@ -722,6 +735,8 @@ public partial class MainWindow : Window
                 window.Close();
             _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
+            _gameFileLock?.Dispose();
+            _gameFileLock = null;
             _sessionLog.Dispose();
             _redAlertTimer.Stop();
             _statusRefreshTimer.Stop();
@@ -733,7 +748,7 @@ public partial class MainWindow : Window
         _state.Connected = true;
         RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
         // Open (or create) the sector database for this game connection
-        OpenSessionDatabase(useSharedProxyDatabase: false);
+        OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
         Dispatcher.UIThread.Post(() =>
         {
             SetTerminalConnected(true);
@@ -752,6 +767,8 @@ public partial class MainWindow : Window
         // Flush and close the database
         try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
         _sessionDb = null;
+        _gameFileLock?.Dispose();
+        _gameFileLock = null;
         Core.ScriptRef.SetActiveDatabase(null);
         Dispatcher.UIThread.Post(() =>
         {
@@ -795,6 +812,7 @@ public partial class MainWindow : Window
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
         RebuildProxyMenu();
+        RebuildScriptsMenu();
     }
 
     /// <summary>Call when TCP connection is established.</summary>
@@ -805,6 +823,7 @@ public partial class MainWindow : Window
         UpdateHaggleToggleState();
         RefreshMombotUi();
         RebuildProxyMenu();
+        RebuildScriptsMenu();
     }
 
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
@@ -817,12 +836,26 @@ public partial class MainWindow : Window
         UpdateHaggleToggleState();
         RefreshMombotUi();
         RebuildProxyMenu();
+        RebuildScriptsMenu();
     }
 
     private void OnHaggleToggleRequested()
     {
         if (_gameInstance == null)
         {
+            if (CanUseRemoteProxyScripts())
+            {
+                SendProxyMenuCommand("h");
+                Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+                return;
+            }
+
+            if (!_state.EmbeddedProxy && _telnet.IsConnected)
+            {
+                bool enabled = _standaloneNativeHaggle.Toggle();
+                _parser.Feed($"\x1b[1;36m[Native haggle {(enabled ? "enabled" : "disabled")}]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+            }
             UpdateHaggleToggleState();
             return;
         }
@@ -833,9 +866,25 @@ public partial class MainWindow : Window
 
     private void UpdateHaggleToggleState()
     {
-        bool proxyActive = _gameInstance != null;
-        _statusHaggleButton.IsEnabled = proxyActive;
+        bool haggleAvailable = _gameInstance != null || (!_state.EmbeddedProxy && _telnet.IsConnected);
+        _statusHaggleButton.IsEnabled = haggleAvailable;
         UpdateTerminalLiveSelector();
+    }
+
+    private void ProcessStandaloneNativeHaggleLine(string strippedLine)
+    {
+        if (_state.EmbeddedProxy ||
+            CanUseRemoteProxyScripts() ||
+            !_telnet.IsConnected ||
+            string.IsNullOrWhiteSpace(strippedLine))
+            return;
+
+        string? response = _standaloneNativeHaggle.HandleLine(strippedLine);
+        if (string.IsNullOrEmpty(response))
+            return;
+
+        _telnet.SendRaw(System.Text.Encoding.ASCII.GetBytes(response + "\r"));
+        Core.GlobalModules.DebugLog($"[MTC.NativeHaggle] standalone SEND '{response}\\r'\n");
     }
 
     private void ApplyMombotConfigChange(Action<MTC.mombot.mombotConfig> update)
@@ -971,6 +1020,11 @@ public partial class MainWindow : Window
 
         if (_gameInstance != null)
             _gameInstance.SetNativeHaggleModes(selectedPortMode, selectedPlanetMode);
+        else
+        {
+            _standaloneNativeHaggle.SetPortHaggleMode(selectedPortMode);
+            _standaloneNativeHaggle.SetPlanetHaggleMode(selectedPlanetMode);
+        }
 
         string selectedPortLabel = availablePortModes
             .FirstOrDefault(info => string.Equals(info.Id, selectedPortMode, StringComparison.OrdinalIgnoreCase))
@@ -1052,7 +1106,7 @@ public partial class MainWindow : Window
             return;
 
         bool restartEmbeddedProxy = _state.EmbeddedProxy && _gameInstance != null;
-        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        string configPath = GameConfigPathForMode(gameName, _state.EmbeddedProxy);
         EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         config.Name = gameName;
         config.DatabasePath = ResolveResetDatabasePath(gameName, config);
@@ -1074,6 +1128,8 @@ public partial class MainWindow : Window
 
             try { _sessionDb?.CloseDatabase(); } catch { }
             _sessionDb = null;
+            _gameFileLock?.Dispose();
+            _gameFileLock = null;
             Core.ScriptRef.SetActiveDatabase(null);
             Core.ScriptRef.OnVariableSaved = null;
             Core.ScriptRef.ClearCurrentGameVars();
@@ -1081,6 +1137,7 @@ public partial class MainWindow : Window
             ResetMombotGameStorage(gameName);
 
             Directory.CreateDirectory(Path.GetDirectoryName(config.DatabasePath)!);
+            using var resetLock = Core.GameFileLock.Acquire("MTC reset game", configPath, config.DatabasePath);
             var db = new Core.ModDatabase();
             db.CreateDatabase(config.DatabasePath, resetHeader);
             db.CloseDatabase();
@@ -1169,7 +1226,7 @@ public partial class MainWindow : Window
 
         return _state.EmbeddedProxy
             ? AppPaths.TwxproxyDatabasePathForGame(gameName)
-            : AppPaths.DatabasePathForGame(gameName);
+            : AppPaths.MtcStandaloneDatabasePathForGame(gameName);
     }
 
     private Core.DataHeader ResolveResetSourceHeader(string databasePath)
@@ -1406,6 +1463,8 @@ public partial class MainWindow : Window
             _appPrefs.DebugPortHaggleEnabled,
             AppPaths.GetPlanetHaggleDebugLogPath(),
             _appPrefs.DebugPlanetHaggleEnabled);
+        _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
+        _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
         RefreshSessionLogTarget();
         if (_gameInstance != null)
             _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
@@ -1753,7 +1812,7 @@ public partial class MainWindow : Window
         config.Port = _state.Port;
         config.Sectors = _state.Sectors;
         config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
-            ? AppPaths.TwxproxyDatabasePathForGame(gameName)
+            ? DatabasePathForMode(gameName, _state.EmbeddedProxy)
             : config.DatabasePath;
         config.ScriptDirectory = ResolvePersistedGameScriptDirectory(config.ScriptDirectory);
         config.NativeHaggleMode = null;
@@ -1886,14 +1945,27 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(name) ? "game" : name;
     }
 
-    private bool GameNameConflicts(string gameName, string? currentConfigPath = null, string? currentDatabasePath = null)
+    private static string GameConfigPathForMode(string gameName, bool embeddedProxy)
+        => embeddedProxy
+            ? AppPaths.TwxproxyGameConfigFileFor(gameName)
+            : AppPaths.MtcStandaloneGameConfigFileFor(gameName);
+
+    private static string DatabasePathForMode(string gameName, bool embeddedProxy)
+        => embeddedProxy
+            ? AppPaths.TwxproxyDatabasePathForGame(gameName)
+            : AppPaths.MtcStandaloneDatabasePathForGame(gameName);
+
+    private static string GameConfigPathForConfig(EmbeddedGameConfig config)
+        => GameConfigPathForMode(NormalizeGameName(config.Name), config.Mtc?.EmbeddedProxy ?? true);
+
+    private bool GameNameConflicts(string gameName, bool embeddedProxy, string? currentConfigPath = null, string? currentDatabasePath = null)
     {
-        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        string configPath = GameConfigPathForMode(gameName, embeddedProxy);
         if (File.Exists(configPath) &&
             !string.Equals(configPath, currentConfigPath, StringComparison.OrdinalIgnoreCase))
             return true;
 
-        string databasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        string databasePath = DatabasePathForMode(gameName, embeddedProxy);
         if (File.Exists(databasePath) &&
             !string.Equals(databasePath, currentDatabasePath, StringComparison.OrdinalIgnoreCase))
             return true;
@@ -2766,6 +2838,8 @@ public partial class MainWindow : Window
 
         try { _sessionDb?.CloseDatabase(); } catch { }
         _sessionDb = null;
+        _gameFileLock?.Dispose();
+        _gameFileLock = null;
         Core.ScriptRef.SetActiveDatabase(null);
 
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
@@ -3488,12 +3562,17 @@ public partial class MainWindow : Window
     private void UpdateTerminalLiveSelector()
     {
         bool enabled = _gameInstance != null;
+        bool remoteProxyScripts = CanUseRemoteProxyScripts();
+        bool haggleAvailable = enabled || remoteProxyScripts || (!_state.EmbeddedProxy && _telnet.IsConnected);
+        bool haggleSelected = enabled
+            ? _gameInstance?.NativeHaggleEnabled == true
+            : !remoteProxyScripts && _standaloneNativeHaggle.Enabled;
         BotRuntimeState botRuntime = GetBotRuntimeState();
         ApplyStatusToggleFrameStyle(_statusMacrosFrame, true);
         ApplyStatusToggleFrameStyle(_statusMapFrame, true);
         ApplyStatusToggleFrameStyle(_statusCommFrame, true);
         ApplyStatusToggleFrameStyle(_statusBotFrame, enabled);
-        ApplyStatusToggleFrameStyle(_statusHaggleFrame, enabled);
+        ApplyStatusToggleFrameStyle(_statusHaggleFrame, haggleAvailable);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusRedAlertFrame, _appPrefs.EnableRedAlertMode);
         _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
@@ -3502,11 +3581,13 @@ public partial class MainWindow : Window
         ApplyStatusMapButtonStyle(_statusMapButton, _mapWindow != null);
         ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
         ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, enabled);
-        ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: enabled && _gameInstance?.NativeHaggleEnabled == true, enabled);
+        ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: haggleSelected, haggleAvailable);
         ToolTip.SetTip(_statusHaggleButton,
-            !enabled
+            !haggleAvailable
                 ? "Native haggle unavailable"
-                : (_gameInstance?.NativeHaggleEnabled == true ? "Disable native haggle" : "Enable native haggle"));
+                : remoteProxyScripts
+                    ? "Toggle native haggle in standalone proxy"
+                : (haggleSelected ? "Disable native haggle" : "Enable native haggle"));
         _statusLivePausedButton.Content = enabled && _statusLivePausedHovered
             ? (_terminalLivePaused ? "RESUME" : "PAUSE")
             : (_terminalLivePaused ? "PAUSED" : "LIVE");
@@ -4150,7 +4231,8 @@ public partial class MainWindow : Window
         try
         {
             AppPaths.EnsureTwxproxyGamesDir();
-            string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+            cfg.Name = string.IsNullOrWhiteSpace(cfg.Name) ? NormalizeGameName(gameName) : NormalizeGameName(cfg.Name);
+            string path = GameConfigPathForConfig(cfg);
             EmbeddedGameConfig persisted = BuildPersistedEmbeddedGameConfig(cfg);
             var json = System.Text.Json.JsonSerializer.Serialize(persisted, _jsonOpts);
             await File.WriteAllTextAsync(path, json);
@@ -4169,14 +4251,23 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(gameName))
             return;
 
-        EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        EmbeddedGameConfig config = _embeddedGameConfig ?? (_state.EmbeddedProxy
+            ? await LoadOrCreateEmbeddedGameConfigAsync(gameName)
+            : BuildEmbeddedGameConfigFromState(gameName, new EmbeddedGameConfig
+            {
+                Name = gameName,
+                Host = _state.Host,
+                Port = _state.Port,
+                Sectors = _state.Sectors,
+                DatabasePath = AppPaths.MtcStandaloneDatabasePathForGame(gameName),
+            }));
         config = BuildEmbeddedGameConfigFromState(gameName, config);
         if (string.IsNullOrWhiteSpace(config.DatabasePath))
-            config.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+            config.DatabasePath = DatabasePathForMode(gameName, _state.EmbeddedProxy);
         await SaveEmbeddedGameConfigAsync(gameName, config);
         _embeddedGameConfig = config;
         _embeddedGameName = gameName;
-        _currentProfilePath ??= AppPaths.TwxproxyGameConfigFileFor(gameName);
+        _currentProfilePath ??= GameConfigPathForMode(gameName, _state.EmbeddedProxy);
         if (!string.IsNullOrWhiteSpace(_currentProfilePath))
             AddToRecentAndSave(_currentProfilePath);
     }
@@ -4193,8 +4284,8 @@ public partial class MainWindow : Window
                 return;
             }
 
-            string sharedConfigPath = AppPaths.TwxproxyGameConfigFileFor(config.Name);
-            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(sharedConfigPath), StringComparison.OrdinalIgnoreCase))
+            string modeConfigPath = GameConfigPathForConfig(config);
+            if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(modeConfigPath), StringComparison.OrdinalIgnoreCase))
             {
                 await ApplyLoadedGameConfigAsync(config, path, addToRecent);
                 return;
@@ -4210,17 +4301,17 @@ public partial class MainWindow : Window
 
             importedProfile = uniqueProfile;
             string gameName = importedProfile.Name;
-            string importedDatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+            string importedDatabasePath = DatabasePathForMode(gameName, importedProfile.EmbeddedProxy);
             if (!string.IsNullOrWhiteSpace(config.DatabasePath) && File.Exists(config.DatabasePath))
             {
-                if (!await ImportDatabaseIntoSharedStoreAsync(config.DatabasePath, gameName))
+                if (!await ImportDatabaseIntoSharedStoreAsync(config.DatabasePath, gameName, importedProfile.EmbeddedProxy))
                     return;
             }
 
             EmbeddedGameConfig importedConfig = BuildEmbeddedGameConfigFromProfile(importedProfile, importedDatabasePath, config);
             importedConfig.Variables = NormalizeEmbeddedVariables(config.Variables);
             await SaveEmbeddedGameConfigAsync(gameName, importedConfig);
-            await ApplyLoadedGameConfigAsync(importedConfig, AppPaths.TwxproxyGameConfigFileFor(gameName), addToRecent);
+            await ApplyLoadedGameConfigAsync(importedConfig, GameConfigPathForMode(gameName, importedProfile.EmbeddedProxy), addToRecent);
             return;
         }
 
@@ -4252,16 +4343,16 @@ public partial class MainWindow : Window
 
             legacy = uniqueLegacy;
             string gameName = legacy.Name;
-            string sharedDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+            string sharedDbPath = DatabasePathForMode(gameName, legacy.EmbeddedProxy);
             if (!string.IsNullOrWhiteSpace(legacy.TwxProxyDbPath) && File.Exists(legacy.TwxProxyDbPath))
             {
-                if (!await ImportDatabaseIntoSharedStoreAsync(legacy.TwxProxyDbPath, gameName))
+                if (!await ImportDatabaseIntoSharedStoreAsync(legacy.TwxProxyDbPath, gameName, legacy.EmbeddedProxy))
                     return;
             }
 
             EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(legacy, sharedDbPath);
             await SaveEmbeddedGameConfigAsync(gameName, config);
-            string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+            string configPath = GameConfigPathForMode(gameName, legacy.EmbeddedProxy);
             await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
             return;
         }
@@ -4336,8 +4427,8 @@ public partial class MainWindow : Window
     {
         ConnectionProfile draft = BuildProfileFromDatabase(databasePath);
         string defaultGameName = NormalizeGameName(draft.Name);
-        string defaultSharedDatabasePath = AppPaths.TwxproxyDatabasePathForGame(defaultGameName);
-        string defaultConfigPath = AppPaths.TwxproxyGameConfigFileFor(defaultGameName);
+        string defaultSharedDatabasePath = DatabasePathForMode(defaultGameName, draft.EmbeddedProxy);
+        string defaultConfigPath = GameConfigPathForMode(defaultGameName, draft.EmbeddedProxy);
 
         if (File.Exists(defaultConfigPath))
         {
@@ -4366,13 +4457,13 @@ public partial class MainWindow : Window
 
         ConnectionProfile imported = uniqueProfile;
         string gameName = imported.Name;
-        if (!await ImportDatabaseIntoSharedStoreAsync(databasePath, gameName))
+        if (!await ImportDatabaseIntoSharedStoreAsync(databasePath, gameName, imported.EmbeddedProxy))
             return;
 
-        string sharedDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName);
+        string sharedDbPath = DatabasePathForMode(gameName, imported.EmbeddedProxy);
         EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(imported, sharedDbPath);
         await SaveEmbeddedGameConfigAsync(gameName, config);
-        string configPath = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        string configPath = GameConfigPathForMode(gameName, imported.EmbeddedProxy);
         await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
     }
 
@@ -4386,8 +4477,10 @@ public partial class MainWindow : Window
                 return null;
             if (string.IsNullOrWhiteSpace(config.Name))
                 config.Name = NormalizeGameName(Path.GetFileNameWithoutExtension(path));
+            if (config.Sectors <= 0)
+                config.Sectors = 1000;
             if (string.IsNullOrWhiteSpace(config.DatabasePath))
-                config.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(config.Name);
+                config.DatabasePath = DatabasePathForMode(config.Name, config.Mtc?.EmbeddedProxy ?? true);
             config.Variables = NormalizeEmbeddedVariables(config.Variables);
             return config;
         }
@@ -4443,7 +4536,7 @@ public partial class MainWindow : Window
         while (true)
         {
             working.Name = NormalizeGameName(working.Name);
-            if (!GameNameConflicts(working.Name, currentConfigPath, currentDatabasePath))
+            if (!GameNameConflicts(working.Name, working.EmbeddedProxy, currentConfigPath, currentDatabasePath))
                 return working;
 
             await ShowMessageAsync(
@@ -4457,9 +4550,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> ImportDatabaseIntoSharedStoreAsync(string sourceDatabasePath, string targetGameName)
+    private async Task<bool> ImportDatabaseIntoSharedStoreAsync(string sourceDatabasePath, string targetGameName, bool embeddedProxy = true)
     {
-        string targetPath = AppPaths.TwxproxyDatabasePathForGame(targetGameName);
+        string targetPath = DatabasePathForMode(targetGameName, embeddedProxy);
         if (string.Equals(Path.GetFullPath(sourceDatabasePath), Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
             return true;
 
@@ -4487,6 +4580,10 @@ public partial class MainWindow : Window
     {
         try
         {
+            int databaseSectors = sectors > 0
+                ? sectors
+                : (_state.Sectors > 0 ? _state.Sectors : 1000);
+
             if (gameName == null)
             {
                 gameName = !string.IsNullOrEmpty(_currentProfilePath)
@@ -4516,8 +4613,18 @@ public partial class MainWindow : Window
             else
             {
                 AppPaths.EnsureDirectories();
-                dbPath = AppPaths.DatabasePathForGame(gameName);
+                dbPath = AppPaths.MtcStandaloneDatabasePathForGame(gameName);
             }
+
+            string configPath = useSharedProxyDatabase
+                ? AppPaths.TwxproxyGameConfigFileFor(gameName)
+                : AppPaths.MtcStandaloneGameConfigFileFor(gameName);
+            _gameFileLock?.Dispose();
+            _gameFileLock = null;
+            _gameFileLock = Core.GameFileLock.Acquire(
+                useSharedProxyDatabase ? "MTC embedded proxy" : "MTC standalone client",
+                configPath,
+                dbPath);
 
             var db = new Core.ModDatabase();
             if (File.Exists(dbPath))
@@ -4526,10 +4633,10 @@ public partial class MainWindow : Window
                 db.UseCache = _embeddedGameConfig?.UseCache ?? true;
                 var header = db.DBHeader;
                 bool headerDirty = false;
-                if (sectors > 0)
+                if (databaseSectors > 0)
                 {
-                    headerDirty |= header.Sectors != sectors;
-                    header.Sectors = sectors;
+                    headerDirty |= header.Sectors != databaseSectors;
+                    header.Sectors = databaseSectors;
                 }
                 string configLoginScript = string.IsNullOrWhiteSpace(_embeddedGameConfig?.LoginScript) ? "0_Login.cts" : _embeddedGameConfig.LoginScript;
                 string configLoginName = _embeddedGameConfig?.LoginName ?? string.Empty;
@@ -4567,7 +4674,7 @@ public partial class MainWindow : Window
                     ServerPort = (ushort)_state.Port,
                     ListenPort = (ushort)(_embeddedGameConfig?.ListenPort ?? 2300),
                     CommandChar = _embeddedGameConfig?.CommandChar ?? '$',
-                    Sectors    = sectors,
+                    Sectors    = databaseSectors,
                     UseLogin   = _embeddedGameConfig?.UseLogin ?? false,
                     UseRLogin  = _embeddedGameConfig?.UseRLogin ?? false,
                     LoginScript = string.IsNullOrWhiteSpace(_embeddedGameConfig?.LoginScript) ? "0_Login.cts" : _embeddedGameConfig.LoginScript,
@@ -4592,6 +4699,51 @@ public partial class MainWindow : Window
     }
 
     private Core.ModInterpreter? CurrentInterpreter => Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+
+    private bool CanUseRemoteProxyScripts()
+    {
+        return !_state.EmbeddedProxy &&
+            _gameInstance == null &&
+            _telnet.IsConnected &&
+            _state.LocalTwxProxy &&
+            IsLoopbackHost(_state.Host) &&
+            IsConfiguredForSameProxyProgramDirectory();
+    }
+
+    private bool CanRunProxyScripts()
+        => CurrentInterpreter != null || CanUseRemoteProxyScripts();
+
+    private bool IsConfiguredForSameProxyProgramDirectory()
+    {
+        try
+        {
+            string mtcProgramDir = Path.GetFullPath(AppPaths.ProgramDir)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string proxyProgramDir = Path.GetFullPath(Core.SharedPathSettingsStore.Load().ProgramDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(mtcProgramDir, proxyProgramDir, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsLoopbackHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        string trimmed = host.Trim();
+        if (trimmed.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("::1", StringComparison.Ordinal) ||
+            trimmed.Equals("[::1]", StringComparison.Ordinal) ||
+            trimmed.StartsWith("127.", StringComparison.Ordinal))
+            return true;
+
+        return System.Net.IPAddress.TryParse(trimmed, out var address) &&
+            System.Net.IPAddress.IsLoopback(address);
+    }
 
     private void OpenNewWindowInNewProcess()
     {
@@ -4637,13 +4789,16 @@ public partial class MainWindow : Window
         bool hasDatabase = _sessionDb != null;
         bool hasInterpreter = CurrentInterpreter != null;
         bool canPlayCapture = _gameInstance != null;
+        bool canRunProxyScripts = hasInterpreter || CanUseRemoteProxyScripts();
 
         var proxyItems = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
         _proxyMenu.ItemsSource = proxyItems;
+        _proxyMenu.IsEnabled = _gameInstance != null;
         _botMenu.ItemsSource = BuildTopLevelBotMenuItems(hasInterpreter);
-        _botMenu.IsEnabled = true;
-        _quickMenu.ItemsSource = BuildQuickMenuItems(hasInterpreter);
-        _quickMenu.IsEnabled = true;
+        _botMenu.IsEnabled = hasInterpreter;
+        _quickMenu.ItemsSource = BuildQuickMenuItems(canRunProxyScripts);
+        _quickMenu.IsEnabled = canRunProxyScripts;
+        _scriptsMenu.IsEnabled = canRunProxyScripts;
         RebuildAiMenu();
         RefreshNativeAppMenu();
         RefreshNativeDockMenu();
@@ -4703,7 +4858,16 @@ public partial class MainWindow : Window
         var interpreter = CurrentInterpreter;
         if (interpreter == null)
         {
-            items.Add(new MenuItem { Header = "No proxy scripts active", IsEnabled = false });
+            if (CanUseRemoteProxyScripts())
+            {
+                var killRemote = new MenuItem { Header = "_Kill Script by ID…" };
+                killRemote.Click += (_, _) => _ = OnRemoteProxyKillScriptByIdAsync();
+                items.Add(killRemote);
+            }
+            else
+            {
+                items.Add(new MenuItem { Header = "No proxy scripts active", IsEnabled = false });
+            }
             return items;
         }
 
@@ -6067,7 +6231,7 @@ public partial class MainWindow : Window
             _embeddedGameConfig ??= new EmbeddedGameConfig
             {
                 Name = NormalizeGameName(DeriveGameName()),
-                DatabasePath = AppPaths.TwxproxyDatabasePathForGame(DeriveGameName()),
+                DatabasePath = DatabasePathForMode(DeriveGameName(), _state.EmbeddedProxy),
             };
 
             MTC.mombot.mombotConfig nativeConfig = GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig);
@@ -7903,6 +8067,20 @@ public partial class MainWindow : Window
         FocusActiveTerminal();
     }
 
+    private async Task OnRemoteProxyKillScriptByIdAsync()
+    {
+        string? scriptId = await ShowTextPromptAsync(
+            "Kill Script",
+            "Enter the script ID to kill in the standalone proxy.",
+            string.Empty,
+            "Kill");
+        if (string.IsNullOrWhiteSpace(scriptId))
+            return;
+
+        SendProxyMenuCommand($"sk {scriptId.Trim()}");
+        FocusActiveTerminal();
+    }
+
     private async Task ExportWarpsAsync()
     {
         await Task.Yield();
@@ -8128,8 +8306,21 @@ public partial class MainWindow : Window
     /// </summary>
     private void RebuildScriptsMenu()
     {
+        bool canRunProxyScripts = CanRunProxyScripts();
+        _scriptsMenu.IsEnabled = canRunProxyScripts;
         var reloadItem = new MenuItem { Header = "_Reload All Scripts" };
         reloadItem.Click += (_, _) => RebuildScriptsMenu();
+
+        if (!canRunProxyScripts)
+        {
+            _scriptsMenu.ItemsSource = new List<object>
+            {
+                reloadItem, new Separator(),
+                new MenuItem { Header = "Proxy scripts unavailable", IsEnabled = false },
+            };
+            RefreshNativeAppMenu();
+            return;
+        }
 
         var dir = _appPrefs.ScriptsDirectory;
 
@@ -8246,12 +8437,20 @@ public partial class MainWindow : Window
                 ToolTip.SetTip(item, relPath);
                 item.Click += (_, _) =>
                 {
-                    var cmd = $"$ss {relPath}\r\n";
-                    _termCtrl.SendInput?.Invoke(System.Text.Encoding.Latin1.GetBytes(cmd));
+                    SendProxyMenuCommand($"ss {relPath}");
                 };
                 target.Add(item);
             }
         }
+    }
+
+    private void SendProxyMenuCommand(string command)
+    {
+        char commandChar = _embeddedGameConfig?.CommandChar is { } configured && configured != '\0'
+            ? configured
+            : '$';
+        string line = $"{commandChar}{command}\r\n";
+        _termCtrl.SendInput?.Invoke(System.Text.Encoding.Latin1.GetBytes(line));
     }
 
     /// <summary>Strips a leading <c>./</c> produced by <see cref="Path.GetRelativePath"/>
@@ -8490,12 +8689,12 @@ public partial class MainWindow : Window
     private async Task OnEditConnectionAsync()
     {
         string previousGameName = DeriveGameName();
-        string previousConfigPath = _currentProfilePath ?? AppPaths.TwxproxyGameConfigFileFor(previousGameName);
+        string previousConfigPath = _currentProfilePath ?? GameConfigPathForMode(previousGameName, _state.EmbeddedProxy);
         string previousDatabasePath = _embeddedGameConfig?.DatabasePath ?? string.Empty;
         string previousHost = _embeddedGameConfig?.Host ?? _state.Host;
         int previousPort = _embeddedGameConfig?.Port > 0 ? _embeddedGameConfig.Port : _state.Port;
         if (string.IsNullOrWhiteSpace(previousDatabasePath))
-            previousDatabasePath = AppPaths.TwxproxyDatabasePathForGame(previousGameName);
+            previousDatabasePath = DatabasePathForMode(previousGameName, _state.EmbeddedProxy);
 
         var dlg = new NewConnectionDialog(BuildProfileFromState());
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
@@ -8511,11 +8710,11 @@ public partial class MainWindow : Window
         string resolvedGameName = editedProfile.Name;
 
         string targetDatabasePath = previousDatabasePath;
-        string oldDefaultDatabasePath = AppPaths.TwxproxyDatabasePathForGame(previousGameName);
+        string oldDefaultDatabasePath = DatabasePathForMode(previousGameName, _state.EmbeddedProxy);
         if (!string.Equals(previousGameName, resolvedGameName, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(previousDatabasePath, oldDefaultDatabasePath, StringComparison.OrdinalIgnoreCase))
         {
-            targetDatabasePath = AppPaths.TwxproxyDatabasePathForGame(resolvedGameName);
+            targetDatabasePath = DatabasePathForMode(resolvedGameName, editedProfile.EmbeddedProxy);
             try
             {
                 if (File.Exists(previousDatabasePath) && !File.Exists(targetDatabasePath))
@@ -8532,11 +8731,11 @@ public partial class MainWindow : Window
 
         EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(
             editedProfile,
-            string.IsNullOrWhiteSpace(targetDatabasePath) ? AppPaths.TwxproxyDatabasePathForGame(resolvedGameName) : targetDatabasePath,
+            string.IsNullOrWhiteSpace(targetDatabasePath) ? DatabasePathForMode(resolvedGameName, editedProfile.EmbeddedProxy) : targetDatabasePath,
             _embeddedGameConfig);
         await SaveEmbeddedGameConfigAsync(resolvedGameName, config);
 
-        string newConfigPath = AppPaths.TwxproxyGameConfigFileFor(resolvedGameName);
+        string newConfigPath = GameConfigPathForMode(resolvedGameName, editedProfile.EmbeddedProxy);
         if (!string.IsNullOrWhiteSpace(previousConfigPath) &&
             !string.Equals(previousConfigPath, newConfigPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -8552,12 +8751,46 @@ public partial class MainWindow : Window
         _embeddedGameConfig = config;
         _embeddedGameName = resolvedGameName;
         ApplyProfile(BuildProfileFromConfig(config));
+        UpdateOpenStandaloneDatabaseHeader(config);
         ApplyDebugLoggingPreferences();
         AddToRecentAndSave(newConfigPath);
         await SyncEmbeddedProxySettingsAsync(previousHost, previousPort);
 
         _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
         _buffer.Dirty = true;
+    }
+
+    private void UpdateOpenStandaloneDatabaseHeader(EmbeddedGameConfig config)
+    {
+        if (_state.EmbeddedProxy || _sessionDb == null)
+            return;
+
+        try
+        {
+            Core.DataHeader header = _sessionDb.DBHeader;
+            bool headerDirty = false;
+            int sectors = config.Sectors > 0 ? config.Sectors : _state.Sectors;
+            if (sectors > 0)
+            {
+                headerDirty |= header.Sectors != sectors;
+                header.Sectors = sectors;
+            }
+
+            headerDirty |= header.Address != _state.Host;
+            header.Address = _state.Host;
+            headerDirty |= header.ServerPort != (ushort)_state.Port;
+            header.ServerPort = (ushort)_state.Port;
+
+            if (headerDirty)
+            {
+                _sessionDb.ReplaceHeader(header);
+                _sessionDb.SaveDatabase();
+            }
+        }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog($"[MTC.EditConnection] failed to update standalone database header: {ex}\n");
+        }
     }
 
     private async Task SyncEmbeddedProxySettingsAsync(string? previousHostOverride = null, int? previousPortOverride = null)
@@ -8675,10 +8908,10 @@ public partial class MainWindow : Window
 
         ConnectionProfile newProfile = uniqueNewProfile;
         string gameName = newProfile.Name;
-        string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
+        string path = GameConfigPathForMode(gameName, newProfile.EmbeddedProxy);
         EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(
             newProfile,
-            AppPaths.TwxproxyDatabasePathForGame(gameName));
+            DatabasePathForMode(gameName, newProfile.EmbeddedProxy));
         await SaveEmbeddedGameConfigAsync(gameName, config);
         await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
     }
@@ -8735,9 +8968,9 @@ public partial class MainWindow : Window
 
         ConnectionProfile saveAsProfile = uniqueSaveAsProfile;
         string gameName = saveAsProfile.Name;
-        string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
-        string targetDatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
-        string currentDatabasePath = _embeddedGameConfig?.DatabasePath ?? AppPaths.TwxproxyDatabasePathForGame(DeriveGameName());
+        string path = GameConfigPathForMode(gameName, saveAsProfile.EmbeddedProxy);
+        string targetDatabasePath = DatabasePathForMode(gameName, saveAsProfile.EmbeddedProxy);
+        string currentDatabasePath = _embeddedGameConfig?.DatabasePath ?? DatabasePathForMode(DeriveGameName(), _state.EmbeddedProxy);
         if (!string.IsNullOrWhiteSpace(currentDatabasePath) &&
             File.Exists(currentDatabasePath) &&
             !string.Equals(currentDatabasePath, targetDatabasePath, StringComparison.OrdinalIgnoreCase) &&

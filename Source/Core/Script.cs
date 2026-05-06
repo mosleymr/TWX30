@@ -3230,6 +3230,246 @@ namespace TWXProxy.Core
             }
         }
 
+        private void LoadPreparedParamsIntoLegacyBuffer(PreparedInstruction instruction)
+        {
+            _cmdParams.Clear();
+
+            PreparedParam[] parameters = instruction.Params;
+            for (int i = 0; i < parameters.Length; i++)
+                _cmdParams.Add(EvaluatePreparedParam(parameters[i]));
+        }
+
+        private bool ExecuteLegacyParsed(PreparedScriptProgram prepared)
+        {
+            var server = GlobalModules.TWXServer;
+            IExecutionObserver? observer = ExecutionObserver;
+            long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
+            int commandsExecuted = 0;
+            int resolvedParamCount = 0;
+            _isExecuting = true;
+
+            bool Finish(bool completed)
+            {
+                _execScriptID = 0;
+                _isExecuting = false;
+                RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
+                if (completed && _forceStopRequested)
+                    _owner.StopByHandle(this);
+                return completed;
+            }
+
+            if (ShouldAbortForForceStop())
+            {
+                _codePos = prepared.CodeLength;
+                return Finish(true);
+            }
+
+            _execScriptID = 0;
+
+            if (_codePos >= prepared.CodeLength)
+                return Finish(true);
+
+            if (!prepared.TryGetInstructionIndex(_codePos, out int instructionIndex))
+            {
+                if (_codePos == prepared.CodeLength)
+                    return Finish(true);
+
+                throw new Exception($"Legacy parser could not locate prepared instruction for code position {_codePos}");
+            }
+
+            byte[] code = _cmp?.Code ?? Array.Empty<byte>();
+
+            try
+            {
+                while (instructionIndex < prepared.Instructions.Length)
+                {
+                    if (ShouldAbortForForceStop())
+                    {
+                        _codePos = prepared.CodeLength;
+                        return Finish(true);
+                    }
+
+                    PreparedInstruction instruction = prepared.Instructions[instructionIndex];
+                    _execScriptID = instruction.ScriptId;
+                    _codePos = instruction.RawEndOffset;
+
+                    if (instruction.IsLabel)
+                    {
+                        if (_codePos >= prepared.CodeLength)
+                            return Finish(true);
+
+                        instructionIndex = instruction.NextInstructionIndex;
+                        continue;
+                    }
+
+                    ushort cmdID = instruction.CommandId;
+                    ScriptCmd? cmd = instruction.Command;
+                    string commandName = instruction.CommandName;
+
+                    LoadPreparedParamsIntoLegacyBuffer(instruction);
+
+                    if (GlobalModules.VerboseDebugMode && commandName == "GOTO" && _cmdParams.Count > 0)
+                    {
+                        string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
+                        GlobalModules.DebugLog($"[Execute/GOTO] raw='{_cmdParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
+                    }
+
+                    if (_owner.ScriptRef == null)
+                        throw new Exception("ScriptRef not initialized");
+
+                    if (cmd == null)
+                    {
+                        if (cmdID >= _owner.ScriptRef.CmdCount)
+                            server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
+
+                        goto NextInstruction;
+                    }
+
+                    if (_cmdParams.Count < cmd.MinParams)
+                    {
+                        var dbg = new System.Text.StringBuilder();
+                        dbg.AppendLine($"ERROR: Command '{commandName}' (ID={cmdID}) requires at least {cmd.MinParams} parameters, but only {_cmdParams.Count} were provided.");
+                        dbg.AppendLine($"  RawOffset={instruction.RawOffset}, RawEndOffset={instruction.RawEndOffset}, ScriptID={instruction.ScriptId}, Line={instruction.LineNumber}");
+                        dbg.AppendLine($"  CodeLength={prepared.CodeLength}");
+                        for (int pi = 0; pi < _cmdParams.Count; pi++)
+                            dbg.AppendLine($"  Param[{pi}] = '{_cmdParams[pi].Value}'");
+
+                        if (code.Length > 0)
+                        {
+                            int dumpStart = Math.Max(0, instruction.RawOffset);
+                            int dumpLen = Math.Min(40, code.Length - dumpStart);
+                            if (dumpLen > 0)
+                                dbg.AppendLine($"  Bytes [{dumpStart}..{dumpStart + dumpLen - 1}]: {BitConverter.ToString(code, dumpStart, dumpLen)}");
+                        }
+
+                        File.AppendAllText("/tmp/twxproxy_debug.log", dbg.ToString());
+                        goto NextInstruction;
+                    }
+
+                    if (commandName == "RETURN")
+                    {
+                        commandsExecuted++;
+                        if (GlobalModules.VerboseDebugMode)
+                            GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
+                        long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
+                        Return();
+                        if (observer != null)
+                        {
+                            observer.OnCommandExecuted(
+                                false,
+                                cmdID,
+                                commandName,
+                                _cmdParams.Count,
+                                -1,
+                                instruction.RawOffset,
+                                Stopwatch.GetTimestamp() - returnStart);
+                        }
+                        if (GlobalModules.VerboseDebugMode)
+                            GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
+                        goto NextInstruction;
+                    }
+
+                    if (cmd.OnCmd == null)
+                        throw new Exception($"Command {commandName} has no handler");
+
+                    if (GlobalModules.VerboseDebugMode)
+                        GlobalModules.DebugLog($"[Dispatch] CMD={commandName} paramCount={_cmdParams.Count}\n");
+
+                    CmdAction action;
+                    long commandStart = observer != null ? Stopwatch.GetTimestamp() : 0;
+                    try
+                    {
+                        CmdParam[] dispatchParams = GetDispatchParamBuffer(_cmdParams.Count);
+                        for (int i = 0; i < _cmdParams.Count; i++)
+                            dispatchParams[i] = _cmdParams[i];
+
+                        commandsExecuted++;
+                        resolvedParamCount += _cmdParams.Count;
+                        action = cmd.OnCmd(this, dispatchParams);
+                    }
+                    catch (Exception ex)
+                    {
+                        GlobalModules.DebugLog($"[Dispatch] EXCEPTION in {commandName}: {ex.Message}\n");
+                        throw new ScriptException($"Error executing command '{commandName}': {ex.Message}", ex);
+                    }
+
+                    if (observer != null)
+                    {
+                        observer.OnCommandExecuted(
+                            false,
+                            cmdID,
+                            commandName,
+                            _cmdParams.Count,
+                            -1,
+                            instruction.RawOffset,
+                            Stopwatch.GetTimestamp() - commandStart);
+                    }
+
+                    switch (action)
+                    {
+                        case CmdAction.Stop:
+                            _codePos = prepared.CodeLength;
+                            return Finish(true);
+
+                        case CmdAction.Pause:
+                            _paused = true;
+                            if (_pausedReason == PauseReason.None)
+                                _pausedReason = PauseReason.Command;
+                            _resetLoopDetectionOnNextExecute = true;
+                            if (GlobalModules.VerboseDebugMode)
+                                GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
+                            return Finish(false);
+
+                        case CmdAction.Auth:
+                            _waitingForAuth = true;
+                            _pausedReason = PauseReason.Auth;
+                            _resetLoopDetectionOnNextExecute = true;
+                            return Finish(false);
+                    }
+
+                NextInstruction:
+                    if (_codePos >= prepared.CodeLength)
+                        return Finish(true);
+
+                    if (_codePos == instruction.RawEndOffset)
+                    {
+                        instructionIndex = instruction.NextInstructionIndex;
+                        continue;
+                    }
+
+                    if (!prepared.TryGetInstructionIndex(_codePos, out instructionIndex))
+                        throw new Exception($"Legacy parser could not locate prepared instruction for code position {_codePos}");
+                }
+
+                return Finish(true);
+            }
+            catch (ScriptException ex)
+            {
+                string msg = $"[Script.ExecuteLegacyParsed] Script exception at pos {_codePos}: {ex.Message}";
+                Console.WriteLine(msg);
+                GlobalModules.DebugLog(msg + "\n");
+                if (ex.InnerException != null)
+                {
+                    string innerMsg = $"[Script.ExecuteLegacyParsed] Inner: {ex.InnerException.Message}";
+                    Console.WriteLine(innerMsg);
+                    GlobalModules.DebugLog(innerMsg + "\n");
+                }
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                _codePos = prepared.CodeLength;
+                return Finish(true);
+            }
+            catch (Exception ex)
+            {
+                string msg = $"[Script.ExecuteLegacyParsed] Unexpected exception at pos {_codePos}: {ex.Message}";
+                Console.WriteLine(msg);
+                Console.WriteLine($"[Script.ExecuteLegacyParsed] Stack trace: {ex.StackTrace}");
+                GlobalModules.DebugLog(msg + "\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                _codePos = prepared.CodeLength;
+                return Finish(true);
+            }
+        }
+
         private bool ExecutePrepared(PreparedScriptProgram prepared)
         {
             var server = GlobalModules.TWXServer;
@@ -3522,6 +3762,12 @@ namespace TWXProxy.Core
                 PreparedScriptProgram? prepared = cmp.PrepareForExecution();
                 if (prepared != null)
                     return ExecutePrepared(prepared);
+            }
+            else
+            {
+                PreparedScriptProgram? prepared = cmp.PrepareForExecution();
+                if (prepared != null)
+                    return ExecuteLegacyParsed(prepared);
             }
 
             byte[] code = cmp.Code;

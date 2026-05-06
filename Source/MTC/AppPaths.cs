@@ -59,6 +59,13 @@ public static class AppPaths
         return Path.Combine(DatabaseDir, safe + ".xdb");
     }
 
+    /// <summary>Returns the MTC standalone .xdb path for a given game name.</summary>
+    public static string MtcStandaloneDatabasePathForGame(string gameName)
+    {
+        string safe = Core.SharedPaths.SanitizeFileComponent(gameName);
+        return Path.Combine(DatabaseDir, safe + "_mtc.xdb");
+    }
+
     public static string LegacyDatabasePathForGame(string gameName)
     {
         string safe = string.Concat(gameName.Split(Path.GetInvalidFileNameChars()));
@@ -97,6 +104,10 @@ public static class AppPaths
     /// <summary>Returns the path to the shared TWXP game config JSON for a given game name.</summary>
     public static string TwxproxyGameConfigFileFor(string gameName)
         => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName) + ".json");
+
+    /// <summary>Returns the path to the MTC standalone game config JSON for a given game name.</summary>
+    public static string MtcStandaloneGameConfigFileFor(string gameName)
+        => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName) + "_mtc.json");
 
     public static string ConfigFilePath => Core.SharedPaths.ConfigFilePath;
 

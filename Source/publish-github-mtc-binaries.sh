@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# publish-github-mtc-binaries.sh — build MTC release binaries, copy them into
-# repo-root releases/MTC/<rid>, commit only those binaries, and push to GitHub.
+# publish-github-mtc-binaries.sh — build MTC release binaries into
+# repo-root bin/<rid>, commit only those binaries, and push to GitHub.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,16 +20,16 @@ Builds the standalone MTC release binaries for:
   - osx-x64
   - win-x64
 
-Copies them into:
-  - releases/MTC/osx-arm64/MTC
-  - releases/MTC/osx-x64/MTC
-  - releases/MTC/win-x64/MTC.exe
+Writes them into:
+  - bin/osx-arm64/MTC
+  - bin/osx-x64/MTC
+  - bin/win-x64/MTC.exe
 
 Then stages only those three binaries, creates one git commit, and pushes the
 current branch to the selected remote.
 
 Options:
-  --no-build       Reuse the current Source/bin/MTC outputs.
+  --no-build       Reuse the current TWX30/bin outputs.
   --no-push        Create the commit but do not push it.
   --message TEXT   Commit message to use.
   --remote NAME    Git remote to push to (default: origin).
@@ -86,49 +86,35 @@ if ! git -C "${REPO_ROOT}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
 fi
 
 if [[ ${BUILD_FIRST} -eq 1 ]]; then
-  "${SCRIPT_DIR}/build-mtc.sh"
+  RID_LIST="osx-arm64 osx-x64 win-x64" "${SCRIPT_DIR}/build-mtc.sh"
 fi
 
-install_release_binary() {
-  local src="$1"
-  local dest="$2"
-  local tmp="${dest}.tmp.$$"
-
-  mkdir -p "$(dirname "${dest}")"
-  rm -f "${tmp}"
-  cp "${src}" "${tmp}"
-  chmod 755 "${tmp}" 2>/dev/null || true
-  mv -f "${tmp}" "${dest}"
-}
-
-copy_release_binary() {
+require_release_binary() {
   local rid="$1"
   local bin_name="$2"
-  local src="${SCRIPT_DIR}/bin/MTC/${rid}/${bin_name}"
-  local dest="${REPO_ROOT}/releases/MTC/${rid}/${bin_name}"
+  local path="${REPO_ROOT}/bin/${rid}/${bin_name}"
 
-  if [[ ! -f "${src}" ]]; then
-    echo "Missing built binary: ${src}" >&2
+  if [[ ! -f "${path}" ]]; then
+    echo "Missing built binary: ${path}" >&2
     exit 1
   fi
 
-  install_release_binary "${src}" "${dest}"
-  echo "==> Synced ${rid}: ${dest}"
+  echo "==> Found ${rid}: ${path}"
 }
 
-copy_release_binary "osx-arm64" "MTC"
-copy_release_binary "osx-x64" "MTC"
-copy_release_binary "win-x64" "MTC.exe"
+require_release_binary "osx-arm64" "MTC"
+require_release_binary "osx-x64" "MTC"
+require_release_binary "win-x64" "MTC.exe"
 
 git -C "${REPO_ROOT}" add --force -- \
-  "releases/MTC/osx-arm64/MTC" \
-  "releases/MTC/osx-x64/MTC" \
-  "releases/MTC/win-x64/MTC.exe"
+  "bin/osx-arm64/MTC" \
+  "bin/osx-x64/MTC" \
+  "bin/win-x64/MTC.exe"
 
 if git -C "${REPO_ROOT}" diff --cached --quiet -- \
-  "releases/MTC/osx-arm64/MTC" \
-  "releases/MTC/osx-x64/MTC" \
-  "releases/MTC/win-x64/MTC.exe"; then
+  "bin/osx-arm64/MTC" \
+  "bin/osx-x64/MTC" \
+  "bin/win-x64/MTC.exe"; then
   echo "No interim MTC binary changes to commit."
   exit 0
 fi

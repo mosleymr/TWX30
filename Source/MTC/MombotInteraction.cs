@@ -250,7 +250,31 @@ public partial class MainWindow
                 }
                 else
                 {
-                    filtered = new List<byte>(chunk.Length + 1) { 0x91 };
+                    filtered = new List<byte>(chunk.Length);
+                }
+            }
+
+            if (_pendingTerminalSyncMarkerUtf8LeadByte)
+            {
+                _pendingTerminalSyncMarkerUtf8LeadByte = false;
+
+                if (index < chunk.Length && chunk[index] == 0x91)
+                {
+                    filtered ??= new List<byte>(chunk.Length);
+                    index++;
+                    if (index < chunk.Length && chunk[index] == 0x08)
+                    {
+                        index++;
+                    }
+                    else if (index >= chunk.Length)
+                    {
+                        _pendingTerminalSyncMarkerLeadByte = true;
+                    }
+                }
+                else
+                {
+                    filtered ??= new List<byte>(chunk.Length + 1);
+                    filtered.Add(0xC2);
                 }
             }
 
@@ -260,7 +284,7 @@ public partial class MainWindow
 
                 if (_suppressingPendingNativeMombotEscapeSequence)
                 {
-                    filtered ??= new List<byte>(chunk.Length);
+                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
 
                     if (!_suppressingPendingNativeMombotEscapeCsiBody)
                     {
@@ -286,29 +310,53 @@ public partial class MainWindow
 
                 if (ShouldSuppressPendingNativeMombotEscapeEcho(value))
                 {
-                    filtered ??= new List<byte>(chunk.Length);
+                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
                     _suppressingPendingNativeMombotEscapeSequence = true;
                     _suppressingPendingNativeMombotEscapeCsiBody = false;
                     continue;
                 }
 
+                if (value == 0xC2)
+                {
+                    if (index + 1 < chunk.Length)
+                    {
+                        if (chunk[index + 1] == 0x91)
+                        {
+                            filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
+                            index++;
+                            if (index + 1 < chunk.Length && chunk[index + 1] == 0x08)
+                                index++;
+                            else if (index + 1 >= chunk.Length)
+                                _pendingTerminalSyncMarkerLeadByte = true;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
+                        _pendingTerminalSyncMarkerUtf8LeadByte = true;
+                        continue;
+                    }
+                }
+
                 if (value == 0x91)
                 {
+                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
                     if (index + 1 < chunk.Length)
                     {
                         if (chunk[index + 1] == 0x08)
                         {
-                            filtered ??= new List<byte>(chunk.Length);
                             index++;
                             continue;
                         }
                     }
                     else
                     {
-                        filtered ??= new List<byte>(chunk.Length);
                         _pendingTerminalSyncMarkerLeadByte = true;
                         continue;
                     }
+
+                    continue;
                 }
 
                 if (value == 0x1B &&
@@ -320,7 +368,7 @@ public partial class MainWindow
                     chunk[index + 5] == (byte)'1' &&
                     chunk[index + 6] == (byte)'A')
                 {
-                    filtered ??= new List<byte>(chunk.Length + 8);
+                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index, 8);
                     filtered.Add(0x0D);
                     filtered.Add(0x1B);
                     filtered.Add((byte)'[');
@@ -343,6 +391,22 @@ public partial class MainWindow
 
             return filtered == null ? chunk : filtered.ToArray();
         }
+    }
+
+    private static List<byte> EnsureTerminalDisplayFilteredBuffer(
+        List<byte>? filtered,
+        byte[] chunk,
+        int preserveLength,
+        int extraCapacity = 0)
+    {
+        if (filtered != null)
+            return filtered;
+
+        var result = new List<byte>(chunk.Length + extraCapacity);
+        for (int copyIndex = 0; copyIndex < preserveLength; copyIndex++)
+            result.Add(chunk[copyIndex]);
+
+        return result;
     }
 
     private bool ShouldSuppressPendingNativeMombotEscapeEcho(byte value)
@@ -803,7 +867,8 @@ public partial class MainWindow
         await Task.Yield();
 
         var interpreter = CurrentInterpreter;
-        if (interpreter == null)
+        bool remoteProxyScripts = interpreter == null && CanUseRemoteProxyScripts();
+        if (interpreter == null && !remoteProxyScripts)
             return;
 
         var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
@@ -838,19 +903,23 @@ public partial class MainWindow
 
         string fullPath = files[0].Path.LocalPath;
         string scriptPath = fullPath;
-        if (!string.IsNullOrWhiteSpace(interpreter.ScriptDirectory))
+        string scriptRoot = interpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
+        if (!string.IsNullOrWhiteSpace(scriptRoot))
         {
-            string fullRoot = Path.GetFullPath(interpreter.ScriptDirectory)
+            string fullRoot = Path.GetFullPath(scriptRoot)
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                 + Path.DirectorySeparatorChar;
             string candidate = Path.GetFullPath(fullPath);
             if (candidate.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
-                scriptPath = Path.GetRelativePath(interpreter.ScriptDirectory, fullPath).Replace('\\', '/');
+                scriptPath = Path.GetRelativePath(scriptRoot, fullPath).Replace('\\', '/');
         }
 
         try
         {
-            Core.ProxyGameOperations.LoadScript(interpreter, scriptPath);
+            if (interpreter != null)
+                Core.ProxyGameOperations.LoadScript(interpreter, scriptPath);
+            else
+                SendProxyMenuCommand($"ss {scriptPath}");
             _parser.Feed($"\x1b[1;36m[Loaded script: {scriptPath}]\x1b[0m\r\n");
             _buffer.Dirty = true;
         }
@@ -870,12 +939,16 @@ public partial class MainWindow
         await Task.Yield();
 
         var interpreter = CurrentInterpreter;
-        if (interpreter == null)
+        bool remoteProxyScripts = interpreter == null && CanUseRemoteProxyScripts();
+        if (interpreter == null && !remoteProxyScripts)
             return;
 
         try
         {
-            Core.ProxyGameOperations.LoadScript(interpreter, relativePath);
+            if (interpreter != null)
+                Core.ProxyGameOperations.LoadScript(interpreter, relativePath);
+            else
+                SendProxyMenuCommand($"ss {relativePath}");
             _parser.Feed($"\x1b[1;36m[Loaded quick script: {relativePath}]\x1b[0m\r\n");
             _buffer.Dirty = true;
         }
@@ -4575,20 +4648,8 @@ public partial class MainWindow
         (string promptAnsi, string promptPlain) = CaptureCurrentGamePromptSnapshot();
         int promptVersionBefore = _mombotObservedGamePromptVersion;
 
-        bool restoreLegacyPromptProbeSuppression = _gameInstance?.SuppressLegacyPromptProbeSends ?? false;
-        if (_gameInstance != null)
-            _gameInstance.SuppressLegacyPromptProbeSends = true;
-
         IReadOnlyList<MTC.mombot.mombotDispatchResult> results;
-        try
-        {
-            _mombot.TryExecuteLocalInput(input, out results);
-        }
-        finally
-        {
-            if (_gameInstance != null)
-                _gameInstance.SuppressLegacyPromptProbeSends = restoreLegacyPromptProbeSuppression;
-        }
+        _mombot.TryExecuteLocalInput(input, out results);
 
         ApplyMombotExecutionRefresh();
         _ = RestoreCurrentGamePromptAfterMombotCommandAsync(results, promptAnsi, promptPlain, promptVersionBefore);
@@ -4706,10 +4767,11 @@ public partial class MainWindow
                 if (IsTerminalCurrentLineEquivalentTo(candidatePromptPlain))
                     return;
 
-                if (!IsTerminalCurrentLineBlank())
+                bool replaceCurrentLine = IsTerminalCurrentLineTruncatedPromptSuffix(candidatePromptPlain);
+                if (!replaceCurrentLine && !IsTerminalCurrentLineBlank())
                     return;
 
-                AppendCurrentGamePrompt(candidatePromptAnsi, candidatePromptPlain);
+                AppendCurrentGamePrompt(candidatePromptAnsi, candidatePromptPlain, replaceCurrentLine);
             });
             return;
         }
@@ -4764,6 +4826,26 @@ public partial class MainWindow
         string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
         return string.IsNullOrWhiteSpace(
             Core.AnsiCodes.NormalizeTerminalText(currentRowText).Trim());
+    }
+
+    private bool IsTerminalCurrentLineTruncatedPromptSuffix(string promptPlain)
+    {
+        string prompt = Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd();
+        if (string.IsNullOrWhiteSpace(prompt) ||
+            !TryGetMombotPromptNameFromLine(prompt, out _))
+        {
+            return false;
+        }
+
+        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
+        string current = Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd().TrimStart();
+        if (current.Length < 8 ||
+            string.Equals(current, prompt, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return prompt.EndsWith(current, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool HasRecentMombotTerminalOutput(TimeSpan quietFor)
@@ -4832,10 +4914,11 @@ public partial class MainWindow
             return true;
         }
 
-        if (HasActiveServerInputPromptOnCurrentLine())
+        bool replaceCurrentLine = IsTerminalCurrentLineTruncatedPromptSuffix(_mombotLastObservedGamePromptPlain);
+        if (!replaceCurrentLine && HasActiveServerInputPromptOnCurrentLine())
             return false;
 
-        AppendCurrentGamePrompt(_mombotLastObservedGamePromptAnsi, _mombotLastObservedGamePromptPlain);
+        AppendCurrentGamePrompt(_mombotLastObservedGamePromptAnsi, _mombotLastObservedGamePromptPlain, replaceCurrentLine);
         return true;
     }
 
@@ -4851,7 +4934,7 @@ public partial class MainWindow
         return new string(chars).TrimEnd();
     }
 
-    private void AppendCurrentGamePrompt(string promptAnsi, string promptPlain)
+    private void AppendCurrentGamePrompt(string promptAnsi, string promptPlain, bool replaceCurrentLine = false)
     {
         string promptText = string.IsNullOrWhiteSpace(promptAnsi) ? promptPlain : promptAnsi;
         promptText = SanitizeObservedPromptForDisplay(promptText);
@@ -4859,7 +4942,8 @@ public partial class MainWindow
             return;
 
         string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
-        bool needsNewLine = _buffer.CursorCol != 0 || !string.IsNullOrWhiteSpace(currentRowText);
+        bool needsNewLine = !replaceCurrentLine &&
+            (_buffer.CursorCol != 0 || !string.IsNullOrWhiteSpace(currentRowText));
         if (needsNewLine)
             _parser.Feed("\r\n");
 

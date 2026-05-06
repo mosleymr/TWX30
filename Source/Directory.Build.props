@@ -1,5 +1,5 @@
 <Project>
-  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'MTC' or '$(MSBuildProjectName)' == 'TWXC' or '$(MSBuildProjectName)' == 'TWXD'">
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'MTC' or '$(MSBuildProjectName)' == 'TWXP' or '$(MSBuildProjectName)' == 'TWXC' or '$(MSBuildProjectName)' == 'TWXD'">
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>

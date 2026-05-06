@@ -104,7 +104,6 @@ namespace TWXProxy.Core
         public string ExternalAddress { get; set; } = string.Empty;
         public bool BroadCastMsgs { get; set; } = true;
         public bool LocalEcho { get; set; } = true;
-        public bool SuppressLegacyPromptProbeSends { get; set; }
         public int ClientCount
         {
             get
@@ -1444,12 +1443,6 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task SendToServerAsync(byte[] data)
         {
-            if (ShouldSuppressLegacyPromptProbeSend(data))
-            {
-                GlobalModules.DebugLog("[SEND] Suppressed legacy #145 prompt probe during native-local Mombot execution.\n");
-                return;
-            }
-
             if (_serverStream != null && _serverClient?.Connected == true)
             {
                 await _serverSendLock.WaitAsync();
@@ -1466,19 +1459,6 @@ namespace TWXProxy.Core
                     _serverSendLock.Release();
                 }
             }
-        }
-
-        private bool ShouldSuppressLegacyPromptProbeSend(byte[] data)
-        {
-            if (!SuppressLegacyPromptProbeSends || data.Length == 0)
-                return false;
-
-            if (data.Length == 1 && data[0] == 0x91)
-                return true;
-
-            return data.Length == 2 &&
-                   data[0] == 0x91 &&
-                   data[1] == 0x08;
         }
 
         /// <summary>
