@@ -145,6 +145,17 @@ namespace TWXProxy.Core
         /// Set to true only when diagnosing deep variable-evaluation bugs.
         /// </summary>
         public static bool VerboseDebugMode { get; set; } = false;
+        /// <summary>
+        /// Enables extremely high-volume script VM instruction tracing such as
+        /// [BRANCH], [CMP], [ADD], and detailed command helper diagnostics.
+        /// Keep this off unless chasing a VM/runtime execution bug.
+        /// </summary>
+        public static bool ScriptTraceDebugMode { get; set; } = false;
+        /// <summary>
+        /// Enables AutoRecorder parser/database chatter. This is useful when
+        /// validating sector parsing, but is separate from general runtime logs.
+        /// </summary>
+        public static bool AutoRecorderDebugMode { get; set; } = true;
         public static bool TriggerDebugMode { get; set; } = false;
         public static bool PortHaggleDebugMode { get; set; } = false;
         public static bool PlanetHaggleDebugMode { get; set; } = false;
@@ -389,7 +400,13 @@ namespace TWXProxy.Core
             }
         }
 
-        public static void ConfigureDebugLogging(string? debugLogPath, bool enabled, bool verboseEnabled, bool triggerEnabled)
+        public static void ConfigureDebugLogging(
+            string? debugLogPath,
+            bool enabled,
+            bool verboseEnabled,
+            bool triggerEnabled,
+            bool scriptTraceEnabled = false,
+            bool autoRecorderEnabled = true)
         {
             lock (_debugLock)
             {
@@ -400,9 +417,12 @@ namespace TWXProxy.Core
                 bool enabledChanged = DebugMode != enabled;
                 bool verboseChanged = VerboseDebugMode != verboseEnabled;
                 bool triggerChanged = TriggerDebugMode != triggerEnabled;
+                bool scriptTraceChanged = ScriptTraceDebugMode != scriptTraceEnabled;
+                bool autoRecorderChanged = AutoRecorderDebugMode != autoRecorderEnabled;
                 bool writerStateMatches = (_debugWriter != null) == (enabled || EnableVmMetrics);
 
-                if (!pathChanged && !enabledChanged && !verboseChanged && !triggerChanged && writerStateMatches)
+                if (!pathChanged && !enabledChanged && !verboseChanged && !triggerChanged &&
+                    !scriptTraceChanged && !autoRecorderChanged && writerStateMatches)
                     return;
 
                 DrainQueuedDebugMessages(flushWriter: true);
@@ -413,6 +433,8 @@ namespace TWXProxy.Core
                 DebugMode = enabled;
                 VerboseDebugMode = verboseEnabled;
                 TriggerDebugMode = triggerEnabled;
+                ScriptTraceDebugMode = scriptTraceEnabled;
+                AutoRecorderDebugMode = autoRecorderEnabled;
 
                 if (!LogWriterEnabled)
                 {
@@ -477,7 +499,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void InitializeDebugLog()
         {
-            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode);
+            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode, ScriptTraceDebugMode, AutoRecorderDebugMode);
             ConfigureHaggleDebugLogging(PortHaggleDebugLogPath, PortHaggleDebugMode, PlanetHaggleDebugLogPath, PlanetHaggleDebugMode);
         }
 
@@ -533,6 +555,34 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Console.WriteLine($"[TRIGGER DEBUG LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void ScriptTraceDebugLog(string message)
+        {
+            if (!DebugMode || !ScriptTraceDebugMode) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SCRIPT TRACE LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void AutoRecorderDebugLog(string message)
+        {
+            if (!DebugMode || !AutoRecorderDebugMode) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AUTORECORDER LOG ERROR] {ex.Message}: {message}");
             }
         }
 

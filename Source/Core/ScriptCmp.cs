@@ -692,6 +692,30 @@ namespace TWXProxy.Core
             return string.Empty;
         }
 
+        public string GetSourceDisplayName(int scriptID)
+        {
+            if (scriptID > 0 && scriptID < _includeScriptList.Count)
+            {
+                string includeName = _includeScriptList[scriptID];
+                return includeName.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
+                    ? includeName
+                    : includeName + ".ts";
+            }
+
+            if (string.IsNullOrWhiteSpace(_scriptFile))
+                return string.Empty;
+
+            string fileName = Path.GetFileName(_scriptFile);
+            string extension = Path.GetExtension(fileName);
+            if (extension.Equals(".cts", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".twx", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.ChangeExtension(fileName, ".ts");
+            }
+
+            return fileName;
+        }
+
         public string QualifyLabelReference(string name, int scriptID)
         {
             if (string.IsNullOrEmpty(name))

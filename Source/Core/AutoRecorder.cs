@@ -199,7 +199,7 @@ namespace TWXProxy.Core
             _pendingPlanetProductName = string.Empty;
             _pendingPlanetProductQuantity = 0;
 
-            GlobalModules.DebugLog($"[AutoRecorder] State reset reason={reason}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] State reset reason={reason}\n");
         }
 
         // ── Compiled Regex ─────────────────────────────────────────────────────
@@ -519,13 +519,13 @@ namespace TWXProxy.Core
                 rawLine.IndexOf("Sector", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 rawLine.IndexOf("Port", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] RAW inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport} lastSect={_lastSector}: '{rawLine}'\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] RAW inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport} lastSect={_lastSector}: '{rawLine}'\n");
             }
 
             var db = ScriptRef.ActiveDatabase;
             if (db == null)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] SKIPPED (db==null): '{rawLine}'\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] SKIPPED (db==null): '{rawLine}'\n");
                 return;
             }
 
@@ -574,7 +574,7 @@ namespace TWXProxy.Core
                 if (_inWarpLane && _warpLaneBuffer.Length > 0)
                     FinalizeWarpLane(db);
 
-                GlobalModules.DebugLog($"[AutoRecorder] WarpLane STARTED: '{rawLine}'\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] WarpLane STARTED: '{rawLine}'\n");
                 _inWarpLane = true;
                 _warpLaneBuffer.Clear();
                 return;
@@ -728,7 +728,7 @@ namespace TWXProxy.Core
                 if (string.IsNullOrWhiteSpace(trimmedLine))
                     return;
 
-                GlobalModules.DebugLog($"[AutoRecorder] Land list ended by line: '{trimmedLine}'\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Land list ended by line: '{trimmedLine}'\n");
             }
 
             // ── Planet detail page ─────────────────────────────────────────────
@@ -825,7 +825,7 @@ namespace TWXProxy.Core
                 FinalizeWarpLane(db);
                 _inHoloScan    = true;
                 _inDensityScan = false;
-                GlobalModules.DebugLog($"[AutoRecorder] HoloScan started, currentSector={_currentSector}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] HoloScan started, currentSector={_currentSector}\n");
                 return;
             }
 
@@ -857,13 +857,13 @@ namespace TWXProxy.Core
                     if (_activeSectorDisplaySector > 0 && _activeSectorDisplaySector != sn)
                         FinalizeActiveSectorDisplay(db);
 
-                    GlobalModules.DebugLog($"[AutoRecorder] lastSector {_lastSector}→{sn} inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] lastSector {_lastSector}→{sn} inHolo={_inHoloScan} inWarpLane={_inWarpLane} inPortRpt={_inPortReport}\n");
                     // A sector display definitively ends any warp-lane sequence.
                     // For 1-hop FM transwarp paths the ':' re-query prompt never arrives,
                     // so _inWarpLane must be cleared here or subsequent sector data gets consumed.
                     if (_inWarpLane)
                     {
-                        GlobalModules.DebugLog($"[AutoRecorder] WarpLane cleared by Sector display\n");
+                        GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] WarpLane cleared by Sector display\n");
                         FinalizeWarpLane(db);
                     }
                     _lastSector = sn;
@@ -888,7 +888,7 @@ namespace TWXProxy.Core
                         // detail when a subsequent sector display only redraws the short
                         // "Ports   :" header.
                         if (_activeSectorDisplayHadCachedPort)
-                            GlobalModules.DebugLog($"[AutoRecorder] Preserving cached port for sector {sn} pending live sector display\n");
+                            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Preserving cached port for sector {sn} pending live sector display\n");
                     }
 
                     // Match Pascal extractor behavior: each "Sector  : NNNN" line advances
@@ -896,7 +896,7 @@ namespace TWXProxy.Core
                     // Scripts such as DisR rely on the final holo sector (the live sector)
                     // having become CURRENTSECTOR before the prompt returns.
                     _currentSector = sn;
-                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
 
                     // Always capture constellation name when present (works for both
                     // normal sector display AND holo scan: "Sector  : 9363  in  The Crucible")
@@ -910,7 +910,7 @@ namespace TWXProxy.Core
                             {
                                 constellationSector.Constellation = constName;
                                 db.SaveSector(constellationSector);
-                                GlobalModules.DebugLog($"[AutoRecorder] Sector {sn} constellation = {constName}\n");
+                                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sn} constellation = {constName}\n");
                             }
                         }
                     }
@@ -938,12 +938,12 @@ namespace TWXProxy.Core
                             {
                                 navSector.Constellation = constName;
                                 db.SaveSector(navSector);
-                                GlobalModules.DebugLog($"[AutoRecorder] NavPoint sector {sn} constellation = {constName}\n");
+                                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] NavPoint sector {sn} constellation = {constName}\n");
                             }
                         }
                     }
 
-                    GlobalModules.DebugLog($"[AutoRecorder] NavPoint preview sector -> {sn}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] NavPoint preview sector -> {sn}\n");
                     return;
                 }
             }
@@ -978,11 +978,11 @@ namespace TWXProxy.Core
                         LandmarkSectorsChanged?.Invoke();
                         if (changed && previousDock != 0 && previousDock != 65535)
                         {
-                            GlobalModules.DebugLog($"[AutoRecorder] Stardock corrected from sector {previousDock} to {dockSector}\n");
+                            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Stardock corrected from sector {previousDock} to {dockSector}\n");
                         }
                         else
                         {
-                            GlobalModules.DebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
+                            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Stardock discovered in sector {dockSector}\n");
                         }
                     }
                     return;
@@ -1008,7 +1008,7 @@ namespace TWXProxy.Core
                             sec.SectorPort.Name = reportName;
                         db.SaveSector(sec);
                     }
-                    GlobalModules.DebugLog($"[AutoRecorder] Commerce report for sector {_portReportSector}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Commerce report for sector {_portReportSector}\n");
                     return;
                 }
             }
@@ -1068,7 +1068,7 @@ namespace TWXProxy.Core
             if (_lastSector <= 0)
             {
                 if (trimmedLine.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
-                    GlobalModules.DebugLog($"[AutoRecorder] DROPPED warp line (_lastSector=0): '{trimmedLine}'\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] DROPPED warp line (_lastSector=0): '{trimmedLine}'\n");
                 return;
             }
 
@@ -1082,7 +1082,7 @@ namespace TWXProxy.Core
                 }
                 // Log if line looks like it should match but didn't
                 if (trimmedLine.IndexOf("Warps to Sector", StringComparison.OrdinalIgnoreCase) >= 0)
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: warp line not matched by regex for sect={_lastSector}: '{trimmedLine}'\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] WARN: warp line not matched by regex for sect={_lastSector}: '{trimmedLine}'\n");
             }
 
             // Port
@@ -1103,7 +1103,7 @@ namespace TWXProxy.Core
                 }
                 // Warn if a line looks like a port line but the regex didn't match
                 if (trimmedLine.StartsWith("Port", StringComparison.OrdinalIgnoreCase))
-                    GlobalModules.DebugLog($"[AutoRecorder] WARN: port-like line not matched for sector {_lastSector}: '{trimmedLine}'\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] WARN: port-like line not matched for sector {_lastSector}: '{trimmedLine}'\n");
             }
 
             // NavHaz  :  15%
@@ -1276,7 +1276,7 @@ namespace TWXProxy.Core
                 (trimmedLine.StartsWith("Command [TL=", StringComparison.Ordinal) ||
                  trimmedLine.StartsWith("Computer command [TL=", StringComparison.Ordinal)))
             {
-                GlobalModules.DebugLog("[AutoRecorder] WarpLane cleared by prompt\n");
+                GlobalModules.AutoRecorderDebugLog("[AutoRecorder] WarpLane cleared by prompt\n");
                 FinalizeWarpLane(db);
             }
 
@@ -1291,7 +1291,7 @@ namespace TWXProxy.Core
                     _currentSector = csn;
                     _lastSector = csn;
                     CurrentSectorChanged?.Invoke(csn);
-                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Current sector set to {csn} from prompt\n");
                 }
                 _dockArea = DockArea.None;
                 return true;
@@ -1308,7 +1308,7 @@ namespace TWXProxy.Core
                     _currentSector = csn;
                     _lastSector = csn;
                     CurrentSectorChanged?.Invoke(csn);
-                    GlobalModules.DebugLog($"[AutoRecorder] Current sector set to {csn} from computer prompt\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Current sector set to {csn} from computer prompt\n");
                 }
                 _dockArea = DockArea.None;
                 return true;
@@ -1333,7 +1333,7 @@ namespace TWXProxy.Core
                 ResetPromptDisplays(db);
                 _inNavPointDisplay = true;
                 _sectorPos = SectorPos.None;
-                GlobalModules.DebugLog("[AutoRecorder] Entered NavPoint preview\n");
+                GlobalModules.AutoRecorderDebugLog("[AutoRecorder] Entered NavPoint preview\n");
                 _dockArea = DockArea.None;
                 return true;
             }
@@ -1342,7 +1342,7 @@ namespace TWXProxy.Core
             {
                 _inNavPointDisplay = false;
                 _sectorPos = SectorPos.None;
-                GlobalModules.DebugLog("[AutoRecorder] Exited NavPoint preview\n");
+                GlobalModules.AutoRecorderDebugLog("[AutoRecorder] Exited NavPoint preview\n");
                 return true;
             }
 
@@ -1382,7 +1382,7 @@ namespace TWXProxy.Core
                 }
 
                 _pendingPortReportSectorOverride = promptSector;
-                GlobalModules.DebugLog($"[AutoRecorder] Port report sector prompt -> {_pendingPortReportSectorOverride}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port report sector prompt -> {_pendingPortReportSectorOverride}\n");
                 return true;
             }
 
@@ -1404,7 +1404,7 @@ namespace TWXProxy.Core
             {
                 EtherProbesDelta = -1
             });
-            GlobalModules.DebugLog($"[AutoRecorder] Ether probe consumed: '{trimmedLine}'\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Ether probe consumed: '{trimmedLine}'\n");
             return true;
         }
 
@@ -1969,7 +1969,7 @@ namespace TWXProxy.Core
                 _activeSectorDisplayHadCachedPort)
             {
                 sector.SectorPort = null;
-                GlobalModules.DebugLog($"[AutoRecorder] Cleared cached port for sector {sectorNumber} after live sector display showed no port\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Cleared cached port for sector {sectorNumber} after live sector display showed no port\n");
             }
 
             SyncSectorPlanetSightings(db, sector);
@@ -1979,7 +1979,7 @@ namespace TWXProxy.Core
             sector.Explored = ExploreType.Yes;
             sector.Update = DateTime.Now;
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] SectorCompleted sector={sectorNumber}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] SectorCompleted sector={sectorNumber}\n");
             _activeSectorDisplaySector = 0;
             _activeSectorDisplaySawPort = false;
             _activeSectorDisplayHadCachedPort = false;
@@ -2042,7 +2042,7 @@ namespace TWXProxy.Core
             sector.SectorPort ??= new Port();
             sector.SectorPort.Dead = true;
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port marked destroyed\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port marked destroyed\n");
         }
 
         private static void ParsePortContinuation(ModDatabase db, int sectorNum, string line)
@@ -2056,7 +2056,7 @@ namespace TWXProxy.Core
                 {
                     sector.SectorPort.BuildTime = buildTime;
                     db.SaveSector(sector);
-                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port buildtime={buildTime}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port buildtime={buildTime}\n");
                     return;
                 }
             }
@@ -2090,7 +2090,7 @@ namespace TWXProxy.Core
                         ShipType = trimmed.Substring(open + 1, close - open - 1).Trim()
                     });
                     db.SaveSector(sector);
-                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} trader={_currentTrader.Name} ship={sector.Traders[^1].ShipName} type={sector.Traders[^1].ShipType} figs={_currentTrader.Fighters}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} trader={_currentTrader.Name} ship={sector.Traders[^1].ShipName} type={sector.Traders[^1].ShipType} figs={_currentTrader.Fighters}\n");
                 }
                 return;
             }
@@ -2127,7 +2127,7 @@ namespace TWXProxy.Core
                         ShipType = trimmed.Substring(1, close - 1).Trim()
                     });
                     db.SaveSector(sector);
-                    GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} ship={_currentShip.Name} owner={_currentShip.Owner} type={sector.Ships[^1].ShipType} figs={_currentShip.Fighters}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} ship={_currentShip.Name} owner={_currentShip.Owner} type={sector.Ships[^1].ShipType} figs={_currentShip.Fighters}\n");
                 }
                 return;
             }
@@ -2173,7 +2173,7 @@ namespace TWXProxy.Core
 
             db.SaveSector(sector);
             AddFigMarker(db, sectorNum);
-            GlobalModules.DebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={sector.Fighters.Quantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={sector.Fighters.Quantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
         }
 
         private void CompleteFigScan(ModDatabase db, string reason)
@@ -2221,7 +2221,7 @@ namespace TWXProxy.Core
             }
 
             db.SetSectorVar(2, "FIG_COUNT", scannedSectors.Count.ToString());
-            GlobalModules.DebugLog(
+            GlobalModules.AutoRecorderDebugLog(
                 $"[AutoRecorder] Fig scan complete: seen={scannedSectors.Count} clearedFriendlyFigSectors={clearedFriendlyFighters} removedFigMarkers={removedFigMarkers} reason={reason}\n");
         }
 
@@ -2232,7 +2232,7 @@ namespace TWXProxy.Core
 
             _inMineScanKind = kind;
             _currentMineScanSectors.Clear();
-            GlobalModules.DebugLog($"[AutoRecorder] Mine scan begin kind={kind}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Mine scan begin kind={kind}\n");
         }
 
         private void ProcessMineScanLine(ModDatabase db, string line)
@@ -2269,7 +2269,7 @@ namespace TWXProxy.Core
 
             ApplyMineScanToSector(sector, _inMineScanKind, quantity, owner);
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Mine scan sector={sectorNum} kind={_inMineScanKind} qty={quantity} owner={owner}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Mine scan sector={sectorNum} kind={_inMineScanKind} qty={quantity} owner={owner}\n");
         }
 
         private void CompleteMineScan(ModDatabase db, string reason)
@@ -2323,7 +2323,7 @@ namespace TWXProxy.Core
                 clearedFriendlyMineSectors++;
             }
 
-            GlobalModules.DebugLog(
+            GlobalModules.AutoRecorderDebugLog(
                 $"[AutoRecorder] Mine scan complete: kind={kind} seen={scannedSectors.Count} clearedFriendlyMineSectors={clearedFriendlyMineSectors} reason={reason}\n");
         }
 
@@ -2405,7 +2405,7 @@ namespace TWXProxy.Core
             if (_pendingSectorDefenseQuantity <= 0)
                 ResetPendingSectorDefense();
 
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={quantity}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} defenders prompt -> fighters={quantity}\n");
         }
 
         private bool TryProcessSectorDefenseStatus(ModDatabase db, string trimmedLine)
@@ -2445,7 +2445,7 @@ namespace TWXProxy.Core
                             sector.Fighters.FigType = _pendingSectorDefenseType;
                         db.SaveSector(sector);
                         AddFigMarker(db, _pendingSectorDefenseSector);
-                        GlobalModules.DebugLog($"[AutoRecorder] Sector {_pendingSectorDefenseSector} defense drop committed qty={_pendingSectorDefenseQuantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+                        GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {_pendingSectorDefenseSector} defense drop committed qty={_pendingSectorDefenseQuantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
                     }
                 }
 
@@ -2658,7 +2658,7 @@ namespace TWXProxy.Core
                     return true;
 
                 db.SetSectorVar(sector, "BUSTED", "1");
-                GlobalModules.DebugLog($"[AutoRecorder] BUSTED sector={sector}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] BUSTED sector={sector}\n");
                 return true;
             }
 
@@ -2669,7 +2669,7 @@ namespace TWXProxy.Core
                     return true;
 
                 db.SetSectorVar(sector, "FAKEBUST", "1");
-                GlobalModules.DebugLog($"[AutoRecorder] FAKEBUST sector={sector}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FAKEBUST sector={sector}\n");
                 return true;
             }
 
@@ -2752,7 +2752,7 @@ namespace TWXProxy.Core
                 {
                     db.SetSectorVar(sector, "MSLSEC", "1");
                     RemoveFigMarker(db, sector);
-                    GlobalModules.DebugLog($"[AutoRecorder] Federation erased corp figs sector={sector} msl=1\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Federation erased corp figs sector={sector} msl=1\n");
                     return true;
                 }
             }
@@ -2809,7 +2809,7 @@ namespace TWXProxy.Core
             if (updated <= 0)
                 RemoveFigMarker(db, sectorNum);
 
-            GlobalModules.DebugLog($"[AutoRecorder] Friendly fighters destroyed sector={sectorNum} destroyed={destroyed} remaining={updated}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Friendly fighters destroyed sector={sectorNum} destroyed={destroyed} remaining={updated}\n");
         }
 
         private bool TryProcessGenesisTorpedoState(string trimmedLine)
@@ -2817,14 +2817,14 @@ namespace TWXProxy.Core
             if (trimmedLine.StartsWith("For building this planet you receive", StringComparison.OrdinalIgnoreCase))
             {
                 GenesisTorpsChanged?.Invoke(-1);
-                GlobalModules.DebugLog("[AutoRecorder] Planet build detected, genesis torps delta=-1\n");
+                GlobalModules.AutoRecorderDebugLog("[AutoRecorder] Planet build detected, genesis torps delta=-1\n");
                 return true;
             }
 
             if (trimmedLine.StartsWith("For blowing up this planet you receive", StringComparison.OrdinalIgnoreCase))
             {
                 AtomicDetChanged?.Invoke(-1);
-                GlobalModules.DebugLog("[AutoRecorder] Planet detonation detected, atomic detonators delta=-1\n");
+                GlobalModules.AutoRecorderDebugLog("[AutoRecorder] Planet detonation detected, atomic detonators delta=-1\n");
                 return true;
             }
 
@@ -2877,7 +2877,7 @@ namespace TWXProxy.Core
                     break;
             }
 
-            GlobalModules.DebugLog($"[AutoRecorder] Last hit type={hitType} sector={sector}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Last hit type={hitType} sector={sector}\n");
         }
 
         private static void AddFigMarker(ModDatabase db, int sector)
@@ -2893,7 +2893,7 @@ namespace TWXProxy.Core
             }
 
             db.SetSectorVar(sector, "FIGSEC", "1");
-            GlobalModules.DebugLog($"[AutoRecorder] FIGSEC add sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FIGSEC add sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
         }
 
         private static void RemoveFigMarker(ModDatabase db, int sector)
@@ -2909,7 +2909,7 @@ namespace TWXProxy.Core
             }
 
             db.SetSectorVar(sector, "FIGSEC", string.Empty);
-            GlobalModules.DebugLog($"[AutoRecorder] FIGSEC remove sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FIGSEC remove sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
         }
 
         private static bool IsSectorVarTrue(ModDatabase db, int sector, string name)
@@ -2953,7 +2953,7 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] density sector={sn} density={sector.Density} warps={wc} navhaz={navhaz} anom={sector.Anomaly}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] density sector={sn} density={sector.Density} warps={wc} navhaz={navhaz} anom={sector.Anomaly}\n");
             return sn;
         }
 
@@ -2975,7 +2975,7 @@ namespace TWXProxy.Core
             sec.WarpCount = (byte)Math.Min(idx, 6);
 
             db.SaveSector(sec);
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {fromSector} warps from density scan: {string.Join(", ", sectors)}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {fromSector} warps from density scan: {string.Join(", ", sectors)}\n");
         }
 
         private static void ParseWarpsLine(ModDatabase db, int sectorNum, string warpsPart)
@@ -3009,7 +3009,7 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");
         }
 
         private void ParsePortLine(ModDatabase db, int sectorNum, string rawLine, Match m)
@@ -3086,7 +3086,7 @@ namespace TWXProxy.Core
                     ScriptRef.SetCurrentGameVar("$BOT~STARDOCK", dockSector);
                     ScriptRef.SetCurrentGameVar("$stardock", dockSector);
                     ScriptRef.OnVariableSaved?.Invoke("$STARDOCK", dockSector);
-                    GlobalModules.DebugLog($"[AutoRecorder] NavPoint confirmed Stardock in sector {sectorNum}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] NavPoint confirmed Stardock in sector {sectorNum}\n");
                 }
             }
 
@@ -3097,7 +3097,7 @@ namespace TWXProxy.Core
             {
                 LandmarkSectorsChanged?.Invoke();
             }
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} port={sector.SectorPort.Name} class={cls}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port={sector.SectorPort.Name} class={cls}\n");
         }
 
         /// <summary>
@@ -3160,11 +3160,11 @@ namespace TWXProxy.Core
                         sector.SectorPort.BuyProduct[ProductType.Equipment]);
                 sector.SectorPort.Update = DateTime.Now;
                 _inPortReport = false;
-                GlobalModules.DebugLog($"[AutoRecorder] Port report complete: sector={_portReportSector} class={sector.SectorPort.ClassIndex}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port report complete: sector={_portReportSector} class={sector.SectorPort.ClassIndex}\n");
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Port product: {productName} {status} amt={amt} pct={pct}% sector={_portReportSector}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port product: {productName} {status} amt={amt} pct={pct}% sector={_portReportSector}\n");
         }
 
         /// <summary>
@@ -3208,7 +3208,7 @@ namespace TWXProxy.Core
                     : FighterType.Offensive;
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} fighters={qty} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} fighters={qty} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
         }
 
         // "Mines   : 3 (Type 1 Armid) (belong to your Corp)"  — or continuation variant.
@@ -3234,7 +3234,7 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Sector {sectorNum} mines {mineType}={qty} owner={owner}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} mines {mineType}={qty} owner={owner}\n");
         }
 
         private static string NormalizeOwnerText(string? rawOwner)
@@ -3266,7 +3266,7 @@ namespace TWXProxy.Core
             {
                 string route = _warpLaneBuffer.ToString();
                 ProcessWarpLaneRoute(db, route);
-                GlobalModules.DebugLog($"[AutoRecorder] WarpLane finalized: '{route}'\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] WarpLane finalized: '{route}'\n");
             }
 
             ResetWarpLane();
@@ -3350,14 +3350,14 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sec);
-            GlobalModules.DebugLog($"[AutoRecorder] AddWarp sector={sectorNum} warp={warp} (FM lane)\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] AddWarp sector={sectorNum} warp={warp} (FM lane)\n");
         }
 
         private static SectorData? GetOrCreate(ModDatabase db, int sectorNum)
         {
             if (sectorNum <= 0)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={db.SectorCount}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={db.SectorCount}\n");
                 return null;
             }
 
@@ -3373,20 +3373,20 @@ namespace TWXProxy.Core
                         header.Sectors = sectorNum;
                         db.ReplaceHeader(header);
                         db.SaveDatabase();
-                        GlobalModules.DebugLog(
+                        GlobalModules.AutoRecorderDebugLog(
                             $"[AutoRecorder] Auto-grew database sectors old={previousSectors} new={sectorNum}\n");
                     }
                 }
                 catch (Exception ex)
                 {
-                    GlobalModules.DebugLog(
+                    GlobalModules.AutoRecorderDebugLog(
                         $"[AutoRecorder] Failed to auto-grow database for sector={sectorNum} dbSectorCount={sectorCount} error='{ex.Message}'\n");
                 }
 
                 sectorCount = db.SectorCount;
                 if (sectorCount > 0 && sectorCount != int.MaxValue && sectorNum > sectorCount)
                 {
-                    GlobalModules.DebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={sectorCount}\n");
+                    GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Reject sector={sectorNum} dbSectorCount={sectorCount}\n");
                     return null;
                 }
             }
@@ -3499,7 +3499,7 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Port CIM: sector={sect} ore={ore}/{pOre}% org={org}/{pOrg}% equip={equip}/{pEquip}%\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port CIM: sector={sect} ore={ore}/{pOre}% org={org}/{pOrg}% equip={equip}/{pEquip}%\n");
         }
 
         private void BeginPortCimBatch()
@@ -3517,7 +3517,7 @@ namespace TWXProxy.Core
 
             if (_currentPortCimSectors.Count == 0)
             {
-                GlobalModules.DebugLog($"[AutoRecorder] Port CIM complete: seen=0 reason={reason}\n");
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port CIM complete: seen=0 reason={reason}\n");
                 _currentPortCimSectors.Clear();
                 return;
             }
@@ -3564,7 +3564,7 @@ namespace TWXProxy.Core
                 }
             }
 
-            GlobalModules.DebugLog(
+            GlobalModules.AutoRecorderDebugLog(
                 $"[AutoRecorder] Port CIM complete: seen={_currentPortCimSectors.Count} clearedFriendlyFigSectors={clearedFighterSectors} removedFigMarkers={removedFigMarkers} reason={reason}\n");
             _currentPortCimSectors.Clear();
         }
@@ -3617,7 +3617,7 @@ namespace TWXProxy.Core
             }
 
             db.SaveSector(sector);
-            GlobalModules.DebugLog($"[AutoRecorder] Warp CIM: sector={sect} warps={string.Join(",", sector.Warp.Where(w => w > 0))}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Warp CIM: sector={sect} warps={string.Join(",", sector.Warp.Where(w => w > 0))}\n");
         }
     }
 }

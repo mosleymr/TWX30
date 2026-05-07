@@ -129,7 +129,7 @@ public partial class MainWindow
         {
             await Task.Yield();
 
-            if (!_mombot.Enabled || _gameInstance == null)
+            if (_gameInstance == null)
             {
                 _mombotLastKeepaliveLine = string.Empty;
                 return;
@@ -137,6 +137,12 @@ public partial class MainWindow
 
             if (_gameInstance.IsConnected)
                 await SendKeepaliveEscapeAsync();
+
+            if (!_mombot.Enabled)
+            {
+                _mombotLastKeepaliveLine = string.Empty;
+                return;
+            }
 
             if (ShouldStopNativeMombotAfterDisconnect() || !ShouldNativeMombotAutoRelog())
             {

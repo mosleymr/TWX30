@@ -1610,6 +1610,9 @@ namespace TWXProxy.Core
 #pragma warning disable CS0649 // Field is never assigned to
         private int _execScriptID;
 #pragma warning restore CS0649
+        private int _currentSourceScriptID;
+        private int _currentSourceLineNumber;
+        private int _currentSourceRawOffset = -1;
         private Stack<int> _subStack;
         private Stack<int> _nonResumingMenuHandlerDepths;
         private List<CmdParam> _cmdParams;
@@ -2784,6 +2787,46 @@ namespace TWXProxy.Core
                 : value;
         }
 
+        private void ClearCurrentSourceLocation()
+        {
+            _currentSourceScriptID = 0;
+            _currentSourceLineNumber = 0;
+            _currentSourceRawOffset = -1;
+        }
+
+        private void SetCurrentSourceLocation(int scriptId, int lineNumber, int rawOffset)
+        {
+            _currentSourceScriptID = scriptId;
+            _currentSourceLineNumber = lineNumber;
+            _currentSourceRawOffset = rawOffset;
+        }
+
+        private string FormatCurrentSourceLocation()
+        {
+            if (_cmp == null)
+                return string.Empty;
+
+            string sourceName = _cmp.GetSourceDisplayName(_currentSourceScriptID);
+            if (!string.IsNullOrWhiteSpace(sourceName) && _currentSourceLineNumber > 0)
+                return $"in {sourceName}, line {_currentSourceLineNumber}: ";
+
+            if (!string.IsNullOrWhiteSpace(sourceName))
+                return $"in {sourceName}: ";
+
+            if (_currentSourceRawOffset >= 0)
+                return $"at byte offset {_currentSourceRawOffset}: ";
+
+            return string.Empty;
+        }
+
+        private string FormatScriptErrorMessage(string message)
+        {
+            string location = FormatCurrentSourceLocation();
+            return string.IsNullOrEmpty(location)
+                ? message
+                : location + message;
+        }
+
         private CmdParam GetScratchParam(int slotIndex, string value)
         {
             if (slotIndex >= _scratchParams.Length)
@@ -3251,6 +3294,7 @@ namespace TWXProxy.Core
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
+                ClearCurrentSourceLocation();
                 _isExecuting = false;
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
@@ -3265,6 +3309,7 @@ namespace TWXProxy.Core
             }
 
             _execScriptID = 0;
+            ClearCurrentSourceLocation();
 
             if (_codePos >= prepared.CodeLength)
                 return Finish(true);
@@ -3291,6 +3336,7 @@ namespace TWXProxy.Core
 
                     PreparedInstruction instruction = prepared.Instructions[instructionIndex];
                     _execScriptID = instruction.ScriptId;
+                    SetCurrentSourceLocation(instruction.ScriptId, instruction.LineNumber, instruction.RawOffset);
                     _codePos = instruction.RawEndOffset;
 
                     if (instruction.IsLabel)
@@ -3445,7 +3491,8 @@ namespace TWXProxy.Core
             }
             catch (ScriptException ex)
             {
-                string msg = $"[Script.ExecuteLegacyParsed] Script exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.ExecuteLegacyParsed] Script exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 GlobalModules.DebugLog(msg + "\n");
                 if (ex.InnerException != null)
@@ -3454,17 +3501,18 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
             catch (Exception ex)
             {
-                string msg = $"[Script.ExecuteLegacyParsed] Unexpected exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.ExecuteLegacyParsed] Unexpected exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.ExecuteLegacyParsed] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -3482,6 +3530,7 @@ namespace TWXProxy.Core
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
+                ClearCurrentSourceLocation();
                 _isExecuting = false;
                 RecordVmExecutionMetrics(true, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
@@ -3496,6 +3545,7 @@ namespace TWXProxy.Core
             }
 
             _execScriptID = 0;
+            ClearCurrentSourceLocation();
 
             if (_codePos >= prepared.CodeLength)
                 return Finish(true);
@@ -3520,6 +3570,7 @@ namespace TWXProxy.Core
 
                     PreparedInstruction instruction = prepared.Instructions[instructionIndex];
                     _execScriptID = instruction.ScriptId;
+                    SetCurrentSourceLocation(instruction.ScriptId, instruction.LineNumber, instruction.RawOffset);
                     _codePos = instruction.RawEndOffset;
 
                     if (instruction.IsLabel)
@@ -3669,7 +3720,8 @@ namespace TWXProxy.Core
             }
             catch (ScriptException ex)
             {
-                string msg = $"[Script.ExecutePrepared] Script exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.ExecutePrepared] Script exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 GlobalModules.DebugLog(msg + "\n");
                 if (ex.InnerException != null)
@@ -3678,17 +3730,18 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
             catch (Exception ex)
             {
-                string msg = $"[Script.ExecutePrepared] Unexpected exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.ExecutePrepared] Unexpected exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.ExecutePrepared] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -3706,6 +3759,7 @@ namespace TWXProxy.Core
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
+                ClearCurrentSourceLocation();
                 _isExecuting = false;
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
@@ -3756,6 +3810,7 @@ namespace TWXProxy.Core
             }
 
             ScriptCmp cmp = _cmp;
+            ClearCurrentSourceLocation();
 
             if (PreferPreparedExecution)
             {
@@ -3795,6 +3850,7 @@ namespace TWXProxy.Core
                     }
                     
                     ushort cmdID;
+                    ushort lineNumber = 0;
                     
                     if (isOldFormat)
                     {
@@ -3804,10 +3860,11 @@ namespace TWXProxy.Core
                         
                         byte scriptID = code[_codePos++];
                         _execScriptID = scriptID;
-                        ushort lineNumber = BitConverter.ToUInt16(code, _codePos);
+                        lineNumber = BitConverter.ToUInt16(code, _codePos);
                         _codePos += 2;
                         cmdID = BitConverter.ToUInt16(code, _codePos);
                         _codePos += 2;
+                        SetCurrentSourceLocation(scriptID, lineNumber, _codePos - 5);
                         
                         // [Execute] per-instruction logging removed — too high-frequency.
                     }
@@ -4159,7 +4216,8 @@ namespace TWXProxy.Core
                 // Do NOT re-throw: propagating a ScriptException out of Execute() causes it
                 // to bubble up through TextEvent → Network.ReadFromServerAsync, where it is
                 // mistaken for a server I/O error and fires a spurious Disconnected event.
-                string msg = $"[Script.Execute] Script exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.Execute] Script exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 GlobalModules.DebugLog(msg + "\n");
                 if (ex.InnerException != null)
@@ -4168,18 +4226,19 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = code.Length; // terminate this script
                 return Finish(true);
             }
             catch (Exception ex)
             {
                 // Unexpected exception — log, notify, and terminate the script gracefully.
-                string msg = $"[Script.Execute] Unexpected exception at pos {_codePos}: {ex.Message}";
+                string formattedMessage = FormatScriptErrorMessage(ex.Message);
+                string msg = $"[Script.Execute] Unexpected exception at pos {_codePos}: {formattedMessage}";
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.Execute] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {ex.Message}\r\n");
+                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = code.Length; // terminate this script
                 return Finish(true);
             }

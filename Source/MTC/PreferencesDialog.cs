@@ -116,7 +116,9 @@ public class PreferencesDialog : Window
         var scriptsRow = BuildPathInputRow(txtScripts, btnBrowse);
 
         var chkDebug = BuildCheckBox("Enable debug logging", prefs.DebugLoggingEnabled);
-        var chkVerbose = BuildCheckBox("Enable verbose debug logging", prefs.VerboseDebugLogging);
+        var chkVerbose = BuildCheckBox("Enable verbose parameter debug logging", prefs.VerboseDebugLogging);
+        var chkScriptTrace = BuildCheckBox("Enable script VM trace logging (huge)", prefs.ScriptTraceDebugLogging);
+        var chkAutoRecorderDebug = BuildCheckBox("Enable AutoRecorder debug logging", prefs.AutoRecorderDebugLogging);
         var chkTriggerDebug = BuildCheckBox("Enable trigger debug logging (very noisy)", prefs.TriggerDebugLogging);
         var chkDebugPortHaggle = BuildCheckBox("Debug port haggle to mtc_haggle_debug.log", prefs.DebugPortHaggleEnabled);
         var chkDebugPlanetHaggle = BuildCheckBox("Debug planet haggle to mtc_neg_debug.log", prefs.DebugPlanetHaggleEnabled);
@@ -135,14 +137,20 @@ public class PreferencesDialog : Window
         {
             bool debugEnabled = chkDebug.IsChecked == true;
             chkVerbose.IsEnabled = debugEnabled;
+            chkScriptTrace.IsEnabled = debugEnabled;
+            chkAutoRecorderDebug.IsEnabled = debugEnabled;
             chkTriggerDebug.IsEnabled = debugEnabled;
             if (!debugEnabled)
             {
                 chkVerbose.IsChecked = false;
+                chkScriptTrace.IsChecked = false;
+                chkAutoRecorderDebug.IsChecked = false;
                 chkTriggerDebug.IsChecked = false;
             }
         };
         chkVerbose.IsEnabled = chkDebug.IsChecked == true;
+        chkScriptTrace.IsEnabled = chkDebug.IsChecked == true;
+        chkAutoRecorderDebug.IsEnabled = chkDebug.IsChecked == true;
         chkTriggerDebug.IsEnabled = chkDebug.IsChecked == true;
 
         var storageSection = BuildSection(
@@ -154,7 +162,7 @@ public class PreferencesDialog : Window
         var diagnosticsSection = BuildSection(
             "Diagnostics",
             "Logging controls for runtime troubleshooting.",
-            BuildCheckGroup(chkDebug, chkVerbose, chkTriggerDebug, chkDebugPortHaggle, chkDebugPlanetHaggle));
+            BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkAutoRecorderDebug, chkTriggerDebug, chkDebugPortHaggle, chkDebugPlanetHaggle));
 
         var alertsSection = BuildSection(
             "Alerts",
@@ -195,6 +203,8 @@ public class PreferencesDialog : Window
                 : txtScripts.Text.Trim();
             prefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
             prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
+            prefs.ScriptTraceDebugLogging = prefs.DebugLoggingEnabled && chkScriptTrace.IsChecked == true;
+            prefs.AutoRecorderDebugLogging = prefs.DebugLoggingEnabled && chkAutoRecorderDebug.IsChecked == true;
             prefs.TriggerDebugLogging = prefs.DebugLoggingEnabled && chkTriggerDebug.IsChecked == true;
             prefs.DebugPortHaggleEnabled = chkDebugPortHaggle.IsChecked == true;
             prefs.DebugPlanetHaggleEnabled = chkDebugPlanetHaggle.IsChecked == true;

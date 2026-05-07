@@ -1457,7 +1457,9 @@ public partial class MainWindow : Window
                 : AppPaths.GetDebugLogPathForGame(debugGameName),
             _appPrefs.DebugLoggingEnabled,
             _appPrefs.VerboseDebugLogging,
-            _appPrefs.TriggerDebugLogging);
+            _appPrefs.TriggerDebugLogging,
+            _appPrefs.ScriptTraceDebugLogging,
+            _appPrefs.AutoRecorderDebugLogging);
         Core.GlobalModules.ConfigureHaggleDebugLogging(
             AppPaths.GetPortHaggleDebugLogPath(),
             _appPrefs.DebugPortHaggleEnabled,

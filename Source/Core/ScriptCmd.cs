@@ -742,12 +742,12 @@ namespace TWXProxy.Core
                 // fall back to the known Warp[] list, but for CALC/DENSITY sectors we should
                 // not let a partial warp list masquerade as a complete count.
                 var s = GetSectorByIndex(indexes);
-                if (s == null) { GlobalModules.DebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault("?")} → null sector\n"); return "0"; }
+                if (s == null) { GlobalModules.ScriptTraceDebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault("?")} → null sector\n"); return "0"; }
                 var knownWarps = s.Warp.Where(w => w != 0).ToList();
                 int warpCountResult = s.WarpCount > 0
                     ? Math.Max(s.WarpCount, knownWarps.Count)
                     : (s.Explored == ExploreType.Yes ? knownWarps.Count : 0);
-                GlobalModules.DebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault()} knownWarps={knownWarps.Count} WarpCount={s.WarpCount} → {warpCountResult} warps=[{string.Join(",",s.Warp)}]\n");
+                GlobalModules.ScriptTraceDebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault()} knownWarps={knownWarps.Count} WarpCount={s.WarpCount} → {warpCountResult} warps=[{string.Join(",",s.Warp)}]\n");
                 return warpCountResult.ToString();
             });
             AddSysConstant("SECTOR.WARPS", (indexes) => { // 58
@@ -759,7 +759,7 @@ namespace TWXProxy.Core
                 if (!int.TryParse(indexes[1], out int warpIdx) || warpIdx < 1 || warpIdx > 6) return "0";
                 var warpList = s.Warp.Where(w => w != 0).ToList();
                 string warpResult = (warpIdx <= warpList.Count) ? warpList[warpIdx - 1].ToString() : "0";
-                GlobalModules.DebugLog($"[SECTOR.WARPS] sect={indexes[0]} idx={warpIdx} warpList=[{string.Join(",",warpList)}] → {warpResult}\n");
+                GlobalModules.ScriptTraceDebugLog($"[SECTOR.WARPS] sect={indexes[0]} idx={warpIdx} warpList=[{string.Join(",",warpList)}] → {warpResult}\n");
                 return warpResult;
             });
             AddSysConstant("SECTOR.WARPSIN", (indexes) => { // 59

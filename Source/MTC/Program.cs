@@ -19,7 +19,9 @@ GlobalModules.ConfigureDebugLogging(
     MTC.AppPaths.GetDebugLogPath(),
     prefs.DebugLoggingEnabled,
     prefs.VerboseDebugLogging,
-    prefs.TriggerDebugLogging);
+    prefs.TriggerDebugLogging,
+    prefs.ScriptTraceDebugLogging,
+    prefs.AutoRecorderDebugLogging);
 GlobalModules.ConfigureHaggleDebugLogging(
     MTC.AppPaths.GetPortHaggleDebugLogPath(),
     prefs.DebugPortHaggleEnabled,

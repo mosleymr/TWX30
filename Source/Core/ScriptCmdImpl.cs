@@ -300,7 +300,7 @@ namespace TWXProxy.Core
             UpdateParam(parameters[0], f1 + f2, precision);
             string varLabel = parameters[0] is VarParam vp ? $"({vp.Name}) " :
                              (parameters[0] is ProgVarParam pvp ? $"(ProgVar:{pvp.Name}) " : "");
-            GlobalModules.DebugLog($"[ADD] {varLabel}{f1} + {f2} = {parameters[0].DecValue}\n");
+            GlobalModules.ScriptTraceDebugLog($"[ADD] {varLabel}{f1} + {f2} = {parameters[0].DecValue}\n");
             return CmdAction.None;
         }
 
@@ -439,9 +439,9 @@ namespace TWXProxy.Core
             parameters[0].Value = result ? "1" : "0";
             string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}@{vp1.GetHashCode():X6}" : "const";
             string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
-            GlobalModules.DebugLog($"[CMP] [{p1n}]='{v1}' == [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
+            GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' == [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
             if (!result && v1.Length > 0 && v2.Length > 0 && v1.Length <= 3 && v2.Length <= 3)
-                GlobalModules.DebugLog($"[CMP_BYTES] v1=[{string.Join(",", v1.Select(c => (int)c))}] v2=[{string.Join(",", v2.Select(c => (int)c))}]\n");
+                GlobalModules.ScriptTraceDebugLog($"[CMP_BYTES] v1=[{string.Join(",", v1.Select(c => (int)c))}] v2=[{string.Join(",", v2.Select(c => (int)c))}]\n");
             return CmdAction.None;
         }
 
@@ -458,7 +458,7 @@ namespace TWXProxy.Core
             parameters[0].Value = result ? "1" : "0";
             string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}" : "const";
             string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
-            GlobalModules.DebugLog($"[CMP] [{p1n}]='{v1}' != [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
+            GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' != [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
             return CmdAction.None;
         }
 
@@ -554,10 +554,10 @@ namespace TWXProxy.Core
                     srcInfo.Append($" src[{i}]={srcName}='{parameters[i].Value}'");
                 }
                 if (GlobalModules.VerboseDebugMode)
-                    GlobalModules.DebugLog($"[SETVAR] {varName}{svHash}: '{oldValue}' → '{result}'{srcInfo}\n");
+                    GlobalModules.ScriptTraceDebugLog($"[SETVAR] {varName}{svHash}: '{oldValue}' → '{result}'{srcInfo}\n");
             }
             else if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[SETVAR] {varName}: '{oldValue}' → '{result}'\n");
+                GlobalModules.ScriptTraceDebugLog($"[SETVAR] {varName}: '{oldValue}' → '{result}'\n");
             if (parameters.Length == 2 && parameters[1].IsNumeric)
                 UpdateParam(parameters[0], parameters[1].DecValue, parameters[1].SigDigits);
             else
@@ -590,7 +590,7 @@ namespace TWXProxy.Core
                 parameters[0].Value += parameters[i].Value;
             }
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[CONCAT] {varName}@{parameters[0].GetHashCode():X8}: '{oldValue}' → '{parameters[0].Value}'{srcDescs}\n");
+                GlobalModules.ScriptTraceDebugLog($"[CONCAT] {varName}@{parameters[0].GetHashCode():X8}: '{oldValue}' → '{parameters[0].Value}'{srcDescs}\n");
             return CmdAction.None;
         }
 
@@ -623,7 +623,7 @@ namespace TWXProxy.Core
             int len = parameters[0].Value.Length;
             parameters[1].Value = len.ToString();
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[GETLENGTH] {p0Name}='{parameters[0].Value}' → {p1Name}='{len}'\n");
+                GlobalModules.ScriptTraceDebugLog($"[GETLENGTH] {p0Name}='{parameters[0].Value}' → {p1Name}='{len}'\n");
             return CmdAction.None;
         }
 
@@ -645,7 +645,7 @@ namespace TWXProxy.Core
             if (start > parameters[0].Value.Length)
             {
                 if (GlobalModules.VerboseDebugMode)
-                    GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (start>len)\n");
+                    GlobalModules.ScriptTraceDebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (start>len)\n");
                 parameters[1].Value = string.Empty;
                 return CmdAction.None;
             }
@@ -653,7 +653,7 @@ namespace TWXProxy.Core
             if (length <= 0)
             {
                 if (GlobalModules.VerboseDebugMode)
-                    GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (len<=0)\n");
+                    GlobalModules.ScriptTraceDebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '' (len<=0)\n");
                 parameters[1].Value = string.Empty;
                 return CmdAction.None;
             }
@@ -661,7 +661,7 @@ namespace TWXProxy.Core
             string result = parameters[0].Value.Substring(start - 1, 
                 Math.Min(length, parameters[0].Value.Length - start + 1));
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");
+                GlobalModules.ScriptTraceDebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");
             parameters[1].Value = result;
             return CmdAction.None;
         }
@@ -685,7 +685,7 @@ namespace TWXProxy.Core
                 if (idx < 0)
                 {
                     parameters[1].Value = string.Empty;
-                    GlobalModules.DebugLog($"[GETTEXT] startStr '{startStr}' not found in '{line}'\n");
+                    GlobalModules.ScriptTraceDebugLog($"[GETTEXT] startStr '{startStr}' not found in '{line}'\n");
                     return CmdAction.None;
                 }
                 startPos = idx + startStr.Length;
@@ -705,7 +705,7 @@ namespace TWXProxy.Core
             }
 
             parameters[1].Value = result;
-            GlobalModules.DebugLog($"[GETTEXT] source='{line}', start='{startStr}', end='{endStr}' => '{result}'\n");
+            GlobalModules.ScriptTraceDebugLog($"[GETTEXT] source='{line}', start='{startStr}', end='{endStr}' => '{result}'\n");
             return CmdAction.None;
         }
 
@@ -794,7 +794,7 @@ namespace TWXProxy.Core
             string srcName = (parameters[0] is VarParam sv) ? $"[src={sv.Name}]" : (parameters[0] is ProgVarParam pvs) ? $"[src=PV:{pvs.Name}]" : "";
             string destHash = (parameters[1] is VarParam dvh) ? $"@{dvh.GetHashCode():X6}" : "";
             string defaultValue = parameters.Length > 3 ? parameters[3].Value : "0";
-            GlobalModules.DebugLog($"[GETWORD] {varName}{destHash}{srcName}: source='{parameters[0].Value}', index={index}, default='{defaultValue}' => '{oldValue}' → '{newValue}'\n");
+            GlobalModules.ScriptTraceDebugLog($"[GETWORD] {varName}{destHash}{srcName}: source='{parameters[0].Value}', index={index}, default='{defaultValue}' => '{oldValue}' → '{newValue}'\n");
             parameters[1].Value = newValue;
             return CmdAction.None;
         }
@@ -815,7 +815,7 @@ namespace TWXProxy.Core
             string src = parameters[0].Value;
             int pos = src.IndexOf(word, StringComparison.Ordinal);
             string result = (pos + 1).ToString();
-            GlobalModules.DebugLog($"[GETWORDPOS] searching for char(s) [{string.Join(",", word.Select(c => (int)c))}] in source[{string.Join(",", src.Take(8).Select(c => (int)c))}]: found at char pos {pos + 1}\n");
+            GlobalModules.ScriptTraceDebugLog($"[GETWORDPOS] searching for char(s) [{string.Join(",", word.Select(c => (int)c))}] in source[{string.Join(",", src.Take(8).Select(c => (int)c))}]: found at char pos {pos + 1}\n");
             parameters[1].Value = result;
             return CmdAction.None;
         }
@@ -848,7 +848,7 @@ namespace TWXProxy.Core
                 parameters[2].Value = result;
             }
             if (GlobalModules.VerboseDebugMode)
-                GlobalModules.DebugLog($"[MERGETEXT] {src0Name}='{src0Val}' + {src1Name}='{src1Val}' → dst={dstName} result='{result}'\n");
+                GlobalModules.ScriptTraceDebugLog($"[MERGETEXT] {src0Name}='{src0Val}' + {src1Name}='{src1Val}' → dst={dstName} result='{result}'\n");
             return CmdAction.None;
         }
 
@@ -1067,7 +1067,7 @@ namespace TWXProxy.Core
             if (script is Script scriptObj)
             {
                 bool shouldBranch = !(parameters[0].DecValue == 1 || Math.Round(parameters[0].DecValue) == 1);
-                GlobalModules.DebugLog($"[BRANCH] cond='{parameters[0].Value}' target='{parameters[1].Value}' willJump={shouldBranch} subDepth={scriptObj.SubStackDepth}\n");
+                GlobalModules.ScriptTraceDebugLog($"[BRANCH] cond='{parameters[0].Value}' target='{parameters[1].Value}' willJump={shouldBranch} subDepth={scriptObj.SubStackDepth}\n");
                 if (shouldBranch)
                     scriptObj.GotoLabel(parameters[1].Value);
             }

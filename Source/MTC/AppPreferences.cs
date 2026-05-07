@@ -65,6 +65,8 @@ public class AppPreferences
 
     public bool DebugLoggingEnabled { get; set; }
     public bool VerboseDebugLogging { get; set; }
+    public bool ScriptTraceDebugLogging { get; set; }
+    public bool AutoRecorderDebugLogging { get; set; } = true;
     public bool TriggerDebugLogging { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
@@ -142,6 +144,8 @@ public class AppPreferences
                 Core.SharedConfigFile.MtcPrefsSectionName,
                 new XElement("DebugLoggingEnabled", DebugLoggingEnabled),
                 new XElement("VerboseDebugLogging", VerboseDebugLogging),
+                new XElement("ScriptTraceDebugLogging", ScriptTraceDebugLogging),
+                new XElement("AutoRecorderDebugLogging", AutoRecorderDebugLogging),
                 new XElement("TriggerDebugLogging", TriggerDebugLogging),
                 new XElement("DebugPortHaggleEnabled", DebugPortHaggleEnabled),
                 new XElement("DebugPlanetHaggleEnabled", DebugPlanetHaggleEnabled),
@@ -227,6 +231,10 @@ public class AppPreferences
                 prefs.DebugLoggingEnabled = debugEnabled;
             if (bool.TryParse((string?)root.Element("VerboseDebugLogging"), out bool verboseEnabled))
                 prefs.VerboseDebugLogging = verboseEnabled;
+            if (bool.TryParse((string?)root.Element("ScriptTraceDebugLogging"), out bool scriptTraceEnabled))
+                prefs.ScriptTraceDebugLogging = scriptTraceEnabled;
+            if (bool.TryParse((string?)root.Element("AutoRecorderDebugLogging"), out bool autoRecorderEnabled))
+                prefs.AutoRecorderDebugLogging = autoRecorderEnabled;
             if (bool.TryParse((string?)root.Element("TriggerDebugLogging"), out bool triggerDebugEnabled))
                 prefs.TriggerDebugLogging = triggerDebugEnabled;
             if (bool.TryParse((string?)root.Element("DebugPortHaggleEnabled"), out bool debugPortHaggleEnabled))
