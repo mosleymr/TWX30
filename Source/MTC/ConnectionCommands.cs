@@ -35,6 +35,10 @@ public partial class MainWindow
         string previousDatabasePath = _embeddedGameConfig?.DatabasePath ?? string.Empty;
         string previousHost = _embeddedGameConfig?.Host ?? _state.Host;
         int previousPort = _embeddedGameConfig?.Port > 0 ? _embeddedGameConfig.Port : _state.Port;
+        bool previousListenForConnections = _embeddedGameConfig?.Mtc?.ListenForConnections ?? _state.ListenForConnections;
+        int previousListenPort = _embeddedGameConfig?.ListenPort > 0
+            ? _embeddedGameConfig.ListenPort
+            : _state.ListenPort;
         if (string.IsNullOrWhiteSpace(previousDatabasePath))
             previousDatabasePath = DatabasePathForMode(previousGameName, _state.EmbeddedProxy);
 
@@ -96,7 +100,11 @@ public partial class MainWindow
         UpdateOpenStandaloneDatabaseHeader(config);
         ApplyDebugLoggingPreferences();
         AddToRecentAndSave(newConfigPath);
-        await SyncEmbeddedProxySettingsAsync(previousHost, previousPort);
+        await SyncEmbeddedProxySettingsAsync(
+            previousHost,
+            previousPort,
+            previousListenForConnections,
+            previousListenPort);
 
         _parser.Feed($"\x1b[1;36m[Connection settings updated]\x1b[0m\r\n");
         _buffer.Dirty = true;
@@ -135,7 +143,11 @@ public partial class MainWindow
         }
     }
 
-    private async Task SyncEmbeddedProxySettingsAsync(string? previousHostOverride = null, int? previousPortOverride = null)
+    private async Task SyncEmbeddedProxySettingsAsync(
+        string? previousHostOverride = null,
+        int? previousPortOverride = null,
+        bool? previousListenForConnectionsOverride = null,
+        int? previousListenPortOverride = null)
     {
         if (!_state.EmbeddedProxy)
         {
@@ -146,22 +158,30 @@ public partial class MainWindow
 
         string gameName = GetEmbeddedGameName();
         var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        gameConfig.Mtc ??= new EmbeddedMtcConfig();
         string? originalNativeHaggleMode = gameConfig.NativeHaggleMode;
         gameConfig.NativeHaggleMode = null;
         string previousHost = previousHostOverride ?? gameConfig.Host;
         int previousPort = previousPortOverride ?? gameConfig.Port;
+        bool previousListenForConnections =
+            previousListenForConnectionsOverride ?? gameConfig.Mtc.ListenForConnections;
+        int previousListenPort = previousListenPortOverride ?? gameConfig.ListenPort;
 
         bool configChanged =
             !string.Equals(originalNativeHaggleMode ?? string.Empty, gameConfig.NativeHaggleMode ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
             gameConfig.Host != _state.Host ||
             gameConfig.Port != _state.Port ||
-            gameConfig.Sectors != _state.Sectors;
+            gameConfig.Sectors != _state.Sectors ||
+            gameConfig.ListenPort != _state.ListenPort ||
+            gameConfig.Mtc.ListenForConnections != _state.ListenForConnections;
 
         gameConfig.Name = gameName;
         gameConfig.Host = _state.Host;
         gameConfig.Port = _state.Port;
         gameConfig.Sectors = _state.Sectors;
+        gameConfig.ListenPort = NormalizeListenPort(_state.ListenPort);
+        gameConfig.Mtc.ListenForConnections = _state.ListenForConnections;
 
         if (configChanged)
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
@@ -232,6 +252,23 @@ public partial class MainWindow
         _gameInstance.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
 
         bool endpointChanged = !string.Equals(previousHost, _state.Host, StringComparison.Ordinal) || previousPort != _state.Port;
+        bool listenerChanged = previousListenForConnections != gameConfig.Mtc.ListenForConnections ||
+                               NormalizeListenPort(previousListenPort) != gameConfig.ListenPort;
+        if (listenerChanged)
+        {
+            try
+            {
+                await _gameInstance.ConfigureLocalListenerAsync(
+                    gameConfig.Mtc.ListenForConnections,
+                    gameConfig.ListenPort);
+            }
+            catch (Exception ex)
+            {
+                _parser.Feed($"\x1b[1;31m[Listen failed: {ex.Message}]\x1b[0m\r\n");
+                Core.GlobalModules.DebugLog($"[MTC.EditConnection] failed to configure listener: {ex}\n");
+            }
+        }
+
         if (!_gameInstance.IsConnected && endpointChanged)
         {
             await StopEmbeddedAsync();

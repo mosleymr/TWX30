@@ -56,6 +56,8 @@ public class GameState
     public bool   EmbeddedProxy   { get; set; } = true;
     public int    Sectors         { get; set; } = ConnectionProfile.DefaultSectors;
     public bool   AutoReconnect   { get; set; } = false;
+    public bool   ListenForConnections { get; set; } = false;
+    public int    ListenPort      { get; set; } = ConnectionProfile.DefaultListenPort;
     public bool   UseLogin        { get; set; } = false;
     public bool   UseRLogin       { get; set; } = false;
     public string LoginScript     { get; set; } = "0_Login.cts";

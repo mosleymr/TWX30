@@ -49,6 +49,10 @@ public class NewConnectionDialog : Window
         var txtServer = CreateTextBox(profile.Server, "hostname or IP address", width: 250);
         var txtPort = CreateTextBox(profile.Port.ToString(), width: 88);
         var txtSectors = CreateTextBox(initialSectors.ToString(), ConnectionProfile.DefaultSectors.ToString(), width: 108);
+        var txtListenPort = CreateTextBox(
+            (profile.ListenPort > 0 ? profile.ListenPort : ConnectionProfile.DefaultListenPort).ToString(),
+            ConnectionProfile.DefaultListenPort.ToString(),
+            width: 88);
         var txtLoginScript = CreateTextBox(string.IsNullOrWhiteSpace(profile.LoginScript) ? "0_Login.cts" : profile.LoginScript, width: 250);
         var txtLoginName = CreateTextBox(profile.LoginName, width: 250);
         var txtPassword = CreateTextBox(profile.Password, width: 250);
@@ -67,6 +71,7 @@ public class NewConnectionDialog : Window
         };
 
         var chkEmbedded = CreateCheckBox("Run embedded proxy (enables .ts/.cts scripts)", profile.EmbeddedProxy);
+        var chkListenForConnections = CreateCheckBox("Listen for connections", profile.ListenForConnections);
         var chkStandaloneProxy = CreateCheckBox("Connect to standalone TWX proxy on this machine", profile.LocalTwxProxy);
         var chkAutoReconnect = CreateCheckBox("Auto-reconnect on disconnect", profile.AutoReconnect);
         var chkUseLogin = CreateCheckBox("Run login script after connect", profile.UseLogin);
@@ -81,6 +86,7 @@ public class NewConnectionDialog : Window
         };
 
         var connectionFields = BuildConnectionFieldsGrid(txtName, txtServer, cboProtocol, txtPort, txtSectors);
+        var listenPortRow = BuildRow("Listen port:", txtListenPort);
         var loginScriptRow = BuildRow("Login script:", txtLoginScript);
         var loginNameRow = BuildRow("Username:", txtLoginName);
         var passwordRow = BuildRow("Password:", txtPassword);
@@ -93,6 +99,8 @@ public class NewConnectionDialog : Window
         var proxySection = BuildSection(
             "Proxy Mode",
             chkEmbedded,
+            chkListenForConnections,
+            listenPortRow,
             chkStandaloneProxy,
             chkAutoReconnect);
 
@@ -118,6 +126,8 @@ public class NewConnectionDialog : Window
 
             chkStandaloneProxy.IsVisible = !embedded;
             chkAutoReconnect.IsVisible = embedded;
+            chkListenForConnections.IsVisible = embedded;
+            listenPortRow.IsVisible = embedded && chkListenForConnections.IsChecked == true;
             loginSection.IsVisible = embedded;
             loginScriptRow.IsVisible = showDetails;
             loginNameRow.IsVisible = showDetails;
@@ -127,6 +137,7 @@ public class NewConnectionDialog : Window
         }
 
         chkEmbedded.IsCheckedChanged += (_, _) => RefreshModeVisibility();
+        chkListenForConnections.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         chkUseLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         chkUseRLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         RefreshModeVisibility();
@@ -135,6 +146,7 @@ public class NewConnectionDialog : Window
         WireDialogClipboard(txtServer);
         WireDialogClipboard(txtPort);
         WireDialogClipboard(txtSectors);
+        WireDialogClipboard(txtListenPort);
         WireDialogClipboard(txtLoginScript);
         WireDialogClipboard(txtLoginName);
         WireDialogClipboard(txtPassword);
@@ -177,6 +189,20 @@ public class NewConnectionDialog : Window
                 return;
             }
 
+            bool embeddedProxy = chkEmbedded.IsChecked == true;
+            bool listenForConnections = embeddedProxy && chkListenForConnections.IsChecked == true;
+            int listenPort = profile.ListenPort > 0 ? profile.ListenPort : ConnectionProfile.DefaultListenPort;
+            bool listenPortValid = int.TryParse(txtListenPort.Text?.Trim(), out int parsedListenPort) &&
+                                   parsedListenPort is >= 1 and <= ushort.MaxValue;
+            if (listenPortValid)
+                listenPort = parsedListenPort;
+            else if (listenForConnections)
+            {
+                SetValidation("Enter a valid listen port from 1 to 65535.");
+                txtListenPort.Focus();
+                return;
+            }
+
             Result = new ConnectionProfile
             {
                 Name = name,
@@ -184,8 +210,10 @@ public class NewConnectionDialog : Window
                 Port = portVal,
                 Protocol = cboProtocol.SelectedIndex == 1 ? TwProtocol.Rlogin : TwProtocol.Telnet,
                 LocalTwxProxy = chkStandaloneProxy.IsChecked == true,
-                EmbeddedProxy = chkEmbedded.IsChecked == true,
+                EmbeddedProxy = embeddedProxy,
                 AutoReconnect = chkAutoReconnect.IsChecked == true,
+                ListenForConnections = listenForConnections,
+                ListenPort = listenPort,
                 Sectors = sectors,
                 UseLogin = chkUseLogin.IsChecked == true,
                 UseRLogin = chkUseRLogin.IsChecked == true,

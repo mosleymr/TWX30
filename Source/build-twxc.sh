@@ -43,6 +43,47 @@ else
   )
 fi
 
+# NativeAOT produces much smaller console tools, but must be built on a
+# compatible host/toolchain for the target RID. "auto" enables it when the
+# current host can build the requested RID.
+NATIVE_AOT="${TWX_SCRIPT_TOOLS_NATIVE_AOT:-auto}"
+
+native_aot_enabled_for_rid() {
+  local rid="$1"
+  local host_os
+  host_os="$(uname -s)"
+
+  case "${NATIVE_AOT}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    0|false|FALSE|no|NO)
+      return 1
+      ;;
+    auto|AUTO|"")
+      case "${host_os}" in
+        Darwin)
+          [[ "${rid}" == osx-* ]]
+          return
+          ;;
+        Linux)
+          [[ "${rid}" == linux-* ]]
+          return
+          ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+          [[ "${rid}" == win-* ]]
+          return
+          ;;
+      esac
+      return 1
+      ;;
+    *)
+      echo "Unknown TWX_SCRIPT_TOOLS_NATIVE_AOT value: ${NATIVE_AOT}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 HOST_ARCH="$(uname -m)"
 HOST_RID=""
 case "${HOST_ARCH}" in
@@ -73,14 +114,45 @@ run_install_cmd() {
   return 1
 }
 
+install_local_artifact() {
+  local src="$1"
+  local tmp="${INSTALL_PATH}.tmp.$$"
+
+  run_install_cmd mkdir -p "${INSTALL_DIR}"
+  run_install_cmd rm -f "${tmp}"
+  run_install_cmd cp "${src}" "${tmp}"
+  run_install_cmd chmod 755 "${tmp}"
+  run_install_cmd xattr -d com.apple.quarantine "${tmp}" 2>/dev/null || true
+  if [[ "${HOST_RID}" == osx-* ]]; then
+    run_install_cmd codesign --force --deep --sign - "${tmp}"
+  fi
+  run_install_cmd mv -f "${tmp}" "${INSTALL_PATH}"
+}
+
 echo "==> Cleaning..."
 rm -rf obj TWXC/bin TWXC/obj
 
 for RID in "${RIDS[@]}"; do
   echo "==> Publishing ${RID}..."
+  PUBLISH_ARGS=(
+      -c Release
+      -r "${RID}"
+      -p:SuppressTrimAnalysisWarnings=true
+  )
+
+  if native_aot_enabled_for_rid "${RID}"; then
+    echo "==> NativeAOT enabled for ${RID}..."
+    PUBLISH_ARGS+=(
+      -p:PublishAot=true
+      -p:StripSymbols=true
+      -p:SuppressAotAnalysisWarnings=true
+    )
+  else
+    echo "==> NativeAOT disabled for ${RID}; using trimmed self-contained publish..."
+  fi
+
   DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet publish TWXC/TWXC.csproj \
-      -c Release \
-      -r "${RID}" \
+      "${PUBLISH_ARGS[@]}" \
       2>&1 | grep -v "^$"
 
   if [[ "${RID}" == win-* ]]; then
@@ -109,13 +181,7 @@ if [[ -n "${HOST_RID}" && "${INSTALL_AFTER_BUILD}" != "0" ]]; then
   HOST_DEST="${BIN_ROOT}/${HOST_RID}/twxc"
   if [[ -f "${HOST_DEST}" ]]; then
     echo "==> Installing ${HOST_RID} standalone to ${INSTALL_PATH}..."
-    run_install_cmd mkdir -p "${INSTALL_DIR}"
-    run_install_cmd cp "${HOST_DEST}" "${INSTALL_PATH}"
-    run_install_cmd chmod 755 "${INSTALL_PATH}"
-    run_install_cmd xattr -d com.apple.quarantine "${INSTALL_PATH}" 2>/dev/null || true
-    if [[ "${HOST_RID}" == osx-* ]]; then
-      run_install_cmd codesign --force --deep --sign - "${INSTALL_PATH}"
-    fi
+    install_local_artifact "${HOST_DEST}"
     ls -lh "${INSTALL_PATH}" | awk '{print "==> Installed: " $5, $6, $7, $8, $9}'
   fi
 fi

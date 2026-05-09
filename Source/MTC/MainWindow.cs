@@ -85,11 +85,6 @@ public partial class MainWindow : Window
     private string?                        _embeddedGameName;
     private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
     private ScriptDebuggerWindow?          _scriptDebuggerWindow;
-    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
-    {
-        WriteIndented             = true,
-        PropertyNameCaseInsensitive = true,
-    };
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };

@@ -51,7 +51,7 @@ fi
 
 ./build-mtc.sh
 ./build-twxp.sh
-TWXC_INSTALL_AFTER_BUILD=0 ./build-twxc.sh
+./build-twxc.sh
 ./build-twxd.sh
 
 for rid in "${RIDS[@]}"; do

@@ -90,11 +90,57 @@ public partial class MainWindow
         items.Add(loggingMenu);
         items.Add(new Separator());
 
+        int listenPort = GetConfiguredProxyListenPort();
+        bool listenConfigured = _state.EmbeddedProxy && _state.ListenForConnections;
+        bool listenerActive = _gameInstance?.IsLocalListenerActive == true;
+        var listenItem = new MenuItem
+        {
+            Header = EscapeMenuHeaderText($"Listen on Port {listenPort}"),
+            IsEnabled = _gameInstance != null && listenConfigured,
+            ToggleType = MenuItemToggleType.CheckBox,
+            IsChecked = listenerActive,
+        };
+        listenItem.Click += (_, _) => _ = ToggleProxyListenerAsync(!listenerActive);
+        items.Add(listenItem);
+        items.Add(new Separator());
+
         var advancedSettings = new MenuItem { Header = "_Advanced Settings…", IsEnabled = true };
         advancedSettings.Click += (_, _) => _ = OnAdvancedProxySettingsAsync();
         items.Add(advancedSettings);
 
         return items;
+    }
+
+    private int GetConfiguredProxyListenPort()
+    {
+        int port = _embeddedGameConfig?.ListenPort > 0
+            ? _embeddedGameConfig.ListenPort
+            : _state.ListenPort;
+        return NormalizeListenPort(port);
+    }
+
+    private async Task ToggleProxyListenerAsync(bool enabled)
+    {
+        if (_gameInstance == null || !_state.ListenForConnections)
+            return;
+
+        int listenPort = GetConfiguredProxyListenPort();
+        try
+        {
+            await _gameInstance.ConfigureLocalListenerAsync(enabled, listenPort);
+            string status = enabled ? "listening" : "stopped listening";
+            _parser.Feed($"\x1b[1;36m[Proxy {status} on port {listenPort}]\x1b[0m\r\n");
+        }
+        catch (Exception ex)
+        {
+            _parser.Feed($"\x1b[1;31m[Listen failed: {ex.Message}]\x1b[0m\r\n");
+            Core.GlobalModules.DebugLog($"[MTC.ProxyMenu] failed to toggle listener: {ex}\n");
+        }
+        finally
+        {
+            _buffer.Dirty = true;
+            RebuildProxyMenu();
+        }
     }
 
     private List<object> BuildStopMenuItems()

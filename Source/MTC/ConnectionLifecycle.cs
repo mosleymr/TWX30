@@ -69,6 +69,8 @@ public partial class MainWindow
             gameConfig.Host != _state.Host ||
             gameConfig.Port != _state.Port ||
             gameConfig.Sectors != _state.Sectors ||
+            gameConfig.ListenPort != _state.ListenPort ||
+            (gameConfig.Mtc?.ListenForConnections ?? false) != _state.ListenForConnections ||
             !string.Equals(gameConfig.DatabasePath, AppPaths.TwxproxyDatabasePathForGame(gameName), StringComparison.OrdinalIgnoreCase) ||
             gameConfig.AutoReconnect != _state.AutoReconnect;
         gameConfig = BuildEmbeddedGameConfigFromState(gameName, gameConfig);
@@ -123,7 +125,8 @@ public partial class MainWindow
         SyncMombotSpecialSectorVarsFromDatabase(persist: true);
         BackfillScriptMombotBootstrapState(gameConfig, gameName, programDir);
 
-        // Create GameInstance. listenPort=0: we never call StartAsync, so no TCP listener.
+        // Create GameInstance. MTC always attaches its own direct client; the TCP
+        // listener is only started when the profile explicitly enables it.
         var gi = new Core.GameInstance(
             gameName,
             _state.Host,
@@ -259,6 +262,9 @@ public partial class MainWindow
         // termToServer: MTC writes keystrokes → gi reads as "local client" input.
         var serverToTerm = new System.IO.Pipelines.Pipe();
         var termToServer = new System.IO.Pipelines.Pipe();
+
+        if (gameConfig.Mtc?.ListenForConnections == true)
+            await gi.StartAsync();
 
         // Wire the GameInstance to the pipe streams.
         gi.ConnectDirectClient(

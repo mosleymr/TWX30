@@ -80,6 +80,7 @@ internal class EmbeddedMtcConfig
     public bool LocalTwxProxy { get; set; } = true;
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
+    public bool ListenForConnections { get; set; }
     public int ScrollbackLines { get; set; } = 2000;
     public EmbeddedMtcStatusBarConfig StatusBar { get; set; } = new();
     [JsonIgnore]

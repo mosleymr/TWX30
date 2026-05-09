@@ -17,6 +17,7 @@ public enum TwProtocol { Telnet, Rlogin }
 public class ConnectionProfile
 {
     public const int DefaultSectors = 20000;
+    public const int DefaultListenPort = 2300;
 
     public string     Name            { get; set; } = string.Empty;
     // ── Connection ─────────────────────────────────────────────────────────
@@ -35,6 +36,10 @@ public class ConnectionProfile
     public int        Sectors         { get; set; } = DefaultSectors;
     /// <summary>When true the embedded proxy automatically reconnects to the server after a disconnect.</summary>
     public bool       AutoReconnect   { get; set; } = false;
+    /// <summary>When true the embedded proxy opens a TCP listener for external/lurker clients.</summary>
+    public bool       ListenForConnections { get; set; } = false;
+    /// <summary>TCP port used when <see cref="ListenForConnections"/> is enabled.</summary>
+    public int        ListenPort      { get; set; } = DefaultListenPort;
     /// <summary>Run the configured login script after the embedded proxy connects.</summary>
     public bool       UseLogin        { get; set; } = false;
     /// <summary>Use Pascal-style RLogin handshake when the embedded proxy connects.</summary>
@@ -106,6 +111,8 @@ public class ConnectionProfile
                 new XElement("EmbeddedProxy",   EmbeddedProxy),
                 new XElement("Sectors",         Sectors),
                 new XElement("AutoReconnect",   AutoReconnect),
+                new XElement("ListenForConnections", ListenForConnections),
+                new XElement("ListenPort",      ListenPort),
                 new XElement("UseLogin",        UseLogin),
                 new XElement("UseRLogin",       UseRLogin),
                 new XElement("LoginScript",     LoginScript),
@@ -178,6 +185,8 @@ public class ConnectionProfile
         p.EmbeddedProxy   = B("EmbeddedProxy", true);
         p.Sectors         = I("Sectors", DefaultSectors);
         p.AutoReconnect   = B("AutoReconnect",  false);
+        p.ListenForConnections = B("ListenForConnections", false);
+        p.ListenPort      = I("ListenPort", DefaultListenPort);
         p.UseLogin        = B("UseLogin", false);
         p.UseRLogin       = B("UseRLogin", false);
         p.LoginScript     = S("LoginScript", "0_Login.cts");

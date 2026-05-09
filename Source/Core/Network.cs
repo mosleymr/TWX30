@@ -83,7 +83,7 @@ namespace TWXProxy.Core
         private readonly string _gameName;
         private readonly string _serverAddress;
         private readonly int _serverPort;
-        private readonly int _listenPort;
+        private int _listenPort;
         private readonly string _scriptDirectory;
         private char _commandChar;
         private readonly ModInterpreter? _interpreter;
@@ -140,6 +140,10 @@ namespace TWXProxy.Core
         private readonly object _deferredLocalOutputLock = new();
         private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
         private int _serverDataDispatchDepth;
+        private readonly object _serverOutputBoundaryLock = new();
+        private bool _serverOutputLineOpen;
+        private int _serverOutputAnsiState;
+        private int _deferredLocalOutputFlushScheduled;
         private int _suppressScriptPipeToggleMessageCount;
         private int _suppressScriptPipeTogglePromptCount;
         
@@ -160,6 +164,7 @@ namespace TWXProxy.Core
         private string _pendingLocalInputProbeSummary = string.Empty;
         private static readonly TimeSpan LocalInputResponseTimeout = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan ServerStaleWatchdogInterval = TimeSpan.FromSeconds(1);
+        private static readonly TimeSpan DeferredLocalOutputQuietDelay = TimeSpan.FromMilliseconds(100);
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
         public int ReconnectDelayMs
         {
@@ -207,6 +212,14 @@ namespace TWXProxy.Core
         public string GameName => _gameName;
         public bool IsRunning => _isRunning;
         public bool IsConnected => _serverClient?.Connected ?? false;
+        public bool IsLocalListenerActive
+        {
+            get
+            {
+                lock (_stateLock)
+                    return _localListener != null;
+            }
+        }
         public char CommandChar => _commandChar;
         public bool IsProxyMenuActive
         {
@@ -624,14 +637,7 @@ namespace TWXProxy.Core
                 _cancellationSource = new CancellationTokenSource();
                 var token = _cancellationSource.Token;
 
-                // Start listening for local connections on all interfaces
-                _localListener = new TcpListener(IPAddress.Any, _listenPort);
-                _localListener.Start();
-                Log($"[{_gameName}] Listening on 0.0.0.0:{_listenPort}");
-                Log($"[{_gameName}] Type $c to connect to server");
-
-                // Start accepting local connections
-                _acceptTask = Task.Run(async () => await AcceptLocalConnectionsAsync(token), token);
+                StartLocalListener(_listenPort, token);
 
                 // NOTE: Server connection is now manual - triggered by $c command
             }
@@ -691,6 +697,72 @@ namespace TWXProxy.Core
 
                 CloseConnections();
                 Log($"[{_gameName}] Stopped");
+            }
+        }
+
+        /// <summary>
+        /// Starts or stops the external/lurker TCP listener without disrupting the
+        /// current server connection, scripts, or the embedded direct MTC client.
+        /// </summary>
+        public async Task ConfigureLocalListenerAsync(bool enabled, int listenPort)
+        {
+            if (listenPort is < 1 or > ushort.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(listenPort), "Listen port must be between 1 and 65535.");
+
+            if (!enabled)
+            {
+                await StopLocalListenerAsync();
+                return;
+            }
+
+            _cancellationSource ??= new CancellationTokenSource();
+            lock (_stateLock)
+            {
+                _isRunning = true;
+                if (_localListener != null && _listenPort == listenPort)
+                    return;
+            }
+
+            await StopLocalListenerAsync();
+            StartLocalListener(listenPort, _cancellationSource.Token);
+        }
+
+        private void StartLocalListener(int listenPort, CancellationToken token)
+        {
+            var listener = new TcpListener(IPAddress.Any, listenPort);
+            listener.Start();
+            _listenPort = listenPort;
+            _localListener = listener;
+            Log($"[{_gameName}] Listening on 0.0.0.0:{_listenPort}");
+            Log($"[{_gameName}] Type $c to connect to server");
+
+            _acceptTask = Task.Run(async () => await AcceptLocalConnectionsAsync(token), token);
+        }
+
+        private async Task StopLocalListenerAsync()
+        {
+            Task? acceptTask;
+            lock (_stateLock)
+            {
+                acceptTask = _acceptTask;
+                _acceptTask = null;
+                _localListener?.Stop();
+                _localListener = null;
+            }
+
+            if (acceptTask == null)
+                return;
+
+            try
+            {
+                await acceptTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
+                // AcceptLocalConnectionsAsync already logs meaningful listener failures.
             }
         }
 
@@ -756,6 +828,7 @@ namespace TWXProxy.Core
 
                 System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
                 Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
+                ResetServerOutputBoundaryState();
                 ClearPendingLocalInputProbe();
 
                 await SendInitialHandshakeAsync(token);
@@ -921,6 +994,10 @@ namespace TWXProxy.Core
             {
                 // Expected during shutdown
             }
+            catch (Exception) when (token.IsCancellationRequested || _localListener == null)
+            {
+                // Expected when the listener is intentionally disabled or the proxy is stopping.
+            }
             catch (Exception ex)
             {
                 Log($"[{_gameName}] Error accepting connections: {ex.Message}");
@@ -1046,9 +1123,13 @@ namespace TWXProxy.Core
                     }
                     else
                     {
-                        if (!ShouldSuppressScriptPipeToggleOutput(cleanData))
+                        bool suppressLocalOutput = ShouldSuppressScriptPipeToggleOutput(cleanData);
+                        if (!suppressLocalOutput)
+                        {
+                            UpdateServerOutputBoundaryState(cleanData);
                             await SendToLocalAsync(cleanData, token: token);
-                        await FlushDeferredLocalOutputAsync(token);
+                        }
+                        await FlushDeferredLocalOutputWhenSafeAsync(token);
                         LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
                 }
@@ -2053,6 +2134,94 @@ namespace TWXProxy.Core
             SendToLocalAsync(data).Wait();
         }
 
+        private void ResetServerOutputBoundaryState()
+        {
+            lock (_serverOutputBoundaryLock)
+            {
+                _serverOutputLineOpen = false;
+                _serverOutputAnsiState = 0;
+            }
+        }
+
+        private void UpdateServerOutputBoundaryState(byte[] data)
+        {
+            if (data.Length == 0)
+                return;
+
+            lock (_serverOutputBoundaryLock)
+            {
+                foreach (byte value in data)
+                    UpdateServerOutputBoundaryState(value);
+            }
+        }
+
+        private void UpdateServerOutputBoundaryState(byte value)
+        {
+            const byte escape = 0x1B;
+            const byte bell = 0x07;
+
+            if (_serverOutputAnsiState == 1)
+            {
+                _serverOutputAnsiState = value switch
+                {
+                    (byte)'[' => 2,
+                    (byte)']' => 3,
+                    >= 0x30 and <= 0x7E => 0,
+                    _ => 1
+                };
+                return;
+            }
+
+            if (_serverOutputAnsiState == 2)
+            {
+                if (value is >= 0x40 and <= 0x7E)
+                    _serverOutputAnsiState = 0;
+                return;
+            }
+
+            if (_serverOutputAnsiState == 3)
+            {
+                if (value == bell)
+                    _serverOutputAnsiState = 0;
+                else if (value == escape)
+                    _serverOutputAnsiState = 4;
+                return;
+            }
+
+            if (_serverOutputAnsiState == 4)
+            {
+                _serverOutputAnsiState = value == (byte)'\\' ? 0 : 3;
+                return;
+            }
+
+            if (value == escape)
+            {
+                _serverOutputAnsiState = 1;
+                return;
+            }
+
+            if (value is (byte)'\r' or (byte)'\n')
+            {
+                _serverOutputLineOpen = false;
+                return;
+            }
+
+            if (value >= 0x20 || value == (byte)'\t')
+                _serverOutputLineOpen = true;
+        }
+
+        private bool IsDeferredLocalOutputFlushSafe()
+        {
+            lock (_serverOutputBoundaryLock)
+                return _serverOutputAnsiState == 0 && !_serverOutputLineOpen;
+        }
+
+        private bool IsServerOutputInsideAnsi()
+        {
+            lock (_serverOutputBoundaryLock)
+                return _serverOutputAnsiState != 0;
+        }
+
         private void BeginServerDataDispatch()
         {
             lock (_deferredLocalOutputLock)
@@ -2086,6 +2255,23 @@ namespace TWXProxy.Core
             }
         }
 
+        private bool HasDeferredLocalOutput()
+        {
+            lock (_deferredLocalOutputLock)
+                return _deferredLocalOutput.Count > 0;
+        }
+
+        private async Task FlushDeferredLocalOutputWhenSafeAsync(CancellationToken token = default)
+        {
+            if (!HasDeferredLocalOutput())
+                return;
+
+            if (IsDeferredLocalOutputFlushSafe())
+                await FlushDeferredLocalOutputAsync(token);
+            else
+                ScheduleDeferredLocalOutputFlushAfterQuiet(token);
+        }
+
         private async Task FlushDeferredLocalOutputAsync(CancellationToken token = default)
         {
             List<DeferredLocalOutput>? pending = null;
@@ -2100,6 +2286,57 @@ namespace TWXProxy.Core
 
             foreach (DeferredLocalOutput output in pending)
                 await SendToLocalAsync(output.Data, output.BroadcastDeaf, token);
+        }
+
+        private void ScheduleDeferredLocalOutputFlushAfterQuiet(CancellationToken token = default)
+        {
+            if (!HasDeferredLocalOutput())
+                return;
+
+            if (Interlocked.CompareExchange(ref _deferredLocalOutputFlushScheduled, 1, 0) != 0)
+                return;
+
+            _ = Task.Run(() => DeferredLocalOutputQuietFlushLoopAsync(token), CancellationToken.None);
+        }
+
+        private async Task DeferredLocalOutputQuietFlushLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested && HasDeferredLocalOutput())
+                {
+                    long observedReceiveTicks = Interlocked.Read(ref _lastServerReceiveUtcTicks);
+                    await Task.Delay(DeferredLocalOutputQuietDelay, token);
+
+                    if (!HasDeferredLocalOutput())
+                        return;
+
+                    if (Interlocked.Read(ref _lastServerReceiveUtcTicks) != observedReceiveTicks)
+                        continue;
+
+                    // Never let script/local output complete a partially received ANSI sequence.
+                    if (IsServerOutputInsideAnsi())
+                        continue;
+
+                    await FlushDeferredLocalOutputAsync(token);
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected during shutdown.
+            }
+            catch (Exception ex)
+            {
+                Log($"[{_gameName}] Deferred local output flush failed: {ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _deferredLocalOutputFlushScheduled, 0);
+
+                if (!token.IsCancellationRequested && HasDeferredLocalOutput())
+                    ScheduleDeferredLocalOutputFlushAfterQuiet(token);
+            }
         }
 
         public void AddQuickText(string key, string value)

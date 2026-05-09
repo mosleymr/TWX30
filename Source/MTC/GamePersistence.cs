@@ -42,6 +42,8 @@ public partial class MainWindow
         EmbeddedProxy   = _state.EmbeddedProxy,
         Sectors         = _state.Sectors,
         AutoReconnect   = _state.AutoReconnect,
+        ListenForConnections = _state.ListenForConnections,
+        ListenPort      = NormalizeListenPort(_state.ListenPort),
         UseLogin        = _state.UseLogin,
         UseRLogin       = _state.UseRLogin,
         LoginScript     = string.IsNullOrWhiteSpace(_state.LoginScript) ? "0_Login.cts" : _state.LoginScript,
@@ -106,6 +108,8 @@ public partial class MainWindow
             EmbeddedProxy = mtc.EmbeddedProxy,
             Sectors = config.Sectors,
             AutoReconnect = config.AutoReconnect,
+            ListenForConnections = mtc.ListenForConnections,
+            ListenPort = NormalizeListenPort(config.ListenPort),
             UseLogin = config.UseLogin,
             UseRLogin = config.UseRLogin,
             LoginScript = string.IsNullOrWhiteSpace(config.LoginScript) ? "0_Login.cts" : config.LoginScript,
@@ -344,6 +348,7 @@ public partial class MainWindow
         config.Host = _state.Host;
         config.Port = _state.Port;
         config.Sectors = _state.Sectors;
+        config.ListenPort = NormalizeListenPort(_state.ListenPort);
         config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
             ? DatabasePathForMode(gameName, _state.EmbeddedProxy)
             : config.DatabasePath;
@@ -355,6 +360,7 @@ public partial class MainWindow
         config.Mtc.LocalTwxProxy = _state.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = _state.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = _state.EmbeddedProxy;
+        config.Mtc.ListenForConnections = _state.ListenForConnections;
         config.Mtc.ScrollbackLines = _buffer.ScrollbackLines;
         config.Mtc.State = BuildEmbeddedMtcState();
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
@@ -367,6 +373,7 @@ public partial class MainWindow
         _state.Host = config.Host;
         _state.Port = config.Port;
         _state.Sectors = config.Sectors;
+        _state.ListenPort = NormalizeListenPort(config.ListenPort);
         _state.AutoReconnect = config.AutoReconnect;
         _state.UseLogin = config.UseLogin;
         _state.UseRLogin = config.UseRLogin;
@@ -377,6 +384,7 @@ public partial class MainWindow
             ? string.Empty
             : config.GameLetter.Trim().Substring(0, 1).ToUpperInvariant();
         _state.EmbeddedProxy = config.Mtc?.EmbeddedProxy ?? _state.EmbeddedProxy;
+        _state.ListenForConnections = config.Mtc?.ListenForConnections ?? false;
         _state.LocalTwxProxy = config.Mtc?.LocalTwxProxy ?? _state.LocalTwxProxy;
         _state.TwxProxyDbPath = config.Mtc?.TwxProxyDbPath ?? _state.TwxProxyDbPath;
         _state.Protocol = Enum.TryParse<TwProtocol>(config.Mtc?.Protocol, true, out TwProtocol protocol)
@@ -439,6 +447,7 @@ public partial class MainWindow
         config.Host = profile.Server;
         config.Port = profile.Port;
         config.Sectors = profile.Sectors;
+        config.ListenPort = NormalizeListenPort(profile.ListenPort);
         config.DatabasePath = databasePath;
         config.ScriptDirectory = ResolvePersistedGameScriptDirectory(config.ScriptDirectory);
         config.NativeHaggleMode = null;
@@ -454,6 +463,7 @@ public partial class MainWindow
         config.Mtc.LocalTwxProxy = profile.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = profile.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = profile.EmbeddedProxy;
+        config.Mtc.ListenForConnections = profile.ListenForConnections;
         config.Mtc.ScrollbackLines = profile.ScrollbackLines;
         config.Mtc.State = BuildEmbeddedMtcState(profile);
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
@@ -461,50 +471,27 @@ public partial class MainWindow
     }
 
     private static Dictionary<string, string> NormalizeEmbeddedVariables(IDictionary<string, string>? source)
-    {
-        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (source == null)
-            return normalized;
-
-        foreach (KeyValuePair<string, string> entry in source)
-            normalized[entry.Key] = entry.Value;
-
-        return normalized;
-    }
+        => GameConfigService.NormalizeVariables(source);
 
     private static string NormalizeGameName(string? value)
-    {
-        string name = string.Concat((value ?? string.Empty).Split(Path.GetInvalidFileNameChars())).Trim();
-        return string.IsNullOrWhiteSpace(name) ? "game" : name;
-    }
+        => GameConfigService.NormalizeGameName(value);
+
+    private static int NormalizeListenPort(int port)
+        => port is >= 1 and <= ushort.MaxValue
+            ? port
+            : ConnectionProfile.DefaultListenPort;
 
     private static string GameConfigPathForMode(string gameName, bool embeddedProxy)
-        => embeddedProxy
-            ? AppPaths.TwxproxyGameConfigFileFor(gameName)
-            : AppPaths.MtcStandaloneGameConfigFileFor(gameName);
+        => GameConfigService.GameConfigPathForMode(gameName, embeddedProxy);
 
     private static string DatabasePathForMode(string gameName, bool embeddedProxy)
-        => embeddedProxy
-            ? AppPaths.TwxproxyDatabasePathForGame(gameName)
-            : AppPaths.MtcStandaloneDatabasePathForGame(gameName);
+        => GameConfigService.DatabasePathForMode(gameName, embeddedProxy);
 
     private static string GameConfigPathForConfig(EmbeddedGameConfig config)
-        => GameConfigPathForMode(NormalizeGameName(config.Name), config.Mtc?.EmbeddedProxy ?? true);
+        => GameConfigService.GameConfigPathForConfig(config);
 
     private bool GameNameConflicts(string gameName, bool embeddedProxy, string? currentConfigPath = null, string? currentDatabasePath = null)
-    {
-        string configPath = GameConfigPathForMode(gameName, embeddedProxy);
-        if (File.Exists(configPath) &&
-            !string.Equals(configPath, currentConfigPath, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        string databasePath = DatabasePathForMode(gameName, embeddedProxy);
-        if (File.Exists(databasePath) &&
-            !string.Equals(databasePath, currentDatabasePath, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
-    }
+        => GameConfigService.HasGameNameConflict(gameName, embeddedProxy, currentConfigPath, currentDatabasePath);
 
     /// <summary>Applies a profile to GameState and the terminal buffer.</summary>
     private void ApplyProfile(ConnectionProfile p)
@@ -540,6 +527,8 @@ public partial class MainWindow
         _state.EmbeddedProxy   = p.EmbeddedProxy;
         _state.Sectors         = p.Sectors;
         _state.AutoReconnect   = p.AutoReconnect;
+        _state.ListenForConnections = p.ListenForConnections;
+        _state.ListenPort      = NormalizeListenPort(p.ListenPort);
         _state.UseLogin        = p.UseLogin;
         _state.UseRLogin       = p.UseRLogin;
         _state.LoginScript     = string.IsNullOrWhiteSpace(p.LoginScript) ? "0_Login.cts" : p.LoginScript;
@@ -621,36 +610,10 @@ public partial class MainWindow
     }
 
     private static EmbeddedGameConfig NormalizeEmbeddedMombotConfig(EmbeddedGameConfig config)
-    {
-        _ = GetOrCreateEmbeddedMombotConfig(config);
-        return config;
-    }
-
-    // Native mombot enablement is live runtime state. Persist these flags as disabled so
-    // a crash or forced shutdown cannot poison the next startup.
-    private static EmbeddedGameConfig BuildPersistedEmbeddedGameConfig(EmbeddedGameConfig source)
-    {
-        string snapshotJson = System.Text.Json.JsonSerializer.Serialize(source, _jsonOpts);
-        EmbeddedGameConfig persisted =
-            System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(snapshotJson, _jsonOpts) ??
-            new EmbeddedGameConfig();
-
-        NormalizeEmbeddedMombotConfig(persisted);
-        MTC.mombot.mombotConfig persistedMombot = GetOrCreateEmbeddedMombotConfig(persisted);
-        persistedMombot.Enabled = false;
-        persistedMombot.WatcherEnabled = false;
-        persisted.Variables = NormalizeEmbeddedVariables(persisted.Variables);
-        return persisted;
-    }
+        => GameConfigService.NormalizeMombotConfig(config);
 
     private static MTC.mombot.mombotConfig GetOrCreateEmbeddedMombotConfig(EmbeddedGameConfig config)
-    {
-        config.Mtc ??= new EmbeddedMtcConfig();
-        config.Mtc.State ??= new EmbeddedMtcState();
-        config.mombot ??= config.Mtc.mombot ?? new MTC.mombot.mombotConfig();
-        config.Mtc.mombot = config.mombot;
-        return config.mombot;
-    }
+        => GameConfigService.GetOrCreateMombotConfig(config);
 
     private void UpdateWindowTitle()
     {
@@ -691,29 +654,7 @@ public partial class MainWindow
     }
 
     private static EmbeddedGameConfig? TryLoadEmbeddedGameConfigForGame(string gameName)
-    {
-        try
-        {
-            string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
-            if (!File.Exists(path))
-                return null;
-
-            var json = File.ReadAllText(path);
-            EmbeddedGameConfig? config = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
-            if (config == null)
-                return null;
-            config.Name = string.IsNullOrWhiteSpace(config.Name) ? NormalizeGameName(gameName) : NormalizeGameName(config.Name);
-            config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
-                ? AppPaths.TwxproxyDatabasePathForGame(config.Name)
-                : config.DatabasePath;
-            config.Variables = NormalizeEmbeddedVariables(config.Variables);
-            return NormalizeEmbeddedMombotConfig(config);
-        }
-        catch
-        {
-            return null;
-        }
-    }
+        => GameConfigService.TryLoadSharedGameConfig(gameName);
 
 
     private async Task ConnectEmbeddedServerAsync()
@@ -748,20 +689,9 @@ public partial class MainWindow
         string path = AppPaths.TwxproxyGameConfigFileFor(gameName);
         if (File.Exists(path))
         {
-            try
-            {
-                var json = await File.ReadAllTextAsync(path);
-                var cfg  = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
-                if (cfg != null)
-                {
-                    cfg.Name = string.IsNullOrWhiteSpace(cfg.Name) ? NormalizeGameName(gameName) : NormalizeGameName(cfg.Name);
-                    cfg.DatabasePath = string.IsNullOrWhiteSpace(cfg.DatabasePath)
-                        ? AppPaths.TwxproxyDatabasePathForGame(cfg.Name)
-                        : cfg.DatabasePath;
-                    return NormalizeEmbeddedMombotConfig(cfg);
-                }
-            }
-            catch { }
+            EmbeddedGameConfig? cfg = await GameConfigService.LoadConfigAsync(path);
+            if (cfg != null)
+                return NormalizeEmbeddedMombotConfig(cfg);
         }
 
         // First run — seed from current profile.
@@ -799,23 +729,7 @@ public partial class MainWindow
 
     /// <summary>Persists <paramref name="cfg"/> to the shared TWXP games directory.</summary>
     private static async Task SaveEmbeddedGameConfigAsync(string gameName, EmbeddedGameConfig cfg)
-    {
-        try
-        {
-            AppPaths.EnsureTwxproxyGamesDir();
-            cfg.Name = string.IsNullOrWhiteSpace(cfg.Name) ? NormalizeGameName(gameName) : NormalizeGameName(cfg.Name);
-            string path = GameConfigPathForConfig(cfg);
-            EmbeddedGameConfig persisted = BuildPersistedEmbeddedGameConfig(cfg);
-            var json = System.Text.Json.JsonSerializer.Serialize(persisted, _jsonOpts);
-            await File.WriteAllTextAsync(path, json);
-        }
-        catch (Exception ex)
-        {
-            Core.GlobalModules.DebugLog(
-                $"[MTC.StatusBarConfig] save failed for '{gameName}': {ex}\n");
-            Core.GlobalModules.FlushDebugLog();
-        }
-    }
+        => await GameConfigService.SaveConfigAsync(gameName, cfg);
 
     private async Task SaveCurrentGameConfigAsync()
     {
@@ -978,22 +892,7 @@ public partial class MainWindow
     }
 
     private static bool PathsEqualSafe(string? left, string? right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-            return false;
-
-        try
-        {
-            return string.Equals(
-                Path.GetFullPath(left),
-                Path.GetFullPath(right),
-                StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-    }
+        => GameConfigService.PathsEqualSafe(left, right);
 
     private async Task ImportDatabaseAsGameAsync(string databasePath, bool addToRecent)
     {
@@ -1040,27 +939,7 @@ public partial class MainWindow
     }
 
     private async Task<EmbeddedGameConfig?> TryLoadGameConfigAsync(string path)
-    {
-        try
-        {
-            string json = await File.ReadAllTextAsync(path);
-            EmbeddedGameConfig? config = System.Text.Json.JsonSerializer.Deserialize<EmbeddedGameConfig>(json, _jsonOpts);
-            if (config == null)
-                return null;
-            if (string.IsNullOrWhiteSpace(config.Name))
-                config.Name = NormalizeGameName(Path.GetFileNameWithoutExtension(path));
-            if (config.Sectors <= 0)
-                config.Sectors = 1000;
-            if (string.IsNullOrWhiteSpace(config.DatabasePath))
-                config.DatabasePath = DatabasePathForMode(config.Name, config.Mtc?.EmbeddedProxy ?? true);
-            config.Variables = NormalizeEmbeddedVariables(config.Variables);
-            return config;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+        => await GameConfigService.LoadConfigAsync(path);
 
     private ConnectionProfile BuildProfileFromDatabase(string databasePath)
     {
@@ -1086,6 +965,7 @@ public partial class MainWindow
             Core.DataHeader header = database.DBHeader;
             profile.Server = string.IsNullOrWhiteSpace(header.Address) ? profile.Server : header.Address;
             profile.Port = header.ServerPort == 0 ? profile.Port : header.ServerPort;
+            profile.ListenPort = header.ListenPort == 0 ? profile.ListenPort : header.ListenPort;
             profile.Sectors = header.Sectors > 0 ? header.Sectors : profile.Sectors;
             profile.UseLogin = header.UseLogin;
             profile.UseRLogin = header.UseRLogin;
