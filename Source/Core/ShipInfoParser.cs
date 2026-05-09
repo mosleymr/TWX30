@@ -48,6 +48,21 @@ public class ShipInfoParser
     // ── Public API ─────────────────────────────────────────────────────────
 
     /// <summary>
+    /// Seeds the parser with a previously known stable status. This prevents
+    /// partial live deltas from publishing a blank baseline before the next
+    /// authoritative "/" or "I" refresh arrives.
+    /// </summary>
+    public void SeedStatus(ShipStatus status)
+    {
+        _s = CloneStatus(status);
+        _infoBlockSnapshot = null;
+        _inInfoBlock = false;
+        _infoBlockSawTransWarpSection = false;
+        _infoBlockSawTransWarp1 = false;
+        _infoBlockSawTransWarp2 = false;
+    }
+
+    /// <summary>
     /// Feed one ANSI-stripped line from the server.
     /// Call this for every line (complete or partial prompt) received.
     /// </summary>

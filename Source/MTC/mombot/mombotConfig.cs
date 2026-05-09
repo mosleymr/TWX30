@@ -4,6 +4,7 @@ namespace MTC.mombot;
 
 internal sealed class mombotConfig
 {
+    public bool Configured { get; set; }
     public bool Enabled { get; set; }
     public bool AutoStart { get; set; }
     public string Name { get; set; } = "MomBot";

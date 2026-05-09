@@ -185,6 +185,8 @@ Current work in this branch has been focused on:
 - The shared Core library is the compatibility-critical layer.
 - `TWXC`, `TWXD`, `MTC`, and the embedded proxy all depend on the same runtime behavior.
 - VM optimization work is being tracked separately in [`../docs/vm-optimization-design.md`](../docs/vm-optimization-design.md).
+- Script-runtime compatibility drifts and accepted behavior differences are tracked in
+  [`SCRIPT_COMMAND_COMPAT_NOTES.md`](SCRIPT_COMMAND_COMPAT_NOTES.md).
 
 ## Migration Notes
 

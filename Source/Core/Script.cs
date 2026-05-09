@@ -2806,12 +2806,31 @@ namespace TWXProxy.Core
             if (_cmp == null)
                 return string.Empty;
 
+            string compiledScriptName = _cmp.GetCompiledScriptDisplayName();
             string sourceName = _cmp.GetSourceDisplayName(_currentSourceScriptID);
+            bool hasCompiledName = !string.IsNullOrWhiteSpace(compiledScriptName);
+            bool hasIncludeName = !string.IsNullOrWhiteSpace(sourceName) &&
+                                  !string.Equals(sourceName, compiledScriptName, StringComparison.OrdinalIgnoreCase);
+
+            if (hasCompiledName)
+            {
+                if (hasIncludeName && _currentSourceLineNumber > 0)
+                    return $"{compiledScriptName} ({sourceName}) line {_currentSourceLineNumber}: ";
+
+                if (hasIncludeName)
+                    return $"{compiledScriptName} ({sourceName}): ";
+
+                if (_currentSourceLineNumber > 0)
+                    return $"{compiledScriptName} line {_currentSourceLineNumber}: ";
+
+                return $"{compiledScriptName}: ";
+            }
+
             if (!string.IsNullOrWhiteSpace(sourceName) && _currentSourceLineNumber > 0)
-                return $"in {sourceName}, line {_currentSourceLineNumber}: ";
+                return $"{sourceName} line {_currentSourceLineNumber}: ";
 
             if (!string.IsNullOrWhiteSpace(sourceName))
-                return $"in {sourceName}: ";
+                return $"{sourceName}: ";
 
             if (_currentSourceRawOffset >= 0)
                 return $"at byte offset {_currentSourceRawOffset}: ";

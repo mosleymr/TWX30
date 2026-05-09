@@ -31,6 +31,14 @@ public class AnsiParser
         Saw255D255B,
     }
 
+    private enum PromptScrubState
+    {
+        None,
+        SawLeft,
+        SawSpaces,
+        SawSecondLeft,
+    }
+
     private readonly TerminalBuffer _buf;
     private State    _state      = State.Ground;
     private string   _csiParam   = "";
@@ -38,6 +46,9 @@ public class AnsiParser
     private byte?    _pendingUtf8Latin1Lead;
     private bool     _pendingPromptProbeByte;
     private LegacyPromptClearState _legacyPromptClearState;
+    private PromptScrubState _promptScrubState;
+    private int _promptScrubRow = -1;
+    private int _promptScrubSpaces;
 
     // Saved cursor
     private int _savedRow, _savedCol;
@@ -139,6 +150,14 @@ public class AnsiParser
             b != 0x1B)
         {
             FlushPendingLegacyPromptClear();
+        }
+
+        if (_promptScrubState != PromptScrubState.None &&
+            _state == State.Ground &&
+            b != 0x1B &&
+            HandlePromptScrubGroundByte(b))
+        {
+            return;
         }
 
         if (_pendingPromptProbeByte)
@@ -299,6 +318,29 @@ public class AnsiParser
         {
             _legacyPromptClearState = LegacyPromptClearState.Saw255D;
             return;
+        }
+
+        if (_promptScrubState != PromptScrubState.None)
+        {
+            if (finalChar == 'D' &&
+                IsSinglePositiveParam(ps, param) &&
+                _promptScrubState is PromptScrubState.SawLeft or PromptScrubState.SawSpaces &&
+                _buf.CursorRow == _promptScrubRow)
+            {
+                _promptScrubState = PromptScrubState.SawSecondLeft;
+            }
+            else
+            {
+                ResetPromptScrub();
+            }
+        }
+        else if (finalChar == 'D' &&
+                 IsSinglePositiveParam(ps, param) &&
+                 LooksLikeTwPromptLine(_buf.CursorRow))
+        {
+            _promptScrubState = PromptScrubState.SawLeft;
+            _promptScrubRow = _buf.CursorRow;
+            _promptScrubSpaces = 0;
         }
 
         switch (finalChar)
@@ -542,6 +584,40 @@ public class AnsiParser
         _buf.EraseLine(_buf.CursorRow, 0, _buf.Columns - 1);
     }
 
+    private bool HandlePromptScrubGroundByte(byte b)
+    {
+        if (_buf.CursorRow != _promptScrubRow)
+        {
+            ResetPromptScrub();
+            return false;
+        }
+
+        if (b == 0x20 && _promptScrubState is PromptScrubState.SawLeft or PromptScrubState.SawSpaces)
+        {
+            _promptScrubState = PromptScrubState.SawSpaces;
+            _promptScrubSpaces++;
+            return false;
+        }
+
+        if (b == 0x0D && _promptScrubState == PromptScrubState.SawSecondLeft && _promptScrubSpaces >= 4)
+        {
+            _buf.EraseLine(_promptScrubRow, 0, _buf.Columns - 1);
+            ResetPromptScrub();
+            HandleControlChar(b);
+            return true;
+        }
+
+        ResetPromptScrub();
+        return false;
+    }
+
+    private void ResetPromptScrub()
+    {
+        _promptScrubState = PromptScrubState.None;
+        _promptScrubRow = -1;
+        _promptScrubSpaces = 0;
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static bool IsLegacySingleParam(int[] ps, string rawParam, int value)
@@ -551,6 +627,30 @@ public class AnsiParser
             return false;
 
         return ps.Length == 1 && ps[0] == value;
+    }
+
+    private static bool IsSinglePositiveParam(int[] ps, string rawParam)
+    {
+        string normalized = rawParam.TrimStart('?');
+        return !normalized.Contains(';', StringComparison.Ordinal) &&
+               ps.Length == 1 &&
+               ps[0] > 0 &&
+               ps[0] < 255;
+    }
+
+    private bool LooksLikeTwPromptLine(int row)
+    {
+        if (row < 0 || row >= _buf.Rows)
+            return false;
+
+        var line = new StringBuilder(_buf.Columns);
+        for (int c = 0; c < _buf.Columns; c++)
+            line.Append(_buf[row, c].Char);
+
+        string text = line.ToString().TrimEnd();
+        return text.StartsWith("Command [", StringComparison.Ordinal) ||
+               text.StartsWith("Computer command [", StringComparison.Ordinal) ||
+               (text.StartsWith('<') && text.Contains(">", StringComparison.Ordinal) && text.Contains("?=", StringComparison.Ordinal));
     }
 
     private static bool IsLegacyEraseToEndOfLine(int[] ps, string rawParam)

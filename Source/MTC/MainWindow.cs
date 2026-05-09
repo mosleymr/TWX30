@@ -906,6 +906,57 @@ public partial class MainWindow : Window
         return new BotRuntimeState(_mombot.Enabled, externalBotName);
     }
 
+    private void RememberNativeMombotBotName(string? botName)
+    {
+        string normalized = NormalizeMombotValue(botName);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return;
+
+        if (string.Equals(_appPrefs.LastNativeMombotBotName, normalized, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _appPrefs.LastNativeMombotBotName = normalized;
+        _appPrefs.Save();
+    }
+
+    private bool IsNativeMombotConfiguredForStart()
+    {
+        MTC.mombot.mombotConfig? config = _embeddedGameConfig?.mombot ?? _embeddedGameConfig?.Mtc?.mombot;
+        if (config?.Configured == true)
+            return true;
+
+        return HasCompleteNativeMombotRelogSettings();
+    }
+
+    private bool HasCompleteNativeMombotRelogSettings()
+    {
+        string configLogin = NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true);
+        string configPassword = NormalizeMombotValue(_embeddedGameConfig?.Password);
+        string configGameLetter = NormalizeMombotValue(_embeddedGameConfig?.GameLetter);
+
+        string loginName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
+            configLogin);
+        string serverName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            loginName);
+        string password = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
+            configPassword);
+        string gameLetter = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
+            configGameLetter);
+
+        return !string.IsNullOrWhiteSpace(serverName) &&
+               !string.IsNullOrWhiteSpace(loginName) &&
+               !string.IsNullOrWhiteSpace(password) &&
+               !string.IsNullOrWhiteSpace(NormalizeGameLetter(gameLetter));
+    }
+
     private void RefreshMombotUi()
     {
         if (_mombot.Enabled)
@@ -1709,6 +1760,54 @@ public partial class MainWindow : Window
         };
     }
 
+    private Core.ShipStatus BuildShipStatusSeedFromCurrentState()
+    {
+        string lrsType = _state.ScannerH
+            ? "Holo"
+            : (_state.ScannerD ? "Density" : string.Empty);
+
+        return new Core.ShipStatus
+        {
+            TraderName = _state.TraderName ?? string.Empty,
+            Experience = _state.Experience,
+            Alignment = long.TryParse((_state.Alignment ?? string.Empty).Replace(",", string.Empty, StringComparison.Ordinal), out long alignment)
+                ? alignment
+                : 0L,
+            Corp = _state.Corp,
+            ShipName = _state.ShipName ?? string.Empty,
+            ShipType = _currentShipType ?? string.Empty,
+            ShipClass = _currentShipClass ?? string.Empty,
+            CurrentSector = _state.Sector,
+            Turns = _state.Turns,
+            TurnsPerWarp = _state.TurnsPerWarp,
+            TotalHolds = _state.HoldsTotal,
+            FuelOre = _state.FuelOre,
+            Organics = _state.Organics,
+            Equipment = _state.Equipment,
+            Colonists = _state.Colonists,
+            HoldsEmpty = _state.HoldsEmpty,
+            Fighters = _state.Fighters,
+            Shields = _state.Shields,
+            Photons = _state.Photon,
+            ArmidMines = _state.Armor,
+            LimpetMines = _state.Limpet,
+            GenesisTorps = _state.Genesis,
+            AtomicDet = _state.Atomic,
+            Corbomite = _state.Corbomite,
+            Cloaks = _state.Cloak,
+            Beacons = _state.Beacon,
+            EtherProbes = _state.Etheral,
+            MineDisruptors = _state.Disruptor,
+            PlanetScanner = _state.ScannerP,
+            LRSType = lrsType,
+            HasTransWarp1 = _state.HasTranswarpDrive1,
+            HasTransWarp2 = _state.HasTranswarpDrive2,
+            TransWarp1 = _state.TranswarpDrive1,
+            TransWarp2 = _state.TranswarpDrive2,
+            Credits = _state.Credits
+        };
+    }
+
     private string ResolveGlobalPortHaggleMode() => Core.NativeHaggleModes.Normalize(_appPrefs.PortHaggleMode);
 
     private string ResolveGlobalPlanetHaggleMode()
@@ -2308,6 +2407,7 @@ public partial class MainWindow : Window
         gi.Logger.BinaryLogs = gameConfig.LogBinary;
         gi.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
+        gi.SeedShipStatus(BuildShipStatusSeedFromCurrentState());
         gi.SetNativeHaggleEnabled(gameConfig.NativeHaggleEnabled, Core.NativeHaggleChangeSource.Config);
         Core.GlobalModules.DebugLog(
             $"[MTC] Embedded haggle startup prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
@@ -3570,10 +3670,11 @@ public partial class MainWindow : Window
             ? _gameInstance?.NativeHaggleEnabled == true
             : !remoteProxyScripts && _standaloneNativeHaggle.Enabled;
         BotRuntimeState botRuntime = GetBotRuntimeState();
+        bool nativeBotAvailable = enabled && (botRuntime.NativeRunning || IsNativeMombotConfiguredForStart());
         ApplyStatusToggleFrameStyle(_statusMacrosFrame, true);
         ApplyStatusToggleFrameStyle(_statusMapFrame, true);
         ApplyStatusToggleFrameStyle(_statusCommFrame, true);
-        ApplyStatusToggleFrameStyle(_statusBotFrame, enabled);
+        ApplyStatusToggleFrameStyle(_statusBotFrame, nativeBotAvailable);
         ApplyStatusToggleFrameStyle(_statusHaggleFrame, haggleAvailable);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusRedAlertFrame, _appPrefs.EnableRedAlertMode);
@@ -3582,8 +3683,12 @@ public partial class MainWindow : Window
         ApplyStatusMacrosButtonStyle(_statusMacrosButton, _macroSettingsDialog != null);
         ApplyStatusMapButtonStyle(_statusMapButton, _mapWindow != null);
         ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
-        ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, enabled);
+        ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, nativeBotAvailable);
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: haggleSelected, haggleAvailable);
+        ToolTip.SetTip(_statusBotButton,
+            nativeBotAvailable
+                ? "Start or stop native MomBot"
+                : "Configure native MomBot before starting");
         ToolTip.SetTip(_statusHaggleButton,
             !haggleAvailable
                 ? "Native haggle unavailable"
@@ -5105,9 +5210,12 @@ public partial class MainWindow : Window
     {
         var items = new List<object>();
         BotRuntimeState runtime = GetBotRuntimeState();
+        IReadOnlyList<StoredBotSection> bots = LoadConfiguredBotSections();
+        bool nativeConfigured = IsNativeMombotConfiguredForStart();
+        bool hasStartableExternalBot = bots.Any(bot => !bot.IsNative && bot.ScriptAvailable);
 
-        var startMenu = new MenuItem { Header = "_Start", IsEnabled = enabled };
-        startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
+        var startMenu = new MenuItem { Header = "_Start", IsEnabled = enabled && (nativeConfigured || hasStartableExternalBot) };
+        startMenu.ItemsSource = BuildBotStartMenuItems(enabled, bots);
         startMenu.SubmenuOpened += (_, _) =>
             startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
         items.Add(startMenu);
@@ -5117,7 +5225,7 @@ public partial class MainWindow : Window
         items.Add(stopItem);
 
         var configureMenu = new MenuItem { Header = "_Configure" };
-        configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
+        configureMenu.ItemsSource = BuildBotConfigureMenuItems(bots);
         configureMenu.SubmenuOpened += (_, _) =>
             configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
         items.Add(configureMenu);
@@ -5140,9 +5248,15 @@ public partial class MainWindow : Window
 
         BotRuntimeState runtime = GetBotRuntimeState();
         StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
+        bool nativeConfigured = IsNativeMombotConfiguredForStart();
         var nativeItem = new MenuItem
         {
-            Header = runtime.NativeRunning ? $"{NativeMombotMenuLabel} (running)" : NativeMombotMenuLabel,
+            Header = runtime.NativeRunning
+                ? $"{NativeMombotMenuLabel} (running)"
+                : nativeConfigured
+                    ? NativeMombotMenuLabel
+                    : $"{NativeMombotMenuLabel} (configure first)",
+            IsEnabled = runtime.NativeRunning || nativeConfigured,
         };
         nativeItem.Click += (_, _) => _ = StartConfiguredBotAsync(nativeBot);
         items.Add(nativeItem);
@@ -5245,6 +5359,7 @@ public partial class MainWindow : Window
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Native"] = "1",
+            ["Configured"] = config.Properties.TryGetValue("Configured", out string? configured) ? configured : "0",
             ["Name"] = config.Name,
             ["Script"] = config.ScriptFile,
             ["Description"] = config.Description,
@@ -5355,6 +5470,12 @@ public partial class MainWindow : Window
 
         if (bot.IsNative)
         {
+            if (!IsNativeMombotConfiguredForStart())
+            {
+                await ShowMessageAsync("Bot", "Configure native MomBot before starting it.");
+                return;
+            }
+
             StopActiveExternalBot();
             await StartInternalMombotAsync(bot.Config, requestedBotName: string.Empty, interactiveOfflinePrompt: true, publishMissingGameMessage: true);
         }
@@ -5402,6 +5523,9 @@ public partial class MainWindow : Window
 
         StoredBotSection? nativeBot = LoadConfiguredBotSections().FirstOrDefault(bot => bot.IsNative);
         if (nativeBot == null || !nativeBot.Config.AutoStart)
+            return;
+
+        if (!IsNativeMombotConfiguredForStart())
             return;
 
         if (!string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName))
@@ -6021,16 +6145,6 @@ public partial class MainWindow : Window
                 RefreshActiveBotContextFromConfig(bot);
                 RefreshStatusBar();
                 RebuildProxyMenu();
-                StoredBotSection? refreshedNativeBot = LoadConfiguredBotSections().FirstOrDefault(section => section.IsNative);
-                if (refreshedNativeBot != null)
-                {
-                    StopActiveExternalBot();
-                    await StartInternalMombotAsync(
-                        refreshedNativeBot.Config,
-                        requestedBotName: string.Empty,
-                        interactiveOfflinePrompt: false,
-                        publishMissingGameMessage: true);
-                }
                 FocusActiveTerminal();
                 return;
             }
@@ -6238,6 +6352,7 @@ public partial class MainWindow : Window
 
             MTC.mombot.mombotConfig nativeConfig = GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig);
             NormalizeNativeMombotRuntimeConfig(nativeConfig);
+            nativeConfig.Configured = true;
             nativeConfig.Name = string.IsNullOrWhiteSpace(result.Name) ? nativeConfig.Name : result.Name.Trim();
             nativeConfig.Description = string.IsNullOrWhiteSpace(result.Description) ? nativeConfig.Description : result.Description.Trim();
             nativeConfig.AutoStart = result.AutoStart;
@@ -6260,6 +6375,7 @@ public partial class MainWindow : Window
                 Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
                 currentBotName);
             string botName = FirstMeaningfulMombotValue(result.NameVar, nativeConfig.Name, "MomBot");
+            RememberNativeMombotBotName(botName);
             string submittedCommsName = NormalizeMombotValue(result.CommsVar);
             bool botNameChanged = !string.Equals(botName, currentBotName, StringComparison.OrdinalIgnoreCase);
             bool commsFollowedBotName = string.IsNullOrWhiteSpace(currentCommsName) ||
@@ -6396,6 +6512,7 @@ public partial class MainWindow : Window
             Properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Native"] = "1",
+                ["Configured"] = runtimeConfig.Configured ? "1" : "0",
                 ["Name"] = runtimeConfig.Name,
                 ["Script"] = scriptFile,
                 ["Description"] = runtimeConfig.Description,
@@ -6449,6 +6566,7 @@ public partial class MainWindow : Window
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["Native"] = "1",
+            ["Configured"] = "0",
             ["Name"] = "MomBot",
             ["Script"] = "mombot/mombot.cts",
             ["Description"] = "Built-in native Mombot runtime",
@@ -6581,6 +6699,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!IsNativeMombotConfiguredForStart())
+        {
+            PublishMombotLocalMessage("Configure native MomBot before starting it.");
+            return;
+        }
+
         StopActiveExternalBot();
         await StartInternalMombotAsync(
             nativeBot.Config,
@@ -6627,6 +6751,13 @@ public partial class MainWindow : Window
         }
 
         Core.BotConfig botConfig = nativeBotConfig ?? LoadConfiguredBotSections().First(bot => bot.IsNative).Config;
+        if (!IsNativeMombotConfiguredForStart())
+        {
+            if (publishMissingGameMessage)
+                PublishMombotLocalMessage("Configure native MomBot before starting it.");
+            return;
+        }
+
         PrimeMombotBootstrapState(botConfig);
         CurrentInterpreter?.ActivateBotContext(botConfig, requestedBotName);
         SyncMombotRuntimeConfigFromTwxpCfg();
@@ -6665,27 +6796,31 @@ public partial class MainWindow : Window
             bool launchedConnectivityRelog = false;
             if (relogSettings.LoginType != MTC.mombot.mombotRelogLoginType.NormalRelog)
             {
-                var initialVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                IReadOnlyDictionary<string, string> initialVars = BuildNativeMombotConnectivityRelogVars(relogSettings);
+                var launchErrors = new List<string>();
+                foreach (string entryLabel in new[] { ":NATIVE~ENTER_NEW_GAME", ":CONNECTIVITY~ENTER_NEW_GAME" })
                 {
-                    ["$CONNECTIVITY~NEWGAME"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.NewGameAccountCreation ? "1" : "0",
-                };
+                    if (_mombot.TryLoadInstalledScriptAtLabel(
+                            "mombot.cts",
+                            entryLabel,
+                            initialVars,
+                            out string? connectivityScriptReference,
+                            out string? connectivityError))
+                    {
+                        launchedConnectivityRelog = true;
+                        Core.GlobalModules.DebugLog(
+                            $"[MTC.NativeBotStart] launched connectivity relog path script='{connectivityScriptReference}' label='{entryLabel}' loginType='{relogSettings.LoginType}'\n");
+                        Core.GlobalModules.FlushDebugLog();
+                        break;
+                    }
 
-                if (_mombot.TryLoadInstalledScriptAtLabel(
-                        "mombot.cts",
-                        ":NATIVE~ENTER_NEW_GAME",
-                        initialVars,
-                        out string? connectivityScriptReference,
-                        out string? connectivityError))
-                {
-                    launchedConnectivityRelog = true;
-                    Core.GlobalModules.DebugLog(
-                        $"[MTC.NativeBotStart] launched connectivity relog path script='{connectivityScriptReference}' loginType='{relogSettings.LoginType}'\n");
-                    Core.GlobalModules.FlushDebugLog();
+                    launchErrors.Add($"{entryLabel}: {connectivityError}");
                 }
-                else
+
+                if (!launchedConnectivityRelog)
                 {
                     Core.GlobalModules.DebugLog(
-                        $"[MTC.NativeBotStart] connectivity relog path failed loginType='{relogSettings.LoginType}' error='{connectivityError}'\n");
+                        $"[MTC.NativeBotStart] connectivity relog path failed loginType='{relogSettings.LoginType}' errors='{string.Join(" | ", launchErrors)}'\n");
                     Core.GlobalModules.FlushDebugLog();
                 }
             }
@@ -6695,6 +6830,52 @@ public partial class MainWindow : Window
         }
 
         FocusActiveTerminal();
+    }
+
+    private IReadOnlyDictionary<string, string> BuildNativeMombotConnectivityRelogVars(MTC.mombot.mombotRelogDialogResult relogSettings)
+    {
+        string newGame = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.NewGameAccountCreation ? "1" : "0";
+        string gameLetter = NormalizeGameLetter(relogSettings.GameLetter);
+        string startShipName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTSHIPNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$bot~startShipName", string.Empty),
+            "Mind ()ver Matter");
+        string isCeo = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISCEO", "0")) ? "TRUE" : "FALSE";
+        string corpName = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPNAME", string.Empty));
+        string corpPassword = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPPASSWORD", string.Empty));
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["$CONNECTIVITY~NEWGAME"] = newGame,
+            ["$connectivity~newgame"] = newGame,
+            ["$BOT~BOT_NAME"] = relogSettings.BotName,
+            ["$SWITCHBOARD~BOT_NAME"] = relogSettings.BotName,
+            ["$bot_name"] = relogSettings.BotName,
+            ["$BOT~SERVERNAME"] = relogSettings.ServerName,
+            ["$servername"] = relogSettings.ServerName,
+            ["$BOT~USERNAME"] = relogSettings.LoginName,
+            ["$username"] = relogSettings.LoginName,
+            ["$BOT~PASSWORD"] = relogSettings.Password,
+            ["$password"] = relogSettings.Password,
+            ["$BOT~LETTER"] = gameLetter,
+            ["$letter"] = gameLetter,
+            ["$LETTER"] = gameLetter,
+            ["$BOT~STARTGAMEDELAY"] = relogSettings.DelayMinutes.ToString(),
+            ["$startGameDelay"] = relogSettings.DelayMinutes.ToString(),
+            ["$BOT~STARTSHIPNAME"] = startShipName,
+            ["$BOT~ISCEO"] = isCeo,
+            ["$BOT~CORPNAME"] = corpName,
+            ["$BOT~CORPPASSWORD"] = corpPassword,
+            ["$BOT~NEWGAMEDAY1"] = newGame,
+            ["$newGameDay1"] = newGame,
+            ["$BOT~NEWGAMEOLDER"] = newGame == "1" ? "0" : "1",
+            ["$newGameOlder"] = newGame == "1" ? "0" : "1",
+            ["$BOT~ISSHIPDESTROYED"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed ? "1" : "0",
+            ["$command_to_issue"] = relogSettings.BotCommand,
+            ["$BOT~STARTMACRO"] = relogSettings.MacroAfterLogin,
+            ["$bot~startMacro"] = relogSettings.MacroAfterLogin,
+            ["$startMacro"] = relogSettings.MacroAfterLogin,
+        };
     }
 
     private async Task StopInternalMombotAsync()
@@ -6785,21 +6966,23 @@ public partial class MainWindow : Window
         string configuredNativeBotName = NormalizeMombotValue(
             _embeddedGameConfig?.mombot?.Name ??
             _embeddedGameConfig?.Mtc?.mombot?.Name);
+        string rememberedBotName = NormalizeMombotValue(_appPrefs.LastNativeMombotBotName);
         string botName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             configuredNativeBotName,
+            rememberedBotName,
             _mombot.Settings.BotName,
             "mombot");
-        string serverName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
-            configLogin);
         string loginName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
             configLogin);
+        string serverName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            loginName);
         string password = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
@@ -6906,8 +7089,11 @@ public partial class MainWindow : Window
 
     private void ApplyMombotRelogDialogResult(MTC.mombot.mombotRelogDialogResult result)
     {
+        RememberNativeMombotBotName(result.BotName);
+
         if (_embeddedGameConfig != null)
         {
+            GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig).Configured = true;
             _embeddedGameConfig.LoginName = result.LoginName;
             _embeddedGameConfig.Password = result.Password;
             _embeddedGameConfig.GameLetter = NormalizeGameLetter(result.GameLetter);
@@ -6926,8 +7112,14 @@ public partial class MainWindow : Window
         PersistMombotVars(result.Password, "$BOT~PASSWORD", "$password");
         PersistMombotVars(NormalizeGameLetter(result.GameLetter), "$BOT~LETTER", "$letter");
         PersistMombotVars(result.DelayMinutes.ToString(), "$BOT~STARTGAMEDELAY", "$startGameDelay");
-        PersistMombotVars(result.BotCommand, "$command_to_issue");
-        PersistMombotVars(result.MacroAfterLogin, "$BOT~STARTMACRO", "$bot~startMacro", "$startMacro");
+        PersistMombotVars(
+            string.Equals(result.AfterLoginAction, "command", StringComparison.OrdinalIgnoreCase) ? result.BotCommand : string.Empty,
+            "$command_to_issue");
+        PersistMombotVars(
+            string.Equals(result.AfterLoginAction, "macro", StringComparison.OrdinalIgnoreCase) ? result.MacroAfterLogin : string.Empty,
+            "$BOT~STARTMACRO",
+            "$bot~startMacro",
+            "$startMacro");
         PersistMombotVars("General", "$BOT~MODE", "$mode");
         PersistMombotVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
         PersistMombotVars("1", "$BOT~DORELOG", "$doRelog");
@@ -6963,21 +7155,23 @@ public partial class MainWindow : Window
         string configuredNativeBotName = NormalizeMombotValue(
             _embeddedGameConfig?.mombot?.Name ??
             _embeddedGameConfig?.Mtc?.mombot?.Name);
+        string rememberedBotName = NormalizeMombotValue(_appPrefs.LastNativeMombotBotName);
         string botName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
             configuredNativeBotName,
+            rememberedBotName,
             _mombot.Settings.BotName,
             "mombot");
-        string serverName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
-            configLogin);
         string loginName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
             configLogin);
+        string serverName = FirstMeaningfulMombotValue(
+            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
+            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            loginName);
         string password = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
@@ -7242,6 +7436,7 @@ public partial class MainWindow : Window
         string ckFigRelative = Path.Combine(folderRelative, "_ck_" + gameName + ".figs").Replace('\\', '/');
         string shipCapRelative = Path.Combine(folderRelative, "ships.cfg").Replace('\\', '/');
         string planetFileRelative = Path.Combine(folderRelative, "planets.cfg").Replace('\\', '/');
+        string planetProdsRelative = Path.Combine(folderRelative, "planetprods.cfg").Replace('\\', '/');
         string figFileRelative = Path.Combine(folderRelative, "fighters.cfg").Replace('\\', '/');
         string figCountRelative = Path.Combine(folderRelative, "fighters.cnt").Replace('\\', '/');
         string limpetFileRelative = Path.Combine(folderRelative, "limpets.cfg").Replace('\\', '/');
@@ -7328,6 +7523,7 @@ public partial class MainWindow : Window
         PersistMombotVars(ckFigRelative, "$CK_FIG_FILE", "$BOT~CK_FIG_FILE");
         PersistMombotVars(shipCapRelative, "$SHIP~cap_file", "$SHIP~CAP_FILE", "$ship~cap_file", "$cap_file");
         PersistMombotVars(planetFileRelative, "$PLANET~planet_file", "$PLANET~PLANET_FILE", "$planet~planet_file", "$planet_file");
+        PersistMombotVars(planetProdsRelative, "$PLANET~planet_prods_file", "$PLANET~PLANET_PRODS_FILE", "$planet~planet_prods_file", "$planet_prods_file");
         PersistMombotVars(figFileRelative, "$FIG_FILE", "$BOT~FIG_FILE");
         PersistMombotVars(figCountRelative, "$FIG_COUNT_FILE", "$BOT~FIG_COUNT_FILE");
         PersistMombotVars(limpetFileRelative, "$LIMP_FILE", "$BOT~LIMP_FILE");
@@ -7398,6 +7594,7 @@ public partial class MainWindow : Window
         SetRedAlertVars("FALSE");
         PersistMombotVars(shipCapRelative, "$cap_file");
         PersistMombotVars(planetFileRelative, "$planet_file");
+        PersistMombotVars(planetProdsRelative, "$planet_prods_file");
 
         SyncMombotSpecialSectorVarsFromDatabase(persist: true);
         MirrorMombotCurrentVars("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");

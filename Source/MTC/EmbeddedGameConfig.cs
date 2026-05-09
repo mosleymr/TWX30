@@ -19,7 +19,7 @@ internal class EmbeddedGameConfig
     public string Name    { get; set; } = string.Empty;
     public string Host    { get; set; } = string.Empty;
     public int    Port    { get; set; } = 23;
-    public int    Sectors { get; set; } = 1000;
+    public int    Sectors { get; set; } = ConnectionProfile.DefaultSectors;
     public int    ListenPort { get; set; } = 2300;
     public char   CommandChar { get; set; } = '$';
     public string DatabasePath { get; set; } = string.Empty;

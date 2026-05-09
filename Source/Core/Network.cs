@@ -125,6 +125,7 @@ namespace TWXProxy.Core
         private CancellationTokenSource? _cancellationSource;
         private Task? _serverReadTask;
         private Task? _acceptTask;
+        private Task? _serverStaleWatchdogTask;
         
         private bool _isRunning;
         private readonly object _stateLock = new();
@@ -152,6 +153,13 @@ namespace TWXProxy.Core
         private int _reconnectDelayMs = 5000;
         private int _reconnectLoopRunning = 0; // Interlocked guard — only one loop at a time
         private int _disconnectHandling = 0;   // Interlocked guard — emit disconnect UI/event once
+        private int _serverStaleWatchdogRunning = 0;
+        private long _lastServerReceiveUtcTicks = 0;
+        private long _pendingLocalInputProbeUtcTicks = 0;
+        private int _pendingLocalInputProbeBytes = 0;
+        private string _pendingLocalInputProbeSummary = string.Empty;
+        private static readonly TimeSpan LocalInputResponseTimeout = TimeSpan.FromSeconds(15);
+        private static readonly TimeSpan ServerStaleWatchdogInterval = TimeSpan.FromSeconds(1);
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
         public int ReconnectDelayMs
         {
@@ -170,6 +178,8 @@ namespace TWXProxy.Core
         // LogVerbose: high-frequency traffic (byte counts) → Console only when Verbose=true.
         private void Log(string message) { GlobalModules.DebugLog(message + "\n"); if (Verbose) Console.WriteLine(message); }
         private void LogVerbose(string message) { if (Verbose) Console.WriteLine(message); }
+
+        private static long UtcNowTicks() => DateTime.UtcNow.Ticks;
         
         // Telnet protocol constants
         private const byte IAC = 255;  // Interpret As Command
@@ -288,6 +298,14 @@ namespace TWXProxy.Core
                 : GlobalModules.ProgramDir;
             foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
                 RegisterBotConfig(bot);
+        }
+
+        public void SeedShipStatus(ShipStatus status)
+        {
+            ShipStatus snapshot = CloneShipStatus(status);
+            _shipInfoParser.SeedStatus(snapshot);
+            lock (_shipStatusLock)
+                _currentShipStatus = CloneShipStatus(snapshot);
         }
 
         private static string GetDefaultProgramDir()
@@ -737,6 +755,8 @@ namespace TWXProxy.Core
                 }
 
                 System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
+                Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
+                ClearPendingLocalInputProbe();
 
                 await SendInitialHandshakeAsync(token);
                 _interpreter?.HandleConnectionAccepted();
@@ -744,6 +764,7 @@ namespace TWXProxy.Core
 
                 // Start reading from server
                 _serverReadTask = Task.Run(async () => await ReadFromServerAsync(token), token);
+                StartServerStaleWatchdog(token);
             }
             catch (Exception ex)
             {
@@ -811,6 +832,7 @@ namespace TWXProxy.Core
                 _serverClient?.Close();
                 _serverStream = null;
                 _serverClient = null;
+                ClearPendingLocalInputProbe();
                 
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
@@ -939,6 +961,7 @@ namespace TWXProxy.Core
                         _serverClient?.Close();
                         _serverStream = null;
                         _serverClient = null;
+                        ClearPendingLocalInputProbe();
                         
                         // Reset telnet negotiation state
                         lock (_negotiationLock)
@@ -953,6 +976,8 @@ namespace TWXProxy.Core
                             _ = Task.Run(() => ReconnectLoopAsync(token));
                         break;
                     }
+
+                    MarkServerReceive();
 
                     var data = new byte[bytesRead];
                     Array.Copy(buffer, data, bytesRead);
@@ -995,6 +1020,7 @@ namespace TWXProxy.Core
                         {
                             await _serverStream.WriteAsync(bufferedData, 0, bufferedData.Length, token);
                             await _serverStream.FlushAsync(token);
+                            MarkLocalInputProbe(bufferedData);
                         }
                     }
 
@@ -1043,6 +1069,7 @@ namespace TWXProxy.Core
                 _serverClient?.Close();
                 _serverStream = null;
                 _serverClient = null;
+                ClearPendingLocalInputProbe();
                 
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
@@ -1112,6 +1139,163 @@ namespace TWXProxy.Core
                 GlobalModules.FlushDebugLog();
                 _ = Task.Run(() => ReconnectLoopAsync(_cancellationSource.Token));
             }
+        }
+
+        private void StartServerStaleWatchdog(CancellationToken token)
+        {
+            if (Interlocked.CompareExchange(ref _serverStaleWatchdogRunning, 1, 0) != 0)
+                return;
+
+            _serverStaleWatchdogTask = Task.Run(() => ServerStaleWatchdogLoopAsync(token), token);
+        }
+
+        private async Task ServerStaleWatchdogLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(ServerStaleWatchdogInterval, token);
+
+                    if (_serverClient?.Connected != true || _serverStream == null)
+                        continue;
+
+                    long probeTicks = Interlocked.Read(ref _pendingLocalInputProbeUtcTicks);
+                    if (probeTicks <= 0)
+                        continue;
+
+                    long lastReceiveTicks = Interlocked.Read(ref _lastServerReceiveUtcTicks);
+                    if (lastReceiveTicks >= probeTicks)
+                    {
+                        ClearPendingLocalInputProbe();
+                        continue;
+                    }
+
+                    DateTime probeUtc = new(probeTicks, DateTimeKind.Utc);
+                    TimeSpan elapsed = DateTime.UtcNow - probeUtc;
+                    if (elapsed < LocalInputResponseTimeout)
+                        continue;
+
+                    await DisconnectStaleServerAsync(probeUtc, lastReceiveTicks, elapsed, token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected during shutdown.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _serverStaleWatchdogRunning, 0);
+            }
+        }
+
+        private async Task DisconnectStaleServerAsync(
+            DateTime probeUtc,
+            long lastReceiveTicks,
+            TimeSpan elapsed,
+            CancellationToken token)
+        {
+            if (Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
+                return;
+
+            string lastReceiveText = lastReceiveTicks > 0
+                ? new DateTime(lastReceiveTicks, DateTimeKind.Utc).ToString("O")
+                : "<never>";
+            string probeSummary = _pendingLocalInputProbeSummary;
+            int probeBytes = Volatile.Read(ref _pendingLocalInputProbeBytes);
+            string reason =
+                $"No server data received for {elapsed.TotalSeconds:F1}s after local terminal input " +
+                $"({probeBytes} byte(s), {probeSummary}); lastServerReceiveUtc={lastReceiveText}";
+
+            Log($"[{_gameName}] Stale server connection detected: {reason}");
+
+            try { _serverStream?.Close(); } catch { }
+            try { _serverClient?.Close(); } catch { }
+            _serverStream = null;
+            _serverClient = null;
+            ClearPendingLocalInputProbe();
+
+            lock (_negotiationLock)
+            {
+                _telnetNegotiationComplete = false;
+                _clientBufferDuringNegotiation.Clear();
+            }
+
+            try
+            {
+                string disconnectText = _autoReconnect && !token.IsCancellationRequested
+                    ? $"\r\n[twxp] Stale server connection detected after local input.  Proxy auto-reconnecting...\r\n"
+                    : $"\r\n[twxp] Stale server connection detected after local input.  Type {_commandChar}c to reconnect.\r\n";
+                await SendToLocalAsync(Encoding.ASCII.GetBytes(disconnectText), broadcastDeaf: true, token: token);
+            }
+            catch (Exception ex)
+            {
+                Log($"[{_gameName}] Could not send stale disconnect message to clients: {ex.Message}");
+            }
+
+            Disconnected?.Invoke(this, new DisconnectEventArgs(reason));
+
+            if (_autoReconnect && !token.IsCancellationRequested)
+                _ = Task.Run(() => ReconnectLoopAsync(token));
+        }
+
+        private void MarkServerReceive()
+        {
+            Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
+            ClearPendingLocalInputProbe();
+        }
+
+        private void ClearPendingLocalInputProbe()
+        {
+            Interlocked.Exchange(ref _pendingLocalInputProbeUtcTicks, 0);
+            Volatile.Write(ref _pendingLocalInputProbeBytes, 0);
+            _pendingLocalInputProbeSummary = string.Empty;
+        }
+
+        private void MarkLocalInputProbe(byte[] data)
+        {
+            if (!ShouldProbeForServerResponse(data))
+                return;
+
+            Interlocked.Exchange(ref _pendingLocalInputProbeUtcTicks, UtcNowTicks());
+            Volatile.Write(ref _pendingLocalInputProbeBytes, data.Length);
+            _pendingLocalInputProbeSummary = SummarizeProbeBytes(data);
+        }
+
+        private static bool ShouldProbeForServerResponse(byte[] data)
+        {
+            foreach (byte b in data)
+            {
+                if (b == 13 || b == 10 || (b >= 0x20 && b < 0x7F))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static string SummarizeProbeBytes(byte[] data)
+        {
+            const int maxBytes = 16;
+            int count = Math.Min(data.Length, maxBytes);
+            var hex = new StringBuilder();
+            var ascii = new StringBuilder();
+
+            for (int i = 0; i < count; i++)
+            {
+                if (i > 0)
+                    hex.Append(' ');
+                byte b = data[i];
+                hex.Append(b.ToString("X2"));
+                ascii.Append(b >= 0x20 && b < 0x7F ? (char)b : '.');
+            }
+
+            if (data.Length > maxBytes)
+            {
+                hex.Append(" ...");
+                ascii.Append("...");
+            }
+
+            return $"hex={hex}, ascii='{ascii}'";
         }
 
         private async Task ReadFromClientAsync(ClientSession session, CancellationToken token)
@@ -1223,8 +1407,10 @@ namespace TWXProxy.Core
                                         }
                                         else
                                         {
-                                            await _serverStream.WriteAsync(new byte[] { b }, 0, 1, token);
+                                            byte[] forwarded = new byte[] { b };
+                                            await _serverStream.WriteAsync(forwarded, 0, forwarded.Length, token);
                                             await _serverStream.FlushAsync(token);
+                                            MarkLocalInputProbe(forwarded);
                                         }
                                     }
                                     else if (scriptWaitingForInput && !keypressMode)
@@ -1821,6 +2007,7 @@ namespace TWXProxy.Core
             _serverStream = null;
             _serverClient = null;
             _localListener = null;
+            ClearPendingLocalInputProbe();
 
             IReadOnlyList<ClientSession> clients = GetClientSnapshot();
             foreach (ClientSession client in clients)

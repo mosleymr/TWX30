@@ -716,6 +716,13 @@ namespace TWXProxy.Core
             return fileName;
         }
 
+        public string GetCompiledScriptDisplayName()
+        {
+            return string.IsNullOrWhiteSpace(_scriptFile)
+                ? string.Empty
+                : Path.GetFileName(_scriptFile);
+        }
+
         public string QualifyLabelReference(string name, int scriptID)
         {
             if (string.IsNullOrEmpty(name))

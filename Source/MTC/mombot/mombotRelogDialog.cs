@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 
@@ -55,123 +57,144 @@ internal sealed class mombotRelogDialog : Window
         public override string ToString() => Label;
     }
 
-    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(20, 20, 20));
-    private static readonly IBrush BdInput = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(170, 170, 170));
-    private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(200, 200, 200));
-    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
+    private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(0x03, 0x0F, 0x17));
+    private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(0x06, 0x37, 0x41));
+    private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(0x02, 0x16, 0x20));
+    private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(0x04, 0x4A, 0x56));
+    private static readonly IBrush BgPrimaryButton = new SolidColorBrush(Color.FromRgb(0x00, 0xD8, 0xCB));
+    private static readonly IBrush Border = new SolidColorBrush(Color.FromRgb(0x08, 0x91, 0xA4));
+    private static readonly IBrush InputBorder = new SolidColorBrush(Color.FromRgb(0x0B, 0x79, 0x8B));
+    private static readonly IBrush FgHeader = new SolidColorBrush(Color.FromRgb(0x00, 0xF2, 0xE7));
+    private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(0xD7, 0xF3, 0xF6));
+    private static readonly IBrush FgMuted = new SolidColorBrush(Color.FromRgb(0x8D, 0xC1, 0xC8));
+    private static readonly IBrush FgDark = new SolidColorBrush(Color.FromRgb(0x01, 0x12, 0x18));
+    private static readonly FontFamily MonoFont = new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
     public mombotRelogDialogResult? Result { get; private set; }
 
     public mombotRelogDialog(mombotRelogDialogResult defaults)
     {
-        Title = "Mombot Configuration";
-        Width = 560;
+        Title = "Native MomBot Login";
+        Width = 620;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = BgPanel;
+        Background = BgWindow;
 
         var loginTypeOptions = new[]
         {
+            new LoginTypeOption(mombotRelogLoginType.NewGameAccountCreation, "New Game Account Creation"),
             new LoginTypeOption(mombotRelogLoginType.NormalRelog, "Normal Relog"),
             new LoginTypeOption(mombotRelogLoginType.ReturnAfterDestroyed, "Return after being destroyed"),
-            new LoginTypeOption(mombotRelogLoginType.NewGameAccountCreation, "New Game Account Creation"),
         };
 
         var afterLoginOptions = new[]
         {
             new AfterLoginOption("nothing", "Nothing"),
+            new AfterLoginOption("command", "Run Command"),
+            new AfterLoginOption("macro", "Fire Macro"),
         };
 
-        var cboLoginType = new ComboBox
-        {
-            ItemsSource = loginTypeOptions,
-            SelectedItem = Array.Find(loginTypeOptions, option => option.Value == defaults.LoginType) ?? loginTypeOptions[0],
-            Background = BgInput,
-            Foreground = FgNormal,
-            BorderBrush = BdInput,
-        };
+        string defaultLoginName = NormalizeFreeform(defaults.LoginName);
+        string defaultServerName = defaultLoginName;
+        string defaultGameLetter = NormalizeGameLetter(defaults.GameLetter);
 
-        var txtBotName = BuildTextBox(defaults.BotName, "bot name");
-        var txtServerName = BuildTextBox(defaults.ServerName, "server name");
-        var txtLoginName = BuildTextBox(defaults.LoginName, "login name");
+        var txtLoginName = BuildTextBox(defaultLoginName, "login name");
         var txtPassword = BuildTextBox(defaults.Password, "password");
-        var txtGameLetter = BuildTextBox(defaults.GameLetter, "game letter");
-        txtGameLetter.MaxLength = 1;
-        txtGameLetter.Width = 80;
-
+        txtPassword.PasswordChar = '*';
+        var txtBotName = BuildTextBox(defaults.BotName, "mombot");
+        txtBotName.Width = 110;
+        txtBotName.HorizontalAlignment = HorizontalAlignment.Left;
+        var txtServerName = BuildTextBox(defaultServerName, "server name");
         var txtDelay = BuildTextBox(defaults.DelayMinutes.ToString(), "0");
-        txtDelay.Width = 100;
+        txtDelay.Width = 110;
+        txtDelay.HorizontalAlignment = HorizontalAlignment.Left;
 
-        var cboAfterLogin = new ComboBox
+        string[] gameLetters = Enumerable.Range('A', 26)
+            .Select(value => ((char)value).ToString())
+            .ToArray();
+        var cboGameLetter = BuildComboBox(gameLetters);
+        cboGameLetter.Width = 110;
+        cboGameLetter.HorizontalAlignment = HorizontalAlignment.Left;
+        cboGameLetter.SelectedItem = gameLetters.FirstOrDefault(letter =>
+            string.Equals(letter, defaultGameLetter, StringComparison.OrdinalIgnoreCase));
+
+        var cboLoginType = BuildComboBox(loginTypeOptions);
+        cboLoginType.SelectedItem = loginTypeOptions.FirstOrDefault(option => option.Value == defaults.LoginType) ?? loginTypeOptions[0];
+
+        var cboAfterLogin = BuildComboBox(afterLoginOptions);
+        cboAfterLogin.SelectedItem = afterLoginOptions.FirstOrDefault(option =>
+            string.Equals(option.Value, defaults.AfterLoginAction, StringComparison.OrdinalIgnoreCase)) ?? afterLoginOptions[0];
+
+        var txtBotCommand = BuildTextBox(defaults.BotCommand, "bot command");
+        var txtMacro = BuildTextBox(defaults.MacroAfterLogin, "macro");
+        Control commandCell = BuildFullWidthCell("Bot command to perform", txtBotCommand);
+        Control macroCell = BuildFullWidthCell("Macro to fire", txtMacro);
+
+        bool syncingServerName = false;
+        bool serverNameEdited = false;
+
+        txtLoginName.TextChanged += (_, _) =>
         {
-            ItemsSource = afterLoginOptions,
-            SelectedItem = Array.Find(afterLoginOptions, option =>
-                string.Equals(option.Value, defaults.AfterLoginAction, StringComparison.OrdinalIgnoreCase)) ?? afterLoginOptions[0],
-            Background = BgInput,
-            Foreground = FgNormal,
-            BorderBrush = BdInput,
+            if (serverNameEdited)
+                return;
+
+            syncingServerName = true;
+            txtServerName.Text = txtLoginName.Text ?? string.Empty;
+            syncingServerName = false;
         };
 
-        var txtBotCommand = BuildTextBox(defaults.BotCommand, "None");
-        var txtMacro = BuildTextBox(defaults.MacroAfterLogin, "None");
-
-        var content = new StackPanel
+        txtServerName.TextChanged += (_, _) =>
         {
-            Margin = new Thickness(16),
-            Spacing = 4,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = "Configure login details for this game. These settings are saved per game and used to start native Mombot when the embedded proxy is offline.",
-                    TextWrapping = TextWrapping.Wrap,
-                    Foreground = FgNormal,
-                    Margin = new Thickness(0, 0, 0, 8),
-                },
-                BuildRow("Type of login:", cboLoginType),
-                BuildRow("Bot Name:", txtBotName),
-                BuildRow("Server Login:", txtServerName),
-                BuildRow("Login Name:", txtLoginName),
-                BuildRow("Password:", txtPassword),
-                BuildRow("Game Letter:", txtGameLetter),
-                BuildRow("Delay (Minutes):", txtDelay),
-                BuildRow("After login:", cboAfterLogin),
-                BuildRow("Bot command to perform:", txtBotCommand),
-                BuildRow("Macro to fire after login:", txtMacro),
-            }
+            if (syncingServerName)
+                return;
+
+            if (txtServerName.IsKeyboardFocusWithin)
+                serverNameEdited = true;
         };
 
-        var btnStart = new Button
+        void RefreshAfterLoginFields()
         {
-            Content = "Save and Start",
-            MinWidth = 80,
-            Background = BgButton,
-            Foreground = FgNormal,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 0, 8, 0),
-        };
+            string selectedAction = (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing";
+            commandCell.IsVisible = string.Equals(selectedAction, "command", StringComparison.OrdinalIgnoreCase);
+            macroCell.IsVisible = string.Equals(selectedAction, "macro", StringComparison.OrdinalIgnoreCase);
+        }
 
-        var btnCancel = new Button
-        {
-            Content = "Cancel",
-            MinWidth = 80,
-            Background = BgButton,
-            Foreground = FgNormal,
-        };
+        cboAfterLogin.SelectionChanged += (_, _) => RefreshAfterLoginFields();
+        RefreshAfterLoginFields();
 
-        btnStart.Click += (_, _) =>
+        var btnSave = BuildButton("Save", primary: true);
+        var btnCancel = BuildButton("Cancel", primary: false);
+
+        btnSave.Click += (_, _) =>
         {
-            string botName = (txtBotName.Text ?? string.Empty).Trim();
-            string serverName = (txtServerName.Text ?? string.Empty).Trim();
-            string loginName = (txtLoginName.Text ?? string.Empty).Trim();
+            string botName = NormalizeFreeform(txtBotName.Text);
+            string serverName = NormalizeFreeform(txtServerName.Text);
+            string loginName = NormalizeFreeform(txtLoginName.Text);
             string password = txtPassword.Text ?? string.Empty;
-            string gameLetter = NormalizeGameLetter(txtGameLetter.Text);
+            string gameLetter = NormalizeGameLetter(cboGameLetter.SelectedItem as string);
             int delayMinutes = int.TryParse(txtDelay.Text?.Trim(), out int parsedDelay) && parsedDelay >= 0
                 ? parsedDelay
                 : 0;
+            string afterLoginAction = (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing";
+
+            if (string.IsNullOrWhiteSpace(loginName))
+            {
+                txtLoginName.Focus();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                txtPassword.Focus();
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(gameLetter))
+            {
+                cboGameLetter.Focus();
+                return;
+            }
 
             if (string.IsNullOrWhiteSpace(botName))
             {
@@ -185,38 +208,98 @@ internal sealed class mombotRelogDialog : Window
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(loginName))
-            {
-                txtLoginName.Focus();
-                return;
-            }
-
             Result = new mombotRelogDialogResult(
-                (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mombotRelogLoginType.NormalRelog,
+                (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mombotRelogLoginType.NewGameAccountCreation,
                 botName,
                 serverName,
                 loginName,
                 password,
                 gameLetter,
                 delayMinutes,
-                (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing",
-                NormalizeFreeform(txtBotCommand.Text),
-                NormalizeFreeform(txtMacro.Text));
+                afterLoginAction,
+                string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase)
+                    ? NormalizeFreeform(txtBotCommand.Text)
+                    : string.Empty,
+                string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
+                    ? NormalizeFreeform(txtMacro.Text)
+                    : string.Empty);
             Close(true);
         };
 
         btnCancel.Click += (_, _) => Close(false);
 
-        var buttons = new StackPanel
+        var buttonRow = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 12, 0, 0),
-            Children = { btnStart, btnCancel },
+            Spacing = 10,
+            Children = { btnCancel, btnSave },
         };
 
-        content.Children.Add(buttons);
-        Content = content;
+        Content = new Border
+        {
+            Background = BgWindow,
+            Padding = new Thickness(18),
+            Child = new Border
+            {
+                Background = BgPanel,
+                BorderBrush = Border,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(18),
+                Child = new StackPanel
+                {
+                    Spacing = 14,
+                    Children =
+                    {
+                        new StackPanel
+                        {
+                            Spacing = 4,
+                            Children =
+                            {
+                                new TextBlock
+                                {
+                                    Text = "New Game Account",
+                                    FontSize = 24,
+                                    FontWeight = FontWeight.Bold,
+                                    Foreground = FgHeader,
+                                },
+                                new TextBlock
+                                {
+                                    Text = "Saved per game and used by native MomBot when it needs to enter the game from the login screens.",
+                                    Foreground = FgMuted,
+                                    TextWrapping = TextWrapping.Wrap,
+                                },
+                            },
+                        },
+                        BuildFullWidthCell("Login type", cboLoginType),
+                        BuildPairRow(
+                            BuildFieldCell("Login name", txtLoginName),
+                            BuildFieldCell("Server name", txtServerName)),
+                        BuildPairRow(
+                            BuildFieldCell("Password", txtPassword),
+                            BuildFieldCell("Game letter", cboGameLetter)),
+                        BuildPairRow(
+                            BuildFieldCell("Bot name", txtBotName),
+                            BuildFieldCell("Delay", txtDelay)),
+                        BuildFullWidthCell("After login", cboAfterLogin),
+                        commandCell,
+                        macroCell,
+                        buttonRow,
+                    },
+                },
+            },
+        };
+
+        txtLoginName.AttachedToVisualTree += (_, _) => txtLoginName.Focus();
+        KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                Close(false);
+            }
+        };
     }
 
     private static TextBox BuildTextBox(string? text, string watermark)
@@ -225,27 +308,92 @@ internal sealed class mombotRelogDialog : Window
         {
             Text = text ?? string.Empty,
             Watermark = watermark,
+            MinWidth = 0,
+            FontFamily = MonoFont,
+            FontSize = 15,
             Background = BgInput,
             Foreground = FgNormal,
-            BorderBrush = BdInput,
+            BorderBrush = InputBorder,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
     }
 
-    private static StackPanel BuildRow(string label, Control input)
+    private static ComboBox BuildComboBox(System.Collections.IEnumerable items)
     {
-        var lbl = new TextBlock
+        return new ComboBox
         {
-            Text = label,
-            Foreground = FgLabel,
-            Margin = new Thickness(0, 0, 0, 3),
+            ItemsSource = items,
+            MinWidth = 0,
+            FontSize = 15,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = InputBorder,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
+    }
 
+    private static Button BuildButton(string label, bool primary)
+    {
+        return new Button
+        {
+            Content = label,
+            MinWidth = 96,
+            Background = primary ? BgPrimaryButton : BgButton,
+            Foreground = primary ? FgDark : FgNormal,
+            BorderBrush = primary ? BgPrimaryButton : InputBorder,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+        };
+    }
+
+    private static Control BuildFieldCell(string label, Control input)
+    {
         return new StackPanel
         {
-            Spacing = 2,
-            Margin = new Thickness(0, 4, 0, 4),
-            Children = { lbl, input },
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = label,
+                    Foreground = FgMuted,
+                    FontWeight = FontWeight.SemiBold,
+                },
+                input,
+            },
         };
+    }
+
+    private static Control BuildFullWidthCell(string label, Control input)
+    {
+        return new StackPanel
+        {
+            Spacing = 6,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = label,
+                    Foreground = FgMuted,
+                    FontWeight = FontWeight.SemiBold,
+                },
+                input,
+            },
+        };
+    }
+
+    private static Control BuildPairRow(Control left, Control right)
+    {
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,*"),
+            ColumnSpacing = 14,
+        };
+
+        Grid.SetColumn(left, 0);
+        Grid.SetColumn(right, 1);
+        grid.Children.Add(left);
+        grid.Children.Add(right);
+        return grid;
     }
 
     private static string NormalizeGameLetter(string? value)

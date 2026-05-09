@@ -16,6 +16,8 @@ public enum TwProtocol { Telnet, Rlogin }
 /// </summary>
 public class ConnectionProfile
 {
+    public const int DefaultSectors = 20000;
+
     public string     Name            { get; set; } = string.Empty;
     // ── Connection ─────────────────────────────────────────────────────────
     public string     Server          { get; set; } = string.Empty;
@@ -28,9 +30,9 @@ public class ConnectionProfile
 
     // ── Embedded proxy (native script engine inside MTC) ───────────────────
     /// <summary>When true MTC runs the TWX proxy engine in-process instead of using a bare telnet connection.</summary>
-    public bool       EmbeddedProxy   { get; set; } = false;
+    public bool       EmbeddedProxy   { get; set; } = true;
     /// <summary>Universe size in sectors — used to pre-size the game database when MTC or the embedded proxy creates it.</summary>
-    public int        Sectors         { get; set; } = 1000;
+    public int        Sectors         { get; set; } = DefaultSectors;
     /// <summary>When true the embedded proxy automatically reconnects to the server after a disconnect.</summary>
     public bool       AutoReconnect   { get; set; } = false;
     /// <summary>Run the configured login script after the embedded proxy connects.</summary>
@@ -173,8 +175,8 @@ public class ConnectionProfile
                             ? proto : TwProtocol.Telnet;
         p.LocalTwxProxy   = B("LocalTwxProxy", true);
         p.TwxProxyDbPath  = S("TwxProxyDbPath");
-        p.EmbeddedProxy   = B("EmbeddedProxy", false);
-        p.Sectors         = I("Sectors", 1000);
+        p.EmbeddedProxy   = B("EmbeddedProxy", true);
+        p.Sectors         = I("Sectors", DefaultSectors);
         p.AutoReconnect   = B("AutoReconnect",  false);
         p.UseLogin        = B("UseLogin", false);
         p.UseRLogin       = B("UseRLogin", false);

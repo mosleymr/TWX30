@@ -26,16 +26,16 @@ public class NewConnectionDialog : Window
     private static readonly IBrush Edge = new SolidColorBrush(Color.FromRgb(57, 112, 128));
     private static readonly IBrush InnerEdge = new SolidColorBrush(Color.FromRgb(23, 81, 94));
     private static readonly IBrush FgText = new SolidColorBrush(Color.FromRgb(222, 238, 242));
-    private static readonly IBrush FgMuted = new SolidColorBrush(Color.FromRgb(126, 170, 180));
     private static readonly IBrush Accent = new SolidColorBrush(Color.FromRgb(0, 212, 201));
     private static readonly IBrush AccentHot = new SolidColorBrush(Color.FromRgb(255, 193, 74));
     private static readonly IBrush AccentInk = new SolidColorBrush(Color.FromRgb(8, 26, 30));
     private static readonly IBrush ErrorText = new SolidColorBrush(Color.FromRgb(255, 106, 106));
+    private const double FieldLabelWidth = 92;
 
     public NewConnectionDialog(ConnectionProfile? defaults = null)
     {
         Title = defaults == null ? "New Connection" : "Edit Connection";
-        Width = 640;
+        Width = 500;
         SizeToContent = SizeToContent.Height;
         MinHeight = 200;
         CanResize = false;
@@ -43,22 +43,24 @@ public class NewConnectionDialog : Window
         Background = BgWin;
 
         var profile = defaults ?? new ConnectionProfile();
-        int initialSectors = profile.Sectors > 0 ? profile.Sectors : 1000;
+        int initialSectors = profile.Sectors > 0 ? profile.Sectors : ConnectionProfile.DefaultSectors;
 
-        var txtName = CreateTextBox(profile.Name, "rogue_t");
-        var txtServer = CreateTextBox(profile.Server, "hostname or IP address");
-        var txtPort = CreateTextBox(profile.Port.ToString(), width: 96);
-        var txtSectors = CreateTextBox(initialSectors.ToString(), "1000", width: 120);
-        var txtLoginScript = CreateTextBox(string.IsNullOrWhiteSpace(profile.LoginScript) ? "0_Login.cts" : profile.LoginScript);
-        var txtLoginName = CreateTextBox(profile.LoginName);
-        var txtPassword = CreateTextBox(profile.Password);
-        var txtGameLetter = CreateTextBox(profile.GameLetter, width: 96);
+        var txtName = CreateTextBox(profile.Name, "rogue_t", width: 250);
+        var txtServer = CreateTextBox(profile.Server, "hostname or IP address", width: 250);
+        var txtPort = CreateTextBox(profile.Port.ToString(), width: 88);
+        var txtSectors = CreateTextBox(initialSectors.ToString(), ConnectionProfile.DefaultSectors.ToString(), width: 108);
+        var txtLoginScript = CreateTextBox(string.IsNullOrWhiteSpace(profile.LoginScript) ? "0_Login.cts" : profile.LoginScript, width: 250);
+        var txtLoginName = CreateTextBox(profile.LoginName, width: 250);
+        var txtPassword = CreateTextBox(profile.Password, width: 250);
+        var txtGameLetter = CreateTextBox(profile.GameLetter, width: 88);
 
         var cboProtocol = new ComboBox
         {
             ItemsSource = new[] { "Telnet", "Rlogin" },
             SelectedIndex = profile.Protocol == TwProtocol.Rlogin ? 1 : 0,
-            MinWidth = 120,
+            Width = 86,
+            MinHeight = 30,
+            FontSize = 13,
             Background = BgInput,
             Foreground = FgText,
             BorderBrush = InnerEdge,
@@ -78,40 +80,24 @@ public class NewConnectionDialog : Window
             TextWrapping = TextWrapping.Wrap,
         };
 
-        var sectorHint = new TextBlock
-        {
-            Foreground = FgMuted,
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(132, -4, 0, 2),
-        };
-
-        var sectorsRow = BuildRow("Sectors:", txtSectors);
+        var connectionFields = BuildConnectionFieldsGrid(txtName, txtServer, cboProtocol, txtPort, txtSectors);
         var loginScriptRow = BuildRow("Login script:", txtLoginScript);
         var loginNameRow = BuildRow("Username:", txtLoginName);
         var passwordRow = BuildRow("Password:", txtPassword);
         var gameLetterRow = BuildRow("Game letter:", txtGameLetter);
 
         var connectionSection = BuildSection(
-            "Connection",
-            "Name the game and tell MTC where to connect.",
-            BuildRow("Game name:", txtName),
-            BuildRow("Server:", txtServer),
-            BuildRow("Port:", txtPort),
-            BuildRow("Protocol:", cboProtocol),
-            sectorsRow,
-            sectorHint);
+            "Game & Server",
+            connectionFields);
 
         var proxySection = BuildSection(
             "Proxy Mode",
-            "Embedded mode runs the native proxy inside MTC. Standalone mode can connect to an external proxy.",
             chkEmbedded,
             chkStandaloneProxy,
             chkAutoReconnect);
 
         var loginSection = BuildSection(
             "Login Automation",
-            "Optional embedded-proxy login helpers.",
             chkUseLogin,
             chkUseRLogin,
             loginScriptRow,
@@ -138,9 +124,6 @@ public class NewConnectionDialog : Window
             passwordRow.IsVisible = showDetails;
             gameLetterRow.IsVisible = showDetails;
 
-            sectorHint.Text = embedded
-                ? "Used when the embedded proxy creates or resizes the shared TWX database."
-                : "Used when MTC creates or resizes its local standalone database for this game.";
         }
 
         chkEmbedded.IsCheckedChanged += (_, _) => RefreshModeVisibility();
@@ -231,25 +214,12 @@ public class NewConnectionDialog : Window
 
         Content = new Border
         {
-            Padding = new Thickness(18),
+            Padding = new Thickness(14),
             Child = new StackPanel
             {
-                Spacing = 14,
+                Spacing = 10,
                 Children =
                 {
-                    new TextBlock
-                    {
-                        Text = defaults == null ? "Create Connection" : "Edit Connection",
-                        Foreground = Accent,
-                        FontSize = 22,
-                        FontWeight = FontWeight.Bold,
-                    },
-                    new TextBlock
-                    {
-                        Text = "Connection settings are stored with the game so the database, sidebar, and script runtime stay aligned.",
-                        Foreground = FgMuted,
-                        TextWrapping = TextWrapping.Wrap,
-                    },
                     connectionSection,
                     proxySection,
                     loginSection,
@@ -273,6 +243,9 @@ public class NewConnectionDialog : Window
             Foreground = FgText,
             BorderBrush = InnerEdge,
             CaretBrush = Accent,
+            FontSize = 13,
+            MinHeight = 30,
+            Padding = new Thickness(8, 4),
         };
     }
 
@@ -283,26 +256,20 @@ public class NewConnectionDialog : Window
             Content = text,
             IsChecked = isChecked,
             Foreground = FgText,
-            Margin = new Thickness(0, 2, 0, 2),
+            FontSize = 13,
+            Margin = new Thickness(0, 1, 0, 1),
         };
     }
 
-    private static Border BuildSection(string title, string subtitle, params Control[] children)
+    private static Border BuildSection(string title, params Control[] children)
     {
-        var body = new StackPanel { Spacing = 8 };
+        var body = new StackPanel { Spacing = 7 };
         body.Children.Add(new TextBlock
         {
             Text = title,
             Foreground = Accent,
-            FontSize = 16,
+            FontSize = 15,
             FontWeight = FontWeight.SemiBold,
-        });
-        body.Children.Add(new TextBlock
-        {
-            Text = subtitle,
-            Foreground = FgMuted,
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
         });
 
         foreach (Control child in children)
@@ -313,8 +280,8 @@ public class NewConnectionDialog : Window
             Background = BgPanel,
             BorderBrush = Edge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(14),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(12),
             Child = body,
         };
     }
@@ -324,20 +291,20 @@ public class NewConnectionDialog : Window
         return new Button
         {
             Content = text,
-            MinWidth = 96,
-            Padding = new Thickness(14, 7),
+            MinWidth = 86,
+            Padding = new Thickness(12, 6),
             Background = primary ? Accent : BgCardAlt,
             BorderBrush = primary ? AccentHot : InnerEdge,
             Foreground = primary ? AccentInk : FgText,
+            FontSize = 13,
             HorizontalContentAlignment = HorizontalAlignment.Center,
         };
     }
 
     private static Grid BuildRow(string labelText, Control input)
     {
-        const double LabelWidth = 124;
-        var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(LabelWidth) });
+        var grid = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(FieldLabelWidth) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var lbl = new TextBlock
@@ -346,6 +313,7 @@ public class NewConnectionDialog : Window
             Foreground = FgText,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0),
+            FontSize = 13,
             FontWeight = FontWeight.SemiBold,
         };
 
@@ -354,6 +322,78 @@ public class NewConnectionDialog : Window
         grid.Children.Add(lbl);
         grid.Children.Add(input);
         return grid;
+    }
+
+    private static Grid BuildConnectionFieldsGrid(
+        TextBox txtName,
+        TextBox txtServer,
+        ComboBox cboProtocol,
+        TextBox txtPort,
+        TextBox txtSectors)
+    {
+        var grid = new Grid
+        {
+            Margin = new Thickness(0, 1, 0, 1),
+            RowSpacing = 7,
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(FieldLabelWidth) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        for (int i = 0; i < 4; i++)
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        AddConnectionField(grid, 0, "Game name:", txtName, spanInput: true);
+        AddConnectionField(grid, 1, "Server:", txtServer, spanInput: true);
+        AddConnectionField(grid, 2, "Protocol:", cboProtocol);
+        AddSecondaryConnectionField(grid, 2, "Port:", txtPort);
+        AddConnectionField(grid, 3, "Sectors:", txtSectors);
+        return grid;
+    }
+
+    private static void AddConnectionField(Grid grid, int row, string labelText, Control input, bool spanInput = false)
+    {
+        var label = new TextBlock
+        {
+            Text = labelText,
+            Foreground = FgText,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 8, 0),
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+        };
+
+        input.HorizontalAlignment = HorizontalAlignment.Left;
+        Grid.SetRow(label, row);
+        Grid.SetColumn(label, 0);
+        Grid.SetRow(input, row);
+        Grid.SetColumn(input, 1);
+        if (spanInput)
+            Grid.SetColumnSpan(input, 3);
+        grid.Children.Add(label);
+        grid.Children.Add(input);
+    }
+
+    private static void AddSecondaryConnectionField(Grid grid, int row, string labelText, Control input)
+    {
+        var label = new TextBlock
+        {
+            Text = labelText,
+            Foreground = FgText,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(18, 0, 6, 0),
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+        };
+
+        input.HorizontalAlignment = HorizontalAlignment.Left;
+        Grid.SetRow(label, row);
+        Grid.SetColumn(label, 2);
+        Grid.SetRow(input, row);
+        Grid.SetColumn(input, 3);
+        grid.Children.Add(label);
+        grid.Children.Add(input);
     }
 
     private static void WireDialogClipboard(TextBox textBox)

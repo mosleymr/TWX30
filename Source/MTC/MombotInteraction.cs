@@ -288,6 +288,9 @@ public partial class MainWindow
             {
                 byte value = chunk[index];
 
+                if (value == 0x1B && LooksLikeTwPromptScrub(chunk, index))
+                    rewrotePromptOverwrite = true;
+
                 if (_suppressingPendingNativeMombotEscapeSequence)
                 {
                     filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
@@ -399,6 +402,53 @@ public partial class MainWindow
         }
     }
 
+    private static bool LooksLikeTwPromptScrub(byte[] chunk, int start)
+    {
+        int index = start;
+        if (!TryReadCsiCursorLeft(chunk, ref index, out int firstLeft) || firstLeft < 4)
+            return false;
+
+        int spaces = 0;
+        while (index < chunk.Length && chunk[index] == 0x20)
+        {
+            spaces++;
+            index++;
+        }
+
+        if (spaces < 4)
+            return false;
+
+        if (!TryReadCsiCursorLeft(chunk, ref index, out int secondLeft) || secondLeft < 4)
+            return false;
+
+        return index < chunk.Length && chunk[index] == 0x0D;
+    }
+
+    private static bool TryReadCsiCursorLeft(byte[] chunk, ref int index, out int count)
+    {
+        count = 0;
+        if (index + 3 >= chunk.Length ||
+            chunk[index] != 0x1B ||
+            chunk[index + 1] != (byte)'[')
+        {
+            return false;
+        }
+
+        index += 2;
+        int digitStart = index;
+        while (index < chunk.Length && chunk[index] >= (byte)'0' && chunk[index] <= (byte)'9')
+        {
+            count = (count * 10) + (chunk[index] - (byte)'0');
+            index++;
+        }
+
+        if (index == digitStart || index >= chunk.Length || chunk[index] != (byte)'D')
+            return false;
+
+        index++;
+        return true;
+    }
+
     private static List<byte> EnsureTerminalDisplayFilteredBuffer(
         List<byte>? filtered,
         byte[] chunk,
@@ -443,6 +493,7 @@ public partial class MainWindow
         int ticket = ++_serverOverwritePromptRestoreTicket;
         _ = Task.Run(async () =>
         {
+            DateTime deadlineUtc = DateTime.UtcNow.AddSeconds(8);
             while (true)
             {
                 await Task.Delay(250).ConfigureAwait(false);
@@ -453,20 +504,23 @@ public partial class MainWindow
                 if (HasRecentMombotTerminalOutput(TimeSpan.FromMilliseconds(250)))
                     continue;
 
-                await Dispatcher.UIThread.InvokeAsync(() =>
+                bool keepWaiting = await Dispatcher.UIThread.InvokeAsync(() =>
                 {
                     if (ticket != _serverOverwritePromptRestoreTicket)
-                        return;
+                        return false;
 
-                    if (HasNonBotScriptsRunning())
-                        return;
+                    if (HasBlockingPromptRestoreScripts(allowMombotBackgroundScripts: true))
+                        return DateTime.UtcNow < deadlineUtc;
 
                     if (HasMombotInteractiveState())
-                        return;
+                        return false;
 
-                    TryRestoreLatestObservedGamePrompt();
+                    TryRestoreLatestObservedGamePrompt(allowMombotBackgroundScripts: true);
+                    return false;
                 }, DispatcherPriority.Background);
-                return;
+
+                if (!keepWaiting)
+                    return;
             }
         });
     }
@@ -4815,6 +4869,31 @@ public partial class MainWindow
             .Any(script => !script.IsBot);
     }
 
+    private bool HasBlockingPromptRestoreScripts(bool allowMombotBackgroundScripts)
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return false;
+
+        return Core.ProxyGameOperations
+            .GetRunningScripts(interpreter)
+            .Any(script => !script.IsBot &&
+                           (!allowMombotBackgroundScripts || !IsMombotBackgroundScript(script)));
+    }
+
+    private static bool IsMombotBackgroundScript(Core.RunningScriptInfo script)
+    {
+        string reference = (script.Reference ?? string.Empty).Replace('\\', '/');
+        if (reference.Contains("/mombot/startups/", StringComparison.OrdinalIgnoreCase) ||
+            reference.Contains("/mombot/daemons/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string name = script.Name ?? string.Empty;
+        return string.Equals(name, "watcher.cts", StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool IsTerminalCurrentLineEquivalentTo(string promptPlain)
     {
         if (string.IsNullOrWhiteSpace(promptPlain))
@@ -4902,13 +4981,13 @@ public partial class MainWindow
                lower.EndsWith(":");
     }
 
-    private bool TryRestoreLatestObservedGamePrompt()
+    private bool TryRestoreLatestObservedGamePrompt(bool allowMombotBackgroundScripts = false)
     {
         if (_gameInstance == null ||
             !_gameInstance.IsConnected ||
             _gameInstance.IsProxyMenuActive ||
             string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain) ||
-            HasNonBotScriptsRunning() ||
+            HasBlockingPromptRestoreScripts(allowMombotBackgroundScripts) ||
             HasPendingTerminalDisplayBacklog())
         {
             return false;

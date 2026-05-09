@@ -81,6 +81,7 @@ public class AppPreferences
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }
     public int CommandDeckLayoutVersion { get; set; }
+    public string LastNativeMombotBotName { get; set; } = string.Empty;
 
     private static string LegacySharedPrefsPath()
         => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
@@ -160,6 +161,7 @@ public class AppPreferences
                 new XElement("PlanetHaggleMode", PlanetHaggleMode),
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
+                new XElement("LastNativeMombotBotName", LastNativeMombotBotName),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -259,6 +261,7 @@ public class AppPreferences
                 prefs.CommandDeckSkinEnabled = commandDeckEnabled;
             if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
                 prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
+            prefs.LastNativeMombotBotName = ((string?)root.Element("LastNativeMombotBotName") ?? string.Empty).Trim();
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");

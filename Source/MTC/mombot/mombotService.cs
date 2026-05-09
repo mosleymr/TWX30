@@ -435,7 +435,8 @@ internal sealed class mombotService
             context.CommandLine,
             selfCommand: context.SelfCommand,
             route: context.Route,
-            userName: context.UserName);
+            userName: context.UserName,
+            trustedSelfCommand: context.TrustedSelfCommand);
 
         return true;
     }
@@ -444,11 +445,12 @@ internal sealed class mombotService
         string input,
         bool selfCommand = true,
         string route = "self",
-        string userName = "self")
+        string userName = "self",
+        bool trustedSelfCommand = false)
     {
         var results = new List<mombotDispatchResult>();
         foreach (string segment in SplitCommandSegments(input))
-            results.Add(ExecuteSingleCommand(segment, selfCommand, route, userName));
+            results.Add(ExecuteSingleCommand(segment, selfCommand, route, userName, trustedSelfCommand));
 
         return results;
     }
@@ -457,7 +459,8 @@ internal sealed class mombotService
         string input,
         bool selfCommand,
         string route,
-        string userName)
+        string userName,
+        bool trustedSelfCommand)
     {
         if (string.IsNullOrWhiteSpace(input))
             return new mombotDispatchResult(false, mombotDispatchKind.Invalid, string.Empty, "Empty mombot command.");
@@ -477,7 +480,8 @@ internal sealed class mombotService
             rawParameters,
             selfCommand,
             route,
-            userName);
+            userName,
+            trustedSelfCommand);
         ApplyDispatchContextVars(dispatchContext);
         string canonical = dispatchContext.CommandName;
 
@@ -1322,20 +1326,20 @@ internal sealed class mombotService
         string teamName = settings.TeamName;
 
         if (_config.AcceptSelfCommands &&
-            TryParseOwnCommand(line, botName, out context))
+            TryParseOwnCommand(line, botName, selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
         {
             return true;
         }
 
         if (_config.AcceptSelfCommands &&
             !string.Equals(teamName, botName, StringComparison.OrdinalIgnoreCase) &&
-            TryParseOwnCommand(line, teamName, out context))
+            TryParseOwnCommand(line, teamName, selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
         {
             return true;
         }
 
         if (_config.AcceptSelfCommands &&
-            TryParseOwnCommand(line, "all", out context))
+            TryParseOwnCommand(line, "all", selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
         {
             return true;
         }
@@ -1401,6 +1405,16 @@ internal sealed class mombotService
     }
 
     private static bool TryParseOwnCommand(string line, string targetName, out mombotCommandContext? context)
+        => TryParseOwnCommand(line, targetName, selfCommand: true, route: "self", userName: "self", trustedSelfCommand: true, out context);
+
+    private static bool TryParseOwnCommand(
+        string line,
+        string targetName,
+        bool selfCommand,
+        string route,
+        string userName,
+        bool trustedSelfCommand,
+        out mombotCommandContext? context)
     {
         context = null;
         if (string.IsNullOrWhiteSpace(targetName))
@@ -1413,7 +1427,7 @@ internal sealed class mombotService
         string remainder = line[prefix.Length..].TrimStart();
         if (string.IsNullOrWhiteSpace(remainder))
         {
-            context = new mombotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), true, "self", "self", string.Empty, string.Empty);
+            context = new mombotCommandContext(string.Empty, string.Empty, Array.Empty<string>(), selfCommand, route, userName, string.Empty, string.Empty, trustedSelfCommand);
             return true;
         }
 
@@ -1427,11 +1441,12 @@ internal sealed class mombotService
             BuildNormalizedCommandLine(commandName, parameters),
             commandName,
             parameters,
-            true,
-            "self",
-            "self",
+            selfCommand,
+            route,
+            userName,
             string.Empty,
-            string.Join(" ", parameters));
+            string.Join(" ", parameters),
+            trustedSelfCommand);
         return true;
     }
 
@@ -1473,7 +1488,7 @@ internal sealed class mombotService
 
     private bool IsAuthorized(mombotCommandContext context)
     {
-        if (context.SelfCommand)
+        if (context.SelfCommand || context.TrustedSelfCommand)
             return true;
 
         if (_authorizedUsers.Count == 0)
@@ -1484,7 +1499,7 @@ internal sealed class mombotService
 
     private static bool IsBlockedRemoteControlCommand(mombotCommandContext context)
     {
-        if (context.SelfCommand)
+        if (context.SelfCommand || context.TrustedSelfCommand)
             return false;
 
         return string.Equals(context.CommandName, "bot", StringComparison.OrdinalIgnoreCase) ||
@@ -1530,7 +1545,8 @@ internal sealed class mombotService
         IReadOnlyList<string> rawParameters,
         bool selfCommand,
         string route,
-        string userName)
+        string userName,
+        bool trustedSelfCommand)
     {
         string typedCommandName = string.IsNullOrWhiteSpace(commandName)
             ? string.Empty
@@ -1554,7 +1570,8 @@ internal sealed class mombotService
             route,
             userName,
             typedCommandName,
-            string.Join(" ", typedParameters));
+            string.Join(" ", typedParameters),
+            trustedSelfCommand);
     }
 
     private static string BuildNormalizedCommandLine(string canonical, IReadOnlyList<string> parameters)

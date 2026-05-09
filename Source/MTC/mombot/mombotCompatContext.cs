@@ -13,7 +13,8 @@ internal sealed record mombotCommandContext(
     string Route = "",
     string UserName = "",
     string TypedCommandName = "",
-    string TypedParameterLine = "");
+    string TypedParameterLine = "",
+    bool TrustedSelfCommand = false);
 
 internal sealed class mombotCompatContext
 {
