@@ -162,7 +162,9 @@ namespace TWXProxy.Core
                 }
                 else
                 {
+                    currentScript.SetCurrentTextContext(text, ScriptRef.GetCurrentAnsiLine());
                     currentScript.TextEvent(text, true);
+                    currentScript.SetCurrentTextContext(text, ScriptRef.GetCurrentAnsiLine());
                     currentScript.TextLineEvent(text, true);
                 }
             }

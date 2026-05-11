@@ -396,6 +396,8 @@ namespace TWXProxy.Core
                 }
                 catch (Exception ex)
                 {
+                    GlobalModules.DebugLog($"[ModInterpreter.Load] Loading script failed for '{filename}': {ex}\n");
+                    GlobalModules.FlushDebugLog();
                     GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Loading script failed: {ex.Message}\r\n");
                     Console.WriteLine($"[ERROR] Loading script failed: {ex.Message}\r\n{ex.StackTrace}");
                     Stop(Count - 1);
@@ -420,6 +422,8 @@ namespace TWXProxy.Core
                 }
                 catch (Exception ex)
                 {
+                    GlobalModules.DebugLog($"[ModInterpreter.Load] Compiling script failed for '{filename}': {ex}\n");
+                    GlobalModules.FlushDebugLog();
                     GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Compiling script failed: {ex.Message}\r\n");
                     Console.WriteLine($"[ERROR] Compiling script failed: {ex.Message}\r\n{ex.StackTrace}");
                     // TWXServer.Broadcast($"\r\n{AnsiCodes.ANSI_15}Script compilation error: {AnsiCodes.ANSI_7}{ex.Message}\r\n\r\n");
@@ -1195,11 +1199,13 @@ namespace TWXProxy.Core
         {
             // Trigger matching text triggers in active scripts
             // [ModInterpreter.TextEvent] per-line logging removed — too high-frequency.
+            string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
             int i = 0;
 
             while (i < _scriptList.Count)
             {
                 Script script = _scriptList[i];
+                script.SetCurrentTextContext(text, currentAnsiLine);
                 bool completed = script.TextEvent(text, forceTrigger);
                 if (completed)
                     StopByHandle(script);
@@ -1212,11 +1218,13 @@ namespace TWXProxy.Core
         {
             // Trigger matching textline triggers in active scripts
             GlobalModules.TriggerDebugLog($"[ModInterpreter.TextLineEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
+            string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
             int i = 0;
 
             while (i < _scriptList.Count)
             {
                 Script script = _scriptList[i];
+                script.SetCurrentTextContext(text, currentAnsiLine);
                 bool completed = script.TextLineEvent(text, forceTrigger);
                 if (completed)
                     StopByHandle(script);
@@ -1228,11 +1236,13 @@ namespace TWXProxy.Core
         public void AutoTextEvent(string text, bool forceTrigger)
         {
             // Trigger matching auto text triggers in active scripts
+            string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
             int i = 0;
 
             while (i < _scriptList.Count)
             {
                 Script script = _scriptList[i];
+                script.SetCurrentTextContext(text, currentAnsiLine);
                 bool completed = script.AutoTextEvent(text, forceTrigger);
                 if (completed)
                     StopByHandle(script);
@@ -1602,6 +1612,9 @@ namespace TWXProxy.Core
         private bool _enableVariableDebug = false;  // Toggle for [VAR] output
         private string _waitText = string.Empty;
         private string _outText = string.Empty;
+        private string _currentTextLine = string.Empty;
+        private string _currentAnsiTextLine = string.Empty;
+        private bool _hasCurrentTextContext;
         private ScriptCmp? _cmp;
         private ModInterpreter _owner;
 #pragma warning disable CS0169 // Field is never used
@@ -1653,6 +1666,17 @@ namespace TWXProxy.Core
             {
                 _triggers[triggerType] = new List<Trigger>();
             }
+        }
+
+        internal bool HasCurrentTextContext => _hasCurrentTextContext;
+        internal string CurrentTextLine => _currentTextLine;
+        internal string CurrentAnsiTextLine => _currentAnsiTextLine;
+
+        internal void SetCurrentTextContext(string line, string ansiLine)
+        {
+            _currentTextLine = line ?? string.Empty;
+            _currentAnsiTextLine = ansiLine ?? string.Empty;
+            _hasCurrentTextContext = true;
         }
 
         public void Dispose()
@@ -1783,6 +1807,9 @@ namespace TWXProxy.Core
             // Check through triggers for matches with Text
             bool result = false;
             handled = false;
+            string currentAnsiLine = !textOutTrigger && HasCurrentTextContext
+                ? CurrentAnsiTextLine
+                : ScriptRef.GetGlobalCurrentAnsiLine();
 
             GlobalModules.TriggerDebugLog($"[CheckTriggers] Text='{text}', triggerCount={triggerList.Count}, TriggersActive={TriggersActive}, Locked={Locked}, textOut={textOutTrigger}, force={forceTrigger}\n");
 
@@ -1845,7 +1872,9 @@ namespace TWXProxy.Core
                             // This allows the handler to parse the triggering line
                             string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
                             GlobalModules.TriggerDebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
+                            SetCurrentTextContext(currentLine, currentAnsiLine);
                             ScriptRef.SetCurrentLine(currentLine);
+                            ScriptRef.SetCurrentAnsiLine(currentAnsiLine);
                             GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
                             
                             GotoLabel(labelName);
@@ -2038,6 +2067,8 @@ namespace TWXProxy.Core
                         _paused = false;
                         _pausedReason = PauseReason.None;
                     }
+                    ScriptRef.SetCurrentLine(text);
+                    ScriptRef.SetCurrentAnsiLine(CurrentAnsiTextLine);
                     return Execute();
                 }
             }
@@ -3309,12 +3340,15 @@ namespace TWXProxy.Core
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
+            Script? previousExecutingScript = ScriptRef.GetExecutingScript();
+            ScriptRef.SetExecutingScript(this);
 
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
                 ClearCurrentSourceLocation();
                 _isExecuting = false;
+                ScriptRef.SetExecutingScript(previousExecutingScript);
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
                     _owner.StopByHandle(this);
@@ -3545,12 +3579,15 @@ namespace TWXProxy.Core
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
+            Script? previousExecutingScript = ScriptRef.GetExecutingScript();
+            ScriptRef.SetExecutingScript(this);
 
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
                 ClearCurrentSourceLocation();
                 _isExecuting = false;
+                ScriptRef.SetExecutingScript(previousExecutingScript);
                 RecordVmExecutionMetrics(true, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
                     _owner.StopByHandle(this);
@@ -3774,12 +3811,16 @@ namespace TWXProxy.Core
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
+            Script? previousExecutingScript = null;
+            bool restoreExecutingScript = false;
 
             bool Finish(bool completed)
             {
                 _execScriptID = 0;
                 ClearCurrentSourceLocation();
                 _isExecuting = false;
+                if (restoreExecutingScript)
+                    ScriptRef.SetExecutingScript(previousExecutingScript);
                 RecordVmExecutionMetrics(false, completed, commandsExecuted, resolvedParamCount, metricsStart);
                 if (completed && _forceStopRequested)
                     _owner.StopByHandle(this);
@@ -3852,6 +3893,9 @@ namespace TWXProxy.Core
             }
 
             _execScriptID = 0;
+            previousExecutingScript = ScriptRef.GetExecutingScript();
+            restoreExecutingScript = true;
+            ScriptRef.SetExecutingScript(this);
 
             try
             {

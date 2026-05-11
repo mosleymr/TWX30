@@ -19,6 +19,11 @@ namespace MTC;
 /// </summary>
 public class TerminalControl : Control
 {
+    // TradeWars/TWGS output is DOS/BBS-style 80-column text and often relies on
+    // column-80 auto-wrap for menus and ANSI art. Keep the logical terminal at
+    // that width even when the MTC window is wider.
+    private const int LogicalTerminalColumns = 80;
+
     private sealed class CachedRenderRun
     {
         public required double X { get; init; }
@@ -227,9 +232,9 @@ public class TerminalControl : Control
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        // Compute how many characters fit in the available pixel area and
-        // resize the backing buffer so the terminal always fills the window.
-        int newCols = Math.Max(10, (int)(finalSize.Width  / _charWidth));
+        // Keep the logical width fixed at 80 columns while allowing the visible
+        // height to grow with the window.
+        int newCols = LogicalTerminalColumns;
         int newRows = Math.Max(3,  (int)(finalSize.Height / _lineHeight));
         if (newCols != _buffer.Columns || newRows != _buffer.Rows)
         {

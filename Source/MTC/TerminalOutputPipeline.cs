@@ -115,28 +115,31 @@ public partial class MainWindow
         int processedBytes = 0;
         long startedAt = Stopwatch.GetTimestamp();
 
-        const int maxChunksPerPass = 64;
-        const int maxBytesPerPass = 64 * 1024;
-        const double maxMillisecondsPerPass = 8.0;
+        const int maxChunksPerPass = 8;
+        const int maxBytesPerPass = 16 * 1024;
+        const double maxMillisecondsPerPass = 4.0;
 
-        while (_pendingDisplayChunks.TryDequeue(out PendingDisplayChunk chunk))
+        using (_buffer.BeginUpdate())
         {
-            if (chunk.Bytes.Length > 0)
+            while (_pendingDisplayChunks.TryDequeue(out PendingDisplayChunk chunk))
             {
-                _parser.Feed(chunk.Bytes, chunk.Bytes.Length);
-                replayed = true;
-                processedBytes += chunk.Bytes.Length;
-            }
+                if (chunk.Bytes.Length > 0)
+                {
+                    _parser.Feed(chunk.Bytes, chunk.Bytes.Length);
+                    replayed = true;
+                    processedBytes += chunk.Bytes.Length;
+                }
 
-            rewrotePromptOverwrite |= chunk.RewrotePromptOverwrite;
-            processedChunks++;
+                rewrotePromptOverwrite |= chunk.RewrotePromptOverwrite;
+                processedChunks++;
 
-            if (!_pendingDisplayChunks.IsEmpty &&
-                (processedChunks >= maxChunksPerPass ||
-                 processedBytes >= maxBytesPerPass ||
-                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds >= maxMillisecondsPerPass))
-            {
-                break;
+                if (!_pendingDisplayChunks.IsEmpty &&
+                    (processedChunks >= maxChunksPerPass ||
+                     processedBytes >= maxBytesPerPass ||
+                     Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds >= maxMillisecondsPerPass))
+                {
+                    break;
+                }
             }
         }
 
@@ -190,10 +193,13 @@ public partial class MainWindow
                 _pausedTerminalChunks.Clear();
             }
 
-            foreach (byte[] chunk in pending)
+            using (_buffer.BeginUpdate())
             {
-                _parser.Feed(chunk, chunk.Length);
-                replayed = true;
+                foreach (byte[] chunk in pending)
+                {
+                    _parser.Feed(chunk, chunk.Length);
+                    replayed = true;
+                }
             }
         }
 

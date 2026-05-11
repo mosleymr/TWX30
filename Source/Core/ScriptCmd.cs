@@ -25,6 +25,7 @@ received this source in.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 
 namespace TWXProxy.Core
 {
@@ -285,6 +286,7 @@ namespace TWXProxy.Core
         private static string _currentLine = string.Empty;
         private static string _currentAnsiLine = string.Empty;
         private static string _rawPacket = string.Empty;
+        private static readonly AsyncLocal<Script?> _executingScript = new();
 
         public ScriptRef()
         {
@@ -962,6 +964,15 @@ namespace TWXProxy.Core
         /// </summary>
         public static string GetCurrentLine()
         {
+            Script? script = _executingScript.Value;
+            if (script?.HasCurrentTextContext == true)
+                return script.CurrentTextLine;
+
+            return _currentLine;
+        }
+
+        internal static string GetGlobalCurrentLine()
+        {
             return _currentLine;
         }
         
@@ -970,7 +981,26 @@ namespace TWXProxy.Core
         /// </summary>
         public static string GetCurrentAnsiLine()
         {
+            Script? script = _executingScript.Value;
+            if (script?.HasCurrentTextContext == true)
+                return script.CurrentAnsiTextLine;
+
             return _currentAnsiLine;
+        }
+
+        internal static string GetGlobalCurrentAnsiLine()
+        {
+            return _currentAnsiLine;
+        }
+
+        internal static Script? GetExecutingScript()
+        {
+            return _executingScript.Value;
+        }
+
+        internal static void SetExecutingScript(Script? script)
+        {
+            _executingScript.Value = script;
         }
         
         /// <summary>

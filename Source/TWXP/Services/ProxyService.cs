@@ -317,7 +317,11 @@ public class ProxyService : IProxyService
                                 // Pascal does NOT call TextLineEvent or ActivateTriggers here —
                                 // those only happen after a full \r-terminated line in ProcessLine.
                                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling AutoTextEvent on prompt...\n");
+                                TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
+                                TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 interpreter.AutoTextEvent(scriptRemainder, false);
+                                TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
+                                TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 interpreter.TextEvent(scriptRemainder, false);
                                 if (nativeHaggleResponded)
                                 {
@@ -346,7 +350,7 @@ public class ProxyService : IProxyService
                         break;
 
                     string rawLine = buffered.Substring(lineStart, lineLength);
-                    string line = bufferedAnsi.Substring(lastAnsiProcessedPos, ansiCrPos - lastAnsiProcessedPos);
+                    string line = bufferedAnsi.Substring(lastAnsiProcessedPos, ansiCrPos - lastAnsiProcessedPos + 1);
                     string scriptLine = rawLine;
                     
                     // Pascal fires ProcessLine (and thus TextLineEvent) on every \r, including blank lines.
@@ -378,6 +382,7 @@ public class ProxyService : IProxyService
                         // Fire text triggers and text line triggers for scripts (all lines, including blank)
                         if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
                         {
+                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(line);
                             TWXProxy.Core.ScriptRef.SetCurrentLine(scriptLine);
 
                             // Pascal dispatch order for complete lines: TextLineEvent first, then TextEvent.
@@ -387,6 +392,8 @@ public class ProxyService : IProxyService
 
                             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextEvent...\n");
                             // TextEvent fires on complete lines too (matches Pascal ProcessPrompt calling TextEvent with CurrentLine)
+                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(line);
+                            TWXProxy.Core.ScriptRef.SetCurrentLine(scriptLine);
                             interpreter.TextEvent(scriptLine, false);
                             
                             // Re-enable triggers for next line (they get disabled when they fire to prevent double-triggering)

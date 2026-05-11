@@ -26,15 +26,7 @@ internal static class UnixAutoDetach
 
         try
         {
-            var startInfo = new ProcessStartInfo("/bin/sh")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(BuildShellCommand(processPath, args));
-            using Process? child = Process.Start(startInfo);
-            return child != null;
+            return LaunchShellCommand(processPath, args) == 0;
         }
         catch
         {
@@ -61,21 +53,11 @@ internal static class UnixAutoDetach
 
         try
         {
-            var startInfo = new ProcessStartInfo("/bin/sh")
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(BuildShellCommand(processPath, args));
-            using Process? child = Process.Start(startInfo);
-            if (child == null)
-            {
-                error = "launcher process failed to start";
-                return false;
-            }
+            int status = LaunchShellCommand(processPath, args);
+            if (status != 0)
+                error = $"launcher exited with status {status}";
 
-            return true;
+            return status == 0;
         }
         catch (Exception ex)
         {
@@ -127,6 +109,9 @@ internal static class UnixAutoDetach
     private static string ShellQuote(string value)
         => "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
 
+    private static int LaunchShellCommand(string processPath, IReadOnlyList<string> args)
+        => system(BuildShellCommand(processPath, args));
+
     [DllImport("libc")]
     private static extern int isatty(int fd);
 
@@ -135,4 +120,7 @@ internal static class UnixAutoDetach
 
     [DllImport("libc")]
     private static extern int tcgetpgrp(int fd);
+
+    [DllImport("libc")]
+    private static extern int system(string command);
 }

@@ -204,6 +204,80 @@ namespace TWXProxy.Core
             return normalized;
         }
 
+        public static string? ResolveExistingPath(string path, string? baseDir = null)
+        {
+            return ResolveExistingPath(path, baseDir, requireFile: false, requireDirectory: false);
+        }
+
+        public static string? ResolveExistingFilePath(string path, string? baseDir = null)
+        {
+            return ResolveExistingPath(path, baseDir, requireFile: true, requireDirectory: false);
+        }
+
+        public static string? ResolveExistingDirectoryPath(string path, string? baseDir = null)
+        {
+            return ResolveExistingPath(path, baseDir, requireFile: false, requireDirectory: true);
+        }
+
+        private static string? ResolveExistingPath(
+            string path,
+            string? baseDir,
+            bool requireFile,
+            bool requireDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            string fullPath = Path.GetFullPath(ResolvePlatformPath(path, baseDir));
+            if (PathMatchesKind(fullPath, requireFile, requireDirectory))
+                return fullPath;
+
+            string? root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root))
+                return null;
+
+            string current = root;
+            string relative = fullPath.Substring(root.Length);
+            string[] parts = relative.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string part in parts)
+            {
+                if (!Directory.Exists(current))
+                    return null;
+
+                string? match;
+                try
+                {
+                    match = Directory.EnumerateFileSystemEntries(current)
+                        .FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), part, StringComparison.OrdinalIgnoreCase));
+                }
+                catch
+                {
+                    return null;
+                }
+
+                if (string.IsNullOrEmpty(match))
+                    return null;
+
+                current = match;
+            }
+
+            return PathMatchesKind(current, requireFile, requireDirectory) ? current : null;
+        }
+
+        private static bool PathMatchesKind(string path, bool requireFile, bool requireDirectory)
+        {
+            if (requireFile)
+                return File.Exists(path);
+
+            if (requireDirectory)
+                return Directory.Exists(path);
+
+            return File.Exists(path) || Directory.Exists(path);
+        }
+
         public static string GetTelnetLogin(string inStr)
         {
             // get telnet commands from this line

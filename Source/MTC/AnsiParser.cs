@@ -49,6 +49,7 @@ public class AnsiParser
     private PromptScrubState _promptScrubState;
     private int _promptScrubRow = -1;
     private int _promptScrubSpaces;
+    private bool _clearPromptLineOnNextPrintable;
 
     // Saved cursor
     private int _savedRow, _savedCol;
@@ -262,16 +263,47 @@ public class AnsiParser
         {
             case 0x00: break;          // NUL – ignore
             case 0x07: break;          // BEL – ignore
-            case 0x08: _buf.BackSpace(); break;
-            case 0x09: _buf.Tab();       break;
+            case 0x08: _clearPromptLineOnNextPrintable = false; _buf.BackSpace(); break;
+            case 0x09: ClearPromptLineBeforeOverwriteIfNeeded(); _buf.Tab(); break;
             case 0x0A:                 // LF
             case 0x0B:                 // VT
-            case 0x0C: _buf.LineFeed(); break;  // FF
-            case 0x0D: _buf.CarriageReturn(); break;
+            case 0x0C: _clearPromptLineOnNextPrintable = false; _buf.LineFeed(); break;  // FF
+            case 0x0D:
+                _clearPromptLineOnNextPrintable = IsPromptLine(_buf.GetLineText(_buf.CursorRow));
+                _buf.CarriageReturn();
+                break;
             default:
-                if (b >= 0x20) _buf.WriteChar(Cp437Glyphs[b]);  // printable DOS/ANSI glyph
+                if (b >= 0x20)
+                {
+                    ClearPromptLineBeforeOverwriteIfNeeded();
+                    _buf.WriteChar(Cp437Glyphs[b]);  // printable DOS/ANSI glyph
+                }
                 break;
         }
+    }
+
+    private void ClearPromptLineBeforeOverwriteIfNeeded()
+    {
+        if (!_clearPromptLineOnNextPrintable)
+            return;
+
+        _clearPromptLineOnNextPrintable = false;
+        _buf.EraseLine(_buf.CursorRow, 0, _buf.Columns - 1);
+        _buf.CarriageReturn();
+    }
+
+    private static bool IsPromptLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        string trimmed = line.TrimStart();
+        return trimmed.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Corporate command [TL=", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Citadel command", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Planet command", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Settings command", StringComparison.OrdinalIgnoreCase);
     }
 
     private static char[] BuildCp437GlyphTable()

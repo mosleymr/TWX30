@@ -128,6 +128,18 @@ public class TerminalBuffer
     /// </summary>
     public TerminalCell[] GetScrollbackLine(int index) => _scrollback[index];
 
+    public string GetLineText(int row)
+    {
+        if (row < 0 || row >= Rows)
+            return string.Empty;
+
+        var chars = new char[Columns];
+        for (int col = 0; col < Columns; col++)
+            chars[col] = _cells[row, col].Char;
+
+        return new string(chars).TrimEnd();
+    }
+
     public int  CursorCol    { get; set; }
     public int  CursorRow    { get; set; }
     public bool CursorVisible { get; set; } = true;
@@ -145,6 +157,8 @@ public class TerminalBuffer
     // are not lost if new output arrives while a frame is being rendered.
     private long _dirtyVersion = 1;
     private long _acknowledgedDirtyVersion;
+    private int _dirtyBatchDepth;
+    private bool _dirtyDuringBatch;
 
     public event Action? DirtyRaised;
 
@@ -157,8 +171,7 @@ public class TerminalBuffer
         {
             if (value)
             {
-                Interlocked.Increment(ref _dirtyVersion);
-                DirtyRaised?.Invoke();
+                MarkDirty();
                 return;
             }
 
@@ -174,6 +187,52 @@ public class TerminalBuffer
         ScrollTop    = 0;
         ScrollBottom = rows - 1;
         Reset();
+    }
+
+    public IDisposable BeginUpdate()
+    {
+        _dirtyBatchDepth++;
+        return new DirtyBatch(this);
+    }
+
+    private void EndUpdate()
+    {
+        if (_dirtyBatchDepth <= 0)
+            return;
+
+        _dirtyBatchDepth--;
+        if (_dirtyBatchDepth != 0 || !_dirtyDuringBatch)
+            return;
+
+        _dirtyDuringBatch = false;
+        MarkDirty();
+    }
+
+    private void MarkDirty()
+    {
+        if (_dirtyBatchDepth > 0)
+        {
+            _dirtyDuringBatch = true;
+            return;
+        }
+
+        Interlocked.Increment(ref _dirtyVersion);
+        DirtyRaised?.Invoke();
+    }
+
+    private sealed class DirtyBatch(TerminalBuffer owner) : IDisposable
+    {
+        private TerminalBuffer? _owner = owner;
+
+        public void Dispose()
+        {
+            TerminalBuffer? owner = _owner;
+            if (owner == null)
+                return;
+
+            _owner = null;
+            owner.EndUpdate();
+        }
     }
 
     public void AcknowledgeDirty(long version)

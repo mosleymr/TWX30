@@ -361,7 +361,11 @@ public partial class MainWindow
                         // Match Pascal TWX here: partial prompts go through AutoTextEvent and
                         // then TextEvent only. They do not fire TextLineEvent and do not
                         // re-activate triggers until a full CR-terminated line is processed.
+                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
                         interpreter.AutoTextEvent(scriptRemainder, false);
+                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
                         interpreter.TextEvent(scriptRemainder, false);
                         if (!string.IsNullOrWhiteSpace(strippedRemainder))
                         {
@@ -384,7 +388,7 @@ public partial class MainWindow
                 if (ansiCrPos == -1)
                     break;
 
-                string lineRaw = bufferedAnsi[lastAnsiProcessedPos..ansiCrPos];
+                string lineRaw = bufferedAnsi[lastAnsiProcessedPos..(ansiCrPos + 1)];
                 string lineForScript = NormalizeLegacyInterrogLineForScripts(buffered[lastProcessedPos..crPos]);
                 string lineStripped = Core.AnsiCodes.NormalizeTerminalText(lineForScript);
 
@@ -406,7 +410,11 @@ public partial class MainWindow
 
                 // Real server lines must continue to advance script waits/triggers even if a
                 // proxy menu is open locally.
+                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                Core.ScriptRef.SetCurrentLine(lineForScript);
                 interpreter.TextLineEvent(lineForScript, false);
+                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                Core.ScriptRef.SetCurrentLine(lineForScript);
                 interpreter.TextEvent(lineForScript, false);
                 interpreter.ActivateTriggers();
 

@@ -1973,6 +1973,7 @@ namespace TWXProxy.Core
             }
 
             SyncSectorPlanetSightings(db, sector);
+            SyncSectorDeploymentMarkers(db, sector);
 
             // TWX27 SectorCompleted() promotes any completed sector display,
             // including probe displays that only emitted a header, to etHolo.
@@ -2269,6 +2270,7 @@ namespace TWXProxy.Core
 
             ApplyMineScanToSector(sector, _inMineScanKind, quantity, owner);
             db.SaveSector(sector);
+            SetMineMarker(db, sectorNum, _inMineScanKind, quantity > 0 && IsFriendlyDeploymentOwner(owner));
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Mine scan sector={sectorNum} kind={_inMineScanKind} qty={quantity} owner={owner}\n");
         }
 
@@ -2302,6 +2304,7 @@ namespace TWXProxy.Core
 
                 ApplyMineScanToSector(sector, kind, entry.Quantity, entry.Owner);
                 db.SaveSector(sector);
+                SetMineMarker(db, sectorNum, kind, entry.Quantity > 0 && IsFriendlyDeploymentOwner(entry.Owner));
             }
 
             for (int i = 1; i <= maxSector; i++)
@@ -2310,17 +2313,28 @@ namespace TWXProxy.Core
                     continue;
 
                 var sector = db.GetSector(i);
+                bool hadMarker = IsSectorVarTrue(db, i, GetMineMarkerName(kind));
                 if (sector == null)
+                {
+                    if (hadMarker)
+                        SetMineMarker(db, i, kind, false);
                     continue;
+                }
 
                 SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
-                if (mines.Quantity <= 0 || !IsFriendlyDeploymentOwner(mines.Owner))
+                bool hadFriendlyMines = mines.Quantity > 0 && IsFriendlyDeploymentOwner(mines.Owner);
+                if (!hadFriendlyMines && !hadMarker)
                     continue;
 
-                mines.Quantity = 0;
-                mines.Owner = string.Empty;
-                db.SaveSector(sector);
-                clearedFriendlyMineSectors++;
+                if (hadFriendlyMines)
+                {
+                    mines.Quantity = 0;
+                    mines.Owner = string.Empty;
+                    db.SaveSector(sector);
+                    clearedFriendlyMineSectors++;
+                }
+
+                SetMineMarker(db, i, kind, false);
             }
 
             GlobalModules.AutoRecorderDebugLog(
@@ -2892,7 +2906,7 @@ namespace TWXProxy.Core
                 db.SetSectorVar(2, "FIG_COUNT", (count + 1).ToString());
             }
 
-            db.SetSectorVar(sector, "FIGSEC", "1");
+            SetSectorFlag(db, sector, "FIGSEC", true);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FIGSEC add sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
         }
 
@@ -2908,8 +2922,53 @@ namespace TWXProxy.Core
                 db.SetSectorVar(2, "FIG_COUNT", count.ToString());
             }
 
-            db.SetSectorVar(sector, "FIGSEC", string.Empty);
+            SetSectorFlag(db, sector, "FIGSEC", false);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FIGSEC remove sector={sector} count={GetSectorVarInt(db, 2, "FIG_COUNT")}\n");
+        }
+
+        private static void SyncSectorDeploymentMarkers(ModDatabase db, SectorData sector)
+        {
+            if (sector.Number <= 0 || sector.Number > db.SectorCount)
+                return;
+
+            bool hasFriendlyFighters = sector.Fighters.Quantity > 0 && IsFriendlyDeploymentOwner(sector.Fighters.Owner);
+            if (hasFriendlyFighters)
+                AddFigMarker(db, sector.Number);
+            else
+                RemoveFigMarker(db, sector.Number);
+
+            SetMineMarker(
+                db,
+                sector.Number,
+                MineScanKind.Armid,
+                sector.MinesArmid.Quantity > 0 && IsFriendlyDeploymentOwner(sector.MinesArmid.Owner));
+
+            SetMineMarker(
+                db,
+                sector.Number,
+                MineScanKind.Limpet,
+                sector.MinesLimpet.Quantity > 0 && IsFriendlyDeploymentOwner(sector.MinesLimpet.Owner));
+        }
+
+        private static void SetMineMarker(ModDatabase db, int sector, MineScanKind kind, bool present)
+        {
+            if (kind == MineScanKind.None)
+                return;
+
+            SetSectorFlag(db, sector, GetMineMarkerName(kind), present);
+        }
+
+        private static string GetMineMarkerName(MineScanKind kind)
+        {
+            return kind == MineScanKind.Armid ? "MINESEC" : "LIMPSEC";
+        }
+
+        private static void SetSectorFlag(ModDatabase db, int sector, string name, bool present)
+        {
+            if (sector <= 0 || sector > db.SectorCount)
+                return;
+
+            db.SetSectorVar(sector, name, present ? "1" : "0");
         }
 
         private static bool IsSectorVarTrue(ModDatabase db, int sector, string name)
@@ -3208,6 +3267,10 @@ namespace TWXProxy.Core
                     : FighterType.Offensive;
 
             db.SaveSector(sector);
+            if (sector.Fighters.Quantity > 0 && IsFriendlyDeploymentOwner(sector.Fighters.Owner))
+                AddFigMarker(db, sectorNum);
+            else
+                RemoveFigMarker(db, sectorNum);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} fighters={qty} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
         }
 
@@ -3226,11 +3289,13 @@ namespace TWXProxy.Core
             {
                 sector.MinesArmid.Quantity = qty;
                 sector.MinesArmid.Owner    = owner;
+                SetMineMarker(db, sectorNum, MineScanKind.Armid, qty > 0 && IsFriendlyDeploymentOwner(owner));
             }
             else
             {
                 sector.MinesLimpet.Quantity = qty;
                 sector.MinesLimpet.Owner    = owner;
+                SetMineMarker(db, sectorNum, MineScanKind.Limpet, qty > 0 && IsFriendlyDeploymentOwner(owner));
             }
 
             db.SaveSector(sector);

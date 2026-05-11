@@ -557,7 +557,7 @@ namespace TWXProxy.Core
             
             // Display standard menu options
             if (menu.OptionQ)
-                SendMenuMessage((string.IsNullOrEmpty(menu.Parent) ? "Q - Terminate script" : "Q - Exit menu") + "\r\n");
+                SendMenuMessage((_menuStack.Count <= 1 ? "Q - Terminate script" : "Q - Exit menu") + "\r\n");
             if (menu.OptionHelp)
                 SendMenuMessage("? - Command list\r\n");
             if (menu.OptionPlus)
@@ -649,8 +649,8 @@ namespace TWXProxy.Core
                                 if (matchingItem.CloseMenu)
                                 {
                                     GlobalModules.DebugLog(
-                                        $"[Menu] Closing current menu '{currentMenu.Name}' before opening submenu '{matchingItem.Name}' due to CloseMenu=TRUE\n");
-                                    CloseMenu(false);
+                                        $"[Menu] Clearing current menu '{currentMenu.Name}' before opening submenu '{matchingItem.Name}' while preserving back stack\n");
+                                    ClearMenuDisplay(restoreCurrentLine: false);
                                 }
 
                                 OpenMenu(matchingItem.Name, 0);

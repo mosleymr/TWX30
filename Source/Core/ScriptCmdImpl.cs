@@ -1240,8 +1240,9 @@ namespace TWXProxy.Core
             // CMD: fileexists var <filename>
             string raw = parameters[1].Value;
             string path = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
-            bool found = File.Exists(path);
-            GlobalModules.DebugLog($"[FILEEXISTS] '{raw}' -> '{path}' => {(found ? "1" : "0")}\n");
+            string? resolved = Utility.ResolveExistingFilePath(raw, GlobalModules.ProgramDir);
+            bool found = resolved != null;
+            GlobalModules.DebugLog($"[FILEEXISTS] '{raw}' -> '{(resolved ?? path)}' => {(found ? "1" : "0")}\n");
             parameters[0].Value = found ? "1" : "0";
             return CmdAction.None;
         }
@@ -1251,8 +1252,9 @@ namespace TWXProxy.Core
             // CMD: direxists var <dirname>
             string raw = parameters[1].Value;
             string path = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
-            bool found = Directory.Exists(path);
-            GlobalModules.DebugLog($"[DIREXISTS] '{raw}' -> '{path}' => {(found ? "1" : "0")}\n");
+            string? resolved = Utility.ResolveExistingDirectoryPath(raw, GlobalModules.ProgramDir);
+            bool found = resolved != null;
+            GlobalModules.DebugLog($"[DIREXISTS] '{raw}' -> '{(resolved ?? path)}' => {(found ? "1" : "0")}\n");
             parameters[0].Value = found ? "1" : "0";
             return CmdAction.None;
         }
@@ -1265,8 +1267,8 @@ namespace TWXProxy.Core
             {
                 try
                 {
-                    string filename = Utility.ResolvePlatformPath(raw, GlobalModules.ProgramDir);
-                    if (File.Exists(filename))
+                    string? filename = Utility.ResolveExistingFilePath(raw, GlobalModules.ProgramDir);
+                    if (!string.IsNullOrWhiteSpace(filename))
                         File.Delete(filename);
                 }
                 catch
@@ -1282,7 +1284,8 @@ namespace TWXProxy.Core
             // CMD: rename <oldname> <newname>
             try
             {
-                string source = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                string source = Utility.ResolveExistingFilePath(parameters[0].Value, GlobalModules.ProgramDir)
+                    ?? Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
                 string destination = Utility.ResolvePlatformPath(parameters[1].Value, GlobalModules.ProgramDir);
                 string? directory = Path.GetDirectoryName(destination);
                 if (!string.IsNullOrWhiteSpace(directory))
@@ -1303,8 +1306,11 @@ namespace TWXProxy.Core
             // This is the sentinel used by while ($var <> "EOF") loops.
             try
             {
-                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
-                string[] lines = File.ReadAllLines(path);
+                string path = Utility.ResolveExistingFilePath(parameters[0].Value, GlobalModules.ProgramDir)
+                    ?? Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                // TWX script file I/O is byte-oriented legacy text. Latin1 keeps
+                // high bytes intact so DOS ANSI/CP437 art survives READ.
+                string[] lines = File.ReadAllLines(path, System.Text.Encoding.Latin1);
                 int lineNum = (int)parameters[2].DecValue;
                 
                 if (lineNum >= 1 && lineNum <= lines.Length)
@@ -1342,8 +1348,10 @@ namespace TWXProxy.Core
             // CMD: readtoarray <filename> var
             try
             {
-                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
-                string[] lines = File.ReadAllLines(path);
+                string path = Utility.ResolveExistingFilePath(parameters[0].Value, GlobalModules.ProgramDir)
+                    ?? Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
+                // Preserve legacy high bytes for scripts that load ANSI/CP437 files.
+                string[] lines = File.ReadAllLines(path, System.Text.Encoding.Latin1);
                 if (parameters[1] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(lines.ToList());
@@ -1368,6 +1376,7 @@ namespace TWXProxy.Core
             string mask = parameters.Length > 1 ? parameters[1].Value.Replace('\r', '*') : "*";
             string resolvedMask = Utility.ResolvePlatformPath(mask, GlobalModules.ProgramDir);
             string directory = Path.GetDirectoryName(resolvedMask) ?? GlobalModules.ProgramDir;
+            directory = Utility.ResolveExistingDirectoryPath(directory) ?? directory;
             string fileMask = Path.GetFileName(resolvedMask);
             if (string.IsNullOrWhiteSpace(fileMask))
                 fileMask = "*";
@@ -1401,6 +1410,7 @@ namespace TWXProxy.Core
         {
             // CMD: getdirlist varArray <path> <fileMask>
             string directory = Utility.ResolvePlatformPath(parameters.Length > 1 ? parameters[1].Value : ".", GlobalModules.ProgramDir);
+            directory = Utility.ResolveExistingDirectoryPath(directory) ?? directory;
             string mask = parameters.Length > 2 ? parameters[2].Value.Replace('\r', '*') : "*";
 
             try
@@ -1448,8 +1458,9 @@ namespace TWXProxy.Core
             // CMD: removedir <dirname>
             try
             {
-                string path = Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
-                Directory.Delete(path);
+                string? path = Utility.ResolveExistingDirectoryPath(parameters[0].Value, GlobalModules.ProgramDir);
+                if (!string.IsNullOrWhiteSpace(path))
+                    Directory.Delete(path);
             }
             catch
             {
@@ -1861,7 +1872,8 @@ namespace TWXProxy.Core
         private static CmdAction CmdGetScriptVersion(object script, CmdParam[] parameters)
         {
             // CMD: getscriptversion <script> var
-            string filename = parameters[0].Value;
+            string filename = Utility.ResolveExistingFilePath(parameters[0].Value, GlobalModules.ProgramDir)
+                ?? Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
             
             if (!File.Exists(filename))
             {

@@ -2213,9 +2213,43 @@ namespace TWXProxy.Core
                 return;
             }
 
+            AddCandidate(target);
             AddCandidate(target + ".ts");
             AddCandidate(target + ".cts");
             AddCandidate(target + ".inc");
+        }
+
+        private static string? ResolveExistingPathCaseInsensitive(string path)
+        {
+            string fullPath = Path.GetFullPath(path);
+            if (File.Exists(fullPath))
+                return fullPath;
+
+            string? root = Path.GetPathRoot(fullPath);
+            if (string.IsNullOrEmpty(root))
+                return null;
+
+            string current = root;
+            string relative = fullPath.Substring(root.Length);
+            string[] parts = relative.Split(
+                new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string part in parts)
+            {
+                if (!Directory.Exists(current))
+                    return null;
+
+                string? match = Directory.EnumerateFileSystemEntries(current)
+                    .FirstOrDefault(entry => string.Equals(Path.GetFileName(entry), part, StringComparison.OrdinalIgnoreCase));
+
+                if (string.IsNullOrEmpty(match))
+                    return null;
+
+                current = match;
+            }
+
+            return File.Exists(current) ? current : null;
         }
 
         private string ResolveIncludePath(string filename)
@@ -2260,8 +2294,9 @@ namespace TWXProxy.Core
 
             foreach (string candidate in candidates)
             {
-                if (File.Exists(candidate))
-                    return candidate;
+                string? resolved = ResolveExistingPathCaseInsensitive(candidate);
+                if (!string.IsNullOrEmpty(resolved))
+                    return resolved;
             }
 
             string searched = candidates.Count > 0
