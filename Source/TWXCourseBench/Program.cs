@@ -865,7 +865,7 @@ internal static class Program
     private static void PrintUsage()
     {
         Console.WriteLine("TWXCourseBench");
-        Console.WriteLine("Benchmarks GETCOURSE-style Pascal BFS against GETCOURSEDIJKSTRA-style shortest-path routing.");
+        Console.WriteLine("Benchmarks GETCOURSE-style Pascal BFS against shortest-path routing.");
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  dotnet run --project Source/TWXCourseBench/TWXCourseBench.csproj -- [options] [db1.xdb db2.xdb ...]");

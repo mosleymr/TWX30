@@ -34,7 +34,7 @@ namespace MTC;
 public partial class MainWindow : Window
 {
     private sealed record CommEntry(Core.CommMessageChannel Channel, string Sender, string Message, bool IsLocal);
-    private readonly record struct PendingDisplayChunk(byte[] Bytes, int LineCount, bool RewrotePromptOverwrite);
+    private readonly record struct PendingDisplayChunk(byte[] Bytes, int LineCount);
     private readonly record struct FinderPrewarmKey(
         string DatabasePath,
         long ChangeStamp,
@@ -279,13 +279,9 @@ public partial class MainWindow : Window
     private MombotPreferencesPage _mombotPreferencesPage;
     private string _mombotLastKeepaliveLine = string.Empty;
     private int _mombotObservedGamePromptVersion;
-    private int _mombotPromptRestoreTicket;
     private int _mombotMacroPromptRedrawTicket;
-    private int _serverOverwritePromptRestoreTicket;
     private string _mombotLastObservedGamePromptAnsi = string.Empty;
     private string _mombotLastObservedGamePromptPlain = string.Empty;
-    private long _mombotLastServerOutputUtcTicks;
-    private long _mombotLastTerminalOutputUtcTicks;
     private int _pendingNativeMombotEscapeEchoSuppressions;
     private long _nativeMombotEscapeEchoSuppressUntilUtcTicks;
     private bool _suppressingPendingNativeMombotEscapeSequence;

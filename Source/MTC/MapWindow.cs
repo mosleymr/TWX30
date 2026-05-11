@@ -852,7 +852,7 @@ public class MapWindow : Window
             if (fromSector <= 0 || toSector <= 0 || fromSector == 65535 || toSector == 65535)
                 return;
 
-            foreach (int sector in db.CalculateShortestPath(fromSector, toSector))
+            foreach (int sector in db.CalculateBidirectionalShortestPath(fromSector, toSector))
                 _majorSpaceLaneSectors.Add(sector);
         }
 

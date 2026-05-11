@@ -2552,10 +2552,10 @@ namespace TWXProxy.Core
             return CmdGetCourse_Impl(script, parameters);
         }
 
-        private static CmdAction CmdGetCourseDijkstra(object script, CmdParam[] parameters)
+        private static CmdAction CmdGetCourses(object script, CmdParam[] parameters)
         {
-            // CMD: getcoursedijkstra var <from> <to>
-            return CmdGetCourseDijkstra_Impl(script, parameters);
+            // CMD: getcourses var <from> <to>
+            return CmdGetCourses_Impl(script, parameters);
         }
 
         private static CmdAction CmdGetDistance(object script, CmdParam[] parameters)

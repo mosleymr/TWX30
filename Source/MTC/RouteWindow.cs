@@ -241,7 +241,7 @@ public class RouteWindow : Window
             return;
         }
 
-        List<int> route = db.CalculateShortestPath(startSector, endSector);
+        List<int> route = db.CalculateBidirectionalShortestPath(startSector, endSector);
         if (route.Count == 0)
         {
             _currentRoute = [];

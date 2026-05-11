@@ -547,7 +547,7 @@ namespace TWXProxy.Core
             AddCommand("AUTOHAGGLE", 1, 1, CmdAutoHaggle, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("NATIVEBOT", 1, 1, CmdNativeBot, Array.Empty<ParamKind>(), ParamKind.Value);
             AddCommand("QUIKSTATS", 0, 0, CmdQuikStats, Array.Empty<ParamKind>(), ParamKind.Value);
-            AddCommand("GETCOURSEDIJKSTRA", 3, 3, CmdGetCourseDijkstra, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
+            AddCommand("GETCOURSES", 3, 3, CmdGetCourses, new[] { ParamKind.Variable, ParamKind.Value, ParamKind.Value }, ParamKind.Value);
         }
 
         private void BuildSysConstList()

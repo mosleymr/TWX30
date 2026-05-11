@@ -347,14 +347,32 @@ namespace TWXProxy.Core
             return CmdGetCourseCore(parameters, scalarIsHopCount: true);
         }
 
-        private static CmdAction CmdGetCourseDijkstra_Impl(object script, CmdParam[] parameters)
+        private static CmdAction CmdGetCourses_Impl(object script, CmdParam[] parameters)
         {
-            // CMD: getcoursedijkstra var <from> <to>
-            // Enhanced shortest-path variant:
-            //   - uses the generic Dijkstra pathfinder
-            //   - returns a path array that includes both start and destination
-            //   - returns the scalar value as the full array length
-            return CmdGetCourseDijkstraCore(parameters);
+            // CMD: getcourses var <from> <to>
+            int fromSector, toSector;
+            ConvertToNumber(parameters[1].Value, out fromSector);
+            ConvertToNumber(parameters[2].Value, out toSector);
+
+            if (parameters[0] is VarParam varParam)
+            {
+                if (_activeDatabase == null ||
+                    fromSector <= 0 || fromSector > _activeDatabase.SectorCount ||
+                    toSector <= 0 || toSector > _activeDatabase.SectorCount)
+                {
+                    varParam.SetMultiArraysFromStringsLists(new List<List<string>>());
+                    varParam.Value = "0";
+                    return CmdAction.None;
+                }
+
+                var courses = _activeDatabase.CalculateAllShortestPaths(fromSector, toSector, _avoidedSectors)
+                    .Select(path => path.Select(sector => sector.ToString(CultureInfo.InvariantCulture)).ToList())
+                    .ToList();
+                varParam.SetMultiArraysFromStringsLists(courses);
+                varParam.Value = courses.Count.ToString(CultureInfo.InvariantCulture);
+            }
+
+            return CmdAction.None;
         }
 
         private static CmdAction CmdGetCourseCore(CmdParam[] parameters, bool scalarIsHopCount)
@@ -390,35 +408,6 @@ namespace TWXProxy.Core
                     emptyVarParam.SetArrayFromStrings(new List<string>());
             }
             
-            return CmdAction.None;
-        }
-
-        private static CmdAction CmdGetCourseDijkstraCore(CmdParam[] parameters)
-        {
-            int fromSector, toSector;
-            ConvertToNumber(parameters[1].Value, out fromSector);
-            ConvertToNumber(parameters[2].Value, out toSector);
-
-            if (parameters[0] is VarParam varParam &&
-                _activeDatabase != null &&
-                fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
-                toSector > 0 && toSector <= _activeDatabase.SectorCount)
-            {
-                var path = CalculatePath(fromSector, toSector);
-                parameters[0].Value = path.Count.ToString();
-
-                if (path.Count > 0)
-                    varParam.SetArrayFromStrings(path.Select(sector => sector.ToString()).ToList());
-                else
-                    varParam.SetArrayFromStrings(new List<string>());
-            }
-            else
-            {
-                parameters[0].Value = "0";
-                if (parameters[0] is VarParam emptyVarParam)
-                    emptyVarParam.SetArrayFromStrings(new List<string>());
-            }
-
             return CmdAction.None;
         }
 
@@ -577,18 +566,6 @@ namespace TWXProxy.Core
         #endregion
 
         #region Pathfinding Helper Methods
-
-        private static List<int> CalculatePath(int fromSector, int toSector)
-        {
-            if (_activeDatabase == null)
-                return new List<int>();
-            
-            if (fromSector == toSector)
-                return new List<int> { fromSector };
-            
-            // Use Dijkstra pathfinding with avoided sectors
-            return _activeDatabase.CalculateShortestPath(fromSector, toSector, _avoidedSectors);
-        }
 
         private static List<int> CalculateGetCoursePath(int fromSector, int toSector)
         {

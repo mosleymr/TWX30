@@ -12,6 +12,15 @@ namespace MTC;
 
 public class GameInfoWindow : Window
 {
+    private enum GameSettingFormat
+    {
+        Text,
+        Boolean,
+        Percent,
+        Milliseconds,
+        MaxCommands
+    }
+
     private enum OwnershipFilter
     {
         All,
@@ -39,11 +48,14 @@ public class GameInfoWindow : Window
         int PortClassSort,
         string Mcic,
         int? McicSort);
+    private sealed record GameSettingRow(string Label, GameSettingFormat Format, params string[] VariableNames);
 
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly Func<GameState?> _getState;
+    private readonly Func<IReadOnlyDictionary<string, string>?> _getGameVars;
     private readonly TextBlock _header;
-    private readonly StackPanel _overviewContent;
+    private readonly StackPanel _statsContent;
+    private readonly StackPanel _settingsContent;
     private readonly StackPanel _fightersContent;
     private readonly StackPanel _planetsContent;
     private readonly StackPanel _portsContent;
@@ -72,10 +84,68 @@ public class GameInfoWindow : Window
     private static readonly IBrush ColMuted = new SolidColorBrush(Color.FromRgb(0xaa, 0xaa, 0xaa));
     private static readonly IBrush ColText = new SolidColorBrush(Color.FromRgb(0xe6, 0xe6, 0xe6));
 
-    public GameInfoWindow(Func<Core.ModDatabase?> getDb, Func<GameState?> getState)
+    private static readonly IReadOnlyList<GameSettingRow> GameSettings =
+    [
+        new("Gold Enabled", GameSettingFormat.Boolean, "$GAME~GOLDENABLED"),
+        new("MBBS Compatibility", GameSettingFormat.Boolean, "$GAME~MBBS"),
+        new("Internal Aliens", GameSettingFormat.Boolean, "$GAME~INTERNALALIENS"),
+        new("Internal Ferrengi", GameSettingFormat.Boolean, "$GAME~INTERNALFERRENGI"),
+        new("Max Commands", GameSettingFormat.MaxCommands, "$GAME~MAX_COMMANDS"),
+        new("Inactive Time", GameSettingFormat.Text, "$GAME~INACTIVE_TIME"),
+        new("Colonist Regen Rate", GameSettingFormat.Text, "$GAME~COLONIST_REGEN"),
+        new("Photon Missile Duration", GameSettingFormat.Text, "$GAME~PHOTON_DURATION"),
+        new("Photons Enabled", GameSettingFormat.Boolean, "$GAME~PHOTONS_ENABLED"),
+        new("Debris Loss Percent", GameSettingFormat.Percent, "$GAME~DEBRIS_LOSS"),
+        new("Trade Percent", GameSettingFormat.Percent, "$GAME~PTRADESETTING"),
+        new("Production Rate", GameSettingFormat.Percent, "$GAME~PRODUCTION_RATE"),
+        new("Max Production Regen", GameSettingFormat.Percent, "$GAME~PRODUCTION_REGEN"),
+        new("Multiple Photons", GameSettingFormat.Boolean, "$GAME~MULTIPLE_PHOTONS"),
+        new("Clear Bust Days", GameSettingFormat.Text, "$GAME~CLEAR_BUST_DAYS"),
+        new("Steal Factor", GameSettingFormat.Percent, "$GAME~ACTUAL_STEAL_FACTOR", "$GAME~STEAL_FACTOR"),
+        new("Rob Factor", GameSettingFormat.Percent, "$GAME~ACTUAL_ROB_FACTOR", "$GAME~ROB_FACTOR"),
+        new("Port Production Max", GameSettingFormat.Text, "$GAME~PORT_MAX"),
+        new("Radiation Lifetime", GameSettingFormat.Text, "$GAME~RADIATION_LIFETIME"),
+        new("Reregister Ship", GameSettingFormat.Text, "$GAME~LSD_REREGISTERCOST"),
+        new("Limpet Removal", GameSettingFormat.Text, "$GAME~LIMPET_REMOVAL_COST"),
+        new("Genesis Torpedo", GameSettingFormat.Text, "$GAME~GENESIS_COST"),
+        new("Armid Mine", GameSettingFormat.Text, "$GAME~ARMID_COST"),
+        new("Limpet Mine", GameSettingFormat.Text, "$GAME~LIMPET_COST"),
+        new("Beacon", GameSettingFormat.Text, "$GAME~BEACON_COST"),
+        new("Type I TWarp", GameSettingFormat.Text, "$GAME~TWARPI_COST"),
+        new("Type II TWarp", GameSettingFormat.Text, "$GAME~TWARPII_COST"),
+        new("TWarp Upgrade", GameSettingFormat.Text, "$GAME~TWARP_UPGRADE_COST"),
+        new("Psychic Probe", GameSettingFormat.Text, "$GAME~PSYCHIC_COST"),
+        new("Planet Scanner", GameSettingFormat.Text, "$GAME~PLANET_SCANNER_COST"),
+        new("Atomic Detonator", GameSettingFormat.Text, "$GAME~ATOMIC_COST"),
+        new("Corbomite", GameSettingFormat.Text, "$GAME~CORBO_COST"),
+        new("Ether Probe", GameSettingFormat.Text, "$GAME~PROBE_COST"),
+        new("Photon Missile", GameSettingFormat.Text, "$GAME~PHOTON_COST"),
+        new("Cloaking Device", GameSettingFormat.Text, "$GAME~CLOAK_COST"),
+        new("Mine Disruptor", GameSettingFormat.Text, "$GAME~DISRUPTOR_COST"),
+        new("Holographic Scanner", GameSettingFormat.Text, "$GAME~HOLO_COST"),
+        new("Density Scanner", GameSettingFormat.Text, "$GAME~DENSITY_COST"),
+        new("Max Planet Sector", GameSettingFormat.Text, "$GAME~MAX_PLANETS_PER_SECTOR"),
+        new("Max Game Planets", GameSettingFormat.Text, "$GAME~MAX_PLANETS_IN_GAME"),
+        new("FedSpace Photons", GameSettingFormat.Boolean, "$GAME~FEDSPACEPHOTONS"),
+        new("Latency", GameSettingFormat.Text, "$GAME~LATENCY"),
+        new("Ship Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYSHIP"),
+        new("Planet Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYPLANET"),
+        new("Other Attacks Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYOTHERATTACK"),
+        new("Ship Transporter Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYSHIPTRANSPORTER"),
+        new("Planet Transporter Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYPLANETTRANSPORTER"),
+        new("EProbe Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYEPROBE"),
+        new("Photon Launch Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYPHOTONLAUNCH"),
+        new("Photon Wave Delay", GameSettingFormat.Milliseconds, "$GAME~DELAYPHOTONDELAY"),
+    ];
+
+    public GameInfoWindow(
+        Func<Core.ModDatabase?> getDb,
+        Func<GameState?> getState,
+        Func<IReadOnlyDictionary<string, string>?>? getGameVars = null)
     {
         _getDb = getDb;
         _getState = getState;
+        _getGameVars = getGameVars ?? (() => null);
 
         Title = "Game Info";
         Width = 1120;
@@ -100,7 +170,8 @@ public class GameInfoWindow : Window
             FontSize = 13,
         };
 
-        _overviewContent = new StackPanel { Margin = new Thickness(12), Spacing = 3 };
+        _statsContent = new StackPanel { Margin = new Thickness(12), Spacing = 3 };
+        _settingsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _fightersContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _planetsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _portsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
@@ -111,10 +182,20 @@ public class GameInfoWindow : Window
             {
                 new TabItem
                 {
-                    Header = "Overview",
+                    Header = "Stats",
                     Content = new ScrollViewer
                     {
-                        Content = _overviewContent,
+                        Content = _statsContent,
+                        VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                        HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+                    }
+                },
+                new TabItem
+                {
+                    Header = "Settings",
+                    Content = new ScrollViewer
+                    {
+                        Content = _settingsContent,
                         VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                         HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
                     }
@@ -185,7 +266,8 @@ public class GameInfoWindow : Window
 
     private void RefreshInfo()
     {
-        _overviewContent.Children.Clear();
+        _statsContent.Children.Clear();
+        _settingsContent.Children.Clear();
         _fightersContent.Children.Clear();
         _planetsContent.Children.Clear();
         _portsContent.Children.Clear();
@@ -195,7 +277,8 @@ public class GameInfoWindow : Window
         {
             _header.Text = "No active database. Connect to a game first.";
             _header.Foreground = ColRed;
-            RenderEmptyTab(_overviewContent, "No active database.");
+            RenderEmptyTab(_statsContent, "No active database.");
+            RenderEmptyTab(_settingsContent, "No active database.");
             RenderEmptyTab(_fightersContent, "No active database.");
             RenderEmptyTab(_planetsContent, "No active database.");
             RenderEmptyTab(_portsContent, "No active database.");
@@ -207,7 +290,8 @@ public class GameInfoWindow : Window
         {
             _header.Text = "Universe size is not known yet.";
             _header.Foreground = ColRed;
-            RenderEmptyTab(_overviewContent, "Universe size is not known yet.");
+            RenderEmptyTab(_statsContent, "Universe size is not known yet.");
+            RenderEmptyTab(_settingsContent, "Universe size is not known yet.");
             RenderEmptyTab(_fightersContent, "Universe size is not known yet.");
             RenderEmptyTab(_planetsContent, "Universe size is not known yet.");
             RenderEmptyTab(_portsContent, "Universe size is not known yet.");
@@ -217,13 +301,14 @@ public class GameInfoWindow : Window
         _header.Text = $"Database: {db.DatabaseName}";
         _header.Foreground = ColMuted;
 
-        RenderOverview(db, totalSectors);
+        RenderStats(db, totalSectors);
+        RenderSettings();
         RenderFighters(db, totalSectors);
         RenderPlanets(db, totalSectors);
         RenderPorts(db, totalSectors);
     }
 
-    private void RenderOverview(Core.ModDatabase db, int totalSectors)
+    private void RenderStats(Core.ModDatabase db, int totalSectors)
     {
         int knownPorts = 0;
         int visitedSectors = 0;
@@ -288,6 +373,222 @@ public class GameInfoWindow : Window
         AddOverviewLine("Known sectors.....:", $"{knownSectors} ({FormatPercent(knownSectors, totalSectors)})", ColMagenta);
         AddOverviewLine("Number of sectors.:", totalSectors.ToString(), ColRed);
     }
+
+    private void RenderSettings()
+    {
+        _settingsContent.Children.Add(new TextBlock
+        {
+            Text = "Mombot game settings captured from the server game-info screen and saved in the current game JSON.",
+            Foreground = ColMuted,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 2),
+        });
+
+        var left = new StackPanel { Spacing = 3 };
+        var right = new StackPanel { Spacing = 3 };
+        int split = (GameSettings.Count + 1) / 2;
+
+        for (int i = 0; i < GameSettings.Count; i++)
+        {
+            Control row = BuildSettingRow(GameSettings[i], i);
+            if (i < split)
+                left.Children.Add(row);
+            else
+                right.Children.Add(row);
+        }
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,*"),
+            ColumnSpacing = 10,
+        };
+        Grid.SetColumn(left, 0);
+        Grid.SetColumn(right, 1);
+        grid.Children.Add(left);
+        grid.Children.Add(right);
+
+        _settingsContent.Children.Add(grid);
+    }
+
+    private Control BuildSettingRow(GameSettingRow setting, int index)
+    {
+        bool found = TryReadGameSetting(setting, out string rawValue);
+        string display = found ? FormatGameSettingValue(rawValue, setting.Format) : "-";
+        IBrush valueBrush = found
+            ? GetGameSettingValueBrush(display, setting.Format)
+            : ColMuted;
+
+        var grid = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("210,12,*"),
+        };
+
+        var label = new TextBlock
+        {
+            Text = setting.Label,
+            Foreground = found ? ColCyan : ColMuted,
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(6, 3),
+        };
+
+        var equals = new TextBlock
+        {
+            Text = "=",
+            Foreground = ColMuted,
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 3),
+        };
+
+        var value = new TextBlock
+        {
+            Text = display,
+            Foreground = valueBrush,
+            FontSize = 11,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 3, 6, 3),
+        };
+
+        Grid.SetColumn(label, 0);
+        Grid.SetColumn(equals, 1);
+        Grid.SetColumn(value, 2);
+        grid.Children.Add(label);
+        grid.Children.Add(equals);
+        grid.Children.Add(value);
+
+        return new Border
+        {
+            Background = index % 2 == 0 ? BgPanel : BgRowAlt,
+            BorderBrush = ColBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Child = grid,
+        };
+    }
+
+    private bool TryReadGameSetting(GameSettingRow setting, out string value)
+    {
+        foreach (string name in setting.VariableNames.SelectMany(GetCompatibleGameVarNames))
+        {
+            IReadOnlyDictionary<string, string>? vars = _getGameVars();
+            if (vars != null &&
+                vars.TryGetValue(name, out string? configuredValue) &&
+                !string.IsNullOrWhiteSpace(configuredValue))
+            {
+                value = configuredValue.Trim();
+                return true;
+            }
+
+            string currentValue = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (!string.IsNullOrWhiteSpace(currentValue))
+            {
+                value = currentValue.Trim();
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static IEnumerable<string> GetCompatibleGameVarNames(string name)
+    {
+        yield return name;
+
+        int prefixLength = name.Length > 0 && (name[0] == '$' || name[0] == '%') ? 1 : 0;
+        int separator = name.LastIndexOf('~');
+        if (separator > prefixLength && separator < name.Length - 1)
+            yield return name[..prefixLength] + name[(separator + 1)..];
+    }
+
+    private static string FormatGameSettingValue(string rawValue, GameSettingFormat format)
+    {
+        string value = rawValue.Trim();
+        if (string.IsNullOrEmpty(value))
+            return "-";
+
+        return format switch
+        {
+            GameSettingFormat.Boolean => FormatBooleanValue(value),
+            GameSettingFormat.Percent => FormatPercentValue(value),
+            GameSettingFormat.Milliseconds => FormatMillisecondValue(value),
+            GameSettingFormat.MaxCommands => FormatMaxCommandsValue(value),
+            _ => FormatCompactNumber(value),
+        };
+    }
+
+    private static string FormatBooleanValue(string value)
+    {
+        if (IsTruthy(value))
+            return "yes";
+        if (IsFalsey(value))
+            return "no";
+        return value;
+    }
+
+    private static string FormatPercentValue(string value)
+    {
+        if (value.EndsWith("%", StringComparison.Ordinal))
+            return value;
+
+        return $"{FormatCompactNumber(value)}%";
+    }
+
+    private static string FormatMillisecondValue(string value)
+    {
+        if (!long.TryParse(value.Replace(",", string.Empty, StringComparison.Ordinal), out long milliseconds))
+            return value;
+
+        return $"{milliseconds:N0} ms";
+    }
+
+    private static string FormatMaxCommandsValue(string value)
+    {
+        if (long.TryParse(value.Replace(",", string.Empty, StringComparison.Ordinal), out long commands) &&
+            commands <= 0)
+        {
+            return "Unlimited";
+        }
+
+        return FormatCompactNumber(value);
+    }
+
+    private static string FormatCompactNumber(string value)
+    {
+        string compact = value.Replace(",", string.Empty, StringComparison.Ordinal);
+        return long.TryParse(compact, out long number)
+            ? number.ToString("N0")
+            : value;
+    }
+
+    private static IBrush GetGameSettingValueBrush(string display, GameSettingFormat format)
+    {
+        if (format != GameSettingFormat.Boolean)
+            return ColText;
+
+        return display.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            ? ColGreen
+            : display.Equals("no", StringComparison.OrdinalIgnoreCase)
+                ? ColRed
+                : ColText;
+    }
+
+    private static bool IsTruthy(string value)
+        => value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("TRUE", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("YES", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("ON", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFalsey(string value)
+        => value.Equals("0", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("FALSE", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("NO", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("OFF", StringComparison.OrdinalIgnoreCase);
 
     private void RenderFighters(Core.ModDatabase db, int totalSectors)
     {
@@ -782,7 +1083,7 @@ public class GameInfoWindow : Window
 
     private void AddOverviewSpacer()
     {
-        _overviewContent.Children.Add(new Border { Height = 8 });
+        _statsContent.Children.Add(new Border { Height = 8 });
     }
 
     private void AddOverviewLine(string label, string value, IBrush valueColor)
@@ -810,7 +1111,7 @@ public class GameInfoWindow : Window
         Grid.SetColumn(valueBlock, 1);
         grid.Children.Add(labelBlock);
         grid.Children.Add(valueBlock);
-        _overviewContent.Children.Add(grid);
+        _statsContent.Children.Add(grid);
     }
 
     private static string FormatLocation(int sector, string name)

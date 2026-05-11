@@ -1314,6 +1314,124 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
+        /// Calculate every directed shortest path between two sectors. The first
+        /// entries are seeded from the TWX27/Pascal BFS path and the current
+        /// bidirectional path, then any remaining equal-hop paths are enumerated.
+        /// </summary>
+        public List<List<int>> CalculateAllShortestPaths(int fromSector, int toSector, HashSet<int>? avoidSectors = null)
+        {
+            var results = new List<List<int>>();
+
+            if (fromSector < 1 || fromSector > _header.Sectors ||
+                toSector < 1 || toSector > _header.Sectors)
+            {
+                return results;
+            }
+
+            var avoids = avoidSectors ?? new HashSet<int>();
+            if (avoids.Contains(toSector))
+                return results;
+
+            List<int> currentPath = CalculateBidirectionalShortestPath(fromSector, toSector, avoids);
+            if (currentPath.Count == 0)
+                return results;
+
+            int shortestDistance = currentPath.Count - 1;
+            int expectedPathLength = currentPath.Count;
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+
+            void AddPath(IReadOnlyList<int> path)
+            {
+                if (path.Count != expectedPathLength)
+                    return;
+                if (path.Count == 0 || path[0] != fromSector || path[^1] != toSector)
+                    return;
+
+                string signature = string.Join(",", path);
+                if (!seen.Add(signature))
+                    return;
+
+                results.Add(path.ToList());
+            }
+
+            AddPath(CalculatePascalShortestPath(fromSector, toSector, avoids));
+            AddPath(currentPath);
+
+            PathGraph graph = GetPathGraph();
+            int[] distanceFromStart = CalculatePathDistances(graph.Outbound, fromSector, graph.SectorCount, avoids, fromSector);
+            int[] distanceToTarget = CalculatePathDistances(graph.Inbound, toSector, graph.SectorCount, avoids, fromSector);
+            if (distanceFromStart[toSector] != shortestDistance)
+                return results;
+
+            var pathBuffer = new int[expectedPathLength];
+            pathBuffer[0] = fromSector;
+
+            void Walk(int sector, int depth)
+            {
+                if (depth == shortestDistance)
+                {
+                    if (sector == toSector)
+                        AddPath(pathBuffer);
+                    return;
+                }
+
+                int nextDepth = depth + 1;
+                foreach (int adjacent in graph.Outbound[sector])
+                {
+                    if (distanceFromStart[adjacent] != nextDepth)
+                        continue;
+                    if (distanceToTarget[adjacent] < 0)
+                        continue;
+                    if (nextDepth + distanceToTarget[adjacent] != shortestDistance)
+                        continue;
+                    if (avoids.Contains(adjacent))
+                        continue;
+
+                    pathBuffer[nextDepth] = adjacent;
+                    Walk(adjacent, nextDepth);
+                }
+            }
+
+            Walk(fromSector, 0);
+            return results;
+        }
+
+        private static int[] CalculatePathDistances(
+            int[][] edges,
+            int startSector,
+            int sectorCount,
+            HashSet<int> avoidSectors,
+            int allowedAvoidedSector)
+        {
+            var distances = new int[sectorCount + 1];
+            Array.Fill(distances, -1);
+
+            var queue = new int[sectorCount + 1];
+            int head = 0;
+            int tail = 0;
+            distances[startSector] = 0;
+            queue[tail++] = startSector;
+
+            while (head < tail)
+            {
+                int current = queue[head++];
+                int nextDistance = distances[current] + 1;
+                foreach (int adjacent in edges[current])
+                {
+                    if (distances[adjacent] >= 0)
+                        continue;
+                    if (adjacent != allowedAvoidedSector && avoidSectors.Contains(adjacent))
+                        continue;
+
+                    distances[adjacent] = nextDistance;
+                    queue[tail++] = adjacent;
+                }
+            }
+
+            return distances;
+        }
+
+        /// <summary>
         /// Reconstruct path from previous nodes dictionary
         /// </summary>
         private List<int> ReconstructPath(Dictionary<int, int> previous, int start, int end)

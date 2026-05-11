@@ -234,9 +234,8 @@ public partial class MainWindow
             DateTime.UtcNow.AddSeconds(2).Ticks);
     }
 
-    private byte[] FilterTerminalDisplayArtifacts(byte[] chunk, out bool rewrotePromptOverwrite)
+    private byte[] FilterTerminalDisplayArtifacts(byte[] chunk)
     {
-        rewrotePromptOverwrite = false;
         if (chunk.Length == 0)
             return chunk;
 
@@ -287,9 +286,6 @@ public partial class MainWindow
             for (; index < chunk.Length; index++)
             {
                 byte value = chunk[index];
-
-                if (value == 0x1B && LooksLikeTwPromptScrub(chunk, index))
-                    rewrotePromptOverwrite = true;
 
                 if (_suppressingPendingNativeMombotEscapeSequence)
                 {
@@ -390,7 +386,6 @@ public partial class MainWindow
                     filtered.Add(0x1B);
                     filtered.Add((byte)'[');
                     filtered.Add((byte)'K');
-                    rewrotePromptOverwrite = true;
                     index += 6;
                     continue;
                 }
@@ -400,53 +395,6 @@ public partial class MainWindow
 
             return filtered == null ? chunk : filtered.ToArray();
         }
-    }
-
-    private static bool LooksLikeTwPromptScrub(byte[] chunk, int start)
-    {
-        int index = start;
-        if (!TryReadCsiCursorLeft(chunk, ref index, out int firstLeft) || firstLeft < 4)
-            return false;
-
-        int spaces = 0;
-        while (index < chunk.Length && chunk[index] == 0x20)
-        {
-            spaces++;
-            index++;
-        }
-
-        if (spaces < 4)
-            return false;
-
-        if (!TryReadCsiCursorLeft(chunk, ref index, out int secondLeft) || secondLeft < 4)
-            return false;
-
-        return index < chunk.Length && chunk[index] == 0x0D;
-    }
-
-    private static bool TryReadCsiCursorLeft(byte[] chunk, ref int index, out int count)
-    {
-        count = 0;
-        if (index + 3 >= chunk.Length ||
-            chunk[index] != 0x1B ||
-            chunk[index + 1] != (byte)'[')
-        {
-            return false;
-        }
-
-        index += 2;
-        int digitStart = index;
-        while (index < chunk.Length && chunk[index] >= (byte)'0' && chunk[index] <= (byte)'9')
-        {
-            count = (count * 10) + (chunk[index] - (byte)'0');
-            index++;
-        }
-
-        if (index == digitStart || index >= chunk.Length || chunk[index] != (byte)'D')
-            return false;
-
-        index++;
-        return true;
     }
 
     private static List<byte> EnsureTerminalDisplayFilteredBuffer(
@@ -486,43 +434,6 @@ public partial class MainWindow
             Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
 
         return true;
-    }
-
-    private void ScheduleLatestObservedGamePromptRestoreAfterQuiet()
-    {
-        int ticket = ++_serverOverwritePromptRestoreTicket;
-        _ = Task.Run(async () =>
-        {
-            DateTime deadlineUtc = DateTime.UtcNow.AddSeconds(8);
-            while (true)
-            {
-                await Task.Delay(250).ConfigureAwait(false);
-
-                if (ticket != _serverOverwritePromptRestoreTicket)
-                    return;
-
-                if (HasRecentMombotTerminalOutput(TimeSpan.FromMilliseconds(250)))
-                    continue;
-
-                bool keepWaiting = await Dispatcher.UIThread.InvokeAsync(() =>
-                {
-                    if (ticket != _serverOverwritePromptRestoreTicket)
-                        return false;
-
-                    if (HasBlockingPromptRestoreScripts(allowMombotBackgroundScripts: true))
-                        return DateTime.UtcNow < deadlineUtc;
-
-                    if (HasMombotInteractiveState())
-                        return false;
-
-                    TryRestoreLatestObservedGamePrompt(allowMombotBackgroundScripts: true);
-                    return false;
-                }, DispatcherPriority.Background);
-
-                if (!keepWaiting)
-                    return;
-            }
-        });
     }
 
     private bool ShouldNativeMombotAutoRelog()
@@ -1983,8 +1894,7 @@ public partial class MainWindow
         {
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
-            if (!TryRestoreLatestObservedGamePrompt())
-                FocusActiveTerminal();
+            FocusActiveTerminal();
         }
     }
 
@@ -2016,8 +1926,7 @@ public partial class MainWindow
         {
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
-            if (!TryRestoreLatestObservedGamePrompt())
-                FocusActiveTerminal();
+            FocusActiveTerminal();
         }
     }
 
@@ -2347,8 +2256,7 @@ public partial class MainWindow
         ClearMombotPreferencesInputState();
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
-        if (!TryRestoreLatestObservedGamePrompt())
-            FocusActiveTerminal();
+        FocusActiveTerminal();
         ApplyMombotExecutionRefresh();
     }
 
@@ -4705,14 +4613,10 @@ public partial class MainWindow
     {
         RecordMombotCommandHistory(input);
 
-        (string promptAnsi, string promptPlain) = CaptureCurrentGamePromptSnapshot();
-        int promptVersionBefore = _mombotObservedGamePromptVersion;
-
         IReadOnlyList<MTC.mombot.mombotDispatchResult> results;
         _mombot.TryExecuteLocalInput(input, out results);
 
         ApplyMombotExecutionRefresh();
-        _ = RestoreCurrentGamePromptAfterMombotCommandAsync(results, promptAnsi, promptPlain, promptVersionBefore);
     }
 
     private void RecordMombotCommandHistory(string input)
@@ -4749,293 +4653,6 @@ public partial class MainWindow
 
         foreach (string entry in history.Split("<<|HS|>>", StringSplitOptions.RemoveEmptyEntries))
             RememberMombotHistory(entry);
-    }
-
-    private (string PromptAnsi, string PromptPlain) CaptureCurrentGamePromptSnapshot()
-    {
-        string promptAnsi = Core.ScriptRef.GetCurrentAnsiLine() ?? string.Empty;
-        string promptPlainSource = Core.ScriptRef.GetCurrentLine();
-        if (string.IsNullOrWhiteSpace(promptPlainSource))
-            promptPlainSource = promptAnsi;
-
-        return (promptAnsi, Core.AnsiCodes.NormalizeTerminalText(promptPlainSource).TrimEnd());
-    }
-
-    private async Task RestoreCurrentGamePromptAfterMombotCommandAsync(
-        IReadOnlyList<MTC.mombot.mombotDispatchResult> results,
-        string promptAnsi,
-        string promptPlain,
-        int promptVersionBefore)
-    {
-        if (string.IsNullOrWhiteSpace(promptPlain))
-            return;
-
-        string[] pendingScriptReferences = results
-            .Where(result => result.Kind == MTC.mombot.mombotDispatchKind.Script &&
-                             !string.IsNullOrWhiteSpace(result.ScriptReference))
-            .Select(result => result.ScriptReference!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        int restoreTicket = ++_mombotPromptRestoreTicket;
-        DateTime restoreDeadlineUtc = DateTime.UtcNow.AddHours(8);
-        while (DateTime.UtcNow < restoreDeadlineUtc)
-        {
-            await Task.Delay(100).ConfigureAwait(false);
-
-            if (restoreTicket != _mombotPromptRestoreTicket)
-                return;
-
-            if (_gameInstance == null ||
-                !_gameInstance.IsConnected ||
-                _gameInstance.IsProxyMenuActive ||
-                !_mombot.Enabled)
-            {
-                return;
-            }
-
-            if (pendingScriptReferences.Any(IsMombotScriptStillRunning))
-                continue;
-
-            if (HasRecentMombotTerminalOutput(TimeSpan.FromMilliseconds(300)))
-                continue;
-
-            if (HasPendingTerminalDisplayBacklog())
-                continue;
-
-            await Dispatcher.UIThread.InvokeAsync(() =>
-            {
-                string candidatePromptAnsi = promptAnsi;
-                string candidatePromptPlain = promptPlain;
-
-                if (restoreTicket != _mombotPromptRestoreTicket)
-                    return;
-
-                if (_mombotObservedGamePromptVersion != promptVersionBefore &&
-                    !string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain))
-                {
-                    candidatePromptAnsi = _mombotLastObservedGamePromptAnsi;
-                    candidatePromptPlain = _mombotLastObservedGamePromptPlain;
-                }
-
-                if (string.IsNullOrWhiteSpace(candidatePromptPlain))
-                    return;
-
-                if (HasNonBotScriptsRunning())
-                    return;
-
-                if (IsTerminalCurrentLineEquivalentTo(candidatePromptPlain))
-                    return;
-
-                bool replaceCurrentLine = IsTerminalCurrentLineTruncatedPromptSuffix(candidatePromptPlain);
-                if (!replaceCurrentLine && !IsTerminalCurrentLineBlank())
-                    return;
-
-                AppendCurrentGamePrompt(candidatePromptAnsi, candidatePromptPlain, replaceCurrentLine);
-            });
-            return;
-        }
-    }
-
-    private bool IsMombotScriptStillRunning(string scriptReference)
-    {
-        Core.ModInterpreter? interpreter = CurrentInterpreter;
-        if (interpreter == null || string.IsNullOrWhiteSpace(scriptReference))
-            return false;
-
-        string normalizedReference = scriptReference.Replace('\\', '/').Trim();
-        string normalizedLeaf = Path.GetFileName(normalizedReference);
-
-        return Core.ProxyGameOperations
-            .GetRunningScripts(interpreter)
-            .Any(script =>
-            {
-                string runningReference = (script.Reference ?? string.Empty).Replace('\\', '/').Trim();
-                string runningLeaf = Path.GetFileName(runningReference);
-                return runningReference.EndsWith(normalizedReference, StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(runningLeaf, normalizedLeaf, StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(script.Name, scriptReference, StringComparison.OrdinalIgnoreCase);
-            });
-    }
-
-    private bool HasNonBotScriptsRunning()
-    {
-        Core.ModInterpreter? interpreter = CurrentInterpreter;
-        if (interpreter == null)
-            return false;
-
-        return Core.ProxyGameOperations
-            .GetRunningScripts(interpreter)
-            .Any(script => !script.IsBot);
-    }
-
-    private bool HasBlockingPromptRestoreScripts(bool allowMombotBackgroundScripts)
-    {
-        Core.ModInterpreter? interpreter = CurrentInterpreter;
-        if (interpreter == null)
-            return false;
-
-        return Core.ProxyGameOperations
-            .GetRunningScripts(interpreter)
-            .Any(script => !script.IsBot &&
-                           (!allowMombotBackgroundScripts || !IsMombotBackgroundScript(script)));
-    }
-
-    private static bool IsMombotBackgroundScript(Core.RunningScriptInfo script)
-    {
-        string reference = (script.Reference ?? string.Empty).Replace('\\', '/');
-        if (reference.Contains("/mombot/startups/", StringComparison.OrdinalIgnoreCase) ||
-            reference.Contains("/mombot/daemons/", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        string name = script.Name ?? string.Empty;
-        return string.Equals(name, "watcher.cts", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsTerminalCurrentLineEquivalentTo(string promptPlain)
-    {
-        if (string.IsNullOrWhiteSpace(promptPlain))
-            return false;
-
-        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
-        return string.Equals(
-            Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd(),
-            Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd(),
-            StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsTerminalCurrentLineBlank()
-    {
-        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
-        return string.IsNullOrWhiteSpace(
-            Core.AnsiCodes.NormalizeTerminalText(currentRowText).Trim());
-    }
-
-    private bool IsTerminalCurrentLineTruncatedPromptSuffix(string promptPlain)
-    {
-        string prompt = Core.AnsiCodes.NormalizeTerminalText(promptPlain).TrimEnd();
-        if (string.IsNullOrWhiteSpace(prompt) ||
-            !TryGetMombotPromptNameFromLine(prompt, out _))
-        {
-            return false;
-        }
-
-        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
-        string current = Core.AnsiCodes.NormalizeTerminalText(currentRowText).TrimEnd().TrimStart();
-        if (current.Length < 8 ||
-            string.Equals(current, prompt, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return prompt.EndsWith(current, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool HasRecentMombotTerminalOutput(TimeSpan quietFor)
-    {
-        if (HasPendingTerminalDisplayBacklog())
-            return true;
-
-        long lastTerminalOutputUtcTicks = Interlocked.Read(ref _mombotLastTerminalOutputUtcTicks);
-        if (lastTerminalOutputUtcTicks > 0)
-        {
-            DateTime lastTerminalOutputUtc = new(lastTerminalOutputUtcTicks, DateTimeKind.Utc);
-            if ((DateTime.UtcNow - lastTerminalOutputUtc) < quietFor)
-                return true;
-        }
-
-        long lastServerOutputUtcTicks = Interlocked.Read(ref _mombotLastServerOutputUtcTicks);
-        if (lastServerOutputUtcTicks <= 0)
-            return false;
-
-        DateTime lastServerOutputUtc = new(lastServerOutputUtcTicks, DateTimeKind.Utc);
-        return (DateTime.UtcNow - lastServerOutputUtc) < quietFor;
-    }
-
-    private bool HasActiveServerInputPromptOnCurrentLine()
-    {
-        string currentRowText = Core.AnsiCodes.NormalizeTerminalText(ReadTerminalRowText(_buffer.CursorRow)).TrimEnd();
-        if (string.IsNullOrWhiteSpace(currentRowText))
-            return false;
-
-        if (TryGetMombotPromptNameFromLine(currentRowText, out _))
-            return true;
-
-        string lower = currentRowText.ToLowerInvariant();
-        if (lower.Contains("selection (? for menu):", StringComparison.Ordinal) ||
-            lower.Contains("enter your choice", StringComparison.Ordinal) ||
-            lower.Contains("land on which planet <q to abort>", StringComparison.Ordinal) ||
-            lower.Contains("choose which ship to beam to", StringComparison.Ordinal) ||
-            lower.Contains("how many holds of ", StringComparison.Ordinal) ||
-            lower.Contains("how many fighters do you want", StringComparison.Ordinal) ||
-            lower.Contains("to which sector [", StringComparison.Ordinal) ||
-            lower.Contains("do you want to ", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        return lower.EndsWith("?") ||
-               lower.EndsWith("]") ||
-               lower.EndsWith(":");
-    }
-
-    private bool TryRestoreLatestObservedGamePrompt(bool allowMombotBackgroundScripts = false)
-    {
-        if (_gameInstance == null ||
-            !_gameInstance.IsConnected ||
-            _gameInstance.IsProxyMenuActive ||
-            string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptPlain) ||
-            HasBlockingPromptRestoreScripts(allowMombotBackgroundScripts) ||
-            HasPendingTerminalDisplayBacklog())
-        {
-            return false;
-        }
-
-        if (IsTerminalCurrentLineEquivalentTo(_mombotLastObservedGamePromptPlain))
-        {
-            FocusActiveTerminal();
-            return true;
-        }
-
-        bool replaceCurrentLine = IsTerminalCurrentLineTruncatedPromptSuffix(_mombotLastObservedGamePromptPlain);
-        if (!replaceCurrentLine && HasActiveServerInputPromptOnCurrentLine())
-            return false;
-
-        AppendCurrentGamePrompt(_mombotLastObservedGamePromptAnsi, _mombotLastObservedGamePromptPlain, replaceCurrentLine);
-        return true;
-    }
-
-    private string ReadTerminalRowText(int row)
-    {
-        if (row < 0 || row >= _buffer.Rows)
-            return string.Empty;
-
-        char[] chars = new char[_buffer.Columns];
-        for (int col = 0; col < _buffer.Columns; col++)
-            chars[col] = _buffer[row, col].Char;
-
-        return new string(chars).TrimEnd();
-    }
-
-    private void AppendCurrentGamePrompt(string promptAnsi, string promptPlain, bool replaceCurrentLine = false)
-    {
-        string promptText = string.IsNullOrWhiteSpace(promptAnsi) ? promptPlain : promptAnsi;
-        promptText = SanitizeObservedPromptForDisplay(promptText);
-        if (string.IsNullOrWhiteSpace(promptText))
-            return;
-
-        string currentRowText = ReadTerminalRowText(_buffer.CursorRow);
-        bool needsNewLine = !replaceCurrentLine &&
-            (_buffer.CursorCol != 0 || !string.IsNullOrWhiteSpace(currentRowText));
-        if (needsNewLine)
-            _parser.Feed("\r\n");
-
-        _parser.Feed("\r\x1b[K");
-        _parser.Feed(promptText);
-        _buffer.Dirty = true;
-        FocusActiveTerminal();
     }
 
     private async Task SendMombotServerMacroAsync(string macro)

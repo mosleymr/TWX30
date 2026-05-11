@@ -87,12 +87,12 @@ public partial class MainWindow
         Interlocked.Exchange(ref _displayDrainScheduled, 0);
     }
 
-    private void EnqueueDisplayChunk(byte[] chunk, int lineCount, bool rewrotePromptOverwrite)
+    private void EnqueueDisplayChunk(byte[] chunk, int lineCount)
     {
-        if (chunk.Length == 0 && !rewrotePromptOverwrite)
+        if (chunk.Length == 0)
             return;
 
-        _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk, lineCount, rewrotePromptOverwrite));
+        _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk, lineCount));
         if (Interlocked.Exchange(ref _displayDrainScheduled, 1) != 0)
             return;
 
@@ -110,7 +110,6 @@ public partial class MainWindow
     private void DrainPendingDisplayChunks()
     {
         bool replayed = false;
-        bool rewrotePromptOverwrite = false;
         int processedChunks = 0;
         int processedBytes = 0;
         long startedAt = Stopwatch.GetTimestamp();
@@ -130,7 +129,6 @@ public partial class MainWindow
                     processedBytes += chunk.Bytes.Length;
                 }
 
-                rewrotePromptOverwrite |= chunk.RewrotePromptOverwrite;
                 processedChunks++;
 
                 if (!_pendingDisplayChunks.IsEmpty &&
@@ -151,16 +149,13 @@ public partial class MainWindow
             Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Render);
         }
 
-        if (rewrotePromptOverwrite)
-            ScheduleLatestObservedGamePromptRestoreAfterQuiet();
-
         if (replayed)
             _buffer.Dirty = true;
     }
 
     private void QueuePausedTerminalChunk(byte[] chunk)
     {
-        byte[] filteredChunk = FilterTerminalDisplayArtifacts(chunk, out _);
+        byte[] filteredChunk = FilterTerminalDisplayArtifacts(chunk);
         if (filteredChunk.Length == 0)
             return;
 

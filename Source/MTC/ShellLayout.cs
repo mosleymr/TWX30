@@ -2147,6 +2147,8 @@ public partial class MainWindow
 
         var viewCacheItem = new MenuItem { Header = "_Cache..." };
         viewCacheItem.Click += (_, _) => OnViewCache();
+        var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
+        viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
@@ -2163,7 +2165,7 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2186,15 +2188,13 @@ public partial class MainWindow
 
         var toolsFindRouteItem = new MenuItem { Header = "_Find Route..." };
         toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
-        var toolsGameInfoItem = new MenuItem { Header = "_Game Info..." };
-        toolsGameInfoItem.Click += (_, _) => OnViewGameInfo();
         var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
         toolsConfigureStatusPanelItem.Click += async (_, _) => await OnConfigureStatusPanelAsync();
         var toolsConfigureStatusBarItem = new MenuItem { Header = "Configure _Status Bar..." };
         toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
-        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsGameInfoItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
 
         var menu = new Menu
         {
@@ -2495,7 +2495,7 @@ public partial class MainWindow
 
     private void OnViewGameInfo()
     {
-        var win = new GameInfoWindow(() => _sessionDb, () => _state);
+        var win = new GameInfoWindow(() => _sessionDb, () => _state, () => _embeddedGameConfig?.Variables);
         win.Show();
     }
 

@@ -1,5 +1,5 @@
 created: 20260421010500000
-modified: 20260421010500000
+modified: 20260511173000000
 title: Mombot Wiki Home
 type: text/vnd.tiddlywiki
 tags: guide mombot
@@ -26,6 +26,7 @@ This wiki is built from the live Mombot help folder and then mixed with editable
 * [[Using Mombot]]
 * [[Native Bot Guide]]
 * [[Other Bot Notes]]
+* [[TWX Script Commands]]
 * [[Maintaining the Mombot Wiki]]
 * [[Mombot Commands]]
 

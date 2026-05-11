@@ -298,9 +298,8 @@ public partial class MainWindow
                     var chunk = buf[..n].ToArray();
                     if (!IsEmbeddedTerminalClientDeaf())
                         _sessionLog.RecordServerData(chunk);
-                    Interlocked.Exchange(ref _mombotLastTerminalOutputUtcTicks, DateTime.UtcNow.Ticks);
-                    byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk, out bool rewrotePromptOverwrite);
-                    EnqueueDisplayChunk(displayChunk, CountTransportLines(displayChunk), rewrotePromptOverwrite);
+                    byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk);
+                    EnqueueDisplayChunk(displayChunk, CountTransportLines(displayChunk));
                 }
             }
             catch (OperationCanceledException) { }
@@ -317,8 +316,6 @@ public partial class MainWindow
 
         gi.ServerDataReceived += (_, e) =>
         {
-            Interlocked.Exchange(ref _mombotLastServerOutputUtcTicks, DateTime.UtcNow.Ticks);
-
             string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
             string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
 
@@ -553,18 +550,6 @@ public partial class MainWindow
             });
 
             _mombot.HandleObservedScriptStop();
-
-            string promptAnsi = _mombotLastObservedGamePromptAnsi;
-            string promptPlain = _mombotLastObservedGamePromptPlain;
-            int promptVersion = _mombotObservedGamePromptVersion;
-            if (string.IsNullOrWhiteSpace(promptPlain))
-                return;
-
-            _ = RestoreCurrentGamePromptAfterMombotCommandAsync(
-                Array.Empty<MTC.mombot.mombotDispatchResult>(),
-                promptAnsi,
-                promptPlain,
-                promptVersion);
         };
 
         gi.ScriptLoaded += (_, _) =>
