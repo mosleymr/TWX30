@@ -256,6 +256,29 @@ public partial class MainWindow
         };
     }
 
+    private static Control BuildTerminalScrollHost(TerminalControl terminal)
+    {
+        var scroll = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = terminal,
+        };
+
+        void SyncTerminalSurfaceSize()
+        {
+            Rect bounds = scroll.Bounds;
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+                return;
+
+            terminal.SetViewportPixelSize(bounds.Width, bounds.Height);
+        }
+
+        scroll.SizeChanged += (_, _) => SyncTerminalSurfaceSize();
+        terminal.AttachedToVisualTree += (_, _) => SyncTerminalSurfaceSize();
+        return scroll;
+    }
+
     private Control BuildCommandDeckShell()
     {
         RecreateDeckShellControls();
@@ -849,7 +872,7 @@ public partial class MainWindow
                 BorderBrush = new SolidColorBrush(Color.FromRgb(24, 54, 66)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Child = _deckTermCtrl,
+                Child = BuildTerminalScrollHost(_deckTermCtrl),
             },
         };
         Grid.SetRow(terminalBorder, 1);
@@ -1732,7 +1755,7 @@ public partial class MainWindow
         UpdateClassicTerminalSizeStatus();
 
         RefreshSkinMenuState();
-        RefreshInfoPanels();
+        RequestInfoPanelsRefresh(force: true);
         Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
@@ -2149,6 +2172,8 @@ public partial class MainWindow
         viewCacheItem.Click += (_, _) => OnViewCache();
         var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
         viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
+        var viewAliensItem = new MenuItem { Header = "_Aliens..." };
+        viewAliensItem.Click += (_, _) => OnViewAliens();
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
@@ -2165,7 +2190,7 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2354,6 +2379,20 @@ public partial class MainWindow
         _cacheWindow.Closed += (_, _) => _cacheWindow = null;
         _cacheWindow.Show(this);
         _cacheWindow.Activate();
+    }
+
+    private void OnViewAliens()
+    {
+        if (_aliensWindow is { IsVisible: true })
+        {
+            _aliensWindow.Activate();
+            return;
+        }
+
+        _aliensWindow = new AliensWindow(() => _sessionDb);
+        _aliensWindow.Closed += (_, _) => _aliensWindow = null;
+        _aliensWindow.Show(this);
+        _aliensWindow.Activate();
     }
 
     private CacheWindowSnapshot CaptureCacheWindowSnapshot()

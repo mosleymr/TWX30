@@ -17,8 +17,13 @@ public partial class MainWindow
 {
     private void SyncMombotPromptStateFromLine(string line, string? ansiLine = null)
     {
-        if (line.Contains("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
-            SetMombotCurrentVars("1", "$BOT~ISSHIPDESTROYED");
+        string trimmedLine = Core.AnsiCodes.NormalizeTerminalText(line).TrimStart();
+        if ((trimmedLine.StartsWith("Your ", StringComparison.OrdinalIgnoreCase) &&
+                trimmedLine.Contains(" has been destroyed!", StringComparison.OrdinalIgnoreCase)) ||
+            trimmedLine.StartsWith("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
+        {
+            MarkNativeMombotShipDestroyed();
+        }
 
         bool isGamePromptLine = TryGetMombotPromptNameFromLine(line, out string promptName);
         if (!isGamePromptLine)
@@ -439,7 +444,7 @@ public partial class MainWindow
     private bool ShouldNativeMombotAutoRelog()
     {
         if (!IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog")) ||
-            IsNativeMombotShipDestroyed())
+            HasNativeMombotShipDestroyedFlag())
         {
             return false;
         }
@@ -453,9 +458,68 @@ public partial class MainWindow
                IsNativeMombotRelogScriptLoaded();
     }
 
-    private bool IsNativeMombotShipDestroyed()
+    private void HandleNativeMombotPostLoginScriptStop()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~ISSHIPDESTROYED"));
+        string macro = ConsumeNativeMombotPostLoginMacro();
+        if (string.IsNullOrWhiteSpace(macro))
+            return;
+
+        Dispatcher.UIThread.Post(async () =>
+        {
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                if (_gameInstance?.IsConnected == true && IsNativeMombotPostLoginReady())
+                    break;
+
+                await Task.Delay(100);
+            }
+
+            if (_gameInstance == null || !_gameInstance.IsConnected || !IsNativeMombotPostLoginReady())
+            {
+                lock (_nativeMombotPostLoginMacroLock)
+                {
+                    if (string.IsNullOrWhiteSpace(_pendingNativeMombotPostLoginMacro))
+                        _pendingNativeMombotPostLoginMacro = macro;
+                }
+
+                Core.GlobalModules.DebugLog($"[MTC.NativeBotStart] deferred post-login macro='{macro}' because login is not ready\n");
+                Core.GlobalModules.FlushDebugLog();
+                return;
+            }
+
+            Core.GlobalModules.DebugLog($"[MTC.NativeBotStart] sending post-login macro='{macro}'\n");
+            Core.GlobalModules.FlushDebugLog();
+            await SendMombotServerMacroAsync(macro);
+            PersistMombotVars(string.Empty, "$BOT~STARTMACRO", "$bot~startMacro", "$startMacro");
+        });
+    }
+
+    private static bool IsNativeMombotPostLoginReady()
+    {
+        if (IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging")))
+            return false;
+
+        string prompt = ReadCurrentMombotVar(string.Empty, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+        return string.Equals(prompt, "Command", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(prompt, "Citadel", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(prompt, "Planet", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void MarkNativeMombotShipDestroyed()
+    {
+        if (!HasNativeMombotShipDestroyedFlag())
+        {
+            Core.GlobalModules.DebugLog("[MTC.NativeBot] observed ship destroyed text; preserving return-after-destroyed state\n");
+            Core.GlobalModules.FlushDebugLog();
+        }
+
+        PersistMombotVars("1", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
+        PersistMombotVars("1", "$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate");
+        SetMombotSessionVar("$BOT~ISSHIPDESTROYED", "1");
+        SetMombotSessionVar("$bot~isShipDestroyed", "1");
+        SetMombotSessionVar("$BOT~DO_NOT_RESUSCITATE", "1");
+        SetMombotSessionVar("$bot~do_not_resuscitate", "1");
+        SetMombotSessionVar("$do_not_resuscitate", "1");
     }
 
     private async Task TriggerNativeMombotRelogAsync(string relogMessage, bool disconnectFirst)
@@ -4613,8 +4677,16 @@ public partial class MainWindow
     {
         RecordMombotCommandHistory(input);
 
-        IReadOnlyList<MTC.mombot.mombotDispatchResult> results;
-        _mombot.TryExecuteLocalInput(input, out results);
+        try
+        {
+            _mombot.TryExecuteLocalInput(input, out _);
+        }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog($"[MTC.Mombot] Local command failed for '{input}': {ex}\n");
+            Core.GlobalModules.FlushDebugLog();
+            PublishMombotLocalMessage($"mombot: command failed: {ex.Message}");
+        }
 
         ApplyMombotExecutionRefresh();
     }

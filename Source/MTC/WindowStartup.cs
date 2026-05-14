@@ -117,7 +117,7 @@ public partial class MainWindow
             _shipParser.ApplyDelta(delta);
         };
 
-        _state.Changed += () => Dispatcher.UIThread.Post(RefreshInfoPanels);
+        _state.Changed += () => RequestInfoPanelsRefresh();
 
         // Wire keyboard → telnet
         SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));

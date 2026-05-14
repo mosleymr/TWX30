@@ -48,6 +48,11 @@ public class GameInfoWindow : Window
         int PortClassSort,
         string Mcic,
         int? McicSort);
+    private sealed record ShipRow(
+        int Sector,
+        string Name,
+        string ShipType,
+        string Owner);
     private sealed record GameSettingRow(string Label, GameSettingFormat Format, params string[] VariableNames);
 
     private readonly Func<Core.ModDatabase?> _getDb;
@@ -59,6 +64,7 @@ public class GameInfoWindow : Window
     private readonly StackPanel _fightersContent;
     private readonly StackPanel _planetsContent;
     private readonly StackPanel _portsContent;
+    private readonly StackPanel _shipsContent;
 
     private OwnershipFilter _fighterFilter = OwnershipFilter.All;
     private OwnershipFilter _planetFilter = OwnershipFilter.All;
@@ -68,6 +74,8 @@ public class GameInfoWindow : Window
     private bool _planetSortDescending;
     private string _portSortColumn = "sector";
     private bool _portSortDescending;
+    private string _shipSortColumn = "sector";
+    private bool _shipSortDescending;
 
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(0x00, 0x00, 0x00));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(0x08, 0x08, 0x08));
@@ -175,6 +183,7 @@ public class GameInfoWindow : Window
         _fightersContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _planetsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _portsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
+        _shipsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
 
         var tabs = new TabControl
         {
@@ -229,6 +238,16 @@ public class GameInfoWindow : Window
                         VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                         HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                     }
+                },
+                new TabItem
+                {
+                    Header = "Ships",
+                    Content = new ScrollViewer
+                    {
+                        Content = _shipsContent,
+                        VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                        HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                    }
                 }
             }
         };
@@ -271,6 +290,7 @@ public class GameInfoWindow : Window
         _fightersContent.Children.Clear();
         _planetsContent.Children.Clear();
         _portsContent.Children.Clear();
+        _shipsContent.Children.Clear();
 
         Core.ModDatabase? db = _getDb();
         if (db == null)
@@ -282,6 +302,7 @@ public class GameInfoWindow : Window
             RenderEmptyTab(_fightersContent, "No active database.");
             RenderEmptyTab(_planetsContent, "No active database.");
             RenderEmptyTab(_portsContent, "No active database.");
+            RenderEmptyTab(_shipsContent, "No active database.");
             return;
         }
 
@@ -295,6 +316,7 @@ public class GameInfoWindow : Window
             RenderEmptyTab(_fightersContent, "Universe size is not known yet.");
             RenderEmptyTab(_planetsContent, "Universe size is not known yet.");
             RenderEmptyTab(_portsContent, "Universe size is not known yet.");
+            RenderEmptyTab(_shipsContent, "Universe size is not known yet.");
             return;
         }
 
@@ -306,6 +328,7 @@ public class GameInfoWindow : Window
         RenderFighters(db, totalSectors);
         RenderPlanets(db, totalSectors);
         RenderPorts(db, totalSectors);
+        RenderShips(db, totalSectors);
     }
 
     private void RenderStats(Core.ModDatabase db, int totalSectors)
@@ -821,6 +844,56 @@ public class GameInfoWindow : Window
         _portsContent.Children.Add(rowsPanel);
     }
 
+    private void RenderShips(Core.ModDatabase db, int totalSectors)
+    {
+        var rows = new List<ShipRow>();
+        for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
+        {
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null || sector.Ships.Count == 0)
+                continue;
+
+            foreach (Core.Ship ship in sector.Ships)
+            {
+                rows.Add(new ShipRow(
+                    sectorNumber,
+                    string.IsNullOrWhiteSpace(ship.Name) ? "-" : ship.Name.Trim(),
+                    string.IsNullOrWhiteSpace(ship.ShipType) ? "-" : ship.ShipType.Trim(),
+                    string.IsNullOrWhiteSpace(ship.Owner) ? "-" : ship.Owner.Trim()));
+            }
+        }
+
+        rows = SortShips(rows).ToList();
+
+        _shipsContent.Children.Add(BuildTableHeader(
+            "80,260,320,220",
+            (HeaderLabel("Sector", _shipSortColumn == "sector", _shipSortDescending), true, () => ToggleSort("ship", "sector")),
+            (HeaderLabel("Ship Name", _shipSortColumn == "name", _shipSortDescending), false, () => ToggleSort("ship", "name")),
+            (HeaderLabel("Ship Type", _shipSortColumn == "type", _shipSortDescending), false, () => ToggleSort("ship", "type")),
+            (HeaderLabel("Owner", _shipSortColumn == "owner", _shipSortDescending), false, () => ToggleSort("ship", "owner"))));
+
+        if (rows.Count == 0)
+        {
+            RenderEmptyTab(_shipsContent, "No recorded ships.");
+            return;
+        }
+
+        var rowsPanel = new StackPanel { Spacing = 2 };
+        for (int i = 0; i < rows.Count; i++)
+        {
+            ShipRow row = rows[i];
+            rowsPanel.Children.Add(BuildDataRow(
+                "80,260,320,220",
+                i,
+                (row.Sector.ToString(), true),
+                (row.Name, false),
+                (row.ShipType, false),
+                (row.Owner, false)));
+        }
+
+        _shipsContent.Children.Add(rowsPanel);
+    }
+
     private IEnumerable<FighterRow> SortFighters(IEnumerable<FighterRow> rows) => _fighterSortColumn switch
     {
         "owner" => _fighterSortDescending
@@ -865,6 +938,22 @@ public class GameInfoWindow : Window
         _ => _portSortDescending
             ? rows.OrderByDescending(r => r.Sector)
             : rows.OrderBy(r => r.Sector)
+    };
+
+    private IEnumerable<ShipRow> SortShips(IEnumerable<ShipRow> rows) => _shipSortColumn switch
+    {
+        "name" => _shipSortDescending
+            ? rows.OrderByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "type" => _shipSortDescending
+            ? rows.OrderByDescending(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "owner" => _shipSortDescending
+            ? rows.OrderByDescending(r => r.Owner, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Owner, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        _ => _shipSortDescending
+            ? rows.OrderByDescending(r => r.Sector).ThenByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase)
+            : rows.OrderBy(r => r.Sector).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
     };
 
     private static IEnumerable<T> SortNullable<T>(
@@ -937,6 +1026,9 @@ public class GameInfoWindow : Window
                 break;
             case "port":
                 (_portSortColumn, _portSortDescending) = ToggleSortState(_portSortColumn, _portSortDescending, column);
+                break;
+            case "ship":
+                (_shipSortColumn, _shipSortDescending) = ToggleSortState(_shipSortColumn, _shipSortDescending, column);
                 break;
         }
 

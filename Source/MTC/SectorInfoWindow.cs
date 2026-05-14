@@ -37,6 +37,7 @@ public class SectorInfoWindow : Window
     private static readonly IBrush ColRed   = new SolidColorBrush(Color.FromRgb(0xff, 0x55, 0x55));
     private static readonly IBrush ColYellow= new SolidColorBrush(Color.FromRgb(0xff, 0xee, 0x44));
     private static readonly IBrush Separator= new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x55));
+    private static readonly FontFamily MonoFont = new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
     public SectorInfoWindow(Func<Core.ModDatabase?> getDb, Func<int> getCurrentSector)
     {
@@ -107,7 +108,7 @@ public class SectorInfoWindow : Window
         {
             Content                  = _content,
             VerticalScrollBarVisibility   = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
         };
 
         var layout = new DockPanel { Background = BgWin };
@@ -211,6 +212,29 @@ public class SectorInfoWindow : Window
             alt = !alt;
         }
 
+        void AddPreformatted(string value)
+        {
+            _content.Children.Add(new Border
+            {
+                Background = BgRow,
+                Margin = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(14, 8, 14, 8),
+                Child = new TextBlock
+                {
+                    Text = value,
+                    Foreground = ColVal,
+                    FontFamily = MonoFont,
+                    FontSize = 12,
+                    TextWrapping = TextWrapping.NoWrap,
+                },
+            });
+            alt = false;
+        }
+
+        // ── Sector Display ─────────────────────────────────────────────────
+        AddSection("Sector Display");
+        AddPreformatted(SectorScanFormatter.FormatSectorTooltip(sn, sd, db));
+
         // ── General ───────────────────────────────────────────────────────
         AddSection("General");
         string exploreStr = sd.Explored switch
@@ -293,11 +317,7 @@ public class SectorInfoWindow : Window
         }
 
         // ── Planets ───────────────────────────────────────────────────────
-        var planets = db.GetPlanetsInSector(sn);
-        var allPlanetNames = planets
-            .Select(p => p.Id > 0 ? $"#{p.Id} {p.Name}" : p.Name)
-            .Concat(sd.PlanetNames.Where(n => !planets.Any(p => p.Name == n)))
-            .ToList();
+        var allPlanetNames = db.GetPlanetNamesInSector(sn);
         if (allPlanetNames.Count > 0)
         {
             AddSection("Planets");

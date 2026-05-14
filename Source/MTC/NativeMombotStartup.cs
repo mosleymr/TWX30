@@ -187,9 +187,10 @@ public partial class MainWindow
         string programDir = interpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
         string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
-        bool preserveDoNotResuscitate = ShouldStopNativeMombotAfterDisconnect();
-        TraceRuntimeStop($"[BotStop] external begin bot='{activeBotName}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate}");
-        ClearMombotRelogState(preserveDoNotResuscitate);
+        bool preserveShipDestroyed = HasNativeMombotShipDestroyedFlag();
+        bool preserveDoNotResuscitate = HasNativeMombotDoNotResuscitateFlag() || preserveShipDestroyed;
+        TraceRuntimeStop($"[BotStop] external begin bot='{activeBotName}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate} preserveShipDestroyed={preserveShipDestroyed}");
+        ClearMombotRelogState(preserveDoNotResuscitate, preserveShipDestroyed);
         interpreter?.StopBot(activeBotName);
 
         int drainedScripts = 0;
@@ -213,11 +214,20 @@ public partial class MainWindow
         Core.GlobalModules.FlushDebugLog();
     }
 
-    private void ClearMombotRelogState(bool preserveDoNotResuscitate = false)
+    private void ClearMombotRelogState(bool preserveDoNotResuscitate = false, bool preserveShipDestroyed = false)
     {
+        if (preserveShipDestroyed)
+            preserveDoNotResuscitate = true;
+
         Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
         Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
-        if (!preserveDoNotResuscitate)
+        if (preserveDoNotResuscitate)
+        {
+            Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "1");
+            Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "1");
+            Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "1");
+        }
+        else
         {
             Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "0");
             Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "0");
@@ -228,11 +238,24 @@ public partial class MainWindow
         Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+        if (preserveShipDestroyed)
+        {
+            Core.ScriptRef.SetCurrentGameVar("$BOT~ISSHIPDESTROYED", "1");
+            Core.ScriptRef.SetCurrentGameVar("$bot~isShipDestroyed", "1");
+        }
+        else
+        {
+            Core.ScriptRef.SetCurrentGameVar("$BOT~ISSHIPDESTROYED", "0");
+            Core.ScriptRef.SetCurrentGameVar("$bot~isShipDestroyed", "0");
+        }
         _mombotLastKeepaliveLine = string.Empty;
     }
 
-    private void SuppressNativeMombotRelogState(bool preserveDoNotResuscitate)
+    private void SuppressNativeMombotRelogState(bool preserveDoNotResuscitate, bool preserveShipDestroyed = false)
     {
+        if (preserveShipDestroyed)
+            preserveDoNotResuscitate = true;
+
         SetMombotSessionVar("$doRelog", "0");
         SetMombotSessionVar("$BOT~DORELOG", "0");
         SetMombotSessionVar("$relogging", "0");
@@ -244,6 +267,12 @@ public partial class MainWindow
             SetMombotSessionVar("$BOT~DO_NOT_RESUSCITATE", "1");
             SetMombotSessionVar("$bot~do_not_resuscitate", "1");
             SetMombotSessionVar("$do_not_resuscitate", "1");
+        }
+
+        if (preserveShipDestroyed)
+        {
+            SetMombotSessionVar("$BOT~ISSHIPDESTROYED", "1");
+            SetMombotSessionVar("$bot~isShipDestroyed", "1");
         }
     }
 
@@ -455,17 +484,28 @@ public partial class MainWindow
         if (!_mombot.Enabled)
             return false;
 
-        return HasNativeMombotDoNotResuscitateFlag();
+        return HasNativeMombotDoNotResuscitateFlag() || HasNativeMombotShipDestroyedFlag();
     }
 
     private bool HasNativeMombotDoNotResuscitateFlag()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate"));
+        return AnyCurrentMombotVarTruthy("$BOT~DO_NOT_RESUSCITATE", "$bot~do_not_resuscitate", "$do_not_resuscitate");
     }
 
     private bool HasNativeMombotShipDestroyedFlag()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed", "$isShipDestroyed"));
+        return AnyCurrentMombotVarTruthy("$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
+    }
+
+    private static bool AnyCurrentMombotVarTruthy(params string[] names)
+    {
+        foreach (string name in names)
+        {
+            if (IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar(name, string.Empty)))
+                return true;
+        }
+
+        return false;
     }
 
     private async Task StopNativeMombotAfterDisconnectAsync()
@@ -501,7 +541,9 @@ public partial class MainWindow
 
             if (ShouldStopNativeMombotAfterDisconnect())
             {
-                SuppressNativeMombotRelogState(preserveDoNotResuscitate: true);
+                SuppressNativeMombotRelogState(
+                    preserveDoNotResuscitate: true,
+                    preserveShipDestroyed: HasNativeMombotShipDestroyedFlag());
                 await StopNativeMombotAfterDisconnectAsync();
                 return;
             }
@@ -509,8 +551,17 @@ public partial class MainWindow
             await Task.Delay(100);
         }
 
-        if (!_mombot.Enabled || ShouldStopNativeMombotAfterDisconnect())
+        if (!_mombot.Enabled)
             return;
+
+        if (ShouldStopNativeMombotAfterDisconnect())
+        {
+            SuppressNativeMombotRelogState(
+                preserveDoNotResuscitate: true,
+                preserveShipDestroyed: HasNativeMombotShipDestroyedFlag());
+            await StopNativeMombotAfterDisconnectAsync();
+            return;
+        }
 
         await TriggerNativeMombotRelogAsync(
             relogMessage: string.Empty,
@@ -1337,6 +1388,9 @@ public partial class MainWindow
 
         bool preserveOfflineDoNotResuscitate = !_gameInstance.IsConnected && HasNativeMombotDoNotResuscitateFlag();
         bool preserveOfflineShipDestroyed = !_gameInstance.IsConnected && HasNativeMombotShipDestroyedFlag();
+        Core.GlobalModules.DebugLog(
+            $"[MTC.NativeBotStart] bootstrap connected={_gameInstance.IsConnected} preserveDnr={preserveOfflineDoNotResuscitate} preserveShipDestroyed={preserveOfflineShipDestroyed}\n");
+        Core.GlobalModules.FlushDebugLog();
         PrimeMombotBootstrapState(
             botConfig,
             preserveDoNotResuscitate: preserveOfflineDoNotResuscitate,
@@ -1378,6 +1432,7 @@ public partial class MainWindow
             await SaveCurrentGameConfigAsync();
             SeedMombotRelogVarsFromCurrentState();
             NormalizeOptionalMombotCorpVars();
+            ArmNativeMombotPostLoginMacro(relogSettings);
             SetMombotCurrentVars("1", "$relogging", "$connectivity~relogging");
             ApplyMombotConfigChange(config => config.Enabled = true);
             LoadMombotStartupScripts();
@@ -1386,9 +1441,9 @@ public partial class MainWindow
             {
                 IReadOnlyDictionary<string, string> initialVars = BuildNativeMombotConnectivityRelogVars(relogSettings);
                 var launchErrors = new List<string>();
-                foreach (string entryLabel in new[] { ":NATIVE~ENTER_NEW_GAME", ":CONNECTIVITY~ENTER_NEW_GAME" })
+                foreach (string entryLabel in new[] { ":CONNECTIVITY~ENTER_NEW_GAME" })
                 {
-                    if (_mombot.TryLoadInstalledScriptAtLabel(
+                    if (_mombot.TryLoadInstalledScriptAtSubroutine(
                             "mombot.cts",
                             entryLabel,
                             initialVars,
@@ -1424,6 +1479,7 @@ public partial class MainWindow
     {
         string newGame = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.NewGameAccountCreation ? "1" : "0";
         string gameLetter = NormalizeGameLetter(relogSettings.GameLetter);
+        string postLoginMacro = GetNativeMombotPostLoginMacro(relogSettings);
         string startShipName = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~STARTSHIPNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot~startShipName", string.Empty),
@@ -1459,11 +1515,66 @@ public partial class MainWindow
             ["$BOT~NEWGAMEOLDER"] = newGame == "1" ? "0" : "1",
             ["$newGameOlder"] = newGame == "1" ? "0" : "1",
             ["$BOT~ISSHIPDESTROYED"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed ? "1" : "0",
+            ["$bot~isShipDestroyed"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed ? "1" : "0",
             ["$command_to_issue"] = relogSettings.BotCommand,
-            ["$BOT~STARTMACRO"] = relogSettings.MacroAfterLogin,
-            ["$bot~startMacro"] = relogSettings.MacroAfterLogin,
-            ["$startMacro"] = relogSettings.MacroAfterLogin,
+            ["$BOT~STARTMACRO"] = postLoginMacro,
+            ["$bot~startMacro"] = postLoginMacro,
+            ["$startMacro"] = postLoginMacro,
         };
+    }
+
+    private void ArmNativeMombotPostLoginMacro(MTC.mombot.mombotRelogDialogResult relogSettings)
+    {
+        string macro = GetNativeMombotPostLoginMacro(relogSettings);
+        lock (_nativeMombotPostLoginMacroLock)
+        {
+            _pendingNativeMombotPostLoginMacro = macro;
+        }
+
+        if (!string.IsNullOrWhiteSpace(macro))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.NativeBotStart] armed post-login macro action='{relogSettings.AfterLoginAction}' macro='{macro}'\n");
+            Core.GlobalModules.FlushDebugLog();
+        }
+    }
+
+    private string ConsumeNativeMombotPostLoginMacro()
+    {
+        lock (_nativeMombotPostLoginMacroLock)
+        {
+            string macro = _pendingNativeMombotPostLoginMacro;
+            _pendingNativeMombotPostLoginMacro = string.Empty;
+            return macro;
+        }
+    }
+
+    private static string GetNativeMombotAfterLoginAction(string botCommand, string startMacro)
+    {
+        if (!string.IsNullOrWhiteSpace(botCommand))
+            return "command";
+
+        if (string.Equals(NormalizeMombotValue(startMacro), "pt", StringComparison.OrdinalIgnoreCase))
+            return "terra";
+
+        return string.IsNullOrWhiteSpace(startMacro)
+            ? "nothing"
+            : "macro";
+    }
+
+    private static bool IsNativeMombotMacroAfterLoginAction(string action)
+    {
+        return string.Equals(action, "macro", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(action, "terra", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetNativeMombotPostLoginMacro(MTC.mombot.mombotRelogDialogResult relogSettings)
+    {
+        return string.Equals(relogSettings.AfterLoginAction, "terra", StringComparison.OrdinalIgnoreCase)
+            ? "pt"
+            : string.Equals(relogSettings.AfterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
+                ? relogSettings.MacroAfterLogin
+                : string.Empty;
     }
 
     private async Task StopInternalMombotAsync()
@@ -1510,9 +1621,10 @@ public partial class MainWindow
             ? string.Empty
             : NormalizeScriptStopPath(scriptRoot, programDir, scriptDirectory);
 
-        bool preserveDoNotResuscitate = ShouldStopNativeMombotAfterDisconnect();
-        TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate}");
-        ClearMombotRelogState(preserveDoNotResuscitate);
+        bool preserveShipDestroyed = HasNativeMombotShipDestroyedFlag();
+        bool preserveDoNotResuscitate = HasNativeMombotDoNotResuscitateFlag() || preserveShipDestroyed;
+        TraceRuntimeStop($"[BotStop] native begin root='{scriptRootPath}' lastLoaded='{lastLoadedModule}' preserveDnr={preserveDoNotResuscitate} preserveShipDestroyed={preserveShipDestroyed}");
+        ClearMombotRelogState(preserveDoNotResuscitate, preserveShipDestroyed);
         ClearNativeMombotStartupDataGather();
         StoredBotSection nativeBotSection = LoadConfiguredBotSections().First(bot => bot.IsNative);
         Core.BotConfig nativeBotConfig = nativeBotSection.Config;
@@ -1589,6 +1701,7 @@ public partial class MainWindow
             Core.ScriptRef.GetCurrentGameVar("$BOT~STARTMACRO", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$bot~startMacro", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$startMacro", string.Empty));
+        string afterLoginAction = GetNativeMombotAfterLoginAction(botCommand, startMacro);
 
         bool newGameDay1 = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
                            string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "false"), "true", StringComparison.OrdinalIgnoreCase);
@@ -1622,15 +1735,15 @@ public partial class MainWindow
             string.IsNullOrWhiteSpace(password) ||
             string.IsNullOrWhiteSpace(gameLetter);
 
-        MTC.mombot.mombotRelogLoginType loginType = doNotResuscitate || wasShipDestroyed
+        MTC.mombot.mombotRelogLoginType loginType = wasShipDestroyed
             ? MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed
             : missingRelogSetup
                 ? MTC.mombot.mombotRelogLoginType.NewGameAccountCreation
                 : newGameDay1
                     ? MTC.mombot.mombotRelogLoginType.NewGameAccountCreation
-                    : newGameOlder
+                    : newGameOlder || doNotResuscitate
                         ? MTC.mombot.mombotRelogLoginType.NormalRelog
-                        : MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed;
+                        : MTC.mombot.mombotRelogLoginType.NormalRelog;
 
         return new MTC.mombot.mombotRelogDialogResult(
             loginType,
@@ -1640,7 +1753,7 @@ public partial class MainWindow
             password,
             NormalizeGameLetter(gameLetter),
             delayMinutes,
-            "nothing",
+            afterLoginAction,
             botCommand,
             startMacro);
     }
@@ -1656,8 +1769,7 @@ public partial class MainWindow
 
     private bool ShouldReviewMombotRelogSettings(MTC.mombot.mombotRelogDialogResult defaults)
     {
-        return HasNativeMombotDoNotResuscitateFlag() ||
-            HasNativeMombotShipDestroyedFlag() ||
+        return HasNativeMombotShipDestroyedFlag() ||
             defaults.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed;
     }
 
@@ -1721,7 +1833,7 @@ public partial class MainWindow
             string.Equals(result.AfterLoginAction, "command", StringComparison.OrdinalIgnoreCase) ? result.BotCommand : string.Empty,
             "$command_to_issue");
         PersistMombotVars(
-            string.Equals(result.AfterLoginAction, "macro", StringComparison.OrdinalIgnoreCase) ? result.MacroAfterLogin : string.Empty,
+            IsNativeMombotMacroAfterLoginAction(result.AfterLoginAction) ? GetNativeMombotPostLoginMacro(result) : string.Empty,
             "$BOT~STARTMACRO",
             "$bot~startMacro",
             "$startMacro");
@@ -1735,17 +1847,17 @@ public partial class MainWindow
             case MTC.mombot.mombotRelogLoginType.NewGameAccountCreation:
                 PersistMombotVars("1", "$BOT~NEWGAMEDAY1", "$newGameDay1");
                 PersistMombotVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                PersistMombotVars("0", "$BOT~ISSHIPDESTROYED");
+                PersistMombotVars("0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
                 break;
             case MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed:
                 PersistMombotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
                 PersistMombotVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                PersistMombotVars("1", "$BOT~ISSHIPDESTROYED");
+                PersistMombotVars("1", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
                 break;
             default:
                 PersistMombotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
                 PersistMombotVars("1", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                PersistMombotVars("0", "$BOT~ISSHIPDESTROYED");
+                PersistMombotVars("0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
                 break;
         }
 
@@ -1792,7 +1904,7 @@ public partial class MainWindow
             "1")) ? "1" : "0";
         string newGameOlder = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0")) ? "1" : "0";
         string newGameDay1 = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0")) ? "1" : "0";
-        string isShipDestroyed = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISSHIPDESTROYED", "0")) ? "1" : "0";
+        string isShipDestroyed = HasNativeMombotShipDestroyedFlag() ? "1" : "0";
 
         SetMombotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
         SetMombotCurrentVars(serverName, "$BOT~SERVERNAME", "$servername");
@@ -1802,7 +1914,7 @@ public partial class MainWindow
         SetMombotCurrentVars(doRelog, "$BOT~DORELOG", "$doRelog");
         SetMombotCurrentVars(newGameOlder, "$BOT~NEWGAMEOLDER", "$newGameOlder");
         SetMombotCurrentVars(newGameDay1, "$BOT~NEWGAMEDAY1", "$newGameDay1");
-        SetMombotCurrentVars(isShipDestroyed, "$BOT~ISSHIPDESTROYED");
+        SetMombotCurrentVars(isShipDestroyed, "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
         SetMombotCurrentVars("General", "$BOT~MODE", "$mode");
         SetMombotCurrentVars(string.Empty, "$BOT~LAST_LOADED_MODULE", "$LAST_LOADED_MODULE");
     }
@@ -2196,7 +2308,7 @@ public partial class MainWindow
         MirrorMombotCurrentVars(hadExistingBotConfig ? "1" : "0", "$BOT~DORELOG", "$doRelog");
         MirrorMombotCurrentVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
         MirrorMombotCurrentVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-        MirrorMombotCurrentVars(preserveShipDestroyed ? "1" : "0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed", "$isShipDestroyed");
+        SetMombotCurrentVars(preserveShipDestroyed ? "1" : "0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
         MirrorMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
         MirrorMombotCurrentVars(string.Empty, "$command_caller", "$BOT~COMMAND_CALLER", "$bot~command_caller");
         MirrorMombotCurrentVars("0", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$BOT~SELF_COMMAND", "$bot~self_command", "$self_command");

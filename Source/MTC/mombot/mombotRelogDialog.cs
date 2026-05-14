@@ -93,6 +93,7 @@ internal sealed class mombotRelogDialog : Window
             new AfterLoginOption("nothing", "Nothing"),
             new AfterLoginOption("command", "Run Command"),
             new AfterLoginOption("macro", "Fire Macro"),
+            new AfterLoginOption("terra", "Land on Terra"),
         };
 
         string defaultLoginName = NormalizeFreeform(defaults.LoginName);
@@ -220,7 +221,9 @@ internal sealed class mombotRelogDialog : Window
                 string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase)
                     ? NormalizeFreeform(txtBotCommand.Text)
                     : string.Empty,
-                string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
+                string.Equals(afterLoginAction, "terra", StringComparison.OrdinalIgnoreCase)
+                    ? "pt"
+                    : string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
                     ? NormalizeFreeform(txtMacro.Text)
                     : string.Empty);
             Close(true);
@@ -252,26 +255,6 @@ internal sealed class mombotRelogDialog : Window
                     Spacing = 14,
                     Children =
                     {
-                        new StackPanel
-                        {
-                            Spacing = 4,
-                            Children =
-                            {
-                                new TextBlock
-                                {
-                                    Text = "New Game Account",
-                                    FontSize = 24,
-                                    FontWeight = FontWeight.Bold,
-                                    Foreground = FgHeader,
-                                },
-                                new TextBlock
-                                {
-                                    Text = "Saved per game and used by native MomBot when it needs to enter the game from the login screens.",
-                                    Foreground = FgMuted,
-                                    TextWrapping = TextWrapping.Wrap,
-                                },
-                            },
-                        },
                         BuildFullWidthCell("Login type", cboLoginType),
                         BuildPairRow(
                             BuildFieldCell("Login name", txtLoginName),

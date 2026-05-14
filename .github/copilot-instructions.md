@@ -360,7 +360,9 @@ Source/build-twxp.sh    # produces local bin/osx-arm64/twxp
 
 `bin/` is generated output and must not be committed to GitHub. Publish release binaries through
 `Source/publish-sourceforge-bundles.sh --rebuild`, which packages MTC, TWXP, TWXC, and TWXD and uploads
-the platform zips to SourceForge.
+the platform packages to SourceForge (`twx30-osx-*.pkg`, `twx30-win-x64.zip`, and Linux `.deb`/`.rpm`
+all-in-one plus split component packages). macOS installers provide UI choices; Linux choices are split
+packages because APT/RPM installs are not interactive.
 
 Verify after install: `twxc ~/twx/scripts/somescript.ts` and check `.cts` output size.
 

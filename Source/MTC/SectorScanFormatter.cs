@@ -9,6 +9,7 @@ namespace MTC;
 internal static class SectorScanFormatter
 {
     private const string SectorLabel = "Sector  : ";
+    private const string BeaconLabel = "Beacon  : ";
     private const string PortLabel = "Ports   : ";
     private const string PlanetLabel = "Planets : ";
     private const string TraderLabel = "Traders : ";
@@ -30,6 +31,13 @@ internal static class SectorScanFormatter
         if (sector == null)
             return output.ToString().TrimEnd();
 
+        if (!string.IsNullOrWhiteSpace(sector.Beacon))
+        {
+            output.Append(BeaconLabel)
+                  .Append(sector.Beacon.Trim())
+                  .AppendLine();
+        }
+
         if (sector.SectorPort is { Dead: false } port && !string.IsNullOrWhiteSpace(port.Name))
         {
             output.Append(PortLabel)
@@ -43,7 +51,7 @@ internal static class SectorScanFormatter
 
         IReadOnlyList<string> planets = GetPlanetLines(sectorNumber, sector, database);
         AppendBlock(output, PlanetLabel, planets);
-        AppendBlock(output, TraderLabel, BuildTraderLines(sector.Traders));
+        AppendTraderBlocks(output, sector.Traders);
         AppendBlock(output, ShipLabel, BuildShipLines(sector.Ships));
 
         if (sector.Fighters.Quantity > 0)
@@ -72,6 +80,15 @@ internal static class SectorScanFormatter
         return output.ToString().TrimEnd();
     }
 
+    private static void AppendTraderBlocks(StringBuilder output, IReadOnlyList<Core.Trader> traders)
+    {
+        if (traders.Count == 0)
+            return;
+
+        foreach (IGrouping<string, Core.Trader> group in traders.GroupBy(t => NormalizeTraderLabel(t.DisplayLabel)))
+            AppendBlock(output, FormatTraderLabel(group.Key), BuildTraderLines(group.ToList()));
+    }
+
     private static void AppendBlock(StringBuilder output, string label, IReadOnlyList<string> lines, string? continuationLabel = null)
     {
         if (lines.Count == 0)
@@ -97,16 +114,27 @@ internal static class SectorScanFormatter
         var lines = new List<string>();
         foreach (Core.Trader trader in traders)
         {
+            bool hasShipDetail =
+                !string.IsNullOrWhiteSpace(trader.ShipName) ||
+                !string.IsNullOrWhiteSpace(trader.ShipType);
+
             var summary = new StringBuilder();
             summary.Append(trader.Name);
             if (trader.Fighters > 0)
                 summary.Append(", w/ ").Append(trader.Fighters.ToString("N0")).Append(" ftrs");
-            if (!string.IsNullOrWhiteSpace(trader.ShipName))
-                summary.Append(", in ").Append(trader.ShipName);
+            if (hasShipDetail)
+                summary.Append(',');
             lines.Add(summary.ToString());
 
-            if (!string.IsNullOrWhiteSpace(trader.ShipType))
-                lines.Add($"({trader.ShipType})");
+            if (hasShipDetail)
+            {
+                var detail = new StringBuilder("in");
+                if (!string.IsNullOrWhiteSpace(trader.ShipName))
+                    detail.Append(' ').Append(trader.ShipName.Trim());
+                if (!string.IsNullOrWhiteSpace(trader.ShipType))
+                    detail.Append(" (").Append(trader.ShipType.Trim()).Append(')');
+                lines.Add(detail.ToString());
+            }
         }
 
         return lines;
@@ -147,9 +175,37 @@ internal static class SectorScanFormatter
         var line = new StringBuilder();
         line.Append(quantity.ToString("N0")).Append(" (").Append(mineType).Append(')');
         if (!string.IsNullOrWhiteSpace(owner))
-            line.Append(' ').Append(owner.Trim());
+        {
+            string trimmedOwner = owner.Trim();
+            if (trimmedOwner.StartsWith('(') && trimmedOwner.EndsWith(')'))
+                line.Append(' ').Append(trimmedOwner);
+            else
+                line.Append(" (").Append(trimmedOwner).Append(')');
+        }
         return line.ToString();
     }
+
+    private static string NormalizeTraderLabel(string? label)
+    {
+        if (string.IsNullOrWhiteSpace(label))
+            return "Traders";
+
+        string value = label.Trim();
+        if (value.Equals("Federals", StringComparison.OrdinalIgnoreCase))
+            return "Federals";
+        if (value.Equals("JemHada", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("Jem'Hada", StringComparison.OrdinalIgnoreCase))
+            return "Jem'Hada";
+        return "Traders";
+    }
+
+    private static string FormatTraderLabel(string label) =>
+        label switch
+        {
+            "Federals" => "Federals: ",
+            "Jem'Hada" => "Jem'Hada: ",
+            _ => TraderLabel,
+        };
 
     private static string FormatConstellation(string? constellation)
     {

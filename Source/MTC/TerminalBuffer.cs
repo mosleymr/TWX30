@@ -102,6 +102,7 @@ public class TerminalBuffer
     private int _resizeBackupRows;
     private int _resizeBackupCursorCol;
     private int _resizeBackupCursorRow;
+    private bool[]? _resizeBackupSoftWrappedRows;
     private bool _suppressResizeBackupInvalidation;
 
     // ── Scrollback buffer ──────────────────────────────────────────────────
@@ -110,7 +111,9 @@ public class TerminalBuffer
 
     // Lines ordered oldest → newest.  Capped at ScrollbackLines entries.
     private readonly List<TerminalCell[]> _scrollback = [];
+    private readonly List<bool> _scrollbackSoftWrapped = [];
     private long _scrollbackGeneration;
+    private bool[] _softWrappedRows;
 
     /// <summary>Number of lines currently held in the scrollback buffer.</summary>
     public int ScrollbackCount => _scrollback.Count;
@@ -184,6 +187,7 @@ public class TerminalBuffer
         Columns      = columns;
         Rows         = rows;
         _cells       = new TerminalCell[rows, columns];
+        _softWrappedRows = new bool[rows];
         ScrollTop    = 0;
         ScrollBottom = rows - 1;
         Reset();
@@ -257,7 +261,7 @@ public class TerminalBuffer
     /// <summary>Writes a character at the current cursor position and advances.</summary>
     public void WriteChar(char ch)
     {
-        if (CursorCol >= Columns) LineFeed();   // wrap
+        if (CursorCol >= Columns) LineFeed(softWrap: true);   // wrap
 
         SetCell(CursorRow, CursorCol, ch, CurrentFg, CurrentBg);
         _cells[CursorRow, CursorCol].Blink = CurrentBlink;
@@ -265,7 +269,7 @@ public class TerminalBuffer
         if (CursorCol >= Columns)
         {
             CursorCol = 0;
-            LineFeed();
+            LineFeed(softWrap: true);
         }
     }
 
@@ -282,8 +286,11 @@ public class TerminalBuffer
 
     public void CarriageReturn()  => CursorCol = 0;
 
-    public void LineFeed()
+    public void LineFeed() => LineFeed(softWrap: false);
+
+    private void LineFeed(bool softWrap)
     {
+        _softWrappedRows[CursorRow] = softWrap;
         if (CursorRow >= ScrollBottom)
             ScrollUp();
         else
@@ -322,15 +329,23 @@ public class TerminalBuffer
                 for (int c = 0; c < Columns; c++)
                     saved[c] = _cells[ScrollTop, c];
                 _scrollback.Add(saved);
+                _scrollbackSoftWrapped.Add(_softWrappedRows[ScrollTop]);
                 _scrollbackGeneration++;
                 if (_scrollback.Count > ScrollbackLines)
+                {
                     _scrollback.RemoveAt(0);
+                    _scrollbackSoftWrapped.RemoveAt(0);
+                }
             }
 
             for (int r = ScrollTop; r < ScrollBottom; r++)
+            {
                 for (int c = 0; c < Columns; c++)
                     _cells[r, c] = _cells[r + 1, c];
+                _softWrappedRows[r] = _softWrappedRows[r + 1];
+            }
             EraseLine(ScrollBottom, 0, Columns - 1);
+            _softWrappedRows[ScrollBottom] = false;
         }
         Dirty = true;
     }
@@ -341,9 +356,13 @@ public class TerminalBuffer
         for (int n = 0; n < lines; n++)
         {
             for (int r = ScrollBottom; r > ScrollTop; r--)
+            {
                 for (int c = 0; c < Columns; c++)
                     _cells[r, c] = _cells[r - 1, c];
+                _softWrappedRows[r] = _softWrappedRows[r - 1];
+            }
             EraseLine(ScrollTop, 0, Columns - 1);
+            _softWrappedRows[ScrollTop] = false;
         }
         Dirty = true;
     }
@@ -355,6 +374,8 @@ public class TerminalBuffer
         InvalidateResizeBackup();
         for (int c = fromCol; c <= toCol && c < Columns; c++)
             _cells[row, c] = new TerminalCell { Char = ' ', Foreground = CurrentFg, Background = CurrentBg };
+        if (fromCol <= 0 && toCol >= Columns - 1)
+            _softWrappedRows[row] = false;
         Dirty = true;
     }
 
@@ -402,6 +423,7 @@ public class TerminalBuffer
             SaveResizeBackup();
 
         TerminalCell[,] sourceCells = _cells;
+        bool[] sourceSoftWrappedRows = _softWrappedRows;
         int sourceColumns = Columns;
         int sourceRows = Rows;
         int sourceCursorCol = CursorCol;
@@ -410,13 +432,24 @@ public class TerminalBuffer
         if (restoreFromBackup)
         {
             sourceCells = _resizeBackupCells!;
+            sourceSoftWrappedRows = _resizeBackupSoftWrappedRows ?? new bool[_resizeBackupRows];
             sourceColumns = _resizeBackupColumns;
             sourceRows = _resizeBackupRows;
             sourceCursorCol = _resizeBackupCursorCol;
             sourceCursorRow = _resizeBackupCursorRow;
         }
 
+        if (columns != sourceColumns)
+        {
+            (sourceCells, sourceSoftWrappedRows, sourceRows) =
+                ReflowSoftWrappedRows(sourceCells, sourceSoftWrappedRows, sourceRows, sourceColumns, columns);
+            sourceColumns = columns;
+            sourceCursorRow = Math.Clamp(sourceCursorRow, 0, Math.Max(0, sourceRows - 1));
+            sourceCursorCol = Math.Clamp(sourceCursorCol, 0, columns - 1);
+        }
+
         var newCells = new TerminalCell[rows, columns];
+        var newSoftWrappedRows = new bool[rows];
         for (int r = 0; r < rows; r++)
             for (int c = 0; c < columns; c++)
                 newCells[r, c] = TerminalCell.Default;
@@ -431,11 +464,15 @@ public class TerminalBuffer
         int copyRows = Math.Min(rows, sourceRows - sourceRowStart);
         int copyCols = Math.Min(columns, sourceColumns);
         for (int r = 0; r < copyRows; r++)
+        {
             for (int c = 0; c < copyCols; c++)
                 newCells[r, c] = sourceCells[sourceRowStart + r, c];
+            newSoftWrappedRows[r] = sourceSoftWrappedRows[sourceRowStart + r];
+        }
 
         _suppressResizeBackupInvalidation = true;
         _cells       = newCells;
+        _softWrappedRows = newSoftWrappedRows;
         Columns      = columns;
         Rows         = rows;
         ScrollTop    = 0;
@@ -460,8 +497,11 @@ public class TerminalBuffer
     {
         InvalidateResizeBackup();
         for (int r = 0; r < Rows; r++)
+        {
             for (int c = 0; c < Columns; c++)
                 _cells[r, c] = TerminalCell.Default;
+            _softWrappedRows[r] = false;
+        }
         CursorCol    = 0;
         CursorRow    = 0;
         ScrollTop    = 0;
@@ -476,6 +516,7 @@ public class TerminalBuffer
     private void SaveResizeBackup()
     {
         _resizeBackupCells = CloneCells(_cells, Rows, Columns);
+        _resizeBackupSoftWrappedRows = (bool[])_softWrappedRows.Clone();
         _resizeBackupColumns = Columns;
         _resizeBackupRows = Rows;
         _resizeBackupCursorCol = CursorCol;
@@ -494,6 +535,7 @@ public class TerminalBuffer
     private void ClearResizeBackup()
     {
         _resizeBackupCells = null;
+        _resizeBackupSoftWrappedRows = null;
         _resizeBackupColumns = 0;
         _resizeBackupRows = 0;
         _resizeBackupCursorCol = 0;
@@ -506,5 +548,103 @@ public class TerminalBuffer
             return;
 
         ClearResizeBackup();
+    }
+
+    private static (TerminalCell[,] Cells, bool[] SoftWrappedRows, int Rows) ReflowSoftWrappedRows(
+        TerminalCell[,] sourceCells,
+        bool[] sourceSoftWrappedRows,
+        int sourceRows,
+        int sourceColumns,
+        int targetColumns)
+    {
+        var rows = new List<TerminalCell[]>();
+        var softWrappedRows = new List<bool>();
+
+        int row = 0;
+        while (row < sourceRows)
+        {
+            bool startsSoftGroup = sourceSoftWrappedRows[row];
+            if (!startsSoftGroup)
+            {
+                rows.Add(CopyRow(sourceCells, row, sourceColumns, targetColumns));
+                softWrappedRows.Add(false);
+                row++;
+                continue;
+            }
+
+            var logicalLine = new List<TerminalCell>(sourceColumns * 2);
+            while (row < sourceRows)
+            {
+                bool softWrap = sourceSoftWrappedRows[row];
+                int take = softWrap ? sourceColumns : LastContentColumn(sourceCells, row, sourceColumns) + 1;
+                for (int c = 0; c < take; c++)
+                    logicalLine.Add(sourceCells[row, c]);
+
+                row++;
+                if (!softWrap)
+                    break;
+            }
+
+            if (logicalLine.Count == 0)
+            {
+                rows.Add(CreateBlankRow(targetColumns));
+                softWrappedRows.Add(false);
+                continue;
+            }
+
+            int offset = 0;
+            while (offset < logicalLine.Count)
+            {
+                TerminalCell[] outRow = CreateBlankRow(targetColumns);
+                int take = Math.Min(targetColumns, logicalLine.Count - offset);
+                for (int c = 0; c < take; c++)
+                    outRow[c] = logicalLine[offset + c];
+
+                offset += take;
+                rows.Add(outRow);
+                softWrappedRows.Add(offset < logicalLine.Count);
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            rows.Add(CreateBlankRow(targetColumns));
+            softWrappedRows.Add(false);
+        }
+
+        var cells = new TerminalCell[rows.Count, targetColumns];
+        for (int r = 0; r < rows.Count; r++)
+            for (int c = 0; c < targetColumns; c++)
+                cells[r, c] = rows[r][c];
+
+        return (cells, softWrappedRows.ToArray(), rows.Count);
+    }
+
+    private static TerminalCell[] CopyRow(TerminalCell[,] sourceCells, int row, int sourceColumns, int targetColumns)
+    {
+        TerminalCell[] output = CreateBlankRow(targetColumns);
+        int copyCols = Math.Min(sourceColumns, targetColumns);
+        for (int c = 0; c < copyCols; c++)
+            output[c] = sourceCells[row, c];
+        return output;
+    }
+
+    private static TerminalCell[] CreateBlankRow(int columns)
+    {
+        var row = new TerminalCell[columns];
+        for (int c = 0; c < columns; c++)
+            row[c] = TerminalCell.Default;
+        return row;
+    }
+
+    private static int LastContentColumn(TerminalCell[,] cells, int row, int columns)
+    {
+        for (int c = columns - 1; c >= 0; c--)
+        {
+            if (cells[row, c].Char != ' ')
+                return c;
+        }
+
+        return -1;
     }
 }

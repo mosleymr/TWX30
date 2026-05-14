@@ -43,8 +43,15 @@ internal sealed class mombotWatcher
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
-        if (line.Contains(UnderAttackLead, StringComparison.Ordinal) ||
-            line.Contains(UnderAttackTail, StringComparison.Ordinal))
+        string trimmed = line.TrimStart();
+        if (trimmed.StartsWith(">", StringComparison.Ordinal) ||
+            trimmed.StartsWith("Received from Shipboard Computers", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith(UnderAttackLead, StringComparison.Ordinal) ||
+            trimmed.Contains(UnderAttackTail, StringComparison.Ordinal))
         {
             SetRedAlertVars("TRUE");
             return true;

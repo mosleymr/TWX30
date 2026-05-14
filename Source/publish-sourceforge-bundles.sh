@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# publish-sourceforge-bundles.sh — upload standalone platform bundles to SourceForge
+# publish-sourceforge-bundles.sh — upload TWX30 installer packages to SourceForge
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./publish-sourceforge-bundles.sh [--rebuild] [--dry-run]
 
-Builds and/or uploads the platform bundle zip files from TWX30/bin to SourceForge.
+Builds and/or uploads the platform release packages from TWX30/bin to SourceForge.
 
 Required environment:
   SOURCEFORGE_API_KEY   SourceForge Release API key
@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $REBUILD -eq 1 ]]; then
-  ./build-sourceforge-bundles.sh
+  RID_LIST="${REBUILD_RID_LIST:-osx-arm64 osx-x64 linux-x64}" ./build-sourceforge-bundles.sh
 fi
 
 if [[ -z "${SOURCEFORGE_API_KEY:-}" ]]; then
@@ -86,55 +86,85 @@ else
     osx-arm64
     osx-x64
     win-x64
+    win-arm64
     linux-x64
   )
 fi
 
 api_defaults_for_rid() {
-  case "$1" in
+  local rid="$1"
+  local file_name="$2"
+
+  case "$rid" in
     osx-arm64) printf '%s' "default=mac" ;;
     win-x64) printf '%s' "default=windows" ;;
-    linux-x64) printf '%s' "default=linux" ;;
+    linux-x64)
+      if [[ "$file_name" == "twx30-linux-x64.deb" ]]; then
+        printf '%s' "default=linux"
+      fi
+      ;;
     *) printf '%s' "" ;;
   esac
 }
 
+package_files_for_rid() {
+  case "$1" in
+    osx-arm64|osx-x64)
+      printf '%s\n' "${BIN_ROOT}/twx30-$1.pkg"
+      ;;
+    win-x64)
+      printf '%s\n' "${BIN_ROOT}/twx30-$1.msi"
+      ;;
+    win-arm64)
+      printf '%s\n' "${BIN_ROOT}/twx30-$1.msi"
+      ;;
+    linux-x64)
+      printf '%s\n' "${BIN_ROOT}/twx30-$1.deb"
+      printf '%s\n' "${BIN_ROOT}/twx30-$1.rpm"
+      ;;
+    *)
+      echo "Unsupported RID for SourceForge package upload: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
 for rid in "${RIDS[@]}"; do
-  zip_path="${BIN_ROOT}/mtc-${rid}.zip"
-  if [[ ! -f "${zip_path}" ]]; then
-    echo "Missing bundle: ${zip_path}" >&2
-    exit 1
-  fi
+  while IFS= read -r package_path; do
+    if [[ ! -f "${package_path}" ]]; then
+      echo "Missing package: ${package_path}" >&2
+      exit 1
+    fi
 
-  file_name="$(basename "${zip_path}")"
-  remote_path="${REMOTE_DIR}/${file_name}"
-  api_url="https://sourceforge.net/projects/TWX30/files/${file_name}"
-  default_arg="$(api_defaults_for_rid "${rid}")"
-  curl_args=(
-    -fsS
-    -H "Accept: application/json"
-    -X PUT
-    -d "api_key=${SOURCEFORGE_API_KEY}"
-    -d "download_label=${file_name}"
-  )
-  if [[ -n "${default_arg}" ]]; then
-    curl_args+=(-d "${default_arg}")
-  fi
+    file_name="$(basename "${package_path}")"
+    remote_path="${REMOTE_DIR}/${file_name}"
+    api_url="https://sourceforge.net/projects/TWX30/files/${file_name}"
+    default_arg="$(api_defaults_for_rid "${rid}" "${file_name}")"
+    curl_args=(
+      -fsS
+      -H "Accept: application/json"
+      -X PUT
+      -d "api_key=${SOURCEFORGE_API_KEY}"
+      -d "download_label=${file_name}"
+    )
+    if [[ -n "${default_arg}" ]]; then
+      curl_args+=(-d "${default_arg}")
+    fi
 
-  echo "==> Uploading ${file_name} to SourceForge..."
-  if [[ $DRY_RUN -eq 1 ]]; then
-    echo "scp -o BatchMode=yes ${zip_path} ${USERNAME}@frs.sourceforge.net:${remote_path}"
-    echo "curl -H 'Accept: application/json' -X PUT -d 'api_key=<redacted>' -d 'download_label=${file_name}'${default_arg:+ -d '${default_arg}'} ${api_url}"
-    continue
-  fi
+    echo "==> Uploading ${file_name} to SourceForge..."
+    if [[ $DRY_RUN -eq 1 ]]; then
+      echo "scp -o BatchMode=yes ${package_path} ${USERNAME}@frs.sourceforge.net:${remote_path}"
+      echo "curl -H 'Accept: application/json' -X PUT -d 'api_key=<redacted>' -d 'download_label=${file_name}'${default_arg:+ -d '${default_arg}'} ${api_url}"
+      continue
+    fi
 
-  scp -o BatchMode=yes "${zip_path}" "${USERNAME}@frs.sourceforge.net:${remote_path}"
+    scp -o BatchMode=yes "${package_path}" "${USERNAME}@frs.sourceforge.net:${remote_path}"
 
-  curl "${curl_args[@]}" "${api_url}" >/tmp/sourceforge-upload-response.json
+    curl "${curl_args[@]}" "${api_url}" >/tmp/sourceforge-upload-response.json
 
-  echo "==> Updated SourceForge metadata for ${file_name}"
+    echo "==> Updated SourceForge metadata for ${file_name}"
 
-  python3 - "$SUMMARY_FILE" "$rid" "$file_name" "https://sourceforge.net/projects/TWX30/files/${file_name}/download" <<'PY'
+    python3 - "$SUMMARY_FILE" "$rid" "$file_name" "https://sourceforge.net/projects/TWX30/files/${file_name}/download" <<'PY'
 import json
 import sys
 
@@ -148,6 +178,7 @@ entry = {
 with open(summary_file, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
 PY
+  done < <(package_files_for_rid "${rid}")
 done
 
 if [[ $DRY_RUN -eq 0 && -n "$DISCORD_WEBHOOK_URL" ]]; then
@@ -176,8 +207,8 @@ for entry in entries:
 payload = {
     "embeds": [
         {
-            "title": "TWX30 SourceForge Release Binaries Updated",
-            "description": "Standalone release bundles are live on SourceForge.",
+            "title": "TWX30 SourceForge Installers Updated",
+            "description": "The latest TWX30 installers are live on SourceForge.",
             "fields": fields,
         }
     ]

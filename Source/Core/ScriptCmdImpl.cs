@@ -1680,7 +1680,7 @@ namespace TWXProxy.Core
                     GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
                     _activeGameInstance.ClearInputBuffer();
                     QueueScriptInputPrompt();
-                    scriptObj.SetWaitingForInput(parameters[0], singleKey);
+                    scriptObj.SetWaitingForInput(parameters[0], singleKey, echoKeypressInput: singleKey);
                     scriptObj.PausedReason = PauseReason.Input;
                     return CmdAction.Pause;
                 }

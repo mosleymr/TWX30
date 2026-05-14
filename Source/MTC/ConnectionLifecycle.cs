@@ -444,7 +444,12 @@ public partial class MainWindow
             if (lastProcessedPos >= buffered.Length)
             {
                 serverLineBuf.Clear();
+                string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
+                    ? bufferedAnsi[lastAnsiProcessedPos..]
+                    : string.Empty;
                 serverAnsiLineBuf.Clear();
+                if (ansiRemainder.Length > 0)
+                    serverAnsiLineBuf.Append(ansiRemainder);
             }
         };
 
@@ -469,7 +474,11 @@ public partial class MainWindow
         {
             bool stopNativeMombot = _mombot.Enabled && ShouldStopNativeMombotAfterDisconnect();
             if (stopNativeMombot)
-                SuppressNativeMombotRelogState(preserveDoNotResuscitate: true);
+            {
+                SuppressNativeMombotRelogState(
+                    preserveDoNotResuscitate: true,
+                    preserveShipDestroyed: HasNativeMombotShipDestroyedFlag());
+            }
 
             // Fire 'Connection Lost' so scripts can re-register triggers, etc.
             interpreter.ProgramEvent("Connection Lost", "", false);
@@ -550,6 +559,7 @@ public partial class MainWindow
             });
 
             _mombot.HandleObservedScriptStop();
+            HandleNativeMombotPostLoginScriptStop();
         };
 
         gi.ScriptLoaded += (_, _) =>

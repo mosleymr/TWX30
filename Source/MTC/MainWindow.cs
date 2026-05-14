@@ -132,6 +132,7 @@ public partial class MainWindow : Window
     private TacticalMapControl? _tacticalMap;
     private MapWindow? _mapWindow;
     private CacheWindow? _cacheWindow;
+    private AliensWindow? _aliensWindow;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
     private bool _nativeAppMenuAttached;
@@ -173,6 +174,8 @@ public partial class MainWindow : Window
     private readonly List<byte[]> _pausedTerminalChunks = [];
     private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
     private bool _terminalLivePaused;
+    private bool _deferredInfoPanelsRefresh;
+    private bool _deferredOnlinePanelRefresh;
     private int _displayDrainScheduled;
     private string _statusBarLayoutSignature = string.Empty;
     private bool _statusMacrosHovered;
@@ -284,6 +287,8 @@ public partial class MainWindow : Window
     private string _mombotLastObservedGamePromptPlain = string.Empty;
     private int _pendingNativeMombotEscapeEchoSuppressions;
     private long _nativeMombotEscapeEchoSuppressUntilUtcTicks;
+    private readonly object _nativeMombotPostLoginMacroLock = new();
+    private string _pendingNativeMombotPostLoginMacro = string.Empty;
     private bool _suppressingPendingNativeMombotEscapeSequence;
     private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;

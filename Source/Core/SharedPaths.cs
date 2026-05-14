@@ -192,7 +192,7 @@ public static class SharedPaths
             return WindowsInstallInfo.GetDefaultProgramDir();
 
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return NormalizeDirectory(Path.Combine(home, "twx"));
+        return NormalizeDirectory(Path.Combine(home, "twxproxy"));
     }
 
     public static string SanitizeFileComponent(string value)

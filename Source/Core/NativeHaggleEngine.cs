@@ -376,6 +376,15 @@ public sealed class NativeHaggleEngine
     private static readonly Regex RxPlanetAccepted = new(
         @"(?:you drive a hard bargain, but )?we'?ll take them\.",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly string[] TerminalTradeRejectionPhrases =
+    {
+        "We're not interested.",
+        "go peddle your wares somewhere else",
+        "as stupid as you look, get lost",
+        "Thats insane",
+        "Get lost creep",
+        "you'd better leave if you value your life",
+    };
     private static readonly Regex RxHoldPrompt = new(
         @"^How many (holds|units) of (Fuel Ore|Organics|Equipment) do you want to (buy|sell) \[(\d+)\]\?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -561,6 +570,12 @@ public sealed class NativeHaggleEngine
 
         if (_tradeSuppressed)
             return null;
+
+        if (IsTerminalTradeRejection(line))
+        {
+            CompleteTradeAsRejected(line);
+            return null;
+        }
 
         if (line.Equals("<Port>", StringComparison.OrdinalIgnoreCase) ||
             line.StartsWith("Docking...", StringComparison.OrdinalIgnoreCase))
@@ -1044,6 +1059,47 @@ public sealed class NativeHaggleEngine
                string.Equals(_retryHint.BuySell, session.BuySell, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsTerminalTradeRejection(string line)
+    {
+        foreach (string phrase in TerminalTradeRejectionPhrases)
+        {
+            if (line.Contains(phrase, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void CompleteTradeAsRejected(string line)
+    {
+        if (_session == null)
+        {
+            Reset("trade-rejected");
+            return;
+        }
+
+        GlobalModules.DebugLog(
+            $"[NativeHaggle] Terminal rejection line sector={_session.Sector} product={_session.ProductKey} text='{line}'\n");
+        WriteTradeDebug(_session, $"[NativeHaggle] TEXT reject text='{line}'\n");
+
+        if (!_session.OutcomeRecorded)
+            RecordOutcome(success: false, "trade-rejected");
+
+        PushScriptState(ResolveScriptStateCredits(), abort: true);
+        Reset("trade-rejected");
+    }
+
+    private long ResolveScriptStateCredits()
+    {
+        if (_hasLastKnownCredits)
+            return _lastKnownCredits;
+        if (_session != null)
+            return _session.StartCredits;
+        if (_shipStatus.Credits >= 0)
+            return _shipStatus.Credits;
+        return 0;
+    }
+
     private void PushScriptState(long credits, bool abort)
     {
         ScriptRef.SetVarOnActiveScripts("$HAGGLE~CREDITS", credits.ToString(CultureInfo.InvariantCulture));
@@ -1206,19 +1262,12 @@ public sealed class NativeHaggleEngine
 
         if (_session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
         {
-            string buySell = _session.BuySell;
-            if (!string.IsNullOrWhiteSpace(buySell))
-            {
-                GlobalModules.DebugLog(
-                    $"[NativeHaggle] Prompt-only offer fallback offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={buySell}\n");
-                WriteTradeDebug(_session,
-                    $"[NativeHaggle] TEXT prompt-only offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={buySell}\n");
-                HandleOffer(offer, buySell, finalOffer: false);
-            }
-        }
-
-        if (_session.PendingBid <= 0 || _session.PendingBidOffer <= 0)
+            GlobalModules.DebugLog(
+                $"[NativeHaggle] Ignoring offer prompt without staged bid offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell}\n");
+            WriteTradeDebug(_session,
+                $"[NativeHaggle] TEXT prompt-without-staged-bid offer={offer} sector={_session.Sector} product={_session.ProductKey} buysell={_session.BuySell}\n");
             return null;
+        }
 
         if (offer != _session.PendingBidOffer)
             return null;
@@ -3052,6 +3101,7 @@ public sealed class NativeHaggleEngine
                     _session.IsPlanetTrade &&
                     string.Equals(reason, "command-prompt", StringComparison.OrdinalIgnoreCase) &&
                     _session.PlanetAcceptanceSeen;
+                PushScriptState(ResolveScriptStateCredits(), abort: !acceptedPlanetTrade);
                 RecordOutcome(
                     success: acceptedPlanetTrade,
                     acceptedPlanetTrade ? $"reset:{reason}:planet-accepted" : $"reset:{reason}");

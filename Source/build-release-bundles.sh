@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# build-release-bundles.sh — build TWX30 standalone tools for all release targets
-# and package one platform zip per target in TWX30/bin.
+# build-release-bundles.sh — build TWX30 standalone tools and installer packages.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,15 +21,21 @@ Builds:
 Targets:
   - osx-arm64
   - osx-x64
-  - win-x64
   - linux-x64
+
+Windows MSI installers are built separately on Windows and consumed from:
+  - TWX30/bin/twx30-win-x64.msi
+  - TWX30/bin/twx30-win-arm64.msi
 
 Outputs:
   - TWX30/bin/<rid>/MTC
   - TWX30/bin/<rid>/twxp
   - TWX30/bin/<rid>/twxc
   - TWX30/bin/<rid>/twxd
-  - TWX30/bin/TWX30-<rid>.zip
+  - bundled scripts in packages that support script payloads
+  - TWX30/bin/twx30-osx-<arch>.pkg
+  - TWX30/bin/twx30-linux-x64.deb
+  - TWX30/bin/twx30-linux-x64.rpm
 EOF
   exit 0
 elif [[ $# -gt 0 ]]; then
@@ -44,7 +49,6 @@ else
   RIDS=(
     osx-arm64
     osx-x64
-    win-x64
     linux-x64
   )
 fi
@@ -57,34 +61,26 @@ TWXC_INSTALL_AFTER_BUILD=0 ./build-twxc.sh
 for RID in "${RIDS[@]}"; do
   echo "==> Packaging ${RID}..."
 
-  if [[ "${RID}" == win-* ]]; then
-    MTC_BIN="MTC.exe"
-    TWXP_BIN="twxp.exe"
-    TWXC_BIN="twxc.exe"
-    TWXD_BIN="twxd.exe"
-  else
-    MTC_BIN="MTC"
-    TWXP_BIN="twxp"
-    TWXC_BIN="twxc"
-    TWXD_BIN="twxd"
+  if [[ "${RID}" == linux-* ]]; then
+    RID_LIST="${RID}" ./build-linux-packages.sh
+    continue
   fi
 
-  STAGE_DIR="$(mktemp -d "/tmp/twx30-release-${RID}-XXXXXX")"
-  ZIP_TMP="${BIN_ROOT}/TWX30-${RID}.zip.tmp.$$"
-  ZIP_DEST="${BIN_ROOT}/TWX30-${RID}.zip"
+  if [[ "${RID}" == osx-* ]]; then
+    RID_LIST="${RID}" ./build-macos-pkgs.sh
+    continue
+  fi
 
-  cp "${BIN_ROOT}/${RID}/${MTC_BIN}" "${STAGE_DIR}/${MTC_BIN}"
-  cp "${BIN_ROOT}/${RID}/${TWXP_BIN}" "${STAGE_DIR}/${TWXP_BIN}"
-  cp "${BIN_ROOT}/${RID}/${TWXC_BIN}" "${STAGE_DIR}/${TWXC_BIN}"
-  cp "${BIN_ROOT}/${RID}/${TWXD_BIN}" "${STAGE_DIR}/${TWXD_BIN}"
+  if [[ "${RID}" == win-* ]]; then
+    MSI_PATH="${BIN_ROOT}/twx30-${RID}.msi"
+    if [[ ! -f "${MSI_PATH}" ]]; then
+      echo "Missing externally built Windows MSI: ${MSI_PATH}" >&2
+      exit 1
+    fi
+    echo "==> Using externally built Windows MSI ${RID}: $(ls -lh "${MSI_PATH}" | awk '{print $5, $6, $7, $8, $9}')"
+    continue
+  fi
 
-  rm -f "${ZIP_TMP}" "${ZIP_DEST}"
-  (
-    cd "${STAGE_DIR}"
-    zip -qry "${ZIP_TMP}" "${MTC_BIN}" "${TWXP_BIN}" "${TWXC_BIN}" "${TWXD_BIN}"
-  )
-  mv -f "${ZIP_TMP}" "${ZIP_DEST}"
-  rm -rf "${STAGE_DIR}"
-
-  echo "==> Done package ${RID}: $(ls -lh "${ZIP_DEST}" | awk '{print $5, $6, $7, $8, $9}')"
+  echo "Unsupported package RID: ${RID}" >&2
+  exit 1
 done

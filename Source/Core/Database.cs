@@ -102,6 +102,7 @@ namespace TWXProxy.Core
     /// </summary>
     public class Trader
     {
+        public string DisplayLabel { get; set; } = "Traders";
         public string Name { get; set; } = string.Empty;
         public string ShipType { get; set; } = string.Empty;
         public string ShipName { get; set; } = string.Empty;
@@ -915,6 +916,14 @@ namespace TWXProxy.Core
                 SavePlanet(update);
             }
 
+            foreach (Planet stale in knownPlanets.Skip(matchedKnown))
+            {
+                Planet update = ClonePlanet(stale);
+                update.LastSector = 0;
+                update.ObservedOrder = 0;
+                SavePlanet(update);
+            }
+
             int reusedProvisionals = 0;
             for (int i = matchedKnown; i < normalizedSightings.Count; i++)
             {
@@ -962,16 +971,17 @@ namespace TWXProxy.Core
         /// <summary>
         /// Returns the TWX27-style planet list for a sector.
         /// TWX27 exposes the sector's current visible planet-item list here, so the
-        /// sector display cache is authoritative when present. If we have not yet seen
-        /// a full sector-visible list, fall back to the ID-keyed planet records so
-        /// scripts can still see known planets discovered from other paths.
+        /// sector display cache is authoritative once the sector has been fully seen.
+        /// If we have not yet seen a full sector-visible list, fall back to the
+        /// ID-keyed planet records so scripts can still see known planets discovered
+        /// from other paths.
         /// </summary>
         public List<string> GetPlanetNamesInSector(int sectorNumber)
         {
             var sector = GetSector(sectorNumber);
             var sectorPlanetNames = sector?.PlanetNames.ToList() ?? new List<string>();
 
-            if (sectorPlanetNames.Count > 0)
+            if (sectorPlanetNames.Count > 0 || sector?.Explored == ExploreType.Yes)
                 return sectorPlanetNames;
 
             var planets = GetPlanetsInSector(sectorNumber);

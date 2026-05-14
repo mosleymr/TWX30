@@ -274,7 +274,7 @@ public partial class MainWindow
             Background          = Brushes.Black,
             BorderBrush         = BorderColor,
             BorderThickness     = new Thickness(2),
-            Child               = _termCtrl,
+            Child               = BuildTerminalScrollHost(_termCtrl),
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment   = VerticalAlignment.Stretch,
         };
@@ -968,8 +968,7 @@ public partial class MainWindow
             _state.TranswarpDrive1 = s.TransWarp1;
             _state.TranswarpDrive2 = s.TransWarp2;
 
-            _state.NotifyChanged();
-            RefreshInfoPanels(); // update UI immediately on this dispatch
+            _state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
 
             // Auto-save ship state back to the open profile file
             if (_currentProfilePath != null)
@@ -997,7 +996,7 @@ public partial class MainWindow
                 return;
 
             _currentComputerShipType = trimmed;
-            Dispatcher.UIThread.Post(RefreshInfoPanels);
+            RequestInfoPanelsRefresh();
             return;
         }
 
@@ -1060,7 +1059,7 @@ public partial class MainWindow
         {
             _capturingOnlinePlayers = true;
             _onlinePlayers.Clear();
-            RefreshOnlinePanel();
+            RequestOnlinePanelRefresh();
             return;
         }
 
@@ -1110,7 +1109,7 @@ public partial class MainWindow
             return;
 
         _onlinePlayers.Add(normalizedPlayerName);
-        RefreshOnlinePanel();
+        RequestOnlinePanelRefresh();
     }
 
     private void RemoveOnlinePlayer(string playerName)
@@ -1122,6 +1121,68 @@ public partial class MainWindow
         int removedCount = _onlinePlayers.RemoveAll(existing =>
             string.Equals(existing, normalizedPlayerName, StringComparison.OrdinalIgnoreCase));
         if (removedCount > 0)
+            RequestOnlinePanelRefresh();
+    }
+
+    private void RequestInfoPanelsRefresh(bool force = false)
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(() => RequestInfoPanelsRefresh(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!force && IsEmbeddedTerminalClientDeaf())
+        {
+            _deferredInfoPanelsRefresh = true;
+            return;
+        }
+
+        _deferredInfoPanelsRefresh = false;
+        RefreshInfoPanels();
+    }
+
+    private void RequestOnlinePanelRefresh(bool force = false)
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(() => RequestOnlinePanelRefresh(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!force && IsEmbeddedTerminalClientDeaf())
+        {
+            _deferredOnlinePanelRefresh = true;
+            return;
+        }
+
+        _deferredOnlinePanelRefresh = false;
+        RefreshOnlinePanel();
+    }
+
+    private void FlushDeferredPanelRefreshes()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(FlushDeferredPanelRefreshes, DispatcherPriority.Background);
+            return;
+        }
+
+        if (IsEmbeddedTerminalClientDeaf())
+            return;
+
+        bool refreshInfoPanels = _deferredInfoPanelsRefresh;
+        bool refreshOnlinePanel = _deferredOnlinePanelRefresh;
+        _deferredInfoPanelsRefresh = false;
+        _deferredOnlinePanelRefresh = false;
+
+        if (refreshInfoPanels)
+        {
+            RefreshInfoPanels();
+            return;
+        }
+
+        if (refreshOnlinePanel)
             RefreshOnlinePanel();
     }
 
@@ -1129,7 +1190,7 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(RefreshOnlinePanel);
+            Dispatcher.UIThread.Post(() => RequestOnlinePanelRefresh());
             return;
         }
 
@@ -1189,7 +1250,7 @@ public partial class MainWindow
 
         _capturingOnlinePlayers = false;
         _onlinePlayers.Clear();
-        RefreshOnlinePanel();
+        RequestOnlinePanelRefresh();
     }
 
     private void OnGenesisTorpsChanged(int delta)
@@ -1206,7 +1267,6 @@ public partial class MainWindow
         int updated = _state.Genesis + delta;
         _state.Genesis = updated < 0 ? 0 : updated;
         _state.NotifyChanged();
-        RefreshInfoPanels();
 
         if (_currentProfilePath != null)
             _ = SaveCurrentGameConfigAsync();
@@ -1226,7 +1286,6 @@ public partial class MainWindow
         int updated = _state.Atomic + delta;
         _state.Atomic = updated < 0 ? 0 : updated;
         _state.NotifyChanged();
-        RefreshInfoPanels();
 
         if (_currentProfilePath != null)
             _ = SaveCurrentGameConfigAsync();

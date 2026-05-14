@@ -342,6 +342,19 @@ namespace TWXProxy.Core
             LoadInternal(filename, silent, entryLabel, beforeExecute);
         }
 
+        public void LoadAtSubroutine(string filename, bool silent, string entryLabel, Action<Script>? beforeExecute)
+        {
+            LoadInternal(
+                filename,
+                silent,
+                null,
+                script =>
+                {
+                    beforeExecute?.Invoke(script);
+                    script.GosubFromMenu(entryLabel);
+                });
+        }
+
         private void LoadInternal(string filename, bool silent, string? entryLabel, Action<Script>? beforeExecute)
         {
             GlobalModules.DebugLog($"[ModInterpreter.Load] Starting load of '{filename}', silent={silent}\n");
@@ -1148,6 +1161,9 @@ namespace TWXProxy.Core
         public bool HasKeypressInputWaiting =>
             _scriptList.Any(s => s.WaitingForInput && s.KeypressMode);
 
+        public bool HasEchoingKeypressInputWaiting =>
+            _scriptList.Any(s => s.WaitingForInput && s.KeypressMode && s.EchoKeypressInput);
+
         public bool TextOutEvent(string text, Script? startScript)
         {
             GlobalModules.TriggerDebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
@@ -1593,6 +1609,7 @@ namespace TWXProxy.Core
         private bool _waitForActive;
         private bool _waitingForInput;
         private bool _keypressMode;         // true when waiting for a single keypress (empty prompt)
+        private bool _echoKeypressInput;
         private CmdParam? _inputVarParam;
         private string? _suppressNextNestedKeypressValue;
 #pragma warning disable CS0169 // Field is never used
@@ -1645,6 +1662,7 @@ namespace TWXProxy.Core
             _waitForActive = false;
             _waitingForInput = false;
             _keypressMode = false;
+            _echoKeypressInput = false;
             _inputVarParam = null;
             _subStack = new Stack<int>();
             _nonResumingMenuHandlerDepths = new Stack<int>();
@@ -1767,6 +1785,7 @@ namespace TWXProxy.Core
             _waitingForAuth = false;
             _waitingForInput = false;
             _keypressMode = false;
+            _echoKeypressInput = false;
             _inputVarParam = null;
             _waitText = string.Empty;
             _resetLoopDetectionOnNextExecute = true;
@@ -4735,6 +4754,8 @@ namespace TWXProxy.Core
                 
                 // Clear waiting state
                 _waitingForInput = false;
+                _keypressMode = false;
+                _echoKeypressInput = false;
                 _inputVarParam = null;
                 
                 // Unpause the script before resuming
@@ -4860,10 +4881,11 @@ namespace TWXProxy.Core
             set => _waitText = value;
         }
 
-        public void SetWaitingForInput(CmdParam varParam, bool keypressMode = false)
+        public void SetWaitingForInput(CmdParam varParam, bool keypressMode = false, bool echoKeypressInput = false)
         {
             _waitingForInput = true;
             _keypressMode = keypressMode;
+            _echoKeypressInput = echoKeypressInput;
             _inputVarParam = varParam;
             _resetLoopDetectionOnNextExecute = true;
         }
@@ -4874,6 +4896,7 @@ namespace TWXProxy.Core
         public bool WaitingForInput => _waitingForInput;
         public bool WaitingForAuth => _waitingForAuth;
         public bool KeypressMode => _keypressMode;
+        public bool EchoKeypressInput => _echoKeypressInput;
         public bool IsExecuting => _isExecuting;
         public bool LastLineHandled => _lastLineHandled;
         public int SubStackDepth => _subStack.Count;
@@ -4932,6 +4955,7 @@ namespace TWXProxy.Core
             _waitingForAuth = false;
             _waitingForInput = false;
             _keypressMode = false;
+            _echoKeypressInput = false;
             _inputVarParam = null;
             _waitText = string.Empty;
             _resetLoopDetectionOnNextExecute = true;

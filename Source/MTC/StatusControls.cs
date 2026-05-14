@@ -1131,7 +1131,7 @@ public partial class MainWindow
         Background = BgWindow;
         UpdateTerminalLiveSelector();
         RefreshStatusBar();
-        RefreshInfoPanels();
+        RequestInfoPanelsRefresh(force: true);
         _buffer.Dirty = true;
         _termCtrl?.InvalidateVisual();
         _deckTermCtrl?.InvalidateVisual();

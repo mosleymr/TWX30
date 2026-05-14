@@ -166,6 +166,7 @@ namespace TWXProxy.Core
             _activeSectorDisplaySector = 0;
             _activeSectorDisplaySawPort = false;
             _activeSectorDisplayHadCachedPort = false;
+            _currentTrader.DisplayLabel = "Traders";
             _currentTrader.Name = string.Empty;
             _currentTrader.ShipType = string.Empty;
             _currentTrader.ShipName = string.Empty;
@@ -334,7 +335,7 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxTraderLine = new(
-            @"^\s*Traders\s+:\s+(.+?),\s+w/\s+([\d,]+)\s+ftrs",
+            @"^\s*(?<label>Traders|Federals|Jem'?Hada)\s*:\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxShipLine = new(
@@ -458,15 +459,15 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxFighterHitReport = new(
-            @"Deployed Fighters Report Sector\s+(\d+)\s*:",
+            @"^Deployed Fighters Report Sector\s+(\d+)\s*:",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxLimpetHitReport = new(
-            @"Limpet mine in\s+(\d+)\s+activated",
+            @"^Limpet mine in\s+(\d+)\s+activated",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxArmidHitReport = new(
-            @"Your mines in\s+(\d+)\s+did\s+",
+            @"^Your mines in\s+(\d+)\s+did\s+",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxDestroyedFigsSector = new(
@@ -879,9 +880,19 @@ namespace TWXProxy.Core
                         sec.Fighters    = new SpaceObject();
                         sec.MinesArmid  = new SpaceObject();
                         sec.MinesLimpet = new SpaceObject();
+                        sec.Beacon = string.Empty;
                         sec.PlanetNames.Clear();
                         sec.Ships.Clear();
                         sec.Traders.Clear();
+                        _currentTrader.DisplayLabel = "Traders";
+                        _currentTrader.Name = string.Empty;
+                        _currentTrader.ShipName = string.Empty;
+                        _currentTrader.ShipType = string.Empty;
+                        _currentTrader.Fighters = 0;
+                        _currentShip.Name = string.Empty;
+                        _currentShip.Owner = string.Empty;
+                        _currentShip.ShipType = string.Empty;
+                        _currentShip.Fighters = 0;
                         // Keep cached port commerce data through the live sector display.
                         // If no Ports line arrives by the time the display completes, we
                         // discard the cached port then. This preserves fresh commerce-report
@@ -1024,19 +1035,19 @@ namespace TWXProxy.Core
                 return;
             }
 
-            if (trimmedLine.Contains("Deployed  Mine  Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Deployed  Mine  Scan", StringComparison.OrdinalIgnoreCase))
             {
                 BeginMineScan(db, MineScanKind.Armid);
                 return;
             }
 
-            if (trimmedLine.Contains("Deployed  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Deployed  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
             {
                 BeginMineScan(db, MineScanKind.Limpet);
                 return;
             }
 
-            if (trimmedLine.Contains("Activated  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Activated  Limpet  Scan", StringComparison.OrdinalIgnoreCase))
             {
                 if (_inMineScanKind != MineScanKind.None)
                     CompleteMineScan(db, "activated limpet scan");
@@ -1051,7 +1062,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            if (trimmedLine.Contains("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("Deployed  Fighter  Scan", StringComparison.OrdinalIgnoreCase))
             {
                 _inFigScan = true;
                 _currentFigScanSectors.Clear();
@@ -2065,10 +2076,11 @@ namespace TWXProxy.Core
 
         private void ParseTraderSummary(Match m)
         {
-            _currentTrader.Name = m.Groups[1].Value.Trim();
+            _currentTrader.DisplayLabel = NormalizeTraderDisplayLabel(m.Groups["label"].Value);
+            _currentTrader.Name = m.Groups["name"].Value.Trim();
             _currentTrader.ShipName = string.Empty;
             _currentTrader.ShipType = string.Empty;
-            _currentTrader.Fighters = ParseCommaInt(m.Groups[2].Value);
+            _currentTrader.Fighters = ParseCommaInt(m.Groups["fighters"].Value);
         }
 
         private void ParseTraderContinuation(ModDatabase db, int sectorNum, string line)
@@ -2085,6 +2097,7 @@ namespace TWXProxy.Core
 
                     sector.Traders.Add(new Trader
                     {
+                        DisplayLabel = _currentTrader.DisplayLabel,
                         Name = _currentTrader.Name,
                         Fighters = _currentTrader.Fighters,
                         ShipName = trimmed.Substring(3, open - 4).Trim(),
@@ -2099,6 +2112,20 @@ namespace TWXProxy.Core
             var m = _rxTraderLine.Match(trimmed);
             if (m.Success)
                 ParseTraderSummary(m);
+        }
+
+        private static string NormalizeTraderDisplayLabel(string? label)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+                return "Traders";
+
+            string value = label.Trim();
+            if (value.Equals("Federals", StringComparison.OrdinalIgnoreCase))
+                return "Federals";
+            if (value.Equals("JemHada", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("Jem'Hada", StringComparison.OrdinalIgnoreCase))
+                return "Jem'Hada";
+            return "Traders";
         }
 
         private void ParseShipSummary(Match m)
@@ -2852,6 +2879,13 @@ namespace TWXProxy.Core
 
             if (AnsiCodes.TryParseCommMessageLine(ansiLine ?? string.Empty, out _))
                 return true;
+
+            string trimmed = line.TrimStart();
+            if (trimmed.StartsWith(">", StringComparison.Ordinal) ||
+                trimmed.StartsWith("Received from Shipboard Computers", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
 
             if (line.StartsWith("P ", StringComparison.Ordinal) ||
                 line.StartsWith("'", StringComparison.Ordinal) ||

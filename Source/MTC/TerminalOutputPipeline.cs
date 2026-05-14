@@ -70,9 +70,14 @@ public partial class MainWindow
         _terminalLivePaused = clientType == Core.ClientType.Deaf;
 
         if (_terminalLivePaused)
+        {
             ClearPendingTerminalOutputBacklog();
+        }
         else
+        {
             ClearPausedTerminalChunks();
+            FlushDeferredPanelRefreshes();
+        }
 
         UpdateTerminalLiveSelector();
     }

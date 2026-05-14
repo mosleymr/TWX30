@@ -135,12 +135,18 @@ From `Source/`:
 ./build-twxp.sh
 
 # Build all standalone binaries into ../bin/<rid>, package
-# ../bin/mtc-<rid>.zip, upload to SourceForge, and post Discord.
+# ../bin/twx30-osx-*.pkg, ../bin/twx30-win-x64.zip,
+# ../bin/twx30-linux-x64.{deb,rpm}, plus split Linux
+# twx30-{mtc,twxp,tools,scripts}-linux-x64.{deb,rpm},
+# upload to SourceForge, and post Discord.
 ./publish-sourceforge-bundles.sh --rebuild
 ```
 
 The top-level `bin/` directory is local/generated output and is not committed to GitHub. SourceForge is the
 only supported release route for MTC, TWXP, TWXC, and TWXD binary packages.
+
+The macOS package presents installer choices for MTC, TWXP, compiler tools, and bundled scripts. Linux
+uses split `.deb`/`.rpm` packages for the same choices because APT/RPM installs are not interactive.
 
 `./build-twxc.sh` is the default TWXC build/install path. It publishes standalone binaries for all
 release targets into the top-level `bin/<rid>/` directory, and on macOS it also installs the current-host

@@ -1,0 +1,5 @@
+                     
+   
+                 <<<< pgrid >>>>
+   
+     pgrid - planet grid into sector 

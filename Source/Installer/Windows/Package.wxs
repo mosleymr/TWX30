@@ -5,10 +5,10 @@
            Version="$(var.ProductVersion)"
            UpgradeCode="$(var.UpgradeCode)"
            Language="1033"
-           Scope="perMachine"
-           Platform="$(var.InstallerPlatform)">
+           Scope="perMachine">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of TWX Proxy is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of TWX Proxy is already installed."
+            AllowSameVersionUpgrades="yes" />
     <MediaTemplate EmbedCab="yes" />
 
     <Icon Id="MtcShortcutIcon" SourceFile="$(var.MtcIconPath)" />
@@ -16,7 +16,6 @@
     <Property Id="ARPPRODUCTICON" Value="TwxpShortcutIcon" />
 
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtfPath)" />
-    <Property Id="WIXUI_INSTALLDIR" Value="PROGRAMROOTDIR" />
     <Property Id="PROGRAMROOTDIR" Value="$(var.ProgramDirDefault)">
       <RegistrySearch Id="FindInstalledProgramDir"
                       Root="HKLM"
@@ -24,7 +23,7 @@
                       Name="ProgramDir"
                       Type="raw" />
     </Property>
-    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="PROGRAMROOTDIR" />
+    <ui:WixUI Id="WixUI_FeatureTree" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLROOT" Name="TWXProxy">
@@ -37,8 +36,9 @@
       <Directory Id="TWXSTARTMENUDIR" Name="TWX Proxy" />
     </StandardDirectory>
 
-    <StandardDirectory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="PROGRAMROOTDIR" Name="twxproxy">
+    <StandardDirectory Id="TARGETDIR">
+      <Directory Id="PROGRAMROOTDIR" Name="twxproxy" ComponentGuidGenerationSeed="{A5A0D0D8-486C-43C2-9803-B07D8D34744C}">
+        <Directory Id="BINDIR" Name="bin" />
         <Directory Id="SCRIPTSDIR" Name="scripts" />
         <Directory Id="DATADIR" Name="data" />
         <Directory Id="LOGSDIR" Name="logs" />
@@ -46,67 +46,8 @@
       </Directory>
     </StandardDirectory>
 
-    <ComponentGroup Id="ProgramFilesPayload">
-      <Component Directory="MTCAPPDIR" Guid="*">
-        <File Id="MtcExeFile"
-              Source="$(var.PayloadRoot)\MTC\MTC.exe"
-              KeyPath="yes"
-              Checksum="yes">
-          <Shortcut Id="MtcStartMenuShortcut"
-                    Directory="TWXSTARTMENUDIR"
-                    Name="Mayhem Tradewars Client"
-                    Description="Launch Mayhem Tradewars Client"
-                    WorkingDirectory="PROGRAMROOTDIR"
-                    Advertise="no"
-                    Icon="MtcShortcutIcon"
-                    IconIndex="0" />
-          <Shortcut Id="MtcDesktopShortcut"
-                    Directory="DesktopFolder"
-                    Name="Mayhem Tradewars Client"
-                    Description="Launch Mayhem Tradewars Client"
-                    WorkingDirectory="PROGRAMROOTDIR"
-                    Advertise="no"
-                    Icon="MtcShortcutIcon"
-                    IconIndex="0" />
-        </File>
-      </Component>
-
-      <Component Directory="TWXPAPPDIR" Guid="*">
-        <File Id="TwxpExeFile"
-              Source="$(var.PayloadRoot)\TWXP\twxp.exe"
-              KeyPath="yes"
-              Checksum="yes">
-          <Shortcut Id="TwxpStartMenuShortcut"
-                    Directory="TWXSTARTMENUDIR"
-                    Name="TWX Proxy"
-                    Description="Launch TWX Proxy"
-                    WorkingDirectory="PROGRAMROOTDIR"
-                    Advertise="no"
-                    Icon="TwxpShortcutIcon"
-                    IconIndex="0" />
-          <Shortcut Id="TwxpDesktopShortcut"
-                    Directory="DesktopFolder"
-                    Name="TWX Proxy"
-                    Description="Launch TWX Proxy"
-                    WorkingDirectory="PROGRAMROOTDIR"
-                    Advertise="no"
-                    Icon="TwxpShortcutIcon"
-                    IconIndex="0" />
-        </File>
-      </Component>
-
-      <Files Directory="MTCAPPDIR" Include="$(var.PayloadRoot)\MTC\**">
-        <Exclude Files="$(var.PayloadRoot)\MTC\MTC.exe" />
-        <Exclude Files="$(var.PayloadRoot)\MTC\**\*.pdb" />
-      </Files>
-
-      <Files Directory="TWXPAPPDIR" Include="$(var.PayloadRoot)\TWXP\**">
-        <Exclude Files="$(var.PayloadRoot)\TWXP\twxp.exe" />
-        <Exclude Files="$(var.PayloadRoot)\TWXP\**\*.pdb" />
-      </Files>
-    </ComponentGroup>
-
-    <ComponentGroup Id="ProgramRootPayload">
+    <!-- Always-installed base: ProgramDir folder, registry, data/logs/modules/start-menu dirs -->
+    <ComponentGroup Id="BasePayload">
       <Component Directory="PROGRAMROOTDIR" Guid="*">
         <CreateFolder />
         <RegistryValue Root="HKLM"
@@ -120,30 +61,11 @@
                        Name="InstallDir"
                        Type="string"
                        Value="[INSTALLROOT]" />
-      </Component>
-
-      <Component Directory="PROGRAMROOTDIR" Guid="*">
-        <File Id="TwxcExeFile"
-              Source="$(var.PayloadRoot)\ProgramDir\twxc.exe"
-              KeyPath="yes"
-              Checksum="yes" />
-      </Component>
-
-      <Component Directory="PROGRAMROOTDIR" Guid="*">
-        <File Id="TwxdExeFile"
-              Source="$(var.PayloadRoot)\ProgramDir\twxd.exe"
-              KeyPath="yes"
-              Checksum="yes" />
-      </Component>
-
-      <Component Directory="SCRIPTSDIR" Guid="*">
-        <CreateFolder />
         <RegistryValue Root="HKLM"
-                       Key="Software\TWXProxy\TWX30\Folders"
-                       Name="scripts"
-                       Type="integer"
-                       Value="1"
-                       KeyPath="yes" />
+                       Key="Software\TWXProxy\TWX30"
+                       Name="ScriptsDir"
+                       Type="string"
+                       Value="[SCRIPTSDIR]" />
       </Component>
 
       <Component Directory="DATADIR" Guid="*">
@@ -176,6 +98,26 @@
                        KeyPath="yes" />
       </Component>
 
+      <Component Directory="BINDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="bin"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Directory="SCRIPTSDIR" Guid="*">
+        <CreateFolder />
+        <RegistryValue Root="HKLM"
+                       Key="Software\TWXProxy\TWX30\Folders"
+                       Name="scripts"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
       <Component Directory="TWXSTARTMENUDIR" Guid="*">
         <CreateFolder />
         <RemoveFolder Id="RemoveTwxStartMenuDir" On="uninstall" />
@@ -188,13 +130,118 @@
       </Component>
     </ComponentGroup>
 
+    <!-- Mayhem Tradewars Client -->
+    <ComponentGroup Id="MtcPayload">
+      <Component Directory="MTCAPPDIR" Guid="*">
+        <File Id="MtcExeFile"
+              Source="$(var.PayloadRoot)\MTC\MTC.exe"
+              KeyPath="yes"
+              Checksum="yes">
+          <Shortcut Id="MtcStartMenuShortcut"
+                    Directory="TWXSTARTMENUDIR"
+                    Name="Mayhem Tradewars Client"
+                    Description="Launch Mayhem Tradewars Client"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="MtcShortcutIcon"
+                    IconIndex="0" />
+          <Shortcut Id="MtcDesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="Mayhem Tradewars Client"
+                    Description="Launch Mayhem Tradewars Client"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="MtcShortcutIcon"
+                    IconIndex="0" />
+        </File>
+      </Component>
+
+    </ComponentGroup>
+
+    <!-- TWX Proxy -->
+    <ComponentGroup Id="TwxpPayload">
+      <Component Directory="TWXPAPPDIR" Guid="*">
+        <File Id="TwxpExeFile"
+              Source="$(var.PayloadRoot)\TWXP\twxp.exe"
+              KeyPath="yes"
+              Checksum="yes">
+          <Shortcut Id="TwxpStartMenuShortcut"
+                    Directory="TWXSTARTMENUDIR"
+                    Name="TWX Proxy"
+                    Description="Launch TWX Proxy"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="TwxpShortcutIcon"
+                    IconIndex="0" />
+          <Shortcut Id="TwxpDesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="TWX Proxy"
+                    Description="Launch TWX Proxy"
+                    WorkingDirectory="PROGRAMROOTDIR"
+                    Advertise="no"
+                    Icon="TwxpShortcutIcon"
+                    IconIndex="0" />
+        </File>
+      </Component>
+
+    </ComponentGroup>
+
+    <!-- Compiler Tools: twxc + twxd -->
+    <ComponentGroup Id="ToolsPayload">
+      <Component Directory="BINDIR" Guid="{6502A2CD-2D83-46BD-B8D6-154A80E5575D}">
+        <File Id="TwxcExeFile"
+              Source="$(var.PayloadRoot)\ProgramDir\twxc.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+
+      <Component Directory="BINDIR" Guid="{18E27695-F1A4-43D9-B41E-32E620D3E6BC}">
+        <File Id="TwxdExeFile"
+              Source="$(var.PayloadRoot)\ProgramDir\twxd.exe"
+              KeyPath="yes"
+              Checksum="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Scripts library (installed under Program Files\TWXProxy\scripts) -->
+    <ComponentGroup Id="ScriptsPayload">
+      <Files Directory="SCRIPTSDIR" Include="$(var.PayloadRoot)\scripts\**" />
+    </ComponentGroup>
+
     <Feature Id="Complete"
-             Title="TWX Proxy"
-             Description="Installs MTC, TWXP, TWXC, and TWXD."
+             Title="TWX Proxy Suite"
+             Description="All TWX Proxy components."
              Level="1"
              ConfigurableDirectory="PROGRAMROOTDIR">
-      <ComponentGroupRef Id="ProgramFilesPayload" />
-      <ComponentGroupRef Id="ProgramRootPayload" />
+      <ComponentGroupRef Id="BasePayload" />
+
+      <Feature Id="FeatureMTC"
+               Title="Mayhem Tradewars Client"
+               Description="Avalonia-based terminal client for TradeWars 2002."
+               Level="1">
+        <ComponentGroupRef Id="MtcPayload" />
+      </Feature>
+
+      <Feature Id="FeatureTWXP"
+               Title="TWX Proxy"
+               Description="Proxy server and game session manager."
+               Level="1">
+        <ComponentGroupRef Id="TwxpPayload" />
+      </Feature>
+
+      <Feature Id="FeatureTools"
+               Title="Compiler Tools"
+               Description="TWX script compiler (twxc) and decompiler (twxd)."
+               Level="1">
+        <ComponentGroupRef Id="ToolsPayload" />
+      </Feature>
+
+      <Feature Id="FeatureScripts"
+               Title="Scripts"
+               Description="Bundled TWX script library installed to the scripts folder."
+               Level="1">
+        <ComponentGroupRef Id="ScriptsPayload" />
+      </Feature>
     </Feature>
   </Package>
 </Wix>

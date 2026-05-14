@@ -1101,36 +1101,45 @@ namespace TWXProxy.Core
                         }
                     }
 
-                    // Raise event for script processing (with cleaned data)
                     if (cleanData.Length > 0)
                     {
-                        BeginServerDataDispatch();
-                        try
+                        foreach (byte[] segment in SplitServerOutputForDispatch(cleanData))
                         {
-                            ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
-                        }
-                        finally
-                        {
-                            EndServerDataDispatch();
-                        }
-                        if (HasOutputEligibleClient())
-                            _log.RecordServerData(cleanData);
-                    }
+                            if (segment.Length == 0)
+                                continue;
 
-                    if (cleanData.Length == 0)
-                    {
-                        Log($"[{_gameName}] -> Only telnet negotiation, nothing to forward");
+                            bool suppressLocalOutput = ShouldSuppressScriptPipeToggleOutput(segment);
+                            if (!suppressLocalOutput)
+                            {
+                                UpdateServerOutputBoundaryState(segment);
+                                await SendToLocalAsync(segment, token: token);
+                            }
+
+                            // Display the completed server segment first, then run script
+                            // triggers for that same segment before later bytes in the packet
+                            // (often the next prompt) are forwarded.  This preserves Pascal TWX
+                            // ordering for script ECHO output without letting local output cut
+                            // into the middle of an unterminated server line.
+                            BeginServerDataDispatch();
+                            try
+                            {
+                                ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(segment));
+                            }
+                            finally
+                            {
+                                EndServerDataDispatch();
+                            }
+
+                            if (HasOutputEligibleClient())
+                                _log.RecordServerData(segment);
+
+                            await FlushDeferredLocalOutputWhenSafeAsync(token);
+                        }
+                        LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
                     else
                     {
-                        bool suppressLocalOutput = ShouldSuppressScriptPipeToggleOutput(cleanData);
-                        if (!suppressLocalOutput)
-                        {
-                            UpdateServerOutputBoundaryState(cleanData);
-                            await SendToLocalAsync(cleanData, token: token);
-                        }
-                        await FlushDeferredLocalOutputWhenSafeAsync(token);
-                        LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
+                        Log($"[{_gameName}] -> Only telnet negotiation, nothing to forward");
                     }
                 }
             }
@@ -1456,6 +1465,7 @@ namespace TWXProxy.Core
                                 else if (!handled)
                                 {
                                     bool keypressMode = scriptWaitingForInput && (_interpreter?.HasKeypressInputWaiting ?? false);
+                                    bool echoKeypressInput = keypressMode && (_interpreter?.HasEchoingKeypressInputWaiting ?? false);
                                     bool textOutConsumed = false;
                                     bool enteredInputWait = false;
                                     if (_interpreter != null && !scriptWaitingForInput)
@@ -1492,6 +1502,14 @@ namespace TWXProxy.Core
                                             await _serverStream.WriteAsync(forwarded, 0, forwarded.Length, token);
                                             await _serverStream.FlushAsync(token);
                                             MarkLocalInputProbe(forwarded);
+                                        }
+                                    }
+                                    else if (scriptWaitingForInput && keypressMode && echoKeypressInput)
+                                    {
+                                        if (b >= 32 || b == 9)
+                                        {
+                                            await session.WriteStream.WriteAsync(new byte[] { b }, 0, 1, token);
+                                            await session.WriteStream.FlushAsync(token);
                                         }
                                     }
                                     else if (scriptWaitingForInput && !keypressMode)
@@ -2041,6 +2059,89 @@ namespace TWXProxy.Core
             }
 
             return false;
+        }
+
+        private static IEnumerable<byte[]> SplitServerOutputForDispatch(byte[] data)
+        {
+            int start = 0;
+            int i = 0;
+
+            while (i < data.Length)
+            {
+                byte value = data[i];
+                if (value == (byte)'\r')
+                {
+                    int end = ConsumeLineTerminatorTail(data, i + 1);
+                    yield return SliceBytes(data, start, end - start);
+                    start = end;
+                    i = end;
+                    continue;
+                }
+
+                if (value == (byte)'\n')
+                {
+                    int end = i + 1;
+                    yield return SliceBytes(data, start, end - start);
+                    start = end;
+                }
+
+                i++;
+            }
+
+            if (start < data.Length)
+                yield return SliceBytes(data, start, data.Length - start);
+        }
+
+        private static int ConsumeLineTerminatorTail(byte[] data, int index)
+        {
+            // TW2002 commonly sends "text\r ESC[0m \n next prompt".  Keep the
+            // reset/LF attached to the completed line so deferred script output
+            // flushes after the visual line is complete, not between CR and reset.
+            while (index < data.Length)
+            {
+                if (data[index] == (byte)'\n')
+                {
+                    index++;
+                    continue;
+                }
+
+                if (data[index] != 0x1B)
+                    break;
+
+                int escapeStart = index;
+                index++;
+                if (index >= data.Length)
+                    return data.Length;
+
+                if (data[index] == (byte)'[')
+                {
+                    index++;
+                    while (index < data.Length)
+                    {
+                        byte b = data[index++];
+                        if (b >= 0x40 && b <= 0x7E)
+                            break;
+                    }
+
+                    continue;
+                }
+
+                // Unknown/incomplete escape: keep the rest with this line rather
+                // than allowing local script output to split an ANSI sequence.
+                return data.Length;
+            }
+
+            return index;
+        }
+
+        private static byte[] SliceBytes(byte[] data, int offset, int length)
+        {
+            if (length <= 0)
+                return Array.Empty<byte>();
+
+            var result = new byte[length];
+            Buffer.BlockCopy(data, offset, result, 0, length);
+            return result;
         }
 
         private void SendNativeHaggleResponse(string response)

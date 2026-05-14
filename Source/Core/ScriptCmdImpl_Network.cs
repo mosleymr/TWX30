@@ -383,7 +383,12 @@ namespace TWXProxy.Core
                 if (lastProcessedPos >= buffered.Length)
                 {
                     serverLineBuf.Clear();
+                    string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
+                        ? bufferedAnsi[lastAnsiProcessedPos..]
+                        : string.Empty;
                     serverAnsiLineBuf.Clear();
+                    if (ansiRemainder.Length > 0)
+                        serverAnsiLineBuf.Append(ansiRemainder);
                 }
             };
 

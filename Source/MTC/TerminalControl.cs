@@ -19,10 +19,10 @@ namespace MTC;
 /// </summary>
 public class TerminalControl : Control
 {
-    // TradeWars/TWGS output is DOS/BBS-style 80-column text and often relies on
-    // column-80 auto-wrap for menus and ANSI art. Keep the logical terminal at
-    // that width even when the MTC window is wider.
-    private const int LogicalTerminalColumns = 80;
+    // TradeWars/TWGS output is DOS/BBS-style 80-column text. Keep 80 columns as
+    // the minimum terminal width, but allow wider windows to expose wider text
+    // lines instead of wrapping early.
+    private const int MinimumTerminalColumns = 80;
 
     private sealed class CachedRenderRun
     {
@@ -31,6 +31,13 @@ public class TerminalControl : Control
         public required TermColor Background { get; init; }
         public required bool Blink { get; init; }
         public FormattedText? Text { get; init; }
+        public required CachedRenderGlyph[] Glyphs { get; init; }
+    }
+
+    private sealed class CachedRenderGlyph
+    {
+        public required double X { get; init; }
+        public required FormattedText Text { get; init; }
     }
 
     private sealed class CachedRenderRow
@@ -72,12 +79,21 @@ public class TerminalControl : Control
     private double _charWidth;
     private double _lineHeight;
 
-    private FontFamily _fontFamily =
-        new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
+    private static readonly string DefaultTerminalFontFamilyName =
+        OperatingSystem.IsLinux()
+            ? "Cascadia Code, DejaVu Sans Mono, Liberation Mono, Noto Sans Mono, Ubuntu Mono, Menlo, Consolas, Courier New, monospace"
+            : OperatingSystem.IsMacOS()
+                ? "Menlo, Cascadia Code, Consolas, Courier New, monospace"
+                : "Consolas, Cascadia Code, Courier New, monospace";
+    private static readonly bool RenderGlyphsPerCell = OperatingSystem.IsLinux();
+
+    private FontFamily _fontFamily = new(DefaultTerminalFontFamilyName);
 
     public const double DefaultFontSize = 14.0;
     private double _fontSize = DefaultFontSize;
     private Typeface _typeFace;
+    private double _viewportPixelWidth;
+    private double _viewportPixelHeight;
 
     // Brush cache – one SolidColorBrush per unique TermColor
     private readonly Dictionary<TermColor, SolidColorBrush> _brushCache = [];
@@ -115,6 +131,7 @@ public class TerminalControl : Control
     public bool IsConnected { get; set; }
     public int Columns => _buffer.Columns;
     public int Rows => _buffer.Rows;
+    public double MinimumPixelWidth => MinimumTerminalColumns * _charWidth;
 
     public TerminalControl(TerminalBuffer buffer)
     {
@@ -201,6 +218,39 @@ public class TerminalControl : Control
             Brushes.White);
         _charWidth  = probe.Width;
         _lineHeight = probe.Height > 0 ? probe.Height : _fontSize * 1.3;
+        ApplyViewportPixelSize();
+    }
+
+    public void SetViewportPixelSize(double width, double height)
+    {
+        _viewportPixelWidth = width;
+        _viewportPixelHeight = height;
+        ApplyViewportPixelSize();
+    }
+
+    private void ApplyViewportPixelSize()
+    {
+        double minWidth = MinimumPixelWidth;
+        MinWidth = minWidth;
+
+        if (_viewportPixelWidth > 0)
+            Width = Math.Max(minWidth, _viewportPixelWidth);
+        if (_viewportPixelHeight > 0)
+            Height = _viewportPixelHeight;
+
+        InvalidateMeasure();
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        double width = double.IsInfinity(availableSize.Width)
+            ? MinimumPixelWidth
+            : Math.Max(MinimumPixelWidth, availableSize.Width);
+        double height = double.IsInfinity(availableSize.Height)
+            ? _lineHeight * 3
+            : availableSize.Height;
+
+        return new Size(width, height);
     }
 
     /// <summary>Change the terminal font. Can be called from the UI thread at any time.</summary>
@@ -232,9 +282,7 @@ public class TerminalControl : Control
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        // Keep the logical width fixed at 80 columns while allowing the visible
-        // height to grow with the window.
-        int newCols = LogicalTerminalColumns;
+        int newCols = Math.Max(MinimumTerminalColumns, (int)(finalSize.Width / _charWidth));
         int newRows = Math.Max(3,  (int)(finalSize.Height / _lineHeight));
         if (newCols != _buffer.Columns || newRows != _buffer.Rows)
         {
@@ -302,8 +350,18 @@ public class TerminalControl : Control
                 if (run.Background != TermColor.Black)
                     ctx.FillRectangle(GetBrush(run.Background), new Rect(run.X, y, run.Width, _lineHeight));
 
-                if (run.Text != null && (!run.Blink || _cursorOn))
-                    ctx.DrawText(run.Text, new Point(run.X, y));
+                if (!run.Blink || _cursorOn)
+                {
+                    if (run.Text != null)
+                    {
+                        ctx.DrawText(run.Text, new Point(run.X, y));
+                    }
+                    else
+                    {
+                        foreach (CachedRenderGlyph glyph in run.Glyphs)
+                            ctx.DrawText(glyph.Text, new Point(glyph.X, y));
+                    }
+                }
             }
         }
 
@@ -877,15 +935,43 @@ public class TerminalControl : Control
                 }
 
                 FormattedText? ft = null;
+                var glyphs = Array.Empty<CachedRenderGlyph>();
                 if (hasVisibleGlyph)
                 {
-                    ft = new FormattedText(
-                        runBuilder.ToString(),
-                        CultureInfo.InvariantCulture,
-                        FlowDirection.LeftToRight,
-                        _typeFace,
-                        _fontSize,
-                        GetBrush(fg));
+                    if (RenderGlyphsPerCell)
+                    {
+                        var cellGlyphs = new List<CachedRenderGlyph>(end - col);
+                        for (int i = col; i < end; i++)
+                        {
+                            char ch = GetDisplayCell(row, i, scrollOff).Char;
+                            if (ch == ' ')
+                                continue;
+
+                            cellGlyphs.Add(new CachedRenderGlyph
+                            {
+                                X = i * _charWidth,
+                                Text = new FormattedText(
+                                    ch.ToString(),
+                                    CultureInfo.InvariantCulture,
+                                    FlowDirection.LeftToRight,
+                                    _typeFace,
+                                    _fontSize,
+                                    GetBrush(fg)),
+                            });
+                        }
+
+                        glyphs = cellGlyphs.ToArray();
+                    }
+                    else
+                    {
+                        ft = new FormattedText(
+                            runBuilder.ToString(),
+                            CultureInfo.InvariantCulture,
+                            FlowDirection.LeftToRight,
+                            _typeFace,
+                            _fontSize,
+                            GetBrush(fg));
+                    }
                 }
 
                 runs.Add(new CachedRenderRun
@@ -895,6 +981,7 @@ public class TerminalControl : Control
                     Background = bg,
                     Blink = blink,
                     Text = ft,
+                    Glyphs = glyphs,
                 });
 
                 col = end;

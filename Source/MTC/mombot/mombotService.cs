@@ -214,6 +214,42 @@ internal sealed class mombotService
         }
     }
 
+    public bool TryLoadScriptAtSubroutine(
+        string scriptPath,
+        string entryLabel,
+        IReadOnlyDictionary<string, string>? initialVars,
+        out string? error)
+    {
+        error = null;
+        if (_interpreter == null)
+        {
+            error = "No active interpreter.";
+            return false;
+        }
+
+        try
+        {
+            _interpreter.LoadAtSubroutine(
+                scriptPath,
+                false,
+                entryLabel,
+                script =>
+                {
+                    if (initialVars == null || initialVars.Count == 0)
+                        return;
+
+                    foreach ((string name, string value) in initialVars)
+                        script.SetScriptVarIgnoreCase(name, value);
+                });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     public void WarmPreparedHotkeyModules(bool forceRefresh = false)
     {
         if (_interpreter == null)
@@ -292,6 +328,26 @@ internal sealed class mombotService
 
         scriptReference = reference;
         return TryLoadScriptAtLabel(reference!, entryLabel, initialVars, out error);
+    }
+
+    public bool TryLoadInstalledScriptAtSubroutine(
+        string relativeReference,
+        string entryLabel,
+        IReadOnlyDictionary<string, string>? initialVars,
+        out string? scriptReference,
+        out string? error)
+    {
+        scriptReference = null;
+        error = null;
+
+        if (!TryResolveExplicitScriptReference(relativeReference, out string? reference, out _))
+        {
+            error = $"Unable to locate '{relativeReference}' in the configured Mombot script root.";
+            return false;
+        }
+
+        scriptReference = reference;
+        return TryLoadScriptAtSubroutine(reference!, entryLabel, initialVars, out error);
     }
 
     public bool StopScriptByName(string scriptName)
@@ -820,6 +876,9 @@ internal sealed class mombotService
     {
         module = null;
 
+        if (!IsSafeCommandModuleName(canonical))
+            return false;
+
         string? scriptRoot = GetAbsoluteScriptRoot();
         if (!string.IsNullOrWhiteSpace(scriptRoot) &&
             Directory.Exists(scriptRoot) &&
@@ -865,6 +924,23 @@ internal sealed class mombotService
         }
 
         return false;
+    }
+
+    private static bool IsSafeCommandModuleName(string canonical)
+    {
+        if (string.IsNullOrWhiteSpace(canonical))
+            return false;
+
+        foreach (char value in canonical)
+        {
+            if (char.IsControl(value) ||
+                value is '/' or '\\' or ':' or '*' or '?' or '"' or '<' or '>' or '|')
+            {
+                return false;
+            }
+        }
+
+        return canonical.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
     }
 
     private bool TryResolveLocalModuleCandidate(
