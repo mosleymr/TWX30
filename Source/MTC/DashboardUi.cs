@@ -968,6 +968,7 @@ public partial class MainWindow
             _state.TranswarpDrive1 = s.TransWarp1;
             _state.TranswarpDrive2 = s.TransWarp2;
 
+            ObserveGameAgentShipStatus(s);
             _state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
 
             // Auto-save ship state back to the open profile file

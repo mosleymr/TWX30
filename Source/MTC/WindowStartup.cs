@@ -60,6 +60,7 @@ public partial class MainWindow
         _telnet.TextLineAnsiReceived += (ansiLine, strippedLine) =>
         {
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
+            ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
             HandlePotentialCommLine(ansiLine);
             ProcessStandaloneNativeHaggleLine(strippedLine);
         };
@@ -88,6 +89,7 @@ public partial class MainWindow
                 if (_state.Sector != sn)
                 {
                     _state.Sector = sn;
+                    ObserveGameAgentCurrentSectorChanged(sn);
                     _state.NotifyChanged();
                 }
             });
@@ -209,6 +211,9 @@ public partial class MainWindow
             foreach (AiAssistantWindow window in _assistantWindows.Values.ToList())
                 window.Close();
             _assistantWindows.Clear();
+            _gameAgentWindow?.Close();
+            _gameAgentWindow = null;
+            _gameAgent.Dispose();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();
             _gameFileLock = null;

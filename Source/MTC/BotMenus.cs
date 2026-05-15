@@ -358,7 +358,14 @@ public partial class MainWindow
 
     private List<object> BuildAiMenuItems()
     {
-        var items = new List<object>();
+        var gameAgentItem = new MenuItem { Header = "_Game Agent" };
+        gameAgentItem.Click += (_, _) => OpenGameAgentWindow();
+
+        var items = new List<object>
+        {
+            gameAgentItem,
+        };
+
         if (_moduleHost == null)
             return items;
 
@@ -375,6 +382,8 @@ public partial class MainWindow
 
         if (modules.Length == 0)
             return items;
+
+        items.Add(new Separator());
 
         foreach (Core.ExpansionModuleBinding<Core.IExpansionChatModule> binding in modules)
         {

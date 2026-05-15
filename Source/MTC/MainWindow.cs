@@ -76,6 +76,7 @@ public partial class MainWindow : Window
     private Core.GameFileLock?             _gameFileLock;
     private Core.ExpansionModuleHost?      _moduleHost;
     private readonly Core.NativeHaggleEngine _standaloneNativeHaggle = new();
+    private readonly GameAgentRuntime        _gameAgent = new();
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
     private readonly object                _embeddedStopSync = new();
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
     private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
+    private GameAgentWindow?                _gameAgentWindow;
     private ScriptDebuggerWindow?          _scriptDebuggerWindow;
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
