@@ -74,7 +74,6 @@ public partial class MainWindow : Window
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private Core.GameFileLock?             _gameFileLock;
-    private Core.ExpansionModuleHost?      _moduleHost;
     private readonly Core.NativeHaggleEngine _standaloneNativeHaggle = new();
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
@@ -83,7 +82,6 @@ public partial class MainWindow : Window
     private readonly Core.ModLog           _sessionLog = new();
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
-    private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
     private ScriptDebuggerWindow?          _scriptDebuggerWindow;
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
@@ -92,7 +90,6 @@ public partial class MainWindow : Window
     private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _toolsMenu     = new() { Header = "_Tools" };
-    private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
     private readonly MenuItem _viewClearRecents = new() { Header = "Clear _Recents" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };

@@ -44,18 +44,8 @@ public partial class MainWindow
         _quickMenu.ItemsSource = BuildQuickMenuItems(canRunProxyScripts);
         _quickMenu.IsEnabled = canRunProxyScripts;
         _scriptsMenu.IsEnabled = canRunProxyScripts;
-        RebuildAiMenu();
         RefreshNativeAppMenu();
         RefreshNativeDockMenu();
-    }
-
-    private void RebuildAiMenu()
-    {
-        List<object> items = BuildAiMenuItems();
-        _aiMenu.ItemsSource = items;
-        bool hasItems = items.OfType<MenuItem>().Any(item => item.IsEnabled);
-        _aiMenu.IsEnabled = hasItems;
-        _aiMenu.IsVisible = hasItems;
     }
 
     private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
@@ -355,40 +345,6 @@ public partial class MainWindow
 
         if (groups.Count == 0)
             items.Add(new MenuItem { Header = "No quick-load scripts found", IsEnabled = false });
-
-        return items;
-    }
-
-    private List<object> BuildAiMenuItems()
-    {
-        var items = new List<object>();
-        if (_moduleHost == null)
-            return items;
-
-        string localModuleRoot = Path.GetFullPath(Path.Combine(GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory()), "modules"));
-        var modules = _moduleHost
-            .GetModules<Core.IExpansionChatModule>()
-            .Where(binding =>
-            {
-                string assemblyPath = Path.GetFullPath(binding.Info.AssemblyPath);
-                return assemblyPath.StartsWith(localModuleRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(Path.GetDirectoryName(assemblyPath), localModuleRoot, StringComparison.OrdinalIgnoreCase);
-            })
-            .ToArray();
-
-        if (modules.Length == 0)
-            return items;
-
-        foreach (Core.ExpansionModuleBinding<Core.IExpansionChatModule> binding in modules)
-        {
-            string moduleId = binding.Info.Id;
-            var item = new MenuItem
-            {
-                Header = EscapeMenuHeaderText(binding.Info.DisplayName),
-            };
-            item.Click += (_, _) => _ = OpenAiAssistantAsync(moduleId);
-            items.Add(item);
-        }
 
         return items;
     }

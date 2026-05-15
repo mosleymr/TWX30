@@ -831,32 +831,6 @@ public partial class MainWindow
         return true;
     }
 
-    private async Task OpenAiAssistantAsync(string moduleId)
-    {
-        var binding = _moduleHost?
-            .GetModules<Core.IExpansionChatModule>()
-            .FirstOrDefault(module => string.Equals(module.Info.Id, moduleId, StringComparison.OrdinalIgnoreCase));
-
-        if (binding == null)
-        {
-            await ShowMessageAsync("AI Assistant", "The selected AI module is not currently loaded.");
-            return;
-        }
-
-        if (_assistantWindows.TryGetValue(moduleId, out AiAssistantWindow? existing))
-        {
-            existing.Show();
-            existing.Activate();
-            return;
-        }
-
-        var window = new AiAssistantWindow(binding.Module, _embeddedGameName ?? DeriveGameName());
-        window.Closed += (_, _) => _assistantWindows.Remove(moduleId);
-        _assistantWindows[moduleId] = window;
-        window.Show();
-        window.Activate();
-    }
-
     private string GetEffectiveProxyScriptDirectory()
     {
         if (!string.IsNullOrWhiteSpace(CurrentInterpreter?.ScriptDirectory))

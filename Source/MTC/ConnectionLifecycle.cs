@@ -597,24 +597,6 @@ public partial class MainWindow
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
         OnNativeHaggleChanged(gi.NativeHaggleEnabled, Core.NativeHaggleChangeSource.Config);
         AppPaths.EnsureDirectories();
-        AppPaths.EnsureSharedModulesDir();
-        _moduleHost = await Core.ExpansionModuleHost.CreateAsync(new Core.ExpansionModuleHostOptions
-        {
-            HostTargets = Core.ExpansionHostTargets.Mtc,
-            HostName = "MTC",
-            GameName = gameName,
-            ProgramDir = programDir,
-            ScriptDirectory = effectiveScriptDir,
-            ModuleDataRootDirectory = AppPaths.ModuleDataDir,
-            ModuleDirectories = new[]
-            {
-                AppPaths.ModulesDir,
-                Core.SharedPaths.LegacyModulesDir,
-            },
-            GameInstance = gi,
-            Interpreter = interpreter,
-            Database = _sessionDb,
-        });
 
         // The proxy is now running. Scripts can execute and communicate with the user
         // before any server connection is made. The server connection is triggered by
@@ -659,7 +641,6 @@ public partial class MainWindow
         _proxyCts = null;
 
         var gi = _gameInstance;
-        var moduleHost = _moduleHost;
         bool hadActiveBot = _mombot.Enabled || !string.IsNullOrWhiteSpace(gi?.ActiveBotName);
         if (hadActiveBot)
         {
@@ -671,7 +652,6 @@ public partial class MainWindow
         }
 
         _gameInstance = null;
-        _moduleHost = null;
         if (gi != null)
             gi.NativeHaggleChanged -= OnNativeHaggleChanged;
         if (gi != null)
@@ -682,11 +662,6 @@ public partial class MainWindow
         {
             TraceRuntimeStop($"[MTC.StopEmbedded] awaiting GameInstance.StopAsync");
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
-        }
-        if (moduleHost != null)
-        {
-            TraceRuntimeStop($"[MTC.StopEmbedded] disposing module host");
-            await moduleHost.DisposeAsync();
         }
         _mombot.DetachSession();
         _terminalLivePaused = false;

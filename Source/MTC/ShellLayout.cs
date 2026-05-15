@@ -2227,7 +2227,7 @@ public partial class MainWindow
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _toolsMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _toolsMenu, mapMenu, viewMenu, helpMenu },
         };
 
         RefreshCommWindowMenuState();

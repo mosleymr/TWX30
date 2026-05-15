@@ -98,7 +98,6 @@ public partial class MainWindow
         AddDockRoot(_botMenu, "_Bot");
         AddDockRoot(_quickMenu, "_Quick");
         AddDockRoot(_toolsMenu, "_Tools");
-        AddDockRoot(_aiMenu, "_AI");
 
         if (!_nativeDockMenuAttached)
         {

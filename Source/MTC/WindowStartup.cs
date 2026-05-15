@@ -168,7 +168,6 @@ public partial class MainWindow
         RebuildRecentMenu();
         RebuildProxyMenu();
         RebuildScriptsMenu();
-        RebuildAiMenu();
         _parser.Feed("\x1b[2J\x1b[H");
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
@@ -204,11 +203,6 @@ public partial class MainWindow
             _mombotKeepaliveTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
-            if (_moduleHost != null)
-                _ = _moduleHost.DisposeAsync().AsTask();
-            foreach (AiAssistantWindow window in _assistantWindows.Values.ToList())
-                window.Close();
-            _assistantWindows.Clear();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();
             _gameFileLock = null;

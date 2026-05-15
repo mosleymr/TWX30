@@ -28,41 +28,6 @@ public interface IExpansionModule
     Task ShutdownAsync(CancellationToken cancellationToken);
 }
 
-public sealed class ExpansionChatMessage
-{
-    public string Role { get; init; } = string.Empty;
-    public string Content { get; init; } = string.Empty;
-    public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
-}
-
-public sealed class ExpansionChatRequest
-{
-    public string Prompt { get; init; } = string.Empty;
-    public IReadOnlyList<ExpansionChatMessage> Conversation { get; init; } = Array.Empty<ExpansionChatMessage>();
-}
-
-public sealed class ExpansionChatReply
-{
-    public string Content { get; init; } = string.Empty;
-    public string? Status { get; init; }
-    public bool IsError { get; init; }
-}
-
-public interface IExpansionChatModule : IExpansionModule
-{
-    string ChatTitle { get; }
-    string ChatWelcomeText { get; }
-    string ChatInputPlaceholder { get; }
-    Task<ExpansionChatReply> AskAsync(ExpansionChatRequest request, CancellationToken cancellationToken);
-}
-
-public interface IExpansionConfigurableChatModule : IExpansionChatModule
-{
-    string? CurrentModel { get; }
-    Task<IReadOnlyList<string>> GetAvailableModelsAsync(CancellationToken cancellationToken);
-    Task SetCurrentModelAsync(string model, CancellationToken cancellationToken);
-}
-
 public sealed class ExpansionModuleContext
 {
     internal ExpansionModuleContext(
