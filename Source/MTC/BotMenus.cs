@@ -254,20 +254,21 @@ public partial class MainWindow
 
         items.Add(new Separator());
 
+        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
         var debugPortHaggle = new MenuItem
         {
-            Header = _appPrefs.DebugPortHaggleEnabled ? "Disable Port Haggle Debug" : "Debug Port Haggle",
-            IsEnabled = true,
+            Header = debugPrefs.DebugPortHaggleEnabled ? "Disable Port Haggle Debug" : "Debug Port Haggle",
+            IsEnabled = hasGame,
         };
-        debugPortHaggle.Click += (_, _) => TogglePortHaggleDebugLogging();
+        debugPortHaggle.Click += (_, _) => _ = TogglePortHaggleDebugLoggingAsync();
         items.Add(debugPortHaggle);
 
         var debugPlanetHaggle = new MenuItem
         {
-            Header = _appPrefs.DebugPlanetHaggleEnabled ? "Disable Planet Haggle Debug" : "Debug Planet Haggle",
-            IsEnabled = true,
+            Header = debugPrefs.DebugPlanetHaggleEnabled ? "Disable Planet Haggle Debug" : "Debug Planet Haggle",
+            IsEnabled = hasGame,
         };
-        debugPlanetHaggle.Click += (_, _) => TogglePlanetHaggleDebugLogging();
+        debugPlanetHaggle.Click += (_, _) => _ = TogglePlanetHaggleDebugLoggingAsync();
         items.Add(debugPlanetHaggle);
 
         return items;
@@ -297,24 +298,26 @@ public partial class MainWindow
         RefreshNativeAppMenu();
     }
 
-    private void TogglePortHaggleDebugLogging()
+    private async Task TogglePortHaggleDebugLoggingAsync()
     {
-        _appPrefs.DebugPortHaggleEnabled = !_appPrefs.DebugPortHaggleEnabled;
-        _appPrefs.Save();
+        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
+        debugPrefs.DebugPortHaggleEnabled = !debugPrefs.DebugPortHaggleEnabled;
+        await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
-        string status = _appPrefs.DebugPortHaggleEnabled ? "enabled" : "disabled";
+        string status = debugPrefs.DebugPortHaggleEnabled ? "enabled" : "disabled";
         _parser.Feed($"\x1b[1;36m[Port haggle debug {status}: {AppPaths.GetPortHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();
         RefreshNativeAppMenu();
     }
 
-    private void TogglePlanetHaggleDebugLogging()
+    private async Task TogglePlanetHaggleDebugLoggingAsync()
     {
-        _appPrefs.DebugPlanetHaggleEnabled = !_appPrefs.DebugPlanetHaggleEnabled;
-        _appPrefs.Save();
+        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
+        debugPrefs.DebugPlanetHaggleEnabled = !debugPrefs.DebugPlanetHaggleEnabled;
+        await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
-        string status = _appPrefs.DebugPlanetHaggleEnabled ? "enabled" : "disabled";
+        string status = debugPrefs.DebugPlanetHaggleEnabled ? "enabled" : "disabled";
         _parser.Feed($"\x1b[1;36m[Planet haggle debug {status}: {AppPaths.GetPlanetHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();

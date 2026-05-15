@@ -27,6 +27,8 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private static readonly TimeSpan TerminalDisplayDrainDelay = TimeSpan.FromMilliseconds(4);
+
     private void SetTerminalLivePaused(bool paused)
     {
         if (_gameInstance == null)
@@ -41,6 +43,11 @@ public partial class MainWindow
         }
 
         Core.ClientType targetType = paused ? Core.ClientType.Deaf : Core.ClientType.Standard;
+        if (paused)
+            ClearPendingTerminalOutputBacklog();
+        else
+            ClearPausedTerminalChunks();
+
         if (_gameInstance.GetClientType(EmbeddedLocalClientIndex) == targetType)
         {
             SyncEmbeddedTerminalClientType(targetType);
@@ -69,11 +76,7 @@ public partial class MainWindow
     {
         _terminalLivePaused = clientType == Core.ClientType.Deaf;
 
-        if (_terminalLivePaused)
-        {
-            ClearPendingTerminalOutputBacklog();
-        }
-        else
+        if (!_terminalLivePaused)
         {
             ClearPausedTerminalChunks();
             FlushDeferredPanelRefreshes();
@@ -89,19 +92,43 @@ public partial class MainWindow
         {
         }
 
+        ResetTerminalDisplayArtifactFilterState();
+        ClearPendingSessionLogChunks();
         Interlocked.Exchange(ref _displayDrainScheduled, 0);
     }
 
-    private void EnqueueDisplayChunk(byte[] chunk, int lineCount)
+    private void EnqueueDisplayChunk(byte[] chunk)
     {
         if (chunk.Length == 0)
             return;
 
-        _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk, lineCount));
+        _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk));
+        ScheduleDisplayDrain(TimeSpan.Zero);
+    }
+
+    private void ScheduleDisplayDrain(TimeSpan delay)
+    {
         if (Interlocked.Exchange(ref _displayDrainScheduled, 1) != 0)
             return;
 
-        Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Render);
+        if (delay <= TimeSpan.Zero)
+        {
+            Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Input);
+            return;
+        }
+
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                await System.Threading.Tasks.Task.Delay(delay).ConfigureAwait(false);
+                Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Input);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _displayDrainScheduled, 0);
+            }
+        });
     }
 
     private bool HasPendingTerminalDisplayBacklog()
@@ -114,14 +141,13 @@ public partial class MainWindow
 
     private void DrainPendingDisplayChunks()
     {
-        bool replayed = false;
         int processedChunks = 0;
         int processedBytes = 0;
         long startedAt = Stopwatch.GetTimestamp();
 
-        const int maxChunksPerPass = 8;
+        const int maxChunksPerPass = 4;
         const int maxBytesPerPass = 16 * 1024;
-        const double maxMillisecondsPerPass = 4.0;
+        const double maxMillisecondsPerPass = 1.25;
 
         using (_buffer.BeginUpdate())
         {
@@ -130,7 +156,6 @@ public partial class MainWindow
                 if (chunk.Bytes.Length > 0)
                 {
                     _parser.Feed(chunk.Bytes, chunk.Bytes.Length);
-                    replayed = true;
                     processedBytes += chunk.Bytes.Length;
                 }
 
@@ -148,14 +173,60 @@ public partial class MainWindow
 
         Interlocked.Exchange(ref _displayDrainScheduled, 0);
 
-        if (!_pendingDisplayChunks.IsEmpty &&
-            Interlocked.Exchange(ref _displayDrainScheduled, 1) == 0)
+        if (!_pendingDisplayChunks.IsEmpty)
         {
-            Dispatcher.UIThread.Post(DrainPendingDisplayChunks, DispatcherPriority.Render);
+            ScheduleDisplayDrain(TerminalDisplayDrainDelay);
+        }
+    }
+
+    private void QueueSessionLogChunk(byte[] chunk)
+    {
+        if (chunk.Length == 0)
+            return;
+
+        _pendingSessionLogChunks.Enqueue(chunk);
+        if (Interlocked.Exchange(ref _sessionLogDrainScheduled, 1) != 0)
+            return;
+
+        _ = System.Threading.Tasks.Task.Run(DrainSessionLogChunks);
+    }
+
+    private void DrainSessionLogChunks()
+    {
+        try
+        {
+            while (_pendingSessionLogChunks.TryDequeue(out byte[]? chunk))
+                _sessionLog.RecordServerData(chunk);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sessionLogDrainScheduled, 0);
+            if (!_pendingSessionLogChunks.IsEmpty &&
+                Interlocked.Exchange(ref _sessionLogDrainScheduled, 1) == 0)
+            {
+                _ = System.Threading.Tasks.Task.Run(DrainSessionLogChunks);
+            }
+        }
+    }
+
+    private void ClearPendingSessionLogChunks()
+    {
+        while (_pendingSessionLogChunks.TryDequeue(out _))
+        {
         }
 
-        if (replayed)
-            _buffer.Dirty = true;
+        Interlocked.Exchange(ref _sessionLogDrainScheduled, 0);
+    }
+
+    private void ResetTerminalDisplayArtifactFilterState()
+    {
+        lock (_terminalDisplayArtifactSync)
+        {
+            _suppressingPendingNativeMombotEscapeSequence = false;
+            _suppressingPendingNativeMombotEscapeCsiBody = false;
+            _pendingTerminalSyncMarkerLeadByte = false;
+            _pendingTerminalSyncMarkerUtf8LeadByte = false;
+        }
     }
 
     private void QueuePausedTerminalChunk(byte[] chunk)

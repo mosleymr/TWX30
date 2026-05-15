@@ -34,7 +34,7 @@ namespace MTC;
 public partial class MainWindow : Window
 {
     private sealed record CommEntry(Core.CommMessageChannel Channel, string Sender, string Message, bool IsLocal);
-    private readonly record struct PendingDisplayChunk(byte[] Bytes, int LineCount);
+    private readonly record struct PendingDisplayChunk(byte[] Bytes);
     private readonly record struct FinderPrewarmKey(
         string DatabasePath,
         long ChangeStamp,
@@ -137,6 +137,7 @@ public partial class MainWindow : Window
     private AliensWindow? _aliensWindow;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
+    private DataMiningWindow? _dataMiningWindow;
     private bool _nativeAppMenuAttached;
     private bool _nativeDockMenuAttached;
     private bool _commWindowVisible;
@@ -177,10 +178,18 @@ public partial class MainWindow : Window
     private readonly ConcurrentQueue<PendingDisplayChunk> _pendingDisplayChunks = new();
     private bool _terminalLivePaused;
     private bool _deferredInfoPanelsRefresh;
+    private readonly ConcurrentQueue<byte[]> _pendingSessionLogChunks = new();
     private bool _deferredOnlinePanelRefresh;
     private int _displayDrainScheduled;
     private string _statusBarLayoutSignature = string.Empty;
     private bool _statusMacrosHovered;
+    private int _sessionLogDrainScheduled;
+    private int _infoPanelsRefreshPostScheduled;
+    private long _lastInfoPanelsRefreshTicks;
+    private DispatcherTimer? _infoPanelsRefreshTimer;
+    private DispatcherTimer? _currentGameConfigSaveTimer;
+    private bool _currentGameConfigSaveRunning;
+    private bool _currentGameConfigSaveAgain;
     private bool _statusStopAllHovered;
     private bool _statusCommHovered;
     private bool _statusBotHovered;
@@ -302,12 +311,13 @@ public partial class MainWindow : Window
     private bool _mombotStartupFinalizeRunning;
     private bool _nativeBotAutoStartInFlight;
     private FinderPrewarmKey? _lastFinderPrewarmKey;
+    private int _nativeMombotStartupWatchScheduled;
     private string _currentShipType = string.Empty;
     private string _currentShipClass = string.Empty;
     private string _currentComputerShipType = string.Empty;
     private bool _awaitingComputerShipTypeLine;
     private readonly List<string> _onlinePlayers = [];
-    private bool _capturingOnlinePlayers;
+    private volatile bool _capturingOnlinePlayers;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,

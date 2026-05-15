@@ -260,8 +260,16 @@ public partial class MainWindow
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
         // termToServer: MTC writes keystrokes → gi reads as "local client" input.
-        var serverToTerm = new System.IO.Pipelines.Pipe();
-        var termToServer = new System.IO.Pipelines.Pipe();
+        var serverToTerm = new System.IO.Pipelines.Pipe(new System.IO.Pipelines.PipeOptions(
+            pauseWriterThreshold: 16 * 1024 * 1024,
+            resumeWriterThreshold: 8 * 1024 * 1024,
+            minimumSegmentSize: 64 * 1024,
+            useSynchronizationContext: false));
+        var termToServer = new System.IO.Pipelines.Pipe(new System.IO.Pipelines.PipeOptions(
+            pauseWriterThreshold: 1024 * 1024,
+            resumeWriterThreshold: 512 * 1024,
+            minimumSegmentSize: 4096,
+            useSynchronizationContext: false));
 
         if (gameConfig.Mtc?.ListenForConnections == true)
             await gi.StartAsync();
@@ -288,7 +296,7 @@ public partial class MainWindow
         var termReader = serverToTerm.Reader.AsStream();
         _ = Task.Run(async () =>
         {
-            var buf = new byte[4096];
+            var buf = new byte[64 * 1024];
             try
             {
                 while (!cts.Token.IsCancellationRequested)
@@ -296,10 +304,10 @@ public partial class MainWindow
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
-                    if (!IsEmbeddedTerminalClientDeaf())
-                        _sessionLog.RecordServerData(chunk);
                     byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk);
-                    EnqueueDisplayChunk(displayChunk, CountTransportLines(displayChunk));
+                    EnqueueDisplayChunk(displayChunk);
+                    if (!IsEmbeddedTerminalClientDeaf())
+                        QueueSessionLogChunk(chunk);
                 }
             }
             catch (OperationCanceledException) { }
@@ -370,8 +378,8 @@ public partial class MainWindow
                             ObserveComputerShipTypeLine(strippedRemainder);
                             ObserveOnlinePlayersLine(strippedRemainder);
                             SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                            _ = HandleEmbeddedKeepaliveWatchLineAsync(strippedRemainder);
-                            _ = HandleNativeMombotWatchLineAsync(strippedRemainder);
+                            ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
+                            ObserveNativeMombotWatchLine(strippedRemainder);
                         }
                         if (nativeHaggleResponded)
                         {
@@ -420,8 +428,8 @@ public partial class MainWindow
                 if (!string.IsNullOrWhiteSpace(lineStripped))
                 {
                     SyncMombotPromptStateFromLine(lineStripped, lineRaw);
-                    _ = HandleEmbeddedKeepaliveWatchLineAsync(lineStripped);
-                    _ = HandleNativeMombotWatchLineAsync(lineStripped);
+                    ObserveEmbeddedKeepaliveWatchLine(lineStripped);
+                    ObserveNativeMombotWatchLine(lineStripped);
                 }
 
                 if (_appPrefs.EnableRedAlertMode &&

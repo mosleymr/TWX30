@@ -83,6 +83,7 @@ internal class EmbeddedMtcConfig
     public bool ListenForConnections { get; set; }
     public int ScrollbackLines { get; set; } = 2000;
     public EmbeddedMtcStatusBarConfig StatusBar { get; set; } = new();
+    public EmbeddedMtcDebugConfig Debug { get; set; } = new();
     [JsonIgnore]
     public MTC.mombot.mombotConfig mombot { get; set; } = new();
     [JsonPropertyName("mombot")]
@@ -108,6 +109,17 @@ internal class EmbeddedMtcConfig
         }
     }
     public EmbeddedMtcState State { get; set; } = new();
+}
+
+internal class EmbeddedMtcDebugConfig
+{
+    public bool DebugLoggingEnabled { get; set; } = true;
+    public bool VerboseDebugLogging { get; set; }
+    public bool ScriptTraceDebugLogging { get; set; }
+    public bool AutoRecorderDebugLogging { get; set; }
+    public bool TriggerDebugLogging { get; set; }
+    public bool DebugPortHaggleEnabled { get; set; }
+    public bool DebugPlanetHaggleEnabled { get; set; }
 }
 
 internal class EmbeddedMtcStatusBarConfig
