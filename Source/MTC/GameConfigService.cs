@@ -87,6 +87,7 @@ internal static class GameConfigService
     {
         config.Mtc ??= new EmbeddedMtcConfig();
         config.Mtc.State ??= new EmbeddedMtcState();
+        config.Mtc.Debug ??= new EmbeddedMtcDebugConfig();
         config.mombot ??= config.Mtc.mombot ?? new MTC.mombot.mombotConfig();
         config.Mtc.mombot = config.mombot;
         return config.mombot;
@@ -156,7 +157,7 @@ internal static class GameConfigService
             if (string.IsNullOrWhiteSpace(config.DatabasePath))
                 config.DatabasePath = DatabasePathForMode(config.Name, config.Mtc?.EmbeddedProxy ?? true);
             config.Variables = NormalizeVariables(config.Variables);
-            return config;
+            return NormalizeMombotConfig(config);
         }
         catch
         {

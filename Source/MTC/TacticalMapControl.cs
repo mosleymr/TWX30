@@ -37,6 +37,7 @@ public class TacticalMapControl : Control
     private const float MaxZoomFactor = 1.75f;
     private const float ZoomStep = 0.12f;
     private const int PreviewMaxHighlightedSectors = 20;
+    private const int PreviewMaxContextSectors = 360;
     private static readonly HexCell[] HexDirections =
     [
         new(1, 0),
@@ -69,6 +70,7 @@ public class TacticalMapControl : Control
     private int _previewGateSector;
     private int _previewSurroundingDepth;
     private bool _previewLimitHighlightedSectors = true;
+    private bool _previewZoomControlsDepth;
     private string? _previewLegendText;
 
     private static string GetViewModeLabel(TacticalMapViewMode viewMode)
@@ -217,7 +219,8 @@ public class TacticalMapControl : Control
         int gateSector = 0,
         int surroundingDepth = 0,
         string? legendText = null,
-        bool limitHighlightedSectors = true)
+        bool limitHighlightedSectors = true,
+        bool zoomControlsDepth = false)
     {
         _previewHighlightedSectors = highlightedSectors?
             .Where(sectorNumber => sectorNumber > 0)
@@ -227,6 +230,7 @@ public class TacticalMapControl : Control
         _previewSurroundingDepth = Math.Max(0, surroundingDepth);
         _previewLegendText = string.IsNullOrWhiteSpace(legendText) ? null : legendText.Trim();
         _previewLimitHighlightedSectors = limitHighlightedSectors;
+        _previewZoomControlsDepth = zoomControlsDepth && _previewHighlightedSectors.Count > 0;
         InvalidateVisual();
     }
 
@@ -570,8 +574,15 @@ public class TacticalMapControl : Control
                 if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay previewOverlay))
                     DrawCircularOwnershipRings(canvas, ringPaint, position, isHighlighted || isGate ? NodeRadius + 3.5f : NodeRadius + 0.5f, previewOverlay);
 
-                textPaint.Color = SKColors.White;
-                canvas.DrawText(sectorNumber.ToString(), position.X, position.Y + 4f, textPaint);
+                bool showPreviewLabel = isHighlighted ||
+                                        isGate ||
+                                        snapshot.Positions.Count <= 90 ||
+                                        snapshot.Depths.GetValueOrDefault(sectorNumber) <= 1;
+                if (showPreviewLabel)
+                {
+                    textPaint.Color = SKColors.White;
+                    canvas.DrawText(sectorNumber.ToString(), position.X, position.Y + 4f, textPaint);
+                }
                 continue;
             }
 
@@ -736,7 +747,7 @@ public class TacticalMapControl : Control
     {
         string text = snapshot.IsPreview
             ? !string.IsNullOrWhiteSpace(snapshot.PreviewLegendText)
-                ? snapshot.PreviewLegendText
+                ? $"{snapshot.PreviewLegendText}  |  {snapshot.Positions.Count} SECTORS"
                 : snapshot.GateSector > 0
                     ? $"PREVIEW DOOR {snapshot.GateSector}  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
                     : $"PREVIEW  |  {snapshot.HighlightedSectors.Count} / {Math.Max(snapshot.HighlightedSectors.Count, snapshot.TotalHighlightedSectors)} SHOWN"
@@ -871,8 +882,13 @@ public class TacticalMapControl : Control
             }
         }
 
-        if (_previewSurroundingDepth > 0)
-            ExpandPreviewNeighbors(db, includedSectors, _previewSurroundingDepth);
+        int previewDepth = GetPreviewSurroundingDepth();
+        if (previewDepth > 0)
+            ExpandPreviewNeighbors(
+                db,
+                includedSectors,
+                previewDepth,
+                _previewZoomControlsDepth ? GetPreviewContextSectorLimit() : int.MaxValue);
 
         if (includedSectors.Count == 0)
             includedSectors.Add(centerSector);
@@ -1034,9 +1050,12 @@ public class TacticalMapControl : Control
         return depths;
     }
 
-    private static void ExpandPreviewNeighbors(Core.ModDatabase db, HashSet<int> includedSectors, int depth)
+    private static void ExpandPreviewNeighbors(Core.ModDatabase db, HashSet<int> includedSectors, int depth, int maxSectors)
     {
         if (depth <= 0 || includedSectors.Count == 0)
+            return;
+
+        if (maxSectors <= 0)
             return;
 
         var queue = new Queue<(int SectorNumber, int Depth)>();
@@ -1060,6 +1079,9 @@ public class TacticalMapControl : Control
                     continue;
 
                 includedSectors.Add(linkedSector);
+                if (includedSectors.Count >= maxSectors)
+                    return;
+
                 queue.Enqueue((linkedSector, currentDepth + 1));
             }
         }
@@ -1472,6 +1494,27 @@ public class TacticalMapControl : Control
             >= 0.80f => 4,
             >= 0.60f => 5,
             _ => ZoomedOutDepth,
+        };
+    }
+
+    private int GetPreviewSurroundingDepth()
+    {
+        if (!_previewZoomControlsDepth)
+            return _previewSurroundingDepth;
+
+        return Math.Max(_previewSurroundingDepth, GetVisibleDepth());
+    }
+
+    private int GetPreviewContextSectorLimit()
+    {
+        return _zoomFactor switch
+        {
+            >= 1.55f => 28,
+            >= 1.30f => 48,
+            >= 1.05f => 84,
+            >= 0.80f => 140,
+            >= 0.60f => 230,
+            _ => PreviewMaxContextSectors,
         };
     }
 

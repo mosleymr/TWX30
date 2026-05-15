@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -970,11 +971,9 @@ public partial class MainWindow
 
             _state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
 
-            // Auto-save ship state back to the open profile file
+            // Ship status can update many times per macro burst; persist it after the burst quiets.
             if (_currentProfilePath != null)
-            {
-                _ = SaveCurrentGameConfigAsync();
-            }
+                RequestCurrentGameConfigSave();
         });
     }
 
@@ -1030,14 +1029,17 @@ public partial class MainWindow
 
     private void ObserveOnlinePlayersLine(string line)
     {
+        string trimmed = line.Trim();
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            if (!ShouldDispatchOnlinePlayersLine(trimmed))
+                return;
+
             string capturedLine = line;
-            Dispatcher.UIThread.Post(() => ObserveOnlinePlayersLine(capturedLine));
+            Dispatcher.UIThread.Post(() => ObserveOnlinePlayersLine(capturedLine), DispatcherPriority.Background);
             return;
         }
-
-        string trimmed = line.Trim();
 
         Match enteredMatch = OnlinePlayerEnteredGameRegex.Match(trimmed);
         if (enteredMatch.Success)
@@ -1076,6 +1078,19 @@ public partial class MainWindow
         }
 
         _capturingOnlinePlayers = false;
+    }
+
+    private bool ShouldDispatchOnlinePlayersLine(string trimmed)
+    {
+        if (_capturingOnlinePlayers)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return false;
+
+        return trimmed.Equals("Who's Playing", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.EndsWith(" enters the game.", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.EndsWith(" exits the game.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryExtractOnlinePlayerName(string line, out string playerName)
@@ -1128,7 +1143,21 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(() => RequestInfoPanelsRefresh(force), DispatcherPriority.Background);
+            if (force)
+            {
+                Dispatcher.UIThread.Post(() => RequestInfoPanelsRefresh(force), DispatcherPriority.Input);
+                return;
+            }
+
+            if (Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 1) == 0)
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 0);
+                    RequestInfoPanelsRefresh();
+                }, DispatcherPriority.Background);
+            }
+
             return;
         }
 
@@ -1138,8 +1167,115 @@ public partial class MainWindow
             return;
         }
 
+        _deferredInfoPanelsRefresh = true;
+
+        if (force)
+        {
+            _infoPanelsRefreshTimer?.Stop();
+            FlushInfoPanelsRefresh();
+            return;
+        }
+
+        TimeSpan delay = GetInfoPanelsRefreshDelay();
+        if (delay <= TimeSpan.Zero && !HasPendingTerminalDisplayBacklog())
+        {
+            FlushInfoPanelsRefresh();
+            return;
+        }
+
+        ScheduleInfoPanelsRefresh(delay <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(100) : delay);
+    }
+
+    private TimeSpan GetInfoPanelsRefreshDelay()
+    {
+        if (HasPendingTerminalDisplayBacklog())
+            return TimeSpan.FromMilliseconds(350);
+
+        long lastRefreshTicks = Volatile.Read(ref _lastInfoPanelsRefreshTicks);
+        if (lastRefreshTicks == 0)
+            return TimeSpan.Zero;
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(lastRefreshTicks);
+        TimeSpan minInterval = TimeSpan.FromMilliseconds(250);
+        return elapsed >= minInterval ? TimeSpan.Zero : minInterval - elapsed;
+    }
+
+    private void ScheduleInfoPanelsRefresh(TimeSpan delay)
+    {
+        DispatcherTimer timer = _infoPanelsRefreshTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+
+        timer.Stop();
+        timer.Interval = delay <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : delay;
+        timer.Tick -= OnInfoPanelsRefreshTimerTick;
+        timer.Tick += OnInfoPanelsRefreshTimerTick;
+        timer.Start();
+    }
+
+    private void OnInfoPanelsRefreshTimerTick(object? sender, EventArgs e)
+    {
+        _infoPanelsRefreshTimer?.Stop();
+        if (HasPendingTerminalDisplayBacklog())
+        {
+            ScheduleInfoPanelsRefresh(TimeSpan.FromMilliseconds(350));
+            return;
+        }
+
+        FlushInfoPanelsRefresh();
+    }
+
+    private void FlushInfoPanelsRefresh()
+    {
+        if (IsEmbeddedTerminalClientDeaf())
+            return;
+
+        if (!_deferredInfoPanelsRefresh)
+            return;
+
         _deferredInfoPanelsRefresh = false;
+        Volatile.Write(ref _lastInfoPanelsRefreshTicks, Stopwatch.GetTimestamp());
         RefreshInfoPanels();
+    }
+
+    private void RequestCurrentGameConfigSave()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(RequestCurrentGameConfigSave, DispatcherPriority.Background);
+            return;
+        }
+
+        DispatcherTimer timer = _currentGameConfigSaveTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+
+        timer.Stop();
+        timer.Interval = TimeSpan.FromSeconds(2);
+        timer.Tick -= OnCurrentGameConfigSaveTimerTick;
+        timer.Tick += OnCurrentGameConfigSaveTimerTick;
+        timer.Start();
+    }
+
+    private async void OnCurrentGameConfigSaveTimerTick(object? sender, EventArgs e)
+    {
+        _currentGameConfigSaveTimer?.Stop();
+        if (_currentGameConfigSaveRunning)
+        {
+            _currentGameConfigSaveAgain = true;
+            return;
+        }
+
+        _currentGameConfigSaveRunning = true;
+        try
+        {
+            await SaveCurrentGameConfigAsync();
+        }
+        finally
+        {
+            _currentGameConfigSaveRunning = false;
+            if (_currentGameConfigSaveAgain)
+            {
+                _currentGameConfigSaveAgain = false;
+                RequestCurrentGameConfigSave();
+            }
+        }
     }
 
     private void RequestOnlinePanelRefresh(bool force = false)

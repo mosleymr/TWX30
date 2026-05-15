@@ -2211,7 +2211,9 @@ public partial class MainWindow
             Items  = { mapViewItem },
         };
 
-        var toolsFindRouteItem = new MenuItem { Header = "_Find Route..." };
+        var toolsFindItem = new MenuItem { Header = "_Find..." };
+        toolsFindItem.Click += (_, _) => OnToolsFind();
+        var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
         toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
         var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
         toolsConfigureStatusPanelItem.Click += async (_, _) => await OnConfigureStatusPanelAsync();
@@ -2219,7 +2221,7 @@ public partial class MainWindow
         toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
-        _toolsMenu.ItemsSource = new object[] { toolsFindRouteItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
 
         var menu = new Menu
         {
@@ -2328,6 +2330,23 @@ public partial class MainWindow
             () => _state.Sector,
             () => _state);
         win.Show();
+    }
+
+    private void OnToolsFind()
+    {
+        if (_dataMiningWindow is { IsVisible: true })
+        {
+            _dataMiningWindow.Activate();
+            return;
+        }
+
+        _dataMiningWindow = new DataMiningWindow(
+            () => _sessionDb,
+            () => _state.Sector,
+            () => _state);
+        _dataMiningWindow.Closed += (_, _) => _dataMiningWindow = null;
+        _dataMiningWindow.Show(this);
+        _dataMiningWindow.Activate();
     }
 
     private void OnViewBubbles()

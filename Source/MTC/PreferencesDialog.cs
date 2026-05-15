@@ -9,11 +9,11 @@ namespace MTC;
 
 /// <summary>
 /// Application-wide preferences dialog.
-/// Usage: <c>var saved = await new PreferencesDialog(prefs).ShowDialog&lt;bool&gt;(owner);</c>
-/// The caller's <see cref="AppPreferences"/> instance is updated in-place when the user
-/// clicks Save, and the dialog returns <c>true</c>.
+/// Usage: <c>var saved = await new PreferencesDialog(prefs, debugPrefs, gameName).ShowDialog&lt;bool&gt;(owner);</c>
+/// The caller's app preferences and per-game debug preferences are updated in-place when
+/// the user clicks Save, and the dialog returns <c>true</c>.
 /// </summary>
-public class PreferencesDialog : Window
+internal class PreferencesDialog : Window
 {
     // ── Colors (match MainWindow dark chrome) ─────────────────────────────
     private static readonly IBrush BgPanel    = new SolidColorBrush(Color.FromRgb(23,  25,  28));
@@ -38,7 +38,7 @@ public class PreferencesDialog : Window
         new("1 MB", 1024),
     };
 
-    public PreferencesDialog(AppPreferences prefs)
+    public PreferencesDialog(AppPreferences prefs, EmbeddedMtcDebugConfig debugPrefs, string? gameName)
     {
         Title                 = "Preferences";
         Width                 = 640;
@@ -115,13 +115,13 @@ public class PreferencesDialog : Window
         var programDirRow = BuildPathInputRow(txtProgramDir, btnBrowseProgramDir);
         var scriptsRow = BuildPathInputRow(txtScripts, btnBrowse);
 
-        var chkDebug = BuildCheckBox("Enable debug logging", prefs.DebugLoggingEnabled);
-        var chkVerbose = BuildCheckBox("Enable verbose parameter debug logging", prefs.VerboseDebugLogging);
-        var chkScriptTrace = BuildCheckBox("Enable script VM trace logging (huge)", prefs.ScriptTraceDebugLogging);
-        var chkAutoRecorderDebug = BuildCheckBox("Enable AutoRecorder debug logging", prefs.AutoRecorderDebugLogging);
-        var chkTriggerDebug = BuildCheckBox("Enable trigger debug logging (very noisy)", prefs.TriggerDebugLogging);
-        var chkDebugPortHaggle = BuildCheckBox("Debug port haggle to mtc_haggle_debug.log", prefs.DebugPortHaggleEnabled);
-        var chkDebugPlanetHaggle = BuildCheckBox("Debug planet haggle to mtc_neg_debug.log", prefs.DebugPlanetHaggleEnabled);
+        var chkDebug = BuildCheckBox("Enable debug logging", debugPrefs.DebugLoggingEnabled);
+        var chkVerbose = BuildCheckBox("Enable verbose parameter debug logging", debugPrefs.VerboseDebugLogging);
+        var chkScriptTrace = BuildCheckBox("Enable script VM trace logging (huge)", debugPrefs.ScriptTraceDebugLogging);
+        var chkAutoRecorderDebug = BuildCheckBox("Enable AutoRecorder debug logging", debugPrefs.AutoRecorderDebugLogging);
+        var chkTriggerDebug = BuildCheckBox("Enable trigger debug logging (very noisy)", debugPrefs.TriggerDebugLogging);
+        var chkDebugPortHaggle = BuildCheckBox("Debug port haggle to mtc_haggle_debug.log", debugPrefs.DebugPortHaggleEnabled);
+        var chkDebugPlanetHaggle = BuildCheckBox("Debug planet haggle to mtc_neg_debug.log", debugPrefs.DebugPlanetHaggleEnabled);
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
@@ -161,7 +161,9 @@ public class PreferencesDialog : Window
 
         var diagnosticsSection = BuildSection(
             "Diagnostics",
-            "Logging controls for runtime troubleshooting.",
+            string.IsNullOrWhiteSpace(gameName)
+                ? "Logging controls for the currently selected game."
+                : $"Logging controls for game '{gameName}'.",
             BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkAutoRecorderDebug, chkTriggerDebug, chkDebugPortHaggle, chkDebugPlanetHaggle));
 
         var alertsSection = BuildSection(
@@ -201,13 +203,13 @@ public class PreferencesDialog : Window
             prefs.ScriptsDirectory = string.IsNullOrWhiteSpace(txtScripts.Text)
                 ? Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(prefs.ProgramDirectory)
                 : txtScripts.Text.Trim();
-            prefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
-            prefs.VerboseDebugLogging = prefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
-            prefs.ScriptTraceDebugLogging = prefs.DebugLoggingEnabled && chkScriptTrace.IsChecked == true;
-            prefs.AutoRecorderDebugLogging = prefs.DebugLoggingEnabled && chkAutoRecorderDebug.IsChecked == true;
-            prefs.TriggerDebugLogging = prefs.DebugLoggingEnabled && chkTriggerDebug.IsChecked == true;
-            prefs.DebugPortHaggleEnabled = chkDebugPortHaggle.IsChecked == true;
-            prefs.DebugPlanetHaggleEnabled = chkDebugPlanetHaggle.IsChecked == true;
+            debugPrefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
+            debugPrefs.VerboseDebugLogging = debugPrefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
+            debugPrefs.ScriptTraceDebugLogging = debugPrefs.DebugLoggingEnabled && chkScriptTrace.IsChecked == true;
+            debugPrefs.AutoRecorderDebugLogging = debugPrefs.DebugLoggingEnabled && chkAutoRecorderDebug.IsChecked == true;
+            debugPrefs.TriggerDebugLogging = debugPrefs.DebugLoggingEnabled && chkTriggerDebug.IsChecked == true;
+            debugPrefs.DebugPortHaggleEnabled = chkDebugPortHaggle.IsChecked == true;
+            debugPrefs.DebugPlanetHaggleEnabled = chkDebugPlanetHaggle.IsChecked == true;
             prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;

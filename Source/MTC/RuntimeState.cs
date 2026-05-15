@@ -706,7 +706,9 @@ public partial class MainWindow
 
     private async Task OnPreferencesAsync()
     {
-        bool saved = await new PreferencesDialog(_appPrefs).ShowDialog<bool>(this);
+        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
+        string gameName = GetDebugLogGameName();
+        bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, gameName).ShowDialog<bool>(this);
         if (!saved)
         {
             Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
@@ -716,10 +718,26 @@ public partial class MainWindow
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
+        await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
         ApplyRedAlertPreference();
         RebuildScriptsMenu();
         Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+    }
+
+    private async Task SaveCurrentDebugConfigAsync()
+    {
+        if (_embeddedGameConfig == null)
+            return;
+
+        string? rawGameName = !string.IsNullOrWhiteSpace(_embeddedGameConfig.Name)
+            ? _embeddedGameConfig.Name
+            : (!string.IsNullOrWhiteSpace(_embeddedGameName) ? _embeddedGameName : _state.GameName);
+        if (string.IsNullOrWhiteSpace(rawGameName))
+            return;
+
+        string gameName = NormalizeGameName(rawGameName);
+        await SaveEmbeddedGameConfigAsync(gameName, _embeddedGameConfig);
     }
 
     private async Task OnMacrosAsync()
@@ -778,6 +796,7 @@ public partial class MainWindow
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         string programDir = AppPaths.ProgramDir;
         Core.GlobalModules.ProgramDir = programDir;
+        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
         Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
         Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
         Core.GlobalModules.PreparedScriptCacheLimitBytes =
@@ -790,16 +809,16 @@ public partial class MainWindow
             string.IsNullOrWhiteSpace(debugGameName)
                 ? AppPaths.GetDebugLogPath()
                 : AppPaths.GetDebugLogPathForGame(debugGameName),
-            _appPrefs.DebugLoggingEnabled,
-            _appPrefs.VerboseDebugLogging,
-            _appPrefs.TriggerDebugLogging,
-            _appPrefs.ScriptTraceDebugLogging,
-            _appPrefs.AutoRecorderDebugLogging);
+            debugPrefs.DebugLoggingEnabled,
+            debugPrefs.VerboseDebugLogging,
+            debugPrefs.TriggerDebugLogging,
+            debugPrefs.ScriptTraceDebugLogging,
+            debugPrefs.AutoRecorderDebugLogging);
         Core.GlobalModules.ConfigureHaggleDebugLogging(
             AppPaths.GetPortHaggleDebugLogPath(),
-            _appPrefs.DebugPortHaggleEnabled,
+            debugPrefs.DebugPortHaggleEnabled,
             AppPaths.GetPlanetHaggleDebugLogPath(),
-            _appPrefs.DebugPlanetHaggleEnabled);
+            debugPrefs.DebugPlanetHaggleEnabled);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
         _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
         RefreshSessionLogTarget();

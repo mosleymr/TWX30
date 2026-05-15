@@ -612,6 +612,21 @@ public partial class MainWindow
     private static EmbeddedGameConfig NormalizeEmbeddedMombotConfig(EmbeddedGameConfig config)
         => GameConfigService.NormalizeMombotConfig(config);
 
+    private static EmbeddedMtcDebugConfig GetOrCreateEmbeddedDebugConfig(EmbeddedGameConfig config)
+    {
+        config.Mtc ??= new EmbeddedMtcConfig();
+        config.Mtc.Debug ??= new EmbeddedMtcDebugConfig();
+        return config.Mtc.Debug;
+    }
+
+    private EmbeddedMtcDebugConfig GetCurrentDebugConfig()
+    {
+        if (_embeddedGameConfig != null)
+            return GetOrCreateEmbeddedDebugConfig(_embeddedGameConfig);
+
+        return new EmbeddedMtcDebugConfig();
+    }
+
     private static MTC.mombot.mombotConfig GetOrCreateEmbeddedMombotConfig(EmbeddedGameConfig config)
         => GameConfigService.GetOrCreateMombotConfig(config);
 

@@ -190,36 +190,57 @@ public partial class MainWindow
         }
     }
 
-    private async Task HandleEmbeddedKeepaliveWatchLineAsync(string line)
+    private void ObserveEmbeddedKeepaliveWatchLine(string line)
     {
-        await Task.Yield();
+        if (_gameInstance == null ||
+            !_gameInstance.IsConnected ||
+            !IsSessionTerminationWarningLine(line))
+        {
+            return;
+        }
 
-        if (_gameInstance == null || !_gameInstance.IsConnected || string.IsNullOrWhiteSpace(line))
+        _ = SendKeepaliveEscapeAsync();
+    }
+
+    private void ObserveNativeMombotWatchLine(string line)
+    {
+        if (_gameInstance == null || string.IsNullOrWhiteSpace(line))
             return;
 
-        if (line.Contains("Your session will be terminated in ", StringComparison.OrdinalIgnoreCase) ||
-            line.Contains("You now have Thirty seconds until termination.", StringComparison.OrdinalIgnoreCase) ||
-            line.Contains("Only TEN seconds remain.  Session termination is imminent.", StringComparison.OrdinalIgnoreCase))
+        if (_gameInstance.IsConnected && IsSessionTerminationWarningLine(line))
+            _ = SendKeepaliveEscapeAsync();
+
+        if (!_mombot.Enabled ||
+            (!_mombotStartupDataGatherPending && !_mombotStartupPostInitPending))
         {
-            await SendKeepaliveEscapeAsync();
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _nativeMombotStartupWatchScheduled, 1) != 0)
+            return;
+
+        _ = Task.Run(RunNativeMombotStartupWatchAsync);
+    }
+
+    private async Task RunNativeMombotStartupWatchAsync()
+    {
+        try
+        {
+            await TryRunNativeMombotInitialSettingsAsync().ConfigureAwait(false);
+            await FinalizeNativeMombotStartupAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _nativeMombotStartupWatchScheduled, 0);
         }
     }
 
-    private async Task HandleNativeMombotWatchLineAsync(string line)
+    private static bool IsSessionTerminationWarningLine(string line)
     {
-        await Task.Yield();
-
-        if (!_mombot.Enabled || _gameInstance == null || string.IsNullOrWhiteSpace(line))
-            return;
-
-        if (_gameInstance.IsConnected &&
-            line.Contains("Your session will be terminated in ", StringComparison.OrdinalIgnoreCase))
-        {
-            await SendKeepaliveEscapeAsync();
-        }
-
-        await TryRunNativeMombotInitialSettingsAsync();
-        await FinalizeNativeMombotStartupAsync();
+        return !string.IsNullOrWhiteSpace(line) &&
+            (line.Contains("Your session will be terminated in ", StringComparison.OrdinalIgnoreCase) ||
+             line.Contains("You now have Thirty seconds until termination.", StringComparison.OrdinalIgnoreCase) ||
+             line.Contains("Only TEN seconds remain.  Session termination is imminent.", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task SendKeepaliveEscapeAsync()
