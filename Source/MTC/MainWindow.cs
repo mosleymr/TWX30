@@ -86,6 +86,7 @@ public partial class MainWindow : Window
     private string?                        _embeddedGameName;
     private readonly Dictionary<string, AiAssistantWindow> _assistantWindows = new(StringComparer.OrdinalIgnoreCase);
     private GameAgentWindow?                _gameAgentWindow;
+    private GameAgentReplayWindow?          _gameAgentReplayWindow;
     private ScriptDebuggerWindow?          _scriptDebuggerWindow;
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
@@ -94,7 +95,7 @@ public partial class MainWindow : Window
     private MenuItem        _botMenu       = new() { Header = "_Bot" };
     private MenuItem        _quickMenu     = new() { Header = "_Quick" };
     private MenuItem        _toolsMenu     = new() { Header = "_Tools" };
-    private MenuItem        _aiMenu        = new() { Header = "_AI", IsVisible = false };
+    private MenuItem        _aiMenu        = new() { Header = "_Chat", IsVisible = false };
     private readonly MenuItem _viewClearRecents = new() { Header = "Clear _Recents" };
     private MenuItem        _fileEdit       = new() { Header = "_Edit Connection…", IsEnabled = false };
     private MenuItem        _fileConnect    = new() { Header = "_Connect",    IsEnabled = false };

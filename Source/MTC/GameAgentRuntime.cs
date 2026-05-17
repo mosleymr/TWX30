@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -51,9 +52,38 @@ internal sealed class GameAgentContextSnapshot
     public int HoldsTotal { get; init; }
     public string CurrentPrompt { get; init; } = string.Empty;
     public string EventLogPath { get; init; } = string.Empty;
+    public GameAgentBotSnapshot Bot { get; init; } = new();
+    public IReadOnlyList<string> OnlinePlayers { get; init; } = [];
+    public IReadOnlyList<GameAgentRunningScriptSnapshot> RunningScripts { get; init; } = [];
+    public IReadOnlyList<string> RecentPrompts { get; init; } = [];
+    public IReadOnlyList<string> Hazards { get; init; } = [];
     public GameAgentSectorSnapshot? CurrentSectorDetails { get; init; }
     public IReadOnlyList<GameAgentSectorSnapshot> AdjacentSectors { get; init; } = [];
     public IReadOnlyList<GameAgentEvent> RecentEvents { get; init; } = [];
+}
+
+internal sealed class GameAgentBotSnapshot
+{
+    public bool NativeMombotRunning { get; init; }
+    public string ExternalBotName { get; init; } = string.Empty;
+    public string BotName { get; init; } = string.Empty;
+    public string TeamName { get; init; } = string.Empty;
+    public string Mode { get; init; } = string.Empty;
+    public string LastLoadedModule { get; init; } = string.Empty;
+    public bool WatcherAttached { get; init; }
+    public bool AcceptsSelfCommands { get; init; }
+    public bool AcceptsSubspaceCommands { get; init; }
+    public bool AcceptsPrivateCommands { get; init; }
+}
+
+internal sealed class GameAgentRunningScriptSnapshot
+{
+    public int Id { get; init; }
+    public string Name { get; init; } = string.Empty;
+    public string Reference { get; init; } = string.Empty;
+    public bool IsSystemScript { get; init; }
+    public bool IsBot { get; init; }
+    public bool Paused { get; init; }
 }
 
 internal sealed class GameAgentSectorSnapshot
@@ -94,6 +124,16 @@ internal sealed class GameAgentReplaySnapshot
     public IReadOnlyList<GameAgentEvent> RecentEvents { get; init; } = [];
 }
 
+internal sealed class GameAgentTrainingSample
+{
+    public DateTimeOffset ExportedAt { get; init; } = DateTimeOffset.UtcNow;
+    public string Schema { get; init; } = "mtc.game-agent.training-sample.v1";
+    public string Purpose { get; init; } = "observer-snapshot";
+    public GameAgentContextSnapshot Context { get; init; } = new();
+    public IReadOnlyList<GameAgentToolDescriptor> AvailableTools { get; init; } = [];
+    public IReadOnlyList<GameAgentToolCallResult> ToolDryRuns { get; init; } = [];
+}
+
 internal sealed class GameAgentRuntime : IDisposable
 {
     private const int MaxRecentEvents = 700;
@@ -106,6 +146,11 @@ internal sealed class GameAgentRuntime : IDisposable
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = false,
+    };
+
+    private static readonly JsonSerializerOptions PrettyJsonOptions = new()
+    {
+        WriteIndented = true,
     };
 
     private string _gameName = "game";
@@ -186,13 +231,22 @@ internal sealed class GameAgentRuntime : IDisposable
         }
     }
 
-    public GameAgentContextSnapshot BuildContextSnapshot(GameState state, Core.ModDatabase? database, int recentEventCount = 80)
+    public GameAgentContextSnapshot BuildContextSnapshot(
+        GameState state,
+        Core.ModDatabase? database,
+        GameAgentBotSnapshot? bot = null,
+        IReadOnlyList<string>? onlinePlayers = null,
+        IReadOnlyList<Core.RunningScriptInfo>? runningScripts = null,
+        int recentEventCount = 80)
     {
         string gameName = NormalizeGameName(state.GameName);
         if (string.Equals(gameName, "game", StringComparison.OrdinalIgnoreCase))
             gameName = _gameName;
 
         string prompt = ResolvePromptSurface();
+        IReadOnlyList<GameAgentEvent> recentEvents = GetRecentEvents(recentEventCount);
+        GameAgentSectorSnapshot? currentSector = BuildSectorSnapshot(database, state.Sector);
+        IReadOnlyList<GameAgentSectorSnapshot> adjacentSectors = BuildAdjacentSectorSnapshots(database, state.Sector);
         return new GameAgentContextSnapshot
         {
             Timestamp = DateTimeOffset.UtcNow,
@@ -210,9 +264,14 @@ internal sealed class GameAgentRuntime : IDisposable
             HoldsTotal = state.HoldsTotal,
             CurrentPrompt = prompt,
             EventLogPath = EventLogPath,
-            CurrentSectorDetails = BuildSectorSnapshot(database, state.Sector),
-            AdjacentSectors = BuildAdjacentSectorSnapshots(database, state.Sector),
-            RecentEvents = GetRecentEvents(recentEventCount),
+            Bot = bot ?? new GameAgentBotSnapshot(),
+            OnlinePlayers = onlinePlayers?.Where(player => !string.IsNullOrWhiteSpace(player)).Take(40).ToArray() ?? [],
+            RunningScripts = BuildRunningScriptSnapshots(runningScripts),
+            RecentPrompts = BuildRecentPrompts(recentEvents),
+            Hazards = BuildHazards(currentSector, adjacentSectors),
+            CurrentSectorDetails = currentSector,
+            AdjacentSectors = adjacentSectors,
+            RecentEvents = recentEvents,
         };
     }
 
@@ -319,6 +378,35 @@ internal sealed class GameAgentRuntime : IDisposable
         }
     }
 
+    public static string ExportTrainingSample(GameAgentContextSnapshot context)
+    {
+        GameAgentTrainingSample sample = new()
+        {
+            Context = context,
+            AvailableTools = GameAgentToolRegistry.DescribeTools(),
+            ToolDryRuns =
+            [
+                GameAgentToolRegistry.ObserveContext(context),
+                GameAgentToolRegistry.ListScripts(context.RunningScripts),
+            ],
+        };
+
+        string dir = BuildAgentDirectory(context.GameName);
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"sample-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(sample, PrettyJsonOptions), Encoding.UTF8);
+        return path;
+    }
+
+    public static string ExportSnapshot(GameAgentContextSnapshot context)
+    {
+        string dir = BuildAgentDirectory(context.GameName);
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"snapshot-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(context, PrettyJsonOptions), Encoding.UTF8);
+        return path;
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -412,9 +500,14 @@ internal sealed class GameAgentRuntime : IDisposable
 
     private static string BuildEventLogPath(string gameName)
     {
-        string safeGameName = NormalizeGameName(gameName);
-        string dir = Path.Combine(AppPaths.TwxproxyGamesDir, safeGameName, "agent");
+        string dir = BuildAgentDirectory(gameName);
         return Path.Combine(dir, $"events-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+    }
+
+    private static string BuildAgentDirectory(string gameName)
+    {
+        string safeGameName = NormalizeGameName(gameName);
+        return Path.Combine(AppPaths.TwxproxyGamesDir, safeGameName, "agent");
     }
 
     private void CloseWriterUnderLock()
@@ -432,9 +525,17 @@ internal sealed class GameAgentRuntime : IDisposable
 
     private static string ResolvePromptSurface()
     {
-        string currentLine = Core.ScriptRef.GetCurrentLine();
-        if (string.IsNullOrWhiteSpace(currentLine))
+        string currentLine;
+        try
+        {
+            currentLine = Core.ScriptRef.GetCurrentLine();
+            if (string.IsNullOrWhiteSpace(currentLine))
+                return string.Empty;
+        }
+        catch
+        {
             return string.Empty;
+        }
 
         string trimmed = Core.AnsiCodes.NormalizeTerminalText(currentLine).Trim();
         int marker = trimmed.IndexOf(" [TL=", StringComparison.OrdinalIgnoreCase);
@@ -450,18 +551,25 @@ internal sealed class GameAgentRuntime : IDisposable
 
     private static IReadOnlyList<GameAgentSectorSnapshot> BuildAdjacentSectorSnapshots(Core.ModDatabase? database, int currentSector)
     {
-        Core.SectorData? sector = database?.GetSector(currentSector);
-        if (database == null || sector == null)
-            return [];
+        try
+        {
+            Core.SectorData? sector = database?.GetSector(currentSector);
+            if (database == null || sector == null)
+                return [];
 
-        return sector.Warp
-            .Where(warp => warp > 0)
-            .Distinct()
-            .Take(8)
-            .Select(warp => BuildSectorSnapshot(database, warp))
-            .Where(snapshot => snapshot != null)
-            .Cast<GameAgentSectorSnapshot>()
-            .ToArray();
+            return sector.Warp
+                .Where(warp => warp > 0)
+                .Distinct()
+                .Take(8)
+                .Select(warp => BuildSectorSnapshot(database, warp))
+                .Where(snapshot => snapshot != null)
+                .Cast<GameAgentSectorSnapshot>()
+                .ToArray();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private static GameAgentSectorSnapshot? BuildSectorSnapshot(Core.ModDatabase? database, int sectorNumber)
@@ -469,29 +577,92 @@ internal sealed class GameAgentRuntime : IDisposable
         if (database == null || sectorNumber <= 0)
             return null;
 
-        Core.SectorData? sector = database.GetSector(sectorNumber);
-        if (sector == null)
-            return new GameAgentSectorSnapshot { Number = sectorNumber, Explored = "Unknown" };
-
-        return new GameAgentSectorSnapshot
+        try
         {
-            Number = sectorNumber,
-            Explored = sector.Explored.ToString(),
-            Constellation = sector.Constellation ?? string.Empty,
-            Beacon = sector.Beacon ?? string.Empty,
-            NavHaz = sector.NavHaz,
-            Anomaly = sector.Anomaly,
-            Density = sector.Density,
-            WarpsOut = sector.Warp.Where(warp => warp > 0).Select(warp => (int)warp).ToArray(),
-            WarpsIn = sector.WarpsIn.Where(warp => warp > 0).Select(warp => (int)warp).OrderBy(warp => warp).ToArray(),
-            Port = FormatPort(sector.SectorPort),
-            Planets = database.GetPlanetNamesInSector(sectorNumber).Where(name => !string.IsNullOrWhiteSpace(name)).Take(12).ToArray(),
-            Traders = sector.Traders.Select(FormatTrader).Where(value => value.Length > 0).Take(12).ToArray(),
-            Ships = sector.Ships.Select(FormatShip).Where(value => value.Length > 0).Take(12).ToArray(),
-            Fighters = FormatSpaceObject(sector.Fighters, includeType: true),
-            ArmidMines = FormatSpaceObject(sector.MinesArmid, includeType: false),
-            LimpetMines = FormatSpaceObject(sector.MinesLimpet, includeType: false),
-        };
+            Core.SectorData? sector = database.GetSector(sectorNumber);
+            if (sector == null)
+                return new GameAgentSectorSnapshot { Number = sectorNumber, Explored = "Unknown" };
+
+            return new GameAgentSectorSnapshot
+            {
+                Number = sectorNumber,
+                Explored = sector.Explored.ToString(),
+                Constellation = sector.Constellation ?? string.Empty,
+                Beacon = sector.Beacon ?? string.Empty,
+                NavHaz = sector.NavHaz,
+                Anomaly = sector.Anomaly,
+                Density = sector.Density,
+                WarpsOut = sector.Warp.Where(warp => warp > 0).Select(warp => (int)warp).ToArray(),
+                WarpsIn = sector.WarpsIn.Where(warp => warp > 0).Select(warp => (int)warp).OrderBy(warp => warp).ToArray(),
+                Port = FormatPort(sector.SectorPort),
+                Planets = database.GetPlanetNamesInSector(sectorNumber).Where(name => !string.IsNullOrWhiteSpace(name)).Take(12).ToArray(),
+                Traders = sector.Traders.Select(FormatTrader).Where(value => value.Length > 0).Take(12).ToArray(),
+                Ships = sector.Ships.Select(FormatShip).Where(value => value.Length > 0).Take(12).ToArray(),
+                Fighters = FormatSpaceObject(sector.Fighters, includeType: true),
+                ArmidMines = FormatSpaceObject(sector.MinesArmid, includeType: false),
+                LimpetMines = FormatSpaceObject(sector.MinesLimpet, includeType: false),
+            };
+        }
+        catch
+        {
+            return new GameAgentSectorSnapshot { Number = sectorNumber, Explored = "Unavailable" };
+        }
+    }
+
+    private static IReadOnlyList<GameAgentRunningScriptSnapshot> BuildRunningScriptSnapshots(IReadOnlyList<Core.RunningScriptInfo>? runningScripts)
+    {
+        if (runningScripts == null || runningScripts.Count == 0)
+            return [];
+
+        return runningScripts
+            .Take(40)
+            .Select(script => new GameAgentRunningScriptSnapshot
+            {
+                Id = script.Id,
+                Name = script.Name,
+                Reference = script.Reference,
+                IsSystemScript = script.IsSystemScript,
+                IsBot = script.IsBot,
+                Paused = script.Paused,
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> BuildRecentPrompts(IReadOnlyList<GameAgentEvent> recentEvents)
+        => recentEvents
+            .Where(evt => evt.Kind == GameAgentEventKind.ServerPrompt)
+            .Select(evt => string.IsNullOrWhiteSpace(evt.PromptSurface) ? evt.PlainText : evt.PromptSurface)
+            .Where(prompt => !string.IsNullOrWhiteSpace(prompt))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .TakeLast(8)
+            .ToArray();
+
+    private static IReadOnlyList<string> BuildHazards(GameAgentSectorSnapshot? currentSector, IReadOnlyList<GameAgentSectorSnapshot> adjacentSectors)
+    {
+        var hazards = new List<string>();
+        AddSectorHazards(hazards, "Current", currentSector);
+        foreach (GameAgentSectorSnapshot sector in adjacentSectors)
+            AddSectorHazards(hazards, "Adjacent", sector);
+        return hazards.Take(20).ToArray();
+    }
+
+    private static void AddSectorHazards(List<string> hazards, string prefix, GameAgentSectorSnapshot? sector)
+    {
+        if (sector == null)
+            return;
+
+        if (sector.NavHaz > 0)
+            hazards.Add($"{prefix} sector {sector.Number} has {sector.NavHaz}% navhaz.");
+        if (sector.Anomaly)
+            hazards.Add($"{prefix} sector {sector.Number} has an anomaly.");
+        if (!string.IsNullOrWhiteSpace(sector.ArmidMines))
+            hazards.Add($"{prefix} sector {sector.Number} has armid mines: {sector.ArmidMines}.");
+        if (!string.IsNullOrWhiteSpace(sector.LimpetMines))
+            hazards.Add($"{prefix} sector {sector.Number} has limpet mines: {sector.LimpetMines}.");
+        if (sector.Traders.Count > 0)
+            hazards.Add($"{prefix} sector {sector.Number} has trader contacts: {string.Join("; ", sector.Traders.Take(3))}.");
+        if (sector.Ships.Count > 0)
+            hazards.Add($"{prefix} sector {sector.Number} has visible ships: {string.Join("; ", sector.Ships.Take(3))}.");
     }
 
     private static string FormatPort(Core.Port? port)

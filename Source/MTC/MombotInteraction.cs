@@ -839,7 +839,7 @@ public partial class MainWindow
 
         if (binding == null)
         {
-            await ShowMessageAsync("AI Assistant", "The selected AI module is not currently loaded.");
+            await ShowMessageAsync("Chat Assistant", "The selected chat module is not currently loaded.");
             return;
         }
 

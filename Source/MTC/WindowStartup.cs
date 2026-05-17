@@ -213,6 +213,8 @@ public partial class MainWindow
             _assistantWindows.Clear();
             _gameAgentWindow?.Close();
             _gameAgentWindow = null;
+            _gameAgentReplayWindow?.Close();
+            _gameAgentReplayWindow = null;
             _gameAgent.Dispose();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();

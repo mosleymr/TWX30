@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using Avalonia.Threading;
 using Core = TWXProxy.Core;
 
@@ -16,24 +17,125 @@ public partial class MainWindow
 
     private void OpenGameAgentWindow()
     {
-        if (_gameAgentWindow != null)
+        try
         {
-            _gameAgentWindow.Activate();
-            _gameAgentWindow.Focus();
-            return;
-        }
+            if (_gameAgentWindow != null)
+            {
+                _gameAgentWindow.Activate();
+                _gameAgentWindow.Focus();
+                return;
+            }
 
-        _gameAgent.SetGameName(GetGameAgentGameName());
-        var window = new GameAgentWindow(BuildGameAgentContextSnapshot);
-        window.Closed += (_, _) => _gameAgentWindow = null;
-        _gameAgentWindow = window;
+            _gameAgent.SetGameName(GetGameAgentGameName());
+            var window = new GameAgentWindow(BuildGameAgentContextSnapshot, _appPrefs);
+            window.Closed += (_, _) => _gameAgentWindow = null;
+            _gameAgentWindow = window;
+            window.Show(this);
+        }
+        catch (Exception ex)
+        {
+            _gameAgentWindow = null;
+            _ = ShowMessageAsync("Game Agent", $"Could not open Game Agent:\n{ex.Message}");
+        }
+    }
+
+    private async Task OpenGameAgentReplayWindowAsync()
+    {
+        string? path = await PickProxyOpenPathAsync(
+            "Open Game Agent Event Log",
+            "Game Agent Events",
+            "*.jsonl");
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        _gameAgentReplayWindow?.Close();
+        var window = new GameAgentReplayWindow(path);
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_gameAgentReplayWindow, window))
+                _gameAgentReplayWindow = null;
+        };
+        _gameAgentReplayWindow = window;
         window.Show(this);
+    }
+
+    private async Task ConfigureGameAgentAsync()
+    {
+        var window = new GameAgentConfigWindow(_appPrefs);
+        bool saved = await window.ShowDialog<bool>(this);
+        if (saved)
+        {
+            _gameAgentWindow?.Close();
+            _gameAgentWindow = null;
+        }
     }
 
     private GameAgentContextSnapshot BuildGameAgentContextSnapshot()
     {
         _gameAgent.SetGameName(GetGameAgentGameName());
-        return _gameAgent.BuildContextSnapshot(_state, _sessionDb);
+        GameAgentBotSnapshot bot = BuildGameAgentBotSnapshot();
+        string[] onlinePlayers = BuildGameAgentOnlinePlayersSnapshot();
+        IReadOnlyList<Core.RunningScriptInfo> runningScripts = BuildGameAgentRunningScriptsSnapshot();
+
+        return _gameAgent.BuildContextSnapshot(
+            _state,
+            _sessionDb,
+            bot,
+            onlinePlayers,
+            runningScripts);
+    }
+
+    private GameAgentBotSnapshot BuildGameAgentBotSnapshot()
+    {
+        try
+        {
+            MTC.mombot.mombotStatusSnapshot snapshot = _mombot.GetStatusSnapshot();
+            return new GameAgentBotSnapshot
+            {
+                NativeMombotRunning = _mombot.Enabled,
+                ExternalBotName = _gameInstance?.ActiveBotName ?? string.Empty,
+                BotName = snapshot.BotName,
+                TeamName = snapshot.TeamName,
+                Mode = snapshot.Mode,
+                LastLoadedModule = snapshot.LastLoadedModule,
+                WatcherAttached = snapshot.WatcherAttached,
+                AcceptsSelfCommands = snapshot.AcceptSelfCommands,
+                AcceptsSubspaceCommands = snapshot.AcceptSubspaceCommands,
+                AcceptsPrivateCommands = snapshot.AcceptPrivateCommands,
+            };
+        }
+        catch
+        {
+            return new GameAgentBotSnapshot
+            {
+                NativeMombotRunning = false,
+                ExternalBotName = _gameInstance?.ActiveBotName ?? string.Empty,
+            };
+        }
+    }
+
+    private string[] BuildGameAgentOnlinePlayersSnapshot()
+    {
+        try
+        {
+            return _onlinePlayers.ToArray();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private IReadOnlyList<Core.RunningScriptInfo> BuildGameAgentRunningScriptsSnapshot()
+    {
+        try
+        {
+            return Core.ProxyGameOperations.GetRunningScripts(CurrentInterpreter);
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     private void ObserveGameAgentServerLine(string plainText, string ansiText, bool isPrompt)

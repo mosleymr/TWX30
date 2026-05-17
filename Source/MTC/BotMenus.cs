@@ -363,10 +363,16 @@ public partial class MainWindow
     {
         var gameAgentItem = new MenuItem { Header = "_Game Agent" };
         gameAgentItem.Click += (_, _) => OpenGameAgentWindow();
+        var configureItem = new MenuItem { Header = "_Configure Game Agent..." };
+        configureItem.Click += (_, _) => _ = ConfigureGameAgentAsync();
+        var replayItem = new MenuItem { Header = "Game Agent _Replay..." };
+        replayItem.Click += (_, _) => _ = OpenGameAgentReplayWindowAsync();
 
         var items = new List<object>
         {
             gameAgentItem,
+            configureItem,
+            replayItem,
         };
 
         if (_moduleHost == null)
