@@ -411,16 +411,16 @@ public class ProxyService : IProxyService
                 }
                 
                 // If we processed all lines, clear the buffer
-                if (lastProcessedPos >= buffered.Length)
-                {
-                    proxyInstance.ServerLineBuffer.Clear();
-                    string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
-                        ? bufferedAnsi.Substring(lastAnsiProcessedPos)
-                        : string.Empty;
-                    proxyInstance.ServerAnsiLineBuffer.Clear();
-                    if (ansiRemainder.Length > 0)
-                        proxyInstance.ServerAnsiLineBuffer.Append(ansiRemainder);
-                }
+                    if (lastProcessedPos >= buffered.Length)
+                    {
+                        proxyInstance.ServerLineBuffer.Clear();
+                        string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
+                            ? bufferedAnsi.Substring(lastAnsiProcessedPos)
+                            : string.Empty;
+                        proxyInstance.ServerAnsiLineBuffer.Clear();
+                        if (ansiRemainder.Length > 0)
+                            proxyInstance.ServerAnsiLineBuffer.Append(ansiRemainder);
+                    }
             };
             
             // Hook up event handlers

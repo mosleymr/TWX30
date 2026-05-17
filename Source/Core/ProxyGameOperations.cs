@@ -25,7 +25,7 @@ public sealed record TwxImportResult(
 /// </summary>
 public static class ProxyGameOperations
 {
-    private readonly record struct BubbleCacheKey(ModDatabase Database, long ChangeStamp, int MaxBubbleSize, bool AllowSeparatedByGates);
+    private readonly record struct BubbleCacheKey(ModDatabase Database, long ChangeStamp, int MaxBubbleSize, int MaxGateCount, bool AllowSeparatedByGates);
     private readonly record struct DeadEndCacheKey(ModDatabase Database, long ChangeStamp, int MaxDeadEndSize);
     private readonly record struct TunnelCacheKey(ModDatabase Database, long ChangeStamp, int MaxTunnelSize);
 
@@ -315,15 +315,18 @@ public static class ProxyGameOperations
     public static IReadOnlyList<BubbleInfo> GetBubbles(
         ModDatabase database,
         int maxBubbleSize,
-        bool allowSectorsSeparatedByGates = false)
+        bool allowSectorsSeparatedByGates = false,
+        int maxGateCount = 1)
     {
         EnsureOpenDatabase(database);
 
         int effectiveMaxBubbleSize = maxBubbleSize > 0 ? maxBubbleSize : ModBubble.DefaultMaxBubbleSize;
+        int effectiveMaxGateCount = Math.Max(1, maxGateCount);
         BubbleCacheKey cacheKey = new(
             database,
             database.ChangeStamp,
             effectiveMaxBubbleSize,
+            effectiveMaxGateCount,
             allowSectorsSeparatedByGates);
 
         lock (FinderCacheLock)
@@ -335,6 +338,7 @@ public static class ProxyGameOperations
         var bubble = new ModBubble
         {
             MaxBubbleSize = effectiveMaxBubbleSize,
+            MaxGateCount = effectiveMaxGateCount,
             AllowSectorsSeparatedByGates = allowSectorsSeparatedByGates,
         };
 

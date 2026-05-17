@@ -92,6 +92,7 @@ public partial class MainWindow
     private void OnGameSelected()
     {
         ClearOnlinePlayers();
+        UpdateNotesForActiveGame();
         _fileEdit.IsEnabled       = true;
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
@@ -106,6 +107,7 @@ public partial class MainWindow
         _fileDisconnect.IsEnabled = true;
         UpdateHaggleToggleState();
         RefreshMombotUi();
+        UpdateNotesForActiveGame();
         RebuildProxyMenu();
         RebuildScriptsMenu();
     }
@@ -115,6 +117,8 @@ public partial class MainWindow
     {
         ClearOnlinePlayers();
         ClearRedAlert();
+        SaveCurrentNotesNow();
+        RefreshNotesMenuState();
         _fileConnect.IsEnabled    = true;
         _fileDisconnect.IsEnabled = false;
         UpdateHaggleToggleState();

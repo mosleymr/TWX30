@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -40,6 +42,36 @@ public sealed class DataMiningWindow : Window
         Pair
     }
 
+    private enum SectorQueryField
+    {
+        Fighters,
+        Armids,
+        Limpets,
+        Density,
+        NavHaz,
+        Warps,
+        Port,
+        Explored,
+        Unexplored,
+        Visited,
+        Planets,
+        TradersAndAliens,
+        Ships,
+        Anomaly,
+        Hostile,
+        NoHostile,
+        Friendly,
+        Backdoor
+    }
+
+    private enum OwnerFilterMode
+    {
+        Any,
+        Me,
+        MyCorp,
+        Custom
+    }
+
     private enum SectorDisplayLineKind
     {
         Generic,
@@ -74,6 +106,7 @@ public sealed class DataMiningWindow : Window
         bool Ships,
         bool Anomaly,
         bool Hostile,
+        bool NoHostile,
         bool Friendly,
         bool Visited,
         bool Explored,
@@ -103,6 +136,27 @@ public sealed class DataMiningWindow : Window
         IReadOnlyDictionary<Core.ProductType, ProductCriteria> Primary,
         IReadOnlyDictionary<Core.ProductType, ProductCriteria> Secondary);
 
+    private sealed record SectorQueryCondition(
+        SectorQueryField Field,
+        NumericOperator Operator,
+        int Number,
+        OwnerFilterMode OwnerMode,
+        string OwnerText,
+        string PortType,
+        string PlanetShield,
+        bool BooleanValue);
+
+    private sealed record SavedFinderQuery(string Name, List<SavedFinderQueryRow> Rows);
+    private sealed record SavedFinderQueryRow(
+        string Field,
+        string Operator,
+        string Value,
+        string OwnerMode,
+        string OwnerText,
+        string PortType,
+        string PlanetShield,
+        bool BooleanValue);
+
     private sealed record SectorResult(int Sector, string Display);
     private sealed record PortResult(int Sector, string Display, int? Distance);
     private sealed record PortPairResult(int SectorA, int SectorB, string Display, int? Distance);
@@ -119,8 +173,49 @@ public sealed class DataMiningWindow : Window
     private sealed class NumericFilterControls
     {
         public CheckBox Enabled { get; init; } = null!;
-        public ComboBox Operator { get; init; } = null!;
+        public OperatorPicker Operator { get; init; } = null!;
         public TextBox Value { get; init; } = null!;
+    }
+
+    private sealed class OperatorPicker : Button
+    {
+        private readonly string[] _items;
+
+        public string SelectedOperator { get; private set; }
+
+        public OperatorPicker(IEnumerable<string> items, string selected)
+        {
+            _items = items.ToArray();
+            SelectedOperator = string.Empty;
+            SetSelectedOperator(selected);
+            ContextMenu = BuildContextMenu();
+            Click += (_, _) => ContextMenu?.Open(this);
+        }
+
+        public void SetSelectedOperator(string selected)
+        {
+            SelectedOperator = _items.Contains(selected, StringComparer.Ordinal) ? selected : DefaultOperatorLabel;
+            Content = SelectedOperator;
+        }
+
+        private ContextMenu BuildContextMenu()
+        {
+            var menu = new ContextMenu();
+            menu.ItemsSource = _items.Select(label =>
+            {
+                var item = new MenuItem
+                {
+                    Header = label,
+                    FontFamily = UiFont,
+                    FontSize = BodyFontSize,
+                    MinWidth = 52,
+                    Padding = new Thickness(10, 3),
+                };
+                item.Click += (_, _) => SetSelectedOperator(label);
+                return item;
+            }).ToArray();
+            return menu;
+        }
     }
 
     private sealed class TextFilterControls
@@ -142,16 +237,17 @@ public sealed class DataMiningWindow : Window
         public NumericFilterControls Density { get; init; } = null!;
         public NumericFilterControls NavHaz { get; init; } = null!;
         public NumericFilterControls Warps { get; init; } = null!;
-        public CheckBox Planets { get; init; } = null!;
-        public CheckBox TradersAndAliens { get; init; } = null!;
-        public CheckBox Ships { get; init; } = null!;
-        public CheckBox Anomaly { get; init; } = null!;
-        public CheckBox Hostile { get; init; } = null!;
-        public CheckBox Friendly { get; init; } = null!;
-        public CheckBox Visited { get; init; } = null!;
-        public CheckBox Explored { get; init; } = null!;
-        public CheckBox Backdoor { get; init; } = null!;
-        public CheckBox Unexplored { get; init; } = null!;
+        public ToggleButton Planets { get; init; } = null!;
+        public ToggleButton TradersAndAliens { get; init; } = null!;
+        public ToggleButton Ships { get; init; } = null!;
+        public ToggleButton Anomaly { get; init; } = null!;
+        public ToggleButton Hostile { get; init; } = null!;
+        public ToggleButton NoHostile { get; init; } = null!;
+        public ToggleButton Friendly { get; init; } = null!;
+        public ToggleButton Visited { get; init; } = null!;
+        public ToggleButton Explored { get; init; } = null!;
+        public ToggleButton Backdoor { get; init; } = null!;
+        public ToggleButton Unexplored { get; init; } = null!;
         public CheckBox UsePortType { get; init; } = null!;
         public ComboBox PortType { get; init; } = null!;
         public TextFilterControls SpaceName { get; init; } = null!;
@@ -183,6 +279,24 @@ public sealed class DataMiningWindow : Window
         public Dictionary<Core.ProductType, ProductFilterControls> Secondary { get; init; } = new();
     }
 
+    private sealed class QueryBuilderRowControls
+    {
+        public Border Host { get; init; } = null!;
+        public ComboBox Field { get; init; } = null!;
+        public OperatorPicker Operator { get; init; } = null!;
+        public TextBox Number { get; init; } = null!;
+        public TextBlock OwnerLabel { get; init; } = null!;
+        public ComboBox OwnerMode { get; init; } = null!;
+        public TextBox OwnerText { get; init; } = null!;
+        public TextBlock PortLabel { get; init; } = null!;
+        public ComboBox PortType { get; init; } = null!;
+        public TextBlock ShieldLabel { get; init; } = null!;
+        public ComboBox ShieldState { get; init; } = null!;
+        public TextBlock BoolLabel { get; init; } = null!;
+        public ComboBox BoolValue { get; init; } = null!;
+        public Button Remove { get; init; } = null!;
+    }
+
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly Func<int> _getCurrentSector;
     private readonly Func<GameState?> _getState;
@@ -195,6 +309,11 @@ public sealed class DataMiningWindow : Window
     private readonly Button _copyButton = new();
     private readonly List<SectorQueryControls> _sectorQueries = new();
     private readonly List<PortQueryControls> _portQueries = new();
+    private readonly List<QueryBuilderRowControls> _queryRows = new();
+    private readonly StackPanel _queryRowsHost = new() { Spacing = 8 };
+    private readonly Dictionary<string, List<SavedFinderQueryRow>> _savedQueries = new(StringComparer.OrdinalIgnoreCase);
+    private ComboBox? _savedQueryPicker;
+    private TextBox? _savedQueryName;
     private TacticalMapControl? _previewMap;
     private string _currentResultText = string.Empty;
     private int _selectedPreviewSector;
@@ -202,13 +321,16 @@ public sealed class DataMiningWindow : Window
     private const int MaxDisplayResults = 250;
     private const int MaxPairResults = 1000;
     private const int MaxPairEvaluations = 750000;
-    private const double HeaderFontSize = 13;
-    private const double SectionFontSize = 9;
-    private const double BodyFontSize = 8.3;
-    private const double SmallFontSize = 7.4;
-    private const double ControlHeight = 19;
+    private const double HeaderFontSize = 20;
+    private const double SectionFontSize = 14;
+    private const double BodyFontSize = 12;
+    private const double SmallFontSize = 11;
+    private const double ControlHeight = 30;
+    private const double SectorOwnerBoxWidth = 150;
+    private const double SaveLoadButtonWidth = 76;
 
     private static readonly FontFamily MonoFont = new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
+    private static readonly FontFamily UiFont = new("Aptos, Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif");
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(0x07, 0x12, 0x17));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(0x0b, 0x26, 0x30));
     private static readonly IBrush BgCard = new SolidColorBrush(Color.FromRgb(0x08, 0x33, 0x3c));
@@ -229,8 +351,33 @@ public sealed class DataMiningWindow : Window
     private static readonly IBrush ColBlue = new SolidColorBrush(Color.FromRgb(0x33, 0x4d, 0xff));
     private static readonly IBrush ColWhite = new SolidColorBrush(Color.FromRgb(0xff, 0xff, 0xff));
 
-    private static readonly string[] OperatorLabels = [">", ">=", "=", "<=", "<", "!="];
+    private const string DefaultOperatorLabel = "=";
+    private static readonly string[] OperatorLabels = ["=", ">", ">=", "<=", "<", "!="];
     private static readonly string[] ProductIntentLabels = ["Any", "Buy", "Sell"];
+    private static readonly string[] SectorQueryFieldLabels =
+    [
+        "Fighters",
+        "Armids",
+        "Limpets",
+        "Density",
+        "NavHaz",
+        "Warps",
+        "Port",
+        "Explored",
+        "Unexplored",
+        "Visited",
+        "Planets",
+        "Traders & Aliens",
+        "Ships",
+        "Anomaly",
+        "Has enemies",
+        "No enemies",
+        "Friendly",
+        "Backdoor"
+    ];
+    private static readonly string[] OwnerModeLabels = ["Any owner", "Me", "My corp", "Custom"];
+    private static readonly string[] BooleanLabels = ["True", "False"];
+    private static readonly string[] PlanetShieldLabels = ["Any shield", "Shielded", "Unshielded"];
     private static readonly string[] PortTypeLabels =
     [
         "Any",
@@ -266,12 +413,12 @@ public sealed class DataMiningWindow : Window
         _getState = getState;
 
         Title = "Find";
-        Width = 1640;
-        Height = 540;
+        Width = 1760;
+        Height = 640;
         MinWidth = 1180;
         MinHeight = 460;
         Background = BgWin;
-        FontFamily = MonoFont;
+        FontFamily = UiFont;
         FontSize = BodyFontSize;
 
         _searchButton.Content = "Search";
@@ -311,6 +458,7 @@ public sealed class DataMiningWindow : Window
         _resultHeader.TextWrapping = TextWrapping.Wrap;
         _resultHeader.Margin = new Thickness(0, 0, 0, 6);
         _modeTabs.FontSize = BodyFontSize;
+        _modeTabs.FontFamily = UiFont;
         _resultList.Background = BgCardAlt;
         _resultList.Foreground = ColText;
         _resultList.BorderBrush = InnerEdge;
@@ -331,7 +479,7 @@ public sealed class DataMiningWindow : Window
 
         var split = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("660,6,390,6,*"),
+            ColumnDefinitions = new ColumnDefinitions("760,6,430,6,*"),
             Children =
             {
                 BuildCriteriaPane(),
@@ -382,6 +530,8 @@ public sealed class DataMiningWindow : Window
                 }
             }
         };
+
+        AddEmptyResult("Choose a preset or build a query, then search to see matches here.");
     }
 
     private Control BuildCriteriaPane()
@@ -398,8 +548,8 @@ public sealed class DataMiningWindow : Window
             BorderBrush = Edge,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            MinWidth = 620,
-            Padding = new Thickness(8),
+            MinWidth = 720,
+            Padding = new Thickness(12),
             Child = new DockPanel
             {
                 Children =
@@ -415,6 +565,7 @@ public sealed class DataMiningWindow : Window
                                 Foreground = ColAccent,
                                 FontSize = HeaderFontSize,
                                 FontWeight = FontWeight.Bold,
+                                FontFamily = MonoFont,
                             },
                             new TextBlock
                             {
@@ -515,91 +666,442 @@ public sealed class DataMiningWindow : Window
 
     private Control BuildSectorQuery()
     {
-        string defaultOwner = _getState()?.TraderName ?? string.Empty;
+        _queryRows.Clear();
+        _queryRowsHost.Children.Clear();
+        LoadSavedQueriesFromDisk();
 
-        var query = new SectorQueryControls
+        _savedQueryPicker = BuildCombo(_savedQueries.Keys.OrderBy(name => name), string.Empty, 180);
+        _savedQueryPicker.PlaceholderText = "saved queries";
+        _savedQueryName = BuildTextBox(string.Empty, 160);
+        _savedQueryName.Watermark = "query name";
+
+        var loadButton = BuildSmallActionButton("Load", SaveLoadButtonWidth);
+        loadButton.Click += (_, _) => LoadSelectedSavedQuery();
+
+        var saveButton = BuildSmallActionButton("Save", SaveLoadButtonWidth);
+        saveButton.Click += (_, _) => SaveCurrentQuery();
+
+        var addButton = BuildSmallActionButton("+ Add condition", 130, primary: true);
+        addButton.Click += (_, _) => AddQueryRow();
+
+        var toolbar = new WrapPanel
         {
-            Fighters = BuildNumericFilter("Fighters", 0, enabled: false),
-            FighterOwner = BuildTextFilter("Owner", defaultOwner, enabled: false, width: 96),
-            UseFighterType = BuildCheckBox("Type"),
-            FighterType = BuildCombo(["Toll", "Defensive", "Offensive"], "Toll", 74),
-            Armids = BuildNumericFilter("Armid mines", 0, enabled: false),
-            ArmidOwner = BuildTextFilter("Owner", defaultOwner, enabled: false, width: 96),
-            Limpets = BuildNumericFilter("Limpet mines", 0, enabled: false),
-            LimpetOwner = BuildTextFilter("Owner", defaultOwner, enabled: false, width: 96),
-            Density = BuildNumericFilter("Density", 0, enabled: false),
-            NavHaz = BuildNumericFilter("NavHaz", 0, enabled: false),
-            Warps = BuildNumericFilter("Warps", 0, enabled: false),
-            Planets = BuildCheckBox("Planets"),
-            TradersAndAliens = BuildCheckBox("Traders & Aliens"),
-            Ships = BuildCheckBox("Ships"),
-            Anomaly = BuildCheckBox("Anomaly"),
-            Hostile = BuildCheckBox("Hostile"),
-            Friendly = BuildCheckBox("Friendly"),
-            Visited = BuildCheckBox("Visited"),
-            Explored = BuildCheckBox("Explored"),
-            Backdoor = BuildCheckBox("Backdoor"),
-            Unexplored = BuildCheckBox("Unexplored"),
-            UsePortType = BuildCheckBox("Port type"),
-            PortType = BuildCombo(PortTypeLabels, "No port", 112),
-            SpaceName = BuildTextFilter("Space name", string.Empty, enabled: false, width: 160),
-            PortName = BuildTextFilter("Port name", string.Empty, enabled: false, width: 160),
-            Beacon = BuildTextFilter("Beacon text", string.Empty, enabled: false, width: 160),
-            SectorNote = BuildTextFilter("Sector note", string.Empty, enabled: false, width: 160),
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 0, 4),
         };
+        AddToolbarItem(toolbar, BuildSmallLabel("Saved"));
+        AddToolbarItem(toolbar, _savedQueryPicker);
+        AddToolbarItem(toolbar, loadButton);
+        AddToolbarItem(toolbar, BuildSmallLabel("Name"));
+        AddToolbarItem(toolbar, _savedQueryName);
+        AddToolbarItem(toolbar, saveButton);
+        AddToolbarItem(toolbar, addButton);
 
-        _sectorQueries.Add(query);
-
-        var grid = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("*,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
-            ColumnSpacing = 6,
-            RowSpacing = 6,
-        };
-
-        AddGridChild(grid, BuildSectionCard("Deployments", new StackPanel
-        {
-            Spacing = 3,
-            Children =
-            {
-                BuildSectorObjectRow(query.Fighters, query.FighterOwner, query.UseFighterType, query.FighterType),
-                BuildSectorObjectRow(query.Armids, query.ArmidOwner, null, null),
-                BuildSectorObjectRow(query.Limpets, query.LimpetOwner, null, null),
-            }
-        }), 0, 0, 2);
-
-        AddGridChild(grid, BuildSectionCard("Topology", new StackPanel
-        {
-            Spacing = 3,
-            Children =
-            {
-                BuildSectorNumericRow(query.Density),
-                BuildSectorNumericRow(query.NavHaz),
-                BuildSectorNumericRow(query.Warps),
-                BuildPortTypeRow(query.UsePortType, query.PortType),
-            }
-        }), 1, 0);
-
-        AddGridChild(grid, BuildSectionCard("Flags", BuildFlagGrid(
-            query.Planets,
-            query.TradersAndAliens,
-            query.Ships,
-            query.Anomaly,
-            query.Hostile,
-            query.Friendly,
-            query.Visited,
-            query.Explored,
-            query.Backdoor,
-            query.Unexplored)), 1, 1);
+        AddDefaultQueryRow();
 
         return new ScrollViewer
         {
-            Content = grid,
+            Content = new StackPanel
+            {
+                Spacing = 10,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Stack conditions, then search. Every row must match.",
+                        Foreground = ColMuted,
+                        FontSize = SmallFontSize,
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    toolbar,
+                    _queryRowsHost,
+                }
+            },
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Margin = new Thickness(0, 4, 0, 0),
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Margin = new Thickness(0, 8, 0, 0),
         };
+    }
+
+    private void AddDefaultQueryRow()
+        => AddQueryRow(new SavedFinderQueryRow("Fighters", ">", "0", "My corp", string.Empty, "Any", "Any shield", true));
+
+    private void AddQueryRow(SavedFinderQueryRow? saved = null)
+    {
+        var field = BuildCombo(SectorQueryFieldLabels, string.IsNullOrWhiteSpace(saved?.Field) ? "Fighters" : saved!.Field, 132);
+        var op = BuildOperatorPicker(OperatorLabels, string.IsNullOrWhiteSpace(saved?.Operator) ? DefaultOperatorLabel : saved!.Operator, 50);
+        var number = BuildTextBox(string.IsNullOrWhiteSpace(saved?.Value) ? "0" : saved!.Value, 84);
+        var ownerMode = BuildCombo(OwnerModeLabels, string.IsNullOrWhiteSpace(saved?.OwnerMode) ? "Any owner" : saved!.OwnerMode, 112);
+        var ownerText = BuildTextBox(saved?.OwnerText ?? string.Empty, 150);
+        ownerText.Watermark = "owner";
+        var portType = BuildCombo(PortTypeLabels, string.IsNullOrWhiteSpace(saved?.PortType) ? "Any" : saved!.PortType, 164);
+        var shieldState = BuildCombo(PlanetShieldLabels, string.IsNullOrWhiteSpace(saved?.PlanetShield) ? "Any shield" : saved!.PlanetShield, 130);
+        var boolValue = BuildCombo(BooleanLabels, (saved?.BooleanValue ?? true) ? "True" : "False", 86);
+        var remove = BuildSmallActionButton("-", 32);
+
+        var rowBody = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                remove,
+                field,
+                op,
+                number,
+                new TextBlock
+                {
+                    Text = "owned by",
+                    Foreground = ColMuted,
+                    FontSize = SmallFontSize,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                ownerMode,
+                ownerText,
+                new TextBlock
+                {
+                    Text = "type",
+                    Foreground = ColMuted,
+                    FontSize = SmallFontSize,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                portType,
+                new TextBlock
+                {
+                    Text = "shield",
+                    Foreground = ColMuted,
+                    FontSize = SmallFontSize,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                shieldState,
+                new TextBlock
+                {
+                    Text = "is",
+                    Foreground = ColMuted,
+                    FontSize = SmallFontSize,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                boolValue,
+            }
+        };
+
+        var row = new QueryBuilderRowControls
+        {
+            Host = new Border
+            {
+                Background = BgCard,
+                BorderBrush = InnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(8),
+                Child = rowBody,
+            },
+            Field = field,
+            Operator = op,
+            Number = number,
+            OwnerLabel = (TextBlock)rowBody.Children[4],
+            OwnerMode = ownerMode,
+            OwnerText = ownerText,
+            PortLabel = (TextBlock)rowBody.Children[7],
+            PortType = portType,
+            ShieldLabel = (TextBlock)rowBody.Children[9],
+            ShieldState = shieldState,
+            BoolLabel = (TextBlock)rowBody.Children[11],
+            BoolValue = boolValue,
+            Remove = remove,
+        };
+
+        field.SelectionChanged += (_, _) => UpdateQueryRowShape(row);
+        ownerMode.SelectionChanged += (_, _) => UpdateQueryRowShape(row);
+        remove.Click += (_, _) => RemoveQueryRow(row);
+
+        _queryRows.Add(row);
+        _queryRowsHost.Children.Add(row.Host);
+        UpdateQueryRowShape(row);
+    }
+
+    private void RemoveQueryRow(QueryBuilderRowControls row)
+    {
+        if (_queryRows.Count <= 1)
+        {
+            ResetQueryBuilder();
+            return;
+        }
+
+        _queryRows.Remove(row);
+        _queryRowsHost.Children.Remove(row.Host);
+    }
+
+    private void ResetQueryBuilder()
+    {
+        _queryRows.Clear();
+        _queryRowsHost.Children.Clear();
+        AddDefaultQueryRow();
+    }
+
+    private static void UpdateQueryRowShape(QueryBuilderRowControls row)
+    {
+        SectorQueryField field = ParseQueryField(row.Field.SelectedItem?.ToString());
+        bool deployment = IsDeploymentField(field);
+        bool numeric = IsNumericQueryField(field);
+        bool port = field == SectorQueryField.Port;
+        bool planets = field == SectorQueryField.Planets;
+        bool boolean = !deployment && !numeric && !port && !planets;
+        bool customOwner = ParseOwnerMode(row.OwnerMode.SelectedItem?.ToString()) == OwnerFilterMode.Custom;
+
+        row.Operator.IsVisible = numeric || deployment || planets;
+        row.Number.IsVisible = numeric || deployment || planets;
+        row.OwnerLabel.IsVisible = deployment || planets;
+        row.OwnerMode.IsVisible = deployment || planets;
+        row.OwnerText.IsVisible = (deployment || planets) && customOwner;
+        row.PortLabel.IsVisible = port;
+        row.PortType.IsVisible = port;
+        row.ShieldLabel.IsVisible = planets;
+        row.ShieldState.IsVisible = planets;
+        row.BoolLabel.IsVisible = boolean;
+        row.BoolValue.IsVisible = boolean;
+    }
+
+    private static bool IsDeploymentField(SectorQueryField field)
+        => field is SectorQueryField.Fighters or SectorQueryField.Armids or SectorQueryField.Limpets;
+
+    private static bool IsNumericQueryField(SectorQueryField field)
+        => field is SectorQueryField.Density or SectorQueryField.NavHaz or SectorQueryField.Warps;
+
+    private IReadOnlyList<SectorQueryCondition> CaptureSectorQueryConditions()
+    {
+        if (_queryRows.Count == 0)
+            AddDefaultQueryRow();
+
+        return _queryRows
+            .Select(row => new SectorQueryCondition(
+                ParseQueryField(row.Field.SelectedItem?.ToString()),
+                ParseOperator(row.Operator.SelectedOperator),
+                ParseInt(row.Number.Text, 0, int.MinValue, int.MaxValue),
+                ParseOwnerMode(row.OwnerMode.SelectedItem?.ToString()),
+                row.OwnerText.Text?.Trim() ?? string.Empty,
+                row.PortType.SelectedItem?.ToString() ?? "Any",
+                row.ShieldState.SelectedItem?.ToString() ?? "Any shield",
+                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString())))
+            .ToArray();
+    }
+
+    private List<SavedFinderQueryRow> CaptureSavedQueryRows()
+        => _queryRows
+            .Select(row => new SavedFinderQueryRow(
+                row.Field.SelectedItem?.ToString() ?? "Fighters",
+                row.Operator.SelectedOperator,
+                row.Number.Text?.Trim() ?? "0",
+                row.OwnerMode.SelectedItem?.ToString() ?? "Any owner",
+                row.OwnerText.Text?.Trim() ?? string.Empty,
+                row.PortType.SelectedItem?.ToString() ?? "Any",
+                row.ShieldState.SelectedItem?.ToString() ?? "Any shield",
+                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString())))
+            .ToList();
+
+    private void LoadSelectedSavedQuery()
+    {
+        string? name = _savedQueryPicker?.SelectedItem?.ToString();
+        if (string.IsNullOrWhiteSpace(name) || !_savedQueries.TryGetValue(name, out List<SavedFinderQueryRow>? rows))
+            return;
+
+        _queryRows.Clear();
+        _queryRowsHost.Children.Clear();
+        foreach (SavedFinderQueryRow row in rows)
+            AddQueryRow(row);
+
+        if (_queryRows.Count == 0)
+            AddDefaultQueryRow();
+
+        if (_savedQueryName != null)
+            _savedQueryName.Text = name;
+    }
+
+    private void SaveCurrentQuery()
+    {
+        string name = _savedQueryName?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            _resultHeader.Text = "Name the query before saving it.";
+            _resultHeader.Foreground = ColOrange;
+            return;
+        }
+
+        _savedQueries[name] = CaptureSavedQueryRows();
+        SaveQueriesToDisk();
+        RefreshSavedQueryPicker(name);
+        _resultHeader.Text = $"Saved query '{name}'.";
+        _resultHeader.Foreground = ColGreen;
+    }
+
+    private void LoadSavedQueriesFromDisk()
+    {
+        _savedQueries.Clear();
+        string path = GetSavedQueryPath();
+        if (!File.Exists(path))
+            return;
+
+        try
+        {
+            string json = File.ReadAllText(path);
+            List<SavedFinderQuery>? queries = JsonSerializer.Deserialize<List<SavedFinderQuery>>(json);
+            if (queries == null)
+                return;
+
+            foreach (SavedFinderQuery query in queries)
+            {
+                if (!string.IsNullOrWhiteSpace(query.Name))
+                    _savedQueries[query.Name] = query.Rows ?? new List<SavedFinderQueryRow>();
+            }
+        }
+        catch (Exception ex)
+        {
+            _resultHeader.Text = $"Could not load saved finder queries: {ex.Message}";
+            _resultHeader.Foreground = ColOrange;
+        }
+    }
+
+    private void SaveQueriesToDisk()
+    {
+        string path = GetSavedQueryPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? AppPaths.TwxproxyGamesDir);
+        var queries = _savedQueries
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new SavedFinderQuery(pair.Key, pair.Value))
+            .ToList();
+        string json = JsonSerializer.Serialize(queries, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(path, json);
+    }
+
+    private void RefreshSavedQueryPicker(string? selected = null)
+    {
+        if (_savedQueryPicker == null)
+            return;
+
+        _savedQueryPicker.ItemsSource = _savedQueries.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (!string.IsNullOrWhiteSpace(selected))
+            _savedQueryPicker.SelectedItem = selected;
+    }
+
+    private string GetSavedQueryPath()
+    {
+        Core.ModDatabase? db = _getDb();
+        string gameName = db?.DatabaseName ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(gameName) && !string.IsNullOrWhiteSpace(db?.DatabasePath))
+            gameName = Path.GetFileNameWithoutExtension(db.DatabasePath);
+        if (string.IsNullOrWhiteSpace(gameName))
+            gameName = "default";
+
+        string safeGame = Core.SharedPaths.SanitizeFileComponent(gameName);
+        return Path.Combine(AppPaths.TwxproxyGamesDir, safeGame, "find_queries.json");
+    }
+
+    private static void AddToolbarItem(WrapPanel panel, Control control)
+    {
+        control.Margin = new Thickness(0, 0, 8, 6);
+        panel.Children.Add(control);
+    }
+
+    private static TextBlock BuildSmallLabel(string text)
+        => new()
+        {
+            Text = text,
+            Foreground = ColMuted,
+            FontSize = SmallFontSize,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 2, 0),
+        };
+
+    private Button BuildSmallActionButton(string label, double width, bool primary = false)
+    {
+        var button = new Button
+        {
+            Content = label,
+            Width = width,
+            Height = ControlHeight,
+            Padding = new Thickness(8, 2),
+            FontFamily = UiFont,
+            FontSize = SmallFontSize,
+        };
+        StyleActionButton(button, primary);
+        return button;
+    }
+
+    private Control BuildPresetBar(SectorQueryControls query)
+    {
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                BuildPresetButton("Clean bubble", () =>
+                {
+                    ResetSectorQuery(query);
+                    query.NoHostile.IsChecked = true;
+                }),
+                BuildPresetButton("My figs", () =>
+                {
+                    ResetSectorQuery(query);
+                    query.Fighters.Enabled.IsChecked = true;
+                    query.Fighters.Operator.SetSelectedOperator(">");
+                    query.Fighters.Value.Text = "0";
+                    query.FighterOwner.Enabled.IsChecked = true;
+                    query.FighterOwner.Text.Text = _getState()?.TraderName ?? string.Empty;
+                }),
+                BuildPresetButton("Enemy-free", () =>
+                {
+                    ResetSectorQuery(query);
+                    query.NoHostile.IsChecked = true;
+                }),
+                BuildPresetButton("Unexplored", () =>
+                {
+                    ResetSectorQuery(query);
+                    query.Unexplored.IsChecked = true;
+                }),
+                BuildPresetButton("Port search", () => _modeTabs.SelectedIndex = 1),
+            }
+        };
+
+        return new Border
+        {
+            Background = BgCardAlt,
+            BorderBrush = InnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(10, 8),
+            Child = new DockPanel
+            {
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Presets",
+                        Foreground = ColMuted,
+                        FontSize = SmallFontSize,
+                        FontWeight = FontWeight.SemiBold,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        Margin = new Thickness(0, 0, 12, 0),
+                    }.WithDock(Dock.Left),
+                    buttons,
+                }
+            }
+        };
+    }
+
+    private Button BuildPresetButton(string label, Action apply)
+    {
+        var button = new Button
+        {
+            Content = label,
+            Height = 28,
+            Padding = new Thickness(12, 3),
+            FontFamily = UiFont,
+            FontSize = SmallFontSize,
+        };
+        StyleActionButton(button, primary: false);
+        button.Click += (_, _) => apply();
+        return button;
     }
 
     private Control BuildPortQuery()
@@ -643,18 +1145,17 @@ public sealed class DataMiningWindow : Window
             Background = BgCard,
             BorderBrush = InnerEdge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(5),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 10),
             Child = new StackPanel
             {
-                Spacing = 4,
+                Spacing = 10,
                 Children =
                 {
-                    new Grid
+                    new StackPanel
                     {
-                        ColumnDefinitions = new ColumnDefinitions("24,62,84,78,74,48,94,*"),
-                        ColumnSpacing = 6,
-                        ClipToBounds = true,
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 16,
                         Children =
                         {
                             BuildSearchGlyph(),
@@ -664,12 +1165,13 @@ public sealed class DataMiningWindow : Window
                                 Foreground = ColText,
                                 VerticalAlignment = VerticalAlignment.Center,
                                 FontSize = BodyFontSize,
-                            }.WithColumn(1),
-                            single.WithColumn(2),
-                            pair.WithColumn(3),
-                            query.MaxDistanceEnabled.WithColumn(4),
-                            query.MaxDistance.WithColumn(5),
-                            query.FighterSearch.WithColumn(6),
+                                FontWeight = FontWeight.SemiBold,
+                            },
+                            single,
+                            pair,
+                            query.MaxDistanceEnabled,
+                            query.MaxDistance,
+                            query.FighterSearch,
                         }
                     },
                 }
@@ -679,11 +1181,11 @@ public sealed class DataMiningWindow : Window
         return new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = new StackPanel
             {
-                Spacing = 6,
-                Margin = new Thickness(0, 4, 0, 0),
+                Spacing = 10,
+                Margin = new Thickness(0, 8, 0, 0),
                 Children =
                 {
                     header,
@@ -721,9 +1223,8 @@ public sealed class DataMiningWindow : Window
             bool sectorMode = _modeTabs.SelectedIndex <= 0;
             if (sectorMode)
             {
-                int index = 0;
-                SectorCriteria criteria = CaptureSectorCriteria(_sectorQueries[index]);
-                List<SectorResult> results = await Task.Run(() => FindSectors(db, totalSectors, criteria, ownerContext));
+                IReadOnlyList<SectorQueryCondition> conditions = CaptureSectorQueryConditions();
+                List<SectorResult> results = await Task.Run(() => FindSectors(db, totalSectors, conditions, ownerContext));
                 RenderSectorResults(results, totalSectors);
             }
             else
@@ -754,7 +1255,11 @@ public sealed class DataMiningWindow : Window
         }
     }
 
-    private List<SectorResult> FindSectors(Core.ModDatabase db, int totalSectors, SectorCriteria criteria, OwnerContext ownerContext)
+    private List<SectorResult> FindSectors(
+        Core.ModDatabase db,
+        int totalSectors,
+        IReadOnlyList<SectorQueryCondition> conditions,
+        OwnerContext ownerContext)
     {
         var results = new List<SectorResult>();
         for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
@@ -762,12 +1267,12 @@ public sealed class DataMiningWindow : Window
             Core.SectorData? sector = db.GetSector(sectorNumber);
             if (sector == null)
             {
-                if (criteria.Unexplored)
+                if (MatchesUnknownSector(conditions))
                     results.Add(new SectorResult(sectorNumber, SectorScanFormatter.FormatSectorTooltip(sectorNumber, null, db)));
                 continue;
             }
 
-            if (!MatchesSector(db, sectorNumber, sector, criteria, ownerContext))
+            if (!MatchesSector(db, sectorNumber, sector, conditions, ownerContext))
                 continue;
 
             results.Add(new SectorResult(
@@ -875,6 +1380,223 @@ public sealed class DataMiningWindow : Window
             .ThenBy(r => r.SectorB)
             .ToList();
 
+    private static bool MatchesUnknownSector(IReadOnlyList<SectorQueryCondition> conditions)
+    {
+        if (conditions.Count == 0)
+            return false;
+
+        return conditions.All(condition => condition.Field switch
+        {
+            SectorQueryField.Unexplored => condition.BooleanValue,
+            SectorQueryField.Explored or SectorQueryField.Visited => !condition.BooleanValue,
+            _ => false
+        });
+    }
+
+    private bool MatchesSector(
+        Core.ModDatabase db,
+        int sectorNumber,
+        Core.SectorData sector,
+        IReadOnlyList<SectorQueryCondition> conditions,
+        OwnerContext ownerContext)
+    {
+        foreach (SectorQueryCondition condition in conditions)
+        {
+            if (!MatchesSectorCondition(db, sectorNumber, sector, condition, ownerContext))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool MatchesSectorCondition(
+        Core.ModDatabase db,
+        int sectorNumber,
+        Core.SectorData sector,
+        SectorQueryCondition condition,
+        OwnerContext ownerContext)
+    {
+        static NumericCriteria Number(SectorQueryCondition condition)
+            => new(true, condition.Operator, condition.Number);
+
+        switch (condition.Field)
+        {
+            case SectorQueryField.Fighters:
+                return MatchesDeployment(
+                    sector,
+                    sector.Fighters,
+                    "FIGSEC",
+                    condition,
+                    ownerContext);
+            case SectorQueryField.Armids:
+                return MatchesDeployment(
+                    sector,
+                    sector.MinesArmid,
+                    "MINESEC",
+                    condition,
+                    ownerContext);
+            case SectorQueryField.Limpets:
+                return MatchesDeployment(
+                    sector,
+                    sector.MinesLimpet,
+                    "LIMPSEC",
+                    condition,
+                    ownerContext);
+            case SectorQueryField.Density:
+                return MatchesNumeric(sector.Density, Number(condition));
+            case SectorQueryField.NavHaz:
+                return MatchesNumeric(sector.NavHaz, Number(condition));
+            case SectorQueryField.Warps:
+                return MatchesNumeric(sector.Warp.Count(w => w > 0), Number(condition));
+            case SectorQueryField.Port:
+                return MatchesPortType(sector.SectorPort, condition.PortType);
+            case SectorQueryField.Explored:
+                return MatchesBoolean(sector.Explored != Core.ExploreType.No, condition.BooleanValue);
+            case SectorQueryField.Unexplored:
+                return MatchesBoolean(sector.Explored == Core.ExploreType.No, condition.BooleanValue);
+            case SectorQueryField.Visited:
+                return MatchesBoolean(sector.Explored == Core.ExploreType.Yes, condition.BooleanValue);
+            case SectorQueryField.Planets:
+                return MatchesNumeric(
+                    CountMatchingPlanets(db, sectorNumber, condition, ownerContext),
+                    Number(condition));
+            case SectorQueryField.TradersAndAliens:
+                return MatchesBoolean(sector.Traders.Count > 0, condition.BooleanValue);
+            case SectorQueryField.Ships:
+                return MatchesBoolean(sector.Ships.Count > 0, condition.BooleanValue);
+            case SectorQueryField.Anomaly:
+                return MatchesBoolean(sector.Anomaly, condition.BooleanValue);
+            case SectorQueryField.Hostile:
+                return MatchesBoolean(HasHostileData(db, sectorNumber, sector, ownerContext), condition.BooleanValue);
+            case SectorQueryField.NoHostile:
+                return MatchesBoolean(!HasHostileData(db, sectorNumber, sector, ownerContext), condition.BooleanValue);
+            case SectorQueryField.Friendly:
+                return MatchesBoolean(HasFriendlyData(db, sectorNumber, sector, ownerContext), condition.BooleanValue);
+            case SectorQueryField.Backdoor:
+                return MatchesBoolean(HasBackdoor(sector), condition.BooleanValue);
+            default:
+                return true;
+        }
+    }
+
+    private static bool MatchesDeployment(
+        Core.SectorData sector,
+        Core.SpaceObject deployment,
+        string friendlyFlag,
+        SectorQueryCondition condition,
+        OwnerContext ownerContext)
+    {
+        bool hasFriendlyFlag = IsSectorVarTrue(sector, friendlyFlag);
+        int effectiveQuantity = deployment.Quantity > 0
+            ? deployment.Quantity
+            : hasFriendlyFlag ? 1 : 0;
+
+        if (!MatchesNumeric(effectiveQuantity, new NumericCriteria(true, condition.Operator, condition.Number)))
+            return false;
+
+        if (condition.OwnerMode == OwnerFilterMode.MyCorp && hasFriendlyFlag)
+            return true;
+
+        return OwnerMatchesMode(deployment.Owner, condition.OwnerMode, condition.OwnerText, ownerContext);
+    }
+
+    private static int CountMatchingPlanets(
+        Core.ModDatabase db,
+        int sectorNumber,
+        SectorQueryCondition condition,
+        OwnerContext ownerContext)
+    {
+        List<Core.Planet> planetRecords = db.GetPlanetsInSector(sectorNumber);
+        List<string> displayNames = db.GetPlanetNamesInSector(sectorNumber);
+        bool ownerFiltered = condition.OwnerMode != OwnerFilterMode.Any;
+        bool shieldFiltered = !condition.PlanetShield.Equals("Any shield", StringComparison.OrdinalIgnoreCase);
+
+        if (!ownerFiltered && !shieldFiltered)
+            return Math.Max(planetRecords.Count, displayNames.Count);
+
+        if (ownerFiltered)
+        {
+            return planetRecords.Count(planet =>
+                OwnerMatchesMode(planet.Owner, condition.OwnerMode, condition.OwnerText, ownerContext) &&
+                MatchesPlanetShield(planet, displayNames, condition.PlanetShield));
+        }
+
+        if (displayNames.Count > 0)
+            return displayNames.Count(name => MatchesPlanetShield((bool?)null, name, condition.PlanetShield));
+
+        return planetRecords.Count(planet => MatchesPlanetShield(planet, displayNames, condition.PlanetShield));
+    }
+
+    private static bool MatchesPlanetShield(Core.Planet planet, IReadOnlyList<string> displayNames, string shieldFilter)
+    {
+        string displayName = FindPlanetDisplayName(planet, displayNames);
+        return MatchesPlanetShield(planet.Shielded, displayName, shieldFilter);
+    }
+
+    private static bool MatchesPlanetShield(bool? shielded, string displayName, string shieldFilter)
+    {
+        if (shieldFilter.Equals("Any shield", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        bool displaySaysShielded = displayName.Contains("(Shielded)", StringComparison.OrdinalIgnoreCase);
+        bool? knownShielded = shielded ?? (string.IsNullOrWhiteSpace(displayName) ? null : displaySaysShielded);
+
+        if (shieldFilter.Equals("Shielded", StringComparison.OrdinalIgnoreCase))
+            return knownShielded == true;
+        if (shieldFilter.Equals("Unshielded", StringComparison.OrdinalIgnoreCase))
+            return knownShielded == false;
+
+        return true;
+    }
+
+    private static string FindPlanetDisplayName(Core.Planet planet, IReadOnlyList<string> displayNames)
+    {
+        if (displayNames.Count == 0)
+            return string.Empty;
+
+        string normalizedPlanet = NormalizePlanetDisplayName(planet.Name);
+        if (!string.IsNullOrWhiteSpace(normalizedPlanet))
+        {
+            foreach (string displayName in displayNames)
+            {
+                string normalizedDisplay = NormalizePlanetDisplayName(displayName);
+                if (normalizedDisplay.Equals(normalizedPlanet, StringComparison.OrdinalIgnoreCase))
+                    return displayName;
+            }
+        }
+
+        return displayNames.FirstOrDefault() ?? string.Empty;
+    }
+
+    private static string NormalizePlanetDisplayName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return string.Empty;
+
+        string normalized = name.Trim();
+        normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
+        normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+        normalized = normalized.Replace("(Shielded)", string.Empty, StringComparison.OrdinalIgnoreCase);
+        int marker = normalized.IndexOf(')');
+        if (normalized.StartsWith("(", StringComparison.Ordinal) && marker >= 0 && marker + 1 < normalized.Length)
+            normalized = normalized[(marker + 1)..];
+        return normalized.Trim();
+    }
+
+    private static bool IsSectorVarTrue(Core.SectorData sector, string key)
+    {
+        if (!sector.Variables.TryGetValue(key, out string? value))
+            return false;
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesBoolean(bool actual, bool expected)
+        => actual == expected;
+
     private bool MatchesSector(
         Core.ModDatabase db,
         int sectorNumber,
@@ -923,6 +1645,8 @@ public sealed class DataMiningWindow : Window
         if (criteria.Backdoor && !HasBackdoor(sector))
             return false;
         if (criteria.Hostile && !HasHostileData(db, sectorNumber, sector, ownerContext))
+            return false;
+        if (criteria.NoHostile && HasHostileData(db, sectorNumber, sector, ownerContext))
             return false;
         if (criteria.Friendly && !HasFriendlyData(db, sectorNumber, sector, ownerContext))
             return false;
@@ -1126,6 +1850,7 @@ public sealed class DataMiningWindow : Window
             query.Ships.IsChecked == true,
             query.Anomaly.IsChecked == true,
             query.Hostile.IsChecked == true,
+            query.NoHostile.IsChecked == true,
             query.Friendly.IsChecked == true,
             query.Visited.IsChecked == true,
             query.Explored.IsChecked == true,
@@ -1166,7 +1891,7 @@ public sealed class DataMiningWindow : Window
     private static NumericCriteria CaptureNumeric(NumericFilterControls controls)
         => new(
             controls.Enabled.IsChecked == true,
-            ParseOperator(controls.Operator.SelectedItem?.ToString()),
+            ParseOperator(controls.Operator.SelectedOperator),
             ParseInt(controls.Value.Text, 0, int.MinValue, int.MaxValue));
 
     private static TextCriteria CaptureText(TextFilterControls controls)
@@ -1176,8 +1901,7 @@ public sealed class DataMiningWindow : Window
     {
         if (_modeTabs.SelectedIndex <= 0)
         {
-            int index = 0;
-            ResetSectorQuery(_sectorQueries[index]);
+            ResetQueryBuilder();
         }
         else
         {
@@ -1199,8 +1923,9 @@ public sealed class DataMiningWindow : Window
         ResetNumeric(query.Density, 0);
         ResetNumeric(query.NavHaz, 0);
         ResetNumeric(query.Warps, 0);
-        foreach (CheckBox box in new[] { query.Planets, query.TradersAndAliens, query.Ships, query.Anomaly, query.Hostile, query.Friendly, query.Visited, query.Explored, query.Backdoor, query.Unexplored, query.UsePortType })
+        foreach (ToggleButton box in new[] { query.Planets, query.TradersAndAliens, query.Ships, query.Anomaly, query.Hostile, query.NoHostile, query.Friendly, query.Visited, query.Explored, query.Backdoor, query.Unexplored })
             box.IsChecked = false;
+        query.UsePortType.IsChecked = false;
         query.PortType.SelectedItem = "No port";
         ResetText(query.SpaceName, string.Empty);
         ResetText(query.PortName, string.Empty);
@@ -1321,11 +2046,8 @@ public sealed class DataMiningWindow : Window
             return false;
 
         string trimmed = owner.Trim();
-        if (trimmed.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase) ||
+        if (IsCorpOwner(trimmed, context) ||
             trimmed.Equals("yours", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        if (context.Corp > 0 && trimmed.Contains($"[{context.Corp}]", StringComparison.OrdinalIgnoreCase))
             return true;
 
         return !string.IsNullOrWhiteSpace(context.TraderName) &&
@@ -1344,6 +2066,41 @@ public sealed class DataMiningWindow : Window
             return false;
 
         return !IsFriendlyOwner(trimmed, context);
+    }
+
+    private static bool OwnerMatchesMode(string? owner, OwnerFilterMode mode, string customOwner, OwnerContext context)
+    {
+        if (mode == OwnerFilterMode.Any)
+            return true;
+        if (string.IsNullOrWhiteSpace(owner) || owner == "-")
+            return false;
+
+        string trimmed = owner.Trim();
+        return mode switch
+        {
+            OwnerFilterMode.Me => IsPersonalOwner(trimmed, context),
+            OwnerFilterMode.MyCorp => IsCorpOwner(trimmed, context),
+            OwnerFilterMode.Custom => string.IsNullOrWhiteSpace(customOwner) ||
+                                      trimmed.Contains(customOwner.Trim(), StringComparison.OrdinalIgnoreCase),
+            _ => true
+        };
+    }
+
+    private static bool IsCorpOwner(string owner, OwnerContext context)
+    {
+        if (owner.Equals("belong to your Corp", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return context.Corp > 0 && owner.Contains($"[{context.Corp}]", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsPersonalOwner(string owner, OwnerContext context)
+    {
+        if (owner.Equals("yours", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(context.TraderName) &&
+               owner.Contains(context.TraderName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool MatchesPortType(Core.Port? port, string portType)
@@ -1521,13 +2278,49 @@ public sealed class DataMiningWindow : Window
     private static NumericOperator ParseOperator(string? label)
         => label switch
         {
+            ">" => NumericOperator.GreaterThan,
             ">=" => NumericOperator.GreaterThanOrEqual,
             "=" => NumericOperator.Equal,
             "<=" => NumericOperator.LessThanOrEqual,
             "<" => NumericOperator.LessThan,
             "!=" => NumericOperator.NotEqual,
-            _ => NumericOperator.GreaterThan
+            _ => NumericOperator.Equal
         };
+
+    private static SectorQueryField ParseQueryField(string? label)
+        => label switch
+        {
+            "Armids" => SectorQueryField.Armids,
+            "Limpets" => SectorQueryField.Limpets,
+            "Density" => SectorQueryField.Density,
+            "NavHaz" => SectorQueryField.NavHaz,
+            "Warps" => SectorQueryField.Warps,
+            "Port" => SectorQueryField.Port,
+            "Explored" => SectorQueryField.Explored,
+            "Unexplored" => SectorQueryField.Unexplored,
+            "Visited" => SectorQueryField.Visited,
+            "Planets" => SectorQueryField.Planets,
+            "Traders & Aliens" => SectorQueryField.TradersAndAliens,
+            "Ships" => SectorQueryField.Ships,
+            "Anomaly" => SectorQueryField.Anomaly,
+            "Has enemies" => SectorQueryField.Hostile,
+            "No enemies" => SectorQueryField.NoHostile,
+            "Friendly" => SectorQueryField.Friendly,
+            "Backdoor" => SectorQueryField.Backdoor,
+            _ => SectorQueryField.Fighters
+        };
+
+    private static OwnerFilterMode ParseOwnerMode(string? label)
+        => label switch
+        {
+            "Me" => OwnerFilterMode.Me,
+            "My corp" => OwnerFilterMode.MyCorp,
+            "Custom" => OwnerFilterMode.Custom,
+            _ => OwnerFilterMode.Any
+        };
+
+    private static bool ParseBooleanLabel(string? label)
+        => !string.Equals(label, "False", StringComparison.OrdinalIgnoreCase);
 
     private static ProductIntent ParseProductIntent(string? label)
         => label switch
@@ -1557,8 +2350,8 @@ public sealed class DataMiningWindow : Window
         var controls = new NumericFilterControls
         {
             Enabled = BuildCheckBox(label),
-            Operator = BuildCombo(OperatorLabels, ">", 36),
-            Value = BuildTextBox(value.ToString(CultureInfo.InvariantCulture), 58),
+            Operator = BuildOperatorPicker(OperatorLabels, DefaultOperatorLabel, 50),
+            Value = BuildTextBox(value.ToString(CultureInfo.InvariantCulture), 72),
         };
         controls.Enabled.IsChecked = enabled;
         return controls;
@@ -1575,39 +2368,94 @@ public sealed class DataMiningWindow : Window
         return controls;
     }
 
+    private static void WireSectorControlState(SectorQueryControls query)
+    {
+        WireNumericFilter(query.Fighters);
+        WireNumericFilter(query.Armids);
+        WireNumericFilter(query.Limpets);
+        WireNumericFilter(query.Density);
+        WireNumericFilter(query.NavHaz);
+        WireNumericFilter(query.Warps);
+        WireTextFilter(query.FighterOwner);
+        WireTextFilter(query.ArmidOwner);
+        WireTextFilter(query.LimpetOwner);
+        WireComboFilter(query.UseFighterType, query.FighterType);
+        WireComboFilter(query.UsePortType, query.PortType);
+    }
+
+    private static void WireNumericFilter(NumericFilterControls controls)
+    {
+        void Sync()
+        {
+            bool enabled = controls.Enabled.IsChecked == true;
+            controls.Operator.IsEnabled = enabled;
+            controls.Value.IsEnabled = enabled;
+            controls.Operator.Opacity = enabled ? 1.0 : 0.36;
+            controls.Value.Opacity = enabled ? 1.0 : 0.36;
+        }
+
+        controls.Enabled.IsCheckedChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void WireTextFilter(TextFilterControls controls)
+    {
+        void Sync()
+        {
+            bool enabled = controls.Enabled.IsChecked == true;
+            controls.Text.IsEnabled = enabled;
+            controls.Text.Opacity = enabled ? 1.0 : 0.36;
+        }
+
+        controls.Enabled.IsCheckedChanged += (_, _) => Sync();
+        Sync();
+    }
+
+    private static void WireComboFilter(CheckBox enabledControl, ComboBox combo)
+    {
+        void Sync()
+        {
+            bool enabled = enabledControl.IsChecked == true;
+            combo.IsEnabled = enabled;
+            combo.Opacity = enabled ? 1.0 : 0.36;
+        }
+
+        enabledControl.IsCheckedChanged += (_, _) => Sync();
+        Sync();
+    }
+
     private Control BuildSectorObjectRow(
         NumericFilterControls numeric,
         TextFilterControls owner,
         CheckBox? useType,
         ComboBox? type)
     {
-        owner.Text.Width = double.NaN;
+        owner.Text.Width = SectorOwnerBoxWidth;
         owner.Text.MinWidth = 0;
-        owner.Text.HorizontalAlignment = HorizontalAlignment.Stretch;
+        owner.Text.MaxWidth = SectorOwnerBoxWidth;
+        owner.Text.HorizontalAlignment = HorizontalAlignment.Left;
 
         var grid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("86,36,58,Auto,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto"),
-            ColumnSpacing = 4,
-            RowSpacing = 2,
+            ColumnDefinitions = new ColumnDefinitions("112,50,72,86,150,54,104,*"),
+            ColumnSpacing = 6,
             ClipToBounds = true,
         };
 
         AddGridChild(grid, numeric.Enabled, 0, 0);
         AddGridChild(grid, numeric.Operator, 0, 1);
         AddGridChild(grid, numeric.Value, 0, 2);
+        AddGridChild(grid, owner.Enabled, 0, 3);
+        AddGridChild(grid, owner.Text, 0, 4);
 
         if (useType != null && type != null)
         {
             type.MinWidth = 0;
-            type.HorizontalAlignment = HorizontalAlignment.Stretch;
-            AddGridChild(grid, useType, 0, 3);
-            AddGridChild(grid, type, 0, 4);
+            type.HorizontalAlignment = HorizontalAlignment.Left;
+            AddGridChild(grid, useType, 0, 5);
+            AddGridChild(grid, type, 0, 6);
         }
 
-        AddGridChild(grid, owner.Enabled, 1, 0);
-        AddGridChild(grid, owner.Text, 1, 1, 4);
         return grid;
     }
 
@@ -1615,8 +2463,8 @@ public sealed class DataMiningWindow : Window
     {
         var grid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("86,36,58,*"),
-            ColumnSpacing = 4,
+            ColumnDefinitions = new ColumnDefinitions("126,58,88,*"),
+            ColumnSpacing = 8,
             ClipToBounds = true,
         };
         AddGridChild(grid, numeric.Enabled, 0, 0);
@@ -1625,28 +2473,20 @@ public sealed class DataMiningWindow : Window
         return grid;
     }
 
-    private static Control BuildFlagGrid(params CheckBox[] boxes)
+    private static Control BuildPillGrid(params ToggleButton[] boxes)
     {
-        int rowCount = Math.Max(1, (boxes.Length + 1) / 2);
-        var grid = new Grid
+        var panel = new WrapPanel
         {
-            ColumnDefinitions = new ColumnDefinitions("*,*"),
-            RowDefinitions = new RowDefinitions(string.Join(",", Enumerable.Repeat("Auto", rowCount))),
-            RowSpacing = 2,
-            ColumnSpacing = 6,
-            ClipToBounds = true,
+            Orientation = Orientation.Horizontal,
         };
 
-        for (int i = 0; i < boxes.Length; i++)
+        foreach (ToggleButton box in boxes)
         {
-            boxes[i].HorizontalAlignment = HorizontalAlignment.Stretch;
-            boxes[i].MinWidth = 0;
-            Grid.SetRow(boxes[i], i / 2);
-            Grid.SetColumn(boxes[i], i % 2);
-            grid.Children.Add(boxes[i]);
+            box.Margin = new Thickness(0, 0, 8, 8);
+            panel.Children.Add(box);
         }
 
-        return grid;
+        return panel;
     }
 
     private static Control BuildTextRow(TextFilterControls controls)
@@ -1657,8 +2497,8 @@ public sealed class DataMiningWindow : Window
 
         var grid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("86,*"),
-            ColumnSpacing = 4,
+            ColumnDefinitions = new ColumnDefinitions("78,*"),
+            ColumnSpacing = 3,
             ClipToBounds = true,
         };
         AddGridChild(grid, controls.Enabled, 0, 0);
@@ -1674,8 +2514,8 @@ public sealed class DataMiningWindow : Window
 
         var grid = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("86,*"),
-            ColumnSpacing = 4,
+            ColumnDefinitions = new ColumnDefinitions("126,*"),
+            ColumnSpacing = 8,
             ClipToBounds = true,
         };
         AddGridChild(grid, enabled, 0, 0);
@@ -1700,13 +2540,13 @@ public sealed class DataMiningWindow : Window
             (int minMcic, int maxMcic) = DefaultMcicRange(product);
             controls[product] = new ProductFilterControls
             {
-                Intent = BuildCombo(ProductIntentLabels, "Any", 52),
-                MinAmount = BuildTextBox("0", 44),
-                MaxAmount = BuildTextBox("65535", 48),
-                MinPercent = BuildTextBox("0", 32),
-                MaxPercent = BuildTextBox("100", 34),
-                MinMcic = BuildTextBox(minMcic.ToString(CultureInfo.InvariantCulture), 36),
-                MaxMcic = BuildTextBox(maxMcic.ToString(CultureInfo.InvariantCulture), 36),
+                Intent = BuildCombo(ProductIntentLabels, "Any", 80),
+                MinAmount = BuildTextBox("0", 76),
+                MaxAmount = BuildTextBox("65535", 76),
+                MinPercent = BuildTextBox("0", 56),
+                MaxPercent = BuildTextBox("100", 56),
+                MinMcic = BuildTextBox(minMcic.ToString(CultureInfo.InvariantCulture), 60),
+                MaxMcic = BuildTextBox(maxMcic.ToString(CultureInfo.InvariantCulture), 60),
             };
         }
 
@@ -1735,19 +2575,19 @@ public sealed class DataMiningWindow : Window
     private static Control BuildProductHeaderRow()
         => new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("62,52,44,48,32,34,36,36,*"),
-            ColumnSpacing = 3,
+            ColumnDefinitions = new ColumnDefinitions("96,80,76,76,56,56,60,60,*"),
+            ColumnSpacing = 8,
             ClipToBounds = true,
             Children =
             {
                 BuildTinyHeader("Product"),
-                BuildTinyHeader("B/S").WithColumn(1),
-                BuildTinyHeader("Min").WithColumn(2),
-                BuildTinyHeader("Max").WithColumn(3),
-                BuildTinyHeader("%-").WithColumn(4),
-                BuildTinyHeader("%+").WithColumn(5),
-                BuildTinyHeader("M-").WithColumn(6),
-                BuildTinyHeader("M+").WithColumn(7),
+                BuildTinyHeader("Buy/Sell").WithColumn(1),
+                BuildTinyHeader("Min amt").WithColumn(2),
+                BuildTinyHeader("Max amt").WithColumn(3),
+                BuildTinyHeader("Min %").WithColumn(4),
+                BuildTinyHeader("Max %").WithColumn(5),
+                BuildTinyHeader("Min MCIC").WithColumn(6),
+                BuildTinyHeader("Max MCIC").WithColumn(7),
             }
         };
 
@@ -1755,8 +2595,8 @@ public sealed class DataMiningWindow : Window
     {
         var row = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("62,52,44,48,32,34,36,36,*"),
-            ColumnSpacing = 3,
+            ColumnDefinitions = new ColumnDefinitions("96,80,76,76,56,56,60,60,*"),
+            ColumnSpacing = 8,
             ClipToBounds = true,
         };
         AddGridChild(row, BuildMiniLabel(label), 0, 0);
@@ -1773,8 +2613,8 @@ public sealed class DataMiningWindow : Window
             Background = BgRowAlt,
             BorderBrush = InnerEdge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(3),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(6),
             Child = row,
         };
     }
@@ -1785,6 +2625,7 @@ public sealed class DataMiningWindow : Window
             Text = text,
             Foreground = ColMuted,
             FontSize = SmallFontSize,
+            FontFamily = UiFont,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
@@ -1795,6 +2636,7 @@ public sealed class DataMiningWindow : Window
             Text = text,
             Foreground = ColText,
             FontSize = BodyFontSize,
+            FontFamily = UiFont,
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
@@ -1805,11 +2647,11 @@ public sealed class DataMiningWindow : Window
             Background = BgCard,
             BorderBrush = InnerEdge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(5),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(12, 10),
             Child = new StackPanel
             {
-                Spacing = 3,
+                Spacing = 10,
                 Children =
                 {
                     new TextBlock
@@ -1837,6 +2679,7 @@ public sealed class DataMiningWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
             },
             Foreground = ColText,
+            FontFamily = UiFont,
             FontSize = BodyFontSize,
             MinHeight = ControlHeight,
             MinWidth = 0,
@@ -1847,9 +2690,40 @@ public sealed class DataMiningWindow : Window
         return box;
     }
 
+    private static ToggleButton BuildPillToggle(string text)
+    {
+        var button = new ToggleButton
+        {
+            Content = text,
+            Height = 30,
+            MinWidth = 104,
+            Padding = new Thickness(12, 3),
+            FontFamily = UiFont,
+            FontSize = BodyFontSize,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(999),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+
+        void Sync()
+        {
+            bool active = button.IsChecked == true;
+            button.Background = active ? ColAccent : BgCardAlt;
+            button.BorderBrush = active ? ColAccent : InnerEdge;
+            button.Foreground = active ? BgWin : ColText;
+            button.Opacity = active ? 1.0 : 0.78;
+        }
+
+        button.IsCheckedChanged += (_, _) => Sync();
+        Sync();
+        return button;
+    }
+
     private static void StyleCheck(ToggleButton button)
     {
         button.Foreground = ColText;
+        button.FontFamily = UiFont;
         button.FontSize = BodyFontSize;
         button.MinHeight = ControlHeight;
         button.MinWidth = 0;
@@ -1869,10 +2743,31 @@ public sealed class DataMiningWindow : Window
             BorderBrush = InnerEdge,
             Foreground = ColText,
             FontSize = BodyFontSize,
+            FontFamily = UiFont,
             Padding = new Thickness(4, 0),
             MinWidth = 0,
         };
         return combo;
+    }
+
+    private OperatorPicker BuildOperatorPicker(IEnumerable<string> items, string selected, double width)
+    {
+        var picker = new OperatorPicker(items, selected)
+        {
+            Width = width,
+            Height = ControlHeight,
+            Background = BgCardAlt,
+            BorderBrush = InnerEdge,
+            BorderThickness = new Thickness(1),
+            Foreground = ColText,
+            FontSize = BodyFontSize,
+            FontFamily = UiFont,
+            Padding = new Thickness(0),
+            MinWidth = 0,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+        };
+        return picker;
     }
 
     private TextBox BuildTextBox(string text, double width)
@@ -1888,8 +2783,9 @@ public sealed class DataMiningWindow : Window
             Foreground = ColText,
             CaretBrush = ColAccent,
             FontSize = BodyFontSize,
+            FontFamily = UiFont,
             VerticalContentAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(4, 0),
+            Padding = new Thickness(8, 0),
             MinWidth = 0,
         };
         box.KeyDown += async (_, e) =>
@@ -1905,7 +2801,7 @@ public sealed class DataMiningWindow : Window
     private static void ResetNumeric(NumericFilterControls controls, int value)
     {
         controls.Enabled.IsChecked = false;
-        controls.Operator.SelectedItem = ">";
+        controls.Operator.SetSelectedOperator(DefaultOperatorLabel);
         controls.Value.Text = value.ToString(CultureInfo.InvariantCulture);
     }
 
@@ -1925,6 +2821,7 @@ public sealed class DataMiningWindow : Window
     {
         button.Background = primary ? ColAccent : BgCardAlt;
         button.Foreground = primary ? BgWin : ColText;
+        button.FontFamily = UiFont;
         button.FontSize = BodyFontSize;
         button.BorderBrush = primary ? ColAccent : InnerEdge;
         button.BorderThickness = new Thickness(1);

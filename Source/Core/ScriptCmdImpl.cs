@@ -1177,34 +1177,41 @@ namespace TWXProxy.Core
             // Source '*' characters are already converted to carriage returns (#13) by
             // the compiler, so we must not expand them to CRLF here.
 
-            GlobalModules.DebugLog($"[SEND] Output: '{output.Replace("\r", "\\r").Replace("\n", "\\n")}'\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[SEND] Output: '{output.Replace("\r", "\\r").Replace("\n", "\\n")}'\n");
             
             // Send to game server via GameInstance (which acts as the client)
             if (_activeGameInstance != null)
             {
-                Console.WriteLine($"[SEND] GameInstance available, IsConnected: {_activeGameInstance.IsConnected}");
+                if (GlobalModules.VerboseDebugMode)
+                    Console.WriteLine($"[SEND] GameInstance available, IsConnected: {_activeGameInstance.IsConnected}");
                 
                 if (!_activeGameInstance.IsConnected)
                 {
-                    Console.WriteLine($"[SEND] Not connected to server - command ignored");
+                    if (GlobalModules.VerboseDebugMode)
+                        Console.WriteLine($"[SEND] Not connected to server - command ignored");
                     GlobalModules.DebugLog($"[SEND] Not connected to server - command ignored\n");
                     return CmdAction.None;
                 }
                 
                 byte[] data = System.Text.Encoding.Latin1.GetBytes(output);
                 
-                Console.WriteLine($"[SEND] Sending {data.Length} bytes to server");
-                GlobalModules.DebugLog($"[SEND] Sending {data.Length} bytes to server\n");
+                if (GlobalModules.VerboseDebugMode)
+                {
+                    Console.WriteLine($"[SEND] Sending {data.Length} bytes to server");
+                    GlobalModules.DebugLog($"[SEND] Sending {data.Length} bytes to server\n");
+                }
 
                 _activeGameInstance.ObserveScriptSend(output);
 
-                // Use SendToServerAsync to send to game server (blocking to preserve send order)
+                // SendToServerAsync preserves order through the shared async socket pump.
                 _activeGameInstance.SendToServerAsync(data).GetAwaiter().GetResult();
             }
             else
             {
                 // If no active game instance, log warning
-                Console.WriteLine($"[SEND] Cannot send '{output}' - no active game connection");
+                if (GlobalModules.VerboseDebugMode)
+                    Console.WriteLine($"[SEND] Cannot send '{output}' - no active game connection");
                 GlobalModules.DebugLog($"[SEND] Cannot send '{output}' - no active game connection\n");
             }
             

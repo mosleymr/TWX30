@@ -27,6 +27,8 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private bool _suppressMainWindowPositionPersistence = true;
+
     // ── Constructor ────────────────────────────────────────────────────────
     public MainWindow()
     {
@@ -125,6 +127,7 @@ public partial class MainWindow
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
+        RestoreMainWindowPositionIfPossible();
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
         _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
@@ -161,13 +164,14 @@ public partial class MainWindow
         };
 
         Content = BuildLayout();
-        PositionChanged += (_, _) => NotifyTerminalWindowMove();
+        PositionChanged += (_, _) => OnMainWindowPositionChanged();
 
         ApplyDebugLoggingPreferences();
         ApplyRedAlertPreference();
         RebuildRecentMenu();
         RebuildProxyMenu();
         RebuildScriptsMenu();
+        RefreshNotesMenuState();
         _parser.Feed("\x1b[2J\x1b[H");
         _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
@@ -186,6 +190,9 @@ public partial class MainWindow
 
         Opened += (_, _) =>
         {
+            Dispatcher.UIThread.Post(
+                () => _suppressMainWindowPositionPersistence = false,
+                DispatcherPriority.Background);
             _nativeAppMenuReady = true;
             _nativeAppMenuAttached = false;
             _nativeDockMenuAttached = false;
@@ -196,6 +203,8 @@ public partial class MainWindow
         Activated += (_, _) => FocusActiveTerminal();
         Closed    += (_, _) =>
         {
+            SaveCurrentNotesNow();
+            _notesSaveTimer?.Stop();
             _appPrefs.Save();
             _nativeAppMenuReady = false;
             _nativeAppMenuAttached = false;
@@ -210,6 +219,49 @@ public partial class MainWindow
             _redAlertTimer.Stop();
             _statusRefreshTimer.Stop();
         };
+    }
+
+    private void RestoreMainWindowPositionIfPossible()
+    {
+        if (!_appPrefs.HasMainWindowPosition)
+            return;
+
+        var savedPosition = new PixelPoint(_appPrefs.MainWindowX, _appPrefs.MainWindowY);
+        if (!IsPositionOnAnyScreen(savedPosition))
+            return;
+
+        Position = savedPosition;
+    }
+
+    private void OnMainWindowPositionChanged()
+    {
+        NotifyTerminalWindowMove();
+
+        if (_suppressMainWindowPositionPersistence || WindowState != WindowState.Normal)
+            return;
+
+        PixelPoint currentPosition = Position;
+        if (!IsPositionOnAnyScreen(currentPosition))
+            return;
+
+        _appPrefs.SetMainWindowPosition(currentPosition.X, currentPosition.Y);
+    }
+
+    private bool IsPositionOnAnyScreen(PixelPoint position)
+    {
+        foreach (var screen in Screens.All)
+        {
+            PixelRect workArea = screen.WorkingArea;
+            if (position.X >= workArea.X &&
+                position.Y >= workArea.Y &&
+                position.X < workArea.X + workArea.Width &&
+                position.Y < workArea.Y + workArea.Height)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 }

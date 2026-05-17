@@ -82,6 +82,9 @@ public class AppPreferences
     public bool CommandDeckSkinEnabled { get; set; }
     public int CommandDeckLayoutVersion { get; set; }
     public string LastNativeMombotBotName { get; set; } = string.Empty;
+    public bool HasMainWindowPosition { get; private set; }
+    public int MainWindowX { get; private set; }
+    public int MainWindowY { get; private set; }
 
     private static string LegacySharedPrefsPath()
         => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
@@ -162,6 +165,11 @@ public class AppPreferences
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
                 new XElement("LastNativeMombotBotName", LastNativeMombotBotName),
+                HasMainWindowPosition
+                    ? new XElement("MainWindowPosition",
+                        new XAttribute("X", MainWindowX.ToString(CultureInfo.InvariantCulture)),
+                        new XAttribute("Y", MainWindowY.ToString(CultureInfo.InvariantCulture)))
+                    : null,
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -262,6 +270,13 @@ public class AppPreferences
             if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
                 prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
             prefs.LastNativeMombotBotName = ((string?)root.Element("LastNativeMombotBotName") ?? string.Empty).Trim();
+            XElement? mainWindowPosition = root.Element("MainWindowPosition");
+            if (mainWindowPosition != null &&
+                int.TryParse((string?)mainWindowPosition.Attribute("X"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowX) &&
+                int.TryParse((string?)mainWindowPosition.Attribute("Y"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowY))
+            {
+                prefs.SetMainWindowPosition(mainWindowX, mainWindowY);
+            }
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
@@ -347,6 +362,17 @@ public class AppPreferences
         }
 
         return prefs;
+    }
+
+    public bool SetMainWindowPosition(int x, int y)
+    {
+        if (HasMainWindowPosition && MainWindowX == x && MainWindowY == y)
+            return false;
+
+        HasMainWindowPosition = true;
+        MainWindowX = x;
+        MainWindowY = y;
+        return true;
     }
 
     public IReadOnlyList<StatusPanelSectionPreference> GetOrderedStatusPanelSections()

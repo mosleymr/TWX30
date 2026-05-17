@@ -304,9 +304,11 @@ public partial class MainWindow
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
+                    bool terminalDeaf = IsEmbeddedTerminalClientDeaf();
+
                     byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk);
-                    EnqueueDisplayChunk(displayChunk);
-                    if (!IsEmbeddedTerminalClientDeaf())
+                    EnqueueDisplayChunk(displayChunk, force: terminalDeaf);
+                    if (!terminalDeaf)
                         QueueSessionLogChunk(chunk);
                 }
             }
@@ -327,29 +329,29 @@ public partial class MainWindow
             string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
             string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
 
-            serverLineBuf.Append(plainChunk);
-            serverAnsiLineBuf.Append(ansiChunk);
+                serverLineBuf.Append(plainChunk);
+                serverAnsiLineBuf.Append(ansiChunk);
 
-            string buffered = serverLineBuf.ToString();
-            string bufferedAnsi = serverAnsiLineBuf.ToString();
-            int searchPos = 0;
-            int ansiSearchPos = 0;
-            int lastProcessedPos = 0;
-            int lastAnsiProcessedPos = 0;
+                string buffered = serverLineBuf.ToString();
+                string bufferedAnsi = serverAnsiLineBuf.ToString();
+                int searchPos = 0;
+                int ansiSearchPos = 0;
+                int lastProcessedPos = 0;
+                int lastAnsiProcessedPos = 0;
 
-            while (searchPos < buffered.Length)
-            {
-                int crPos = buffered.IndexOf('\r', searchPos);
-
-                if (crPos == -1)
+                while (searchPos < buffered.Length)
                 {
-                    // No complete line yet — remainder is a partial line / prompt.
-                    string remainder = buffered[lastProcessedPos..];
-                    string remainderAnsi = bufferedAnsi[lastAnsiProcessedPos..];
-                    serverLineBuf.Clear();
-                    serverLineBuf.Append(remainder);
-                    serverAnsiLineBuf.Clear();
-                    serverAnsiLineBuf.Append(remainderAnsi);
+                    int crPos = buffered.IndexOf('\r', searchPos);
+
+                    if (crPos == -1)
+                    {
+                        // No complete line yet — remainder is a partial line / prompt.
+                        string remainder = buffered[lastProcessedPos..];
+                        string remainderAnsi = bufferedAnsi[lastAnsiProcessedPos..];
+                        serverLineBuf.Clear();
+                        serverLineBuf.Append(remainder);
+                        serverAnsiLineBuf.Clear();
+                        serverAnsiLineBuf.Append(remainderAnsi);
 
                     if (!string.IsNullOrEmpty(remainder))
                     {
@@ -385,13 +387,13 @@ public partial class MainWindow
                             serverLineBuf.Clear();
                         }
                     }
-                    break;
-                }
+                        break;
+                    }
 
-                // Complete \r-terminated line.
-                int ansiCrPos = bufferedAnsi.IndexOf('\r', ansiSearchPos);
-                if (ansiCrPos == -1)
-                    break;
+                    // Complete \r-terminated line.
+                    int ansiCrPos = bufferedAnsi.IndexOf('\r', ansiSearchPos);
+                    if (ansiCrPos == -1)
+                        break;
 
                 string lineRaw = bufferedAnsi[lastAnsiProcessedPos..(ansiCrPos + 1)];
                 string lineForScript = NormalizeLegacyInterrogLineForScripts(buffered[lastProcessedPos..crPos]);
@@ -443,22 +445,22 @@ public partial class MainWindow
                     });
                 }
 
-                searchPos = crPos + 1;
-                lastProcessedPos = searchPos;
-                ansiSearchPos = ansiCrPos + 1;
-                lastAnsiProcessedPos = ansiSearchPos;
-            }
+                    searchPos = crPos + 1;
+                    lastProcessedPos = searchPos;
+                    ansiSearchPos = ansiCrPos + 1;
+                    lastAnsiProcessedPos = ansiSearchPos;
+                }
 
-            if (lastProcessedPos >= buffered.Length)
-            {
-                serverLineBuf.Clear();
-                string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
-                    ? bufferedAnsi[lastAnsiProcessedPos..]
-                    : string.Empty;
-                serverAnsiLineBuf.Clear();
-                if (ansiRemainder.Length > 0)
-                    serverAnsiLineBuf.Append(ansiRemainder);
-            }
+                if (lastProcessedPos >= buffered.Length)
+                {
+                    serverLineBuf.Clear();
+                    string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
+                        ? bufferedAnsi[lastAnsiProcessedPos..]
+                        : string.Empty;
+                    serverAnsiLineBuf.Clear();
+                    if (ansiRemainder.Length > 0)
+                        serverAnsiLineBuf.Append(ansiRemainder);
+                }
         };
 
         // Wire Connected / Disconnected events.

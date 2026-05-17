@@ -481,18 +481,21 @@ internal sealed class mombotService
             return true;
         }
 
-        if (!IsAuthorized(context))
+        mombotCommandContext dispatchContext = NormalizeDispatchContext(
+            context.CommandName,
+            context.Parameters,
+            context.SelfCommand,
+            context.Route,
+            context.UserName,
+            context.TrustedSelfCommand);
+
+        if (!IsAuthorized(dispatchContext))
             return watcherHandled;
 
-        if (IsBlockedRemoteControlCommand(context))
+        if (IsBlockedRemoteControlCommand(dispatchContext))
             return watcherHandled;
 
-        ExecuteCommandLine(
-            context.CommandLine,
-            selfCommand: context.SelfCommand,
-            route: context.Route,
-            userName: context.UserName,
-            trustedSelfCommand: context.TrustedSelfCommand);
+        ExecuteCommandContext(dispatchContext);
 
         return true;
     }
@@ -538,6 +541,11 @@ internal sealed class mombotService
             route,
             userName,
             trustedSelfCommand);
+        return ExecuteCommandContext(dispatchContext);
+    }
+
+    private mombotDispatchResult ExecuteCommandContext(mombotCommandContext dispatchContext)
+    {
         ApplyDispatchContextVars(dispatchContext);
         string canonical = dispatchContext.CommandName;
 

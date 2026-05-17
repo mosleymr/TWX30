@@ -392,7 +392,7 @@ public class GameInfoWindow : Window
         AddOverviewSpacer();
         AddOverviewLine("Known ports.......:", knownPorts.ToString(), ColYellow);
         AddOverviewLine("Known bubbles.....:", totalBubbles.ToString(), ColBlue);
-        AddOverviewLine("Visited sectors...:", $"{visitedSectors} ({FormatPercent(visitedSectors, totalSectors)})", ColCyan);
+        AddOverviewLine("Explored sectors..:", $"{visitedSectors} ({FormatPercent(visitedSectors, totalSectors)})", ColCyan);
         AddOverviewLine("Known sectors.....:", $"{knownSectors} ({FormatPercent(knownSectors, totalSectors)})", ColMagenta);
         AddOverviewLine("Number of sectors.:", totalSectors.ToString(), ColRed);
     }

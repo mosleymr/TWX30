@@ -498,6 +498,10 @@ namespace TWXProxy.Core
             @"^Unsuccessful P-grid into sector\s+(\d+)\.",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxTradeExperienceReward = new(
+            @"^For your (good|great|excellent) trading you receive ([\d,]+) experience point",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // ── Public API ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -511,6 +515,9 @@ namespace TWXProxy.Core
             string trimmedLine = rawLine.Trim();
 
             if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine))
+                return;
+
+            if (TryProcessTradeExperienceReward(rawLine))
                 return;
 
             // Log any line that looks warp-related so we can trace what the game sends
@@ -1809,6 +1816,21 @@ namespace TWXProxy.Core
                 return;
 
             ShipStatusDeltaDetected?.Invoke(delta);
+        }
+
+        private bool TryProcessTradeExperienceReward(string rawLine)
+        {
+            var reward = _rxTradeExperienceReward.Match(rawLine);
+            if (!reward.Success)
+                return false;
+
+            long amount = ParseCommaLong(reward.Groups[2].Value);
+            if (amount <= 0)
+                return false;
+
+            EmitShipStatusDelta(new ShipStatusDelta { ExperienceDelta = amount });
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Trade experience reward tier={reward.Groups[1].Value} delta={amount}\n");
+            return true;
         }
 
         private void EmitPendingPlanetProductDelta(PlanetProductTransferKind confirmationKind, string confirmationProductName)

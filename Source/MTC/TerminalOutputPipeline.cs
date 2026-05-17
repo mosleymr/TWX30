@@ -76,7 +76,17 @@ public partial class MainWindow
     {
         _terminalLivePaused = clientType == Core.ClientType.Deaf;
 
-        if (!_terminalLivePaused)
+        if (_terminalLivePaused)
+        {
+            // Script-driven deafing can happen immediately after an ECHO.  Do
+            // not discard already queued display chunks here, or the progress
+            // line can disappear before the UI drain paints it.  Manual pause
+            // still clears the backlog in SetTerminalLivePaused before it
+            // changes the client type.
+            ClearPausedTerminalChunks();
+            ClearPendingSessionLogChunks();
+        }
+        else
         {
             ClearPausedTerminalChunks();
             FlushDeferredPanelRefreshes();
@@ -97,9 +107,11 @@ public partial class MainWindow
         Interlocked.Exchange(ref _displayDrainScheduled, 0);
     }
 
-    private void EnqueueDisplayChunk(byte[] chunk)
+    private void EnqueueDisplayChunk(byte[] chunk, bool force = false)
     {
         if (chunk.Length == 0)
+            return;
+        if (_terminalLivePaused && !force)
             return;
 
         _pendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk));

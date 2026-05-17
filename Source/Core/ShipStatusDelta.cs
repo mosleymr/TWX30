@@ -8,6 +8,8 @@ public sealed class ShipStatusDelta
 {
     public int? CurrentSector { get; set; }
     public int? Turns { get; set; }
+    public long? Experience { get; set; }
+    public long ExperienceDelta { get; set; }
 
     public long? Credits { get; set; }
 
@@ -51,6 +53,7 @@ public sealed class ShipStatusDelta
         return Credits.HasValue ||
                CurrentSector.HasValue ||
                Turns.HasValue ||
+               Experience.HasValue || ExperienceDelta != 0 ||
                Fighters.HasValue || FightersDelta != 0 ||
                Shields.HasValue || ShieldsDelta != 0 ||
                TotalHolds.HasValue || TotalHoldsDelta != 0 ||
@@ -90,6 +93,10 @@ public sealed class ShipStatusDelta
 
         if (Credits.HasValue)
             status.Credits = Credits.Value;
+
+        if (Experience.HasValue)
+            status.Experience = ClampNonNegative(Experience.Value);
+        status.Experience = ClampNonNegative(status.Experience + ExperienceDelta);
 
         if (Fighters.HasValue)
             status.Fighters = ClampNonNegative(Fighters.Value);
@@ -141,4 +148,5 @@ public sealed class ShipStatusDelta
     }
 
     private static int ClampNonNegative(int value) => value < 0 ? 0 : value;
+    private static long ClampNonNegative(long value) => value < 0 ? 0 : value;
 }

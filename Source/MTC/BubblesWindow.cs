@@ -37,7 +37,11 @@ public class BubblesWindow : Window
         int? DistToSd,
         int? DistToSol,
         IReadOnlyList<ushort> Sectors,
-        bool Gapped);
+        IReadOnlyList<ushort> Gates,
+        bool Gapped)
+    {
+        public int GateCount => Math.Max(1, Gates.Count);
+    }
 
     private readonly record struct FinderCacheKey(
         Core.ModDatabase Database,
@@ -45,6 +49,9 @@ public class BubblesWindow : Window
         FinderTabKind Kind,
         int MinSize,
         int MaxSize,
+        int MaxGates,
+        bool NoEnemyPlanets,
+        bool NoEnemyFigs,
         bool AllowSeparatedByGates);
 
     private sealed class FinderTabState
@@ -54,6 +61,7 @@ public class BubblesWindow : Window
         public required TextBlock SearchStatus { get; init; }
         public required TextBox MinSizeBox { get; init; }
         public required TextBox MaxSizeBox { get; init; }
+        public TextBox? MaxGatesBox { get; init; }
         public required TextBox SectorSearchBox { get; init; }
         public required StackPanel RowHost { get; init; }
         public ScrollViewer? ResultsScrollViewer { get; set; }
@@ -61,6 +69,8 @@ public class BubblesWindow : Window
         public required Button CopySelectedButton { get; init; }
         public required Button SectorSearchButton { get; init; }
         public required CheckBox? AllowSeparatedByGatesCheckBox { get; init; }
+        public required CheckBox? NoEnemyPlanetsCheckBox { get; init; }
+        public required CheckBox? NoEnemyFigsCheckBox { get; init; }
         public Button? SortSectorsButton { get; set; }
         public Button? SortDepthButton { get; set; }
         public Button? SortDistToSdButton { get; set; }
@@ -198,6 +208,11 @@ public class BubblesWindow : Window
                 refreshButton,
             },
         };
+        if (state.MaxGatesBox != null)
+        {
+            actionsPanel.Children.Insert(4, BuildToolbarLabel("Max Entrances"));
+            actionsPanel.Children.Insert(5, state.MaxGatesBox);
+        }
 
         var headerText = new TextBlock
         {
@@ -244,8 +259,20 @@ public class BubblesWindow : Window
             },
         };
 
+        var filterPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 18,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        if (state.NoEnemyPlanetsCheckBox != null)
+            filterPanel.Children.Add(state.NoEnemyPlanetsCheckBox);
+        if (state.NoEnemyFigsCheckBox != null)
+            filterPanel.Children.Add(state.NoEnemyFigsCheckBox);
         if (state.AllowSeparatedByGatesCheckBox != null)
-            topStack.Children.Add(state.AllowSeparatedByGatesCheckBox);
+            filterPanel.Children.Add(state.AllowSeparatedByGatesCheckBox);
+        if (filterPanel.Children.Count > 0)
+            topStack.Children.Add(filterPanel);
 
         var resultsScrollViewer = new ScrollViewer
         {
@@ -410,6 +437,16 @@ public class BubblesWindow : Window
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
             },
+            MaxGatesBox = showAllowSeparatedByGates
+                ? new TextBox
+                {
+                    Text = "1",
+                    Width = 60,
+                    Height = 34,
+                    HorizontalContentAlignment = HorizontalAlignment.Center,
+                    VerticalContentAlignment = VerticalAlignment.Center,
+                }
+                : null,
             SectorSearchBox = new TextBox
             {
                 Width = 92,
@@ -444,10 +481,30 @@ public class BubblesWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                 }
                 : null,
+            NoEnemyPlanetsCheckBox = showAllowSeparatedByGates
+                ? new CheckBox
+                {
+                    Content = "No enemy planets",
+                    IsChecked = false,
+                    Foreground = ColText,
+                    VerticalAlignment = VerticalAlignment.Center,
+                }
+                : null,
+            NoEnemyFigsCheckBox = showAllowSeparatedByGates
+                ? new CheckBox
+                {
+                    Content = "No enemy figs",
+                    IsChecked = false,
+                    Foreground = ColText,
+                    VerticalAlignment = VerticalAlignment.Center,
+                }
+                : null,
         };
 
         StyleInputBox(state.MinSizeBox);
         StyleInputBox(state.MaxSizeBox);
+        if (state.MaxGatesBox != null)
+            StyleInputBox(state.MaxGatesBox);
         StyleInputBox(state.SectorSearchBox);
         StyleActionButton(state.CopySelectedButton, primary: true);
         StyleActionButton(state.SectorSearchButton, primary: true);
@@ -456,6 +513,10 @@ public class BubblesWindow : Window
 
         if (state.AllowSeparatedByGatesCheckBox != null)
             state.AllowSeparatedByGatesCheckBox.IsCheckedChanged += async (_, _) => await RefreshTabAsync(state, forceRecompute: true);
+        if (state.NoEnemyPlanetsCheckBox != null)
+            state.NoEnemyPlanetsCheckBox.IsCheckedChanged += async (_, _) => await RefreshTabAsync(state, forceRecompute: true);
+        if (state.NoEnemyFigsCheckBox != null)
+            state.NoEnemyFigsCheckBox.IsCheckedChanged += async (_, _) => await RefreshTabAsync(state, forceRecompute: true);
 
         state.PreviewMap = new TacticalMapControl(
             () => state.SelectedRow?.Door ?? Math.Max(1, _getCurrentSector()),
@@ -488,7 +549,7 @@ public class BubblesWindow : Window
         }
         else
         {
-            AddHeaderCell(grid, "Door", 0);
+            AddHeaderCell(grid, state.Kind == FinderTabKind.Bubbles ? "Entrance(s)" : "Door", 0);
             state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, state, FinderSortMode.Sectors);
             state.SortDepthButton = AddSortHeaderCell(grid, "Depth", 2, state, FinderSortMode.Depth);
             state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
@@ -610,7 +671,7 @@ public class BubblesWindow : Window
 
     private async Task RefreshTabFromInputAsync(FinderTabState state)
     {
-        if (!TryApplyInput(state, out _, out _))
+        if (!TryApplyInput(state, out _, out _, out _))
             return;
 
         await RefreshTabAsync(state, forceRecompute: true);
@@ -636,7 +697,7 @@ public class BubblesWindow : Window
             return;
         }
 
-        if (!TryApplyInput(state, out int minSize, out int maxSize))
+        if (!TryApplyInput(state, out int minSize, out int maxSize, out int maxGates))
             return;
 
         int stardockSector = ResolveStardockSector(db);
@@ -646,6 +707,7 @@ public class BubblesWindow : Window
             db,
             minSize,
             maxSize,
+            maxGates,
             stardockSector,
             solSector,
             forceRecompute);
@@ -654,7 +716,9 @@ public class BubblesWindow : Window
         state.Rows = SortRows(state, rows).ToList();
         state.Summary.Text = state.Kind switch
         {
-            FinderTabKind.Bubbles => $"{state.Rows.Count} solid bubble(s) found.",
+            FinderTabKind.Bubbles => maxGates > 1
+                ? $"{state.Rows.Count} solid bubble(s) found with up to {maxGates} entrance(s)."
+                : $"{state.Rows.Count} solid bubble(s) found.",
             FinderTabKind.DeadEnds => $"{state.Rows.Count} dead end(s) found.",
             FinderTabKind.Tunnels => $"{state.Rows.Count} tunnel(s) found.",
             _ => $"{state.Rows.Count} result(s) found.",
@@ -668,7 +732,9 @@ public class BubblesWindow : Window
             state.RowHost.Children.Add(BuildEmptyCard(
                 state.Kind switch
                 {
-                    FinderTabKind.Bubbles => "No bubbles match the current size range.",
+                    FinderTabKind.Bubbles => maxGates > 1
+                        ? $"No bubbles match the current size range and maximum entrance count of {maxGates}."
+                        : "No bubbles match the current size range.",
                     FinderTabKind.DeadEnds => "No dead ends match the current size range.",
                     FinderTabKind.Tunnels => "No tunnels match the current size range.",
                     _ => "No results match the current size range.",
@@ -696,10 +762,11 @@ public class BubblesWindow : Window
         await Task.CompletedTask;
     }
 
-    private bool TryApplyInput(FinderTabState state, out int minSize, out int maxSize)
+    private bool TryApplyInput(FinderTabState state, out int minSize, out int maxSize, out int maxGates)
     {
         minSize = 1;
         maxSize = Core.ModBubble.DefaultMaxBubbleSize;
+        maxGates = 1;
 
         string rawMin = (state.MinSizeBox.Text ?? string.Empty).Trim();
         string rawMax = (state.MaxSizeBox.Text ?? string.Empty).Trim();
@@ -709,6 +776,19 @@ public class BubblesWindow : Window
             state.Summary.Text = "Min and max size must both be whole numbers greater than zero.";
             state.Summary.Foreground = ColError;
             return false;
+        }
+
+        if (state.MaxGatesBox != null)
+        {
+            string rawGates = (state.MaxGatesBox.Text ?? string.Empty).Trim();
+            if (!int.TryParse(rawGates, out maxGates) || maxGates < 1)
+            {
+                state.Summary.Text = "Maximum entrances must be a whole number greater than zero.";
+                state.Summary.Foreground = ColError;
+                return false;
+            }
+
+            state.MaxGatesBox.Text = maxGates.ToString();
         }
 
         if (minSize > maxSize)
@@ -737,7 +817,7 @@ public class BubblesWindow : Window
             return;
         }
 
-        if (!TryApplyInput(state, out _, out _))
+        if (!TryApplyInput(state, out _, out _, out _))
             return;
 
         await RefreshTabAsync(state);
@@ -749,7 +829,10 @@ public class BubblesWindow : Window
         }
 
         FinderRow? row = state.Rows.FirstOrDefault(row =>
-            row.Door == sectorNumber || row.Deepest == sectorNumber || row.Sectors.Contains((ushort)sectorNumber));
+            row.Door == sectorNumber ||
+            row.Deepest == sectorNumber ||
+            row.Sectors.Contains((ushort)sectorNumber) ||
+            row.Gates.Contains((ushort)sectorNumber));
 
         if (row == null)
         {
@@ -760,7 +843,7 @@ public class BubblesWindow : Window
 
         state.SearchStatus.Text = state.Kind switch
         {
-            FinderTabKind.Bubbles => $"Sector {sectorNumber} is in bubble door {row.Door}.",
+            FinderTabKind.Bubbles => $"Sector {sectorNumber} is in bubble entrance(s) {FormatGates(row)}.",
             FinderTabKind.DeadEnds => $"Sector {sectorNumber} is in dead end door {row.Door}.",
             FinderTabKind.Tunnels => $"Sector {sectorNumber} is in tunnel {row.Door} -> {row.Deepest}.",
             _ => $"Sector {sectorNumber} was found.",
@@ -774,6 +857,7 @@ public class BubblesWindow : Window
         Core.ModDatabase db,
         int minSize,
         int maxSize,
+        int maxGates,
         int stardockSector,
         int solSector,
         bool forceRecompute)
@@ -784,6 +868,9 @@ public class BubblesWindow : Window
             state.Kind,
             minSize,
             maxSize,
+            maxGates,
+            state.NoEnemyPlanetsCheckBox?.IsChecked == true,
+            state.NoEnemyFigsCheckBox?.IsChecked == true,
             state.AllowSeparatedByGatesCheckBox?.IsChecked == true);
 
         if (!forceRecompute && state.CachedKey == cacheKey)
@@ -791,7 +878,7 @@ public class BubblesWindow : Window
 
         IReadOnlyList<FinderRow> rows = state.Kind switch
         {
-            FinderTabKind.Bubbles => LoadBubbleRows(db, minSize, maxSize, state, stardockSector, solSector),
+            FinderTabKind.Bubbles => LoadBubbleRows(db, minSize, maxSize, maxGates, state, stardockSector, solSector),
             FinderTabKind.DeadEnds => LoadDeadEndRows(db, minSize, maxSize, stardockSector, solSector),
             FinderTabKind.Tunnels => LoadTunnelRows(db, minSize, maxSize, stardockSector, solSector),
             _ => Array.Empty<FinderRow>(),
@@ -802,10 +889,11 @@ public class BubblesWindow : Window
         return rows;
     }
 
-    private static IReadOnlyList<FinderRow> LoadBubbleRows(
+    private IReadOnlyList<FinderRow> LoadBubbleRows(
         Core.ModDatabase db,
         int minSize,
         int maxSize,
+        int maxGates,
         FinderTabState state,
         int stardockSector,
         int solSector)
@@ -813,21 +901,67 @@ public class BubblesWindow : Window
         IReadOnlyList<Core.BubbleInfo> bubbles = Core.ProxyGameOperations.GetBubbles(
             db,
             maxSize,
-            state.AllowSeparatedByGatesCheckBox?.IsChecked == true);
+            state.AllowSeparatedByGatesCheckBox?.IsChecked == true,
+            maxGates);
+
+        bool noEnemyPlanets = state.NoEnemyPlanetsCheckBox?.IsChecked == true;
+        bool noEnemyFigs = state.NoEnemyFigsCheckBox?.IsChecked == true;
+        GameState? ownerState = _getState?.Invoke();
 
         return bubbles
             .Where(bubble => !bubble.Gapped)
             .Where(bubble => bubble.Size >= minSize && bubble.Size <= maxSize)
+            .Where(bubble => Math.Max(1, bubble.GateCount) <= maxGates)
+            .Where(bubble => !noEnemyPlanets || !BubbleHasEnemyPlanets(db, bubble.Sectors, ownerState))
+            .Where(bubble => !noEnemyFigs || !BubbleHasEnemyFigs(db, bubble.Sectors, ownerState))
             .Select(bubble => new FinderRow(
                 bubble.Gate,
                 bubble.Deepest,
                 bubble.Size,
                 bubble.MaxDepth,
-                stardockSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, stardockSector)) : null,
-                solSector > 0 ? NormalizeDistance(db.GetDistance(bubble.Gate, solSector)) : null,
+                stardockSector > 0 ? NormalizeNearestDistance(db, bubble.Gates, stardockSector) : null,
+                solSector > 0 ? NormalizeNearestDistance(db, bubble.Gates, solSector) : null,
                 bubble.Sectors,
+                bubble.Gates,
                 bubble.Gapped))
             .ToArray();
+    }
+
+    private static bool BubbleHasEnemyPlanets(
+        Core.ModDatabase db,
+        IReadOnlyList<ushort> sectors,
+        GameState? state)
+    {
+        foreach (ushort sectorNumber in sectors)
+        {
+            foreach (Core.Planet planet in db.GetPlanetsInSector(sectorNumber))
+            {
+                if (SectorOwnershipClassifier.IsEnemyOwner(planet.Owner, state))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool BubbleHasEnemyFigs(
+        Core.ModDatabase db,
+        IReadOnlyList<ushort> sectors,
+        GameState? state)
+    {
+        foreach (ushort sectorNumber in sectors)
+        {
+            if (db.LoadSector(sectorNumber) is not Core.SectorData sector)
+                continue;
+
+            if (sector.Fighters.Quantity > 0 &&
+                SectorOwnershipClassifier.IsEnemyOwner(sector.Fighters.Owner, state))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static IReadOnlyList<FinderRow> LoadDeadEndRows(
@@ -848,6 +982,7 @@ public class BubblesWindow : Window
                 stardockSector > 0 ? NormalizeDistance(db.GetDistance(deadEnd.Door, stardockSector)) : null,
                 solSector > 0 ? NormalizeDistance(db.GetDistance(deadEnd.Door, solSector)) : null,
                 deadEnd.Sectors,
+                new[] { deadEnd.Door },
                 false))
             .ToArray();
     }
@@ -870,6 +1005,7 @@ public class BubblesWindow : Window
                 stardockSector > 0 ? NormalizeNearestDistance(db, tunnel.Start, tunnel.End, stardockSector) : null,
                 solSector > 0 ? NormalizeNearestDistance(db, tunnel.Start, tunnel.End, solSector) : null,
                 tunnel.Sectors,
+                new[] { tunnel.Start, tunnel.End },
                 false))
             .ToArray();
     }
@@ -889,6 +1025,21 @@ public class BubblesWindow : Window
         if (!hasSecond)
             return first;
         return Math.Min(first, second);
+    }
+
+    private static int? NormalizeNearestDistance(Core.ModDatabase db, IReadOnlyList<ushort> sectors, int targetSector)
+    {
+        int? nearest = null;
+        foreach (ushort sector in sectors)
+        {
+            int distance = db.GetDistance(sector, targetSector);
+            if (distance < 0)
+                continue;
+
+            nearest = nearest.HasValue ? Math.Min(nearest.Value, distance) : distance;
+        }
+
+        return nearest;
     }
 
     private static int ResolveStardockSector(Core.ModDatabase db)
@@ -953,7 +1104,7 @@ public class BubblesWindow : Window
             ColumnSpacing = 12,
         };
 
-        AddValueCell(grid, row.Door.ToString(), 0, ColAccent, bold: true);
+        AddValueCell(grid, state.Kind == FinderTabKind.Bubbles ? FormatGates(row) : row.Door.ToString(), 0, ColAccent, bold: true);
         if (state.Kind == FinderTabKind.Tunnels)
         {
             AddValueCell(grid, row.Deepest.ToString(), 1, ColText);
@@ -1076,7 +1227,10 @@ public class BubblesWindow : Window
         else
         {
             state.PreviewMap.CenterOnSector(row.Door);
-            state.PreviewMap.SetPreviewSelection(row.Sectors.Select(sector => (int)sector), row.Door);
+            state.PreviewMap.SetPreviewSelection(
+                row.Sectors.Concat(row.Gates).Select(sector => (int)sector),
+                row.Door,
+                legendText: $"PREVIEW BUBBLE {FormatGates(row)}  |  {row.Size} SECTORS  |  {row.GateCount} ENTRANCE(S)");
         }
 
         state.PreviewMap.SetViewMode(TacticalMapViewMode.Bubble);
@@ -1108,6 +1262,18 @@ public class BubblesWindow : Window
     }
 
     private static string FormatDistance(int? distance) => distance?.ToString() ?? string.Empty;
+
+    private static string FormatGates(FinderRow row)
+    {
+        IReadOnlyList<ushort> gates = row.Gates.Count > 0 ? row.Gates : new[] { row.Door };
+        if (gates.Count == 1)
+            return gates[0].ToString();
+
+        if (gates.Count == 2)
+            return $"{gates[0]}/{gates[1]}";
+
+        return $"{gates[0]} +{gates.Count - 1}";
+    }
 
     private static void AddValueCell(Grid grid, string text, int column, IBrush foreground, bool bold = false, bool wrap = false)
     {

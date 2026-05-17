@@ -139,7 +139,10 @@ namespace TWXProxy.Core
         private ShipStatus _currentShipStatus = new();
         private readonly object _deferredLocalOutputLock = new();
         private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
+        private readonly ConcurrentQueue<byte[]> _serverSendQueue = new();
+        private readonly SemaphoreSlim _serverSendSignal = new(0);
         private int _serverDataDispatchDepth;
+        private int _serverSendPumpScheduled;
         private readonly object _serverOutputBoundaryLock = new();
         private bool _serverOutputLineOpen;
         private int _serverOutputAnsiState;
@@ -440,17 +443,6 @@ namespace TWXProxy.Core
         {
             _ = SendEchoMarkAsync(3);
             ScriptStopped?.Invoke(this, EventArgs.Empty);
-            if (_interpreter != null && _interpreter.Count == 0)
-            {
-                lock (_clientLock)
-                {
-                    foreach (ClientSession client in _clients)
-                    {
-                        if (client.Type != ClientType.Rejected)
-                            client.Type = ClientType.Standard;
-                    }
-                }
-            }
         }
 
         private async Task SendEchoMarkAsync(byte mark)
@@ -814,6 +806,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.GlobalAutoRecorder.ResetState($"server-connect:{_gameName}");
                 _serverClient = new TcpClient();
+                ConfigureServerSocket(_serverClient);
                 await _serverClient.ConnectAsync(_serverAddress, _serverPort, token);
                 _serverStream = _serverClient.GetStream();
 
@@ -843,6 +836,22 @@ namespace TWXProxy.Core
             {
                 Log($"[{_gameName}] Failed to connect to server: {ex.Message}");
                 throw;
+            }
+        }
+
+        private static void ConfigureServerSocket(TcpClient client)
+        {
+            const int bufferBytes = 4 * 1024 * 1024;
+
+            try
+            {
+                client.NoDelay = true;
+                client.ReceiveBufferSize = bufferBytes;
+                client.SendBufferSize = bufferBytes;
+            }
+            catch
+            {
+                // Socket buffer limits vary by platform; defaults are safe if tuning fails.
             }
         }
 
@@ -905,6 +914,7 @@ namespace TWXProxy.Core
                 _serverClient?.Close();
                 _serverStream = null;
                 _serverClient = null;
+                ClearPendingServerSends();
                 ClearPendingLocalInputProbe();
                 
                 // Reset telnet negotiation state
@@ -1038,6 +1048,7 @@ namespace TWXProxy.Core
                         _serverClient?.Close();
                         _serverStream = null;
                         _serverClient = null;
+                        ClearPendingServerSends();
                         ClearPendingLocalInputProbe();
                         
                         // Reset telnet negotiation state
@@ -1095,8 +1106,7 @@ namespace TWXProxy.Core
                         // Send buffered data outside the lock
                         if (bufferedData != null && _serverStream != null)
                         {
-                            await _serverStream.WriteAsync(bufferedData, 0, bufferedData.Length, token);
-                            await _serverStream.FlushAsync(token);
+                            await SendToServerAsync(bufferedData);
                             MarkLocalInputProbe(bufferedData);
                         }
                     }
@@ -1115,11 +1125,8 @@ namespace TWXProxy.Core
                                 await SendToLocalAsync(segment, token: token);
                             }
 
-                            // Display the completed server segment first, then run script
-                            // triggers for that same segment before later bytes in the packet
-                            // (often the next prompt) are forwarded.  This preserves Pascal TWX
-                            // ordering for script ECHO output without letting local output cut
-                            // into the middle of an unterminated server line.
+                            // Preserve Pascal TWX ordering: scripts see each completed server
+                            // segment before the next one is dispatched.
                             BeginServerDataDispatch();
                             try
                             {
@@ -1159,6 +1166,7 @@ namespace TWXProxy.Core
                 _serverClient?.Close();
                 _serverStream = null;
                 _serverClient = null;
+                ClearPendingServerSends();
                 ClearPendingLocalInputProbe();
                 
                 // Reset telnet negotiation state
@@ -1303,6 +1311,7 @@ namespace TWXProxy.Core
             try { _serverClient?.Close(); } catch { }
             _serverStream = null;
             _serverClient = null;
+            ClearPendingServerSends();
             ClearPendingLocalInputProbe();
 
             lock (_negotiationLock)
@@ -1499,8 +1508,7 @@ namespace TWXProxy.Core
                                         else
                                         {
                                             byte[] forwarded = new byte[] { b };
-                                            await _serverStream.WriteAsync(forwarded, 0, forwarded.Length, token);
-                                            await _serverStream.FlushAsync(token);
+                                            await SendToServerAsync(forwarded);
                                             MarkLocalInputProbe(forwarded);
                                         }
                                     }
@@ -1726,24 +1734,85 @@ namespace TWXProxy.Core
         /// <summary>
         /// Send data to the server
         /// </summary>
-        public async Task SendToServerAsync(byte[] data)
+        public Task SendToServerAsync(byte[] data)
         {
-            if (_serverStream != null && _serverClient?.Connected == true)
+            if (data.Length == 0 || _serverStream == null || _serverClient?.Connected != true)
+                return Task.CompletedTask;
+
+            byte[] copy = new byte[data.Length];
+            Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+            _serverSendQueue.Enqueue(copy);
+            _serverSendSignal.Release();
+            ScheduleServerSendPump();
+            return Task.CompletedTask;
+        }
+
+        private void ScheduleServerSendPump()
+        {
+            if (Interlocked.CompareExchange(ref _serverSendPumpScheduled, 1, 0) != 0)
+                return;
+
+            CancellationToken token = _cancellationSource?.Token ?? CancellationToken.None;
+            _ = Task.Run(() => ProcessServerSendQueueAsync(token), CancellationToken.None);
+        }
+
+        private async Task ProcessServerSendQueueAsync(CancellationToken token)
+        {
+            try
             {
-                await _serverSendLock.WaitAsync();
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    if (_serverStream != null && _serverClient?.Connected == true)
+                    await _serverSendSignal.WaitAsync(token);
+
+                    while (!token.IsCancellationRequested &&
+                           _serverSendQueue.TryDequeue(out byte[]? data) &&
+                           data != null)
                     {
-                        await _serverStream.WriteAsync(data, 0, data.Length);
-                        await _serverStream.FlushAsync();
+                        try
+                        {
+                            await _serverSendLock.WaitAsync(token);
+                            try
+                            {
+                                NetworkStream? stream = _serverStream;
+                                if (stream != null && _serverClient?.Connected == true)
+                                {
+                                    await stream.WriteAsync(data, 0, data.Length, token);
+                                    await stream.FlushAsync(token);
+                                }
+                            }
+                            finally
+                            {
+                                _serverSendLock.Release();
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[{_gameName}] Error sending queued server data: {ex.Message}");
+                            if (_serverStream == null || _serverClient?.Connected != true)
+                                ClearPendingServerSends();
+                        }
                     }
                 }
-                finally
-                {
-                    _serverSendLock.Release();
-                }
             }
+            catch (OperationCanceledException)
+            {
+                // Expected during shutdown.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _serverSendPumpScheduled, 0);
+                if (!_serverSendQueue.IsEmpty && !token.IsCancellationRequested)
+                    ScheduleServerSendPump();
+            }
+        }
+
+        private void ClearPendingServerSends()
+        {
+            while (_serverSendQueue.TryDequeue(out _)) { }
         }
 
         /// <summary>
@@ -2189,6 +2258,7 @@ namespace TWXProxy.Core
             _serverStream = null;
             _serverClient = null;
             _localListener = null;
+            ClearPendingServerSends();
             ClearPendingLocalInputProbe();
 
             IReadOnlyList<ClientSession> clients = GetClientSnapshot();
@@ -2220,7 +2290,11 @@ namespace TWXProxy.Core
         public void Broadcast(string message, bool broadcastDeaf)
         {
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
-            if (TryQueueDeferredLocalOutput(data, broadcastDeaf))
+            // ECHO/ECHOEX and script prompts use broadcastDeaf so menu/status
+            // messages remain visible while scripts mute server output.  Do not
+            // defer those behind server dispatch, or a deafing script can appear
+            // to hang without showing its own progress message.
+            if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
 
             SendToLocalAsync(data, broadcastDeaf: broadcastDeaf).Wait();

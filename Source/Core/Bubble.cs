@@ -35,7 +35,22 @@ namespace TWXProxy.Core
         ushort Size,
         ushort MaxDepth,
         bool Gapped,
-        IReadOnlyList<ushort> Sectors);
+        IReadOnlyList<ushort> Sectors,
+        IReadOnlyList<ushort> Gates)
+    {
+        public int GateCount => Gates.Count;
+
+        public BubbleInfo(
+            ushort gate,
+            ushort deepest,
+            ushort size,
+            ushort maxDepth,
+            bool gapped,
+            IReadOnlyList<ushort> sectors)
+            : this(gate, deepest, size, maxDepth, gapped, sectors, new[] { gate })
+        {
+        }
+    }
 
     /// <summary>
     /// Bubble structure representing a closed area of sectors
@@ -48,6 +63,7 @@ namespace TWXProxy.Core
         public ushort MaxDepth;
         public bool Gapped;
         public IReadOnlyList<ushort> Sectors;
+        public IReadOnlyList<ushort> Gates;
     }
 
     /// <summary>
@@ -86,6 +102,7 @@ namespace TWXProxy.Core
         }
 
         public bool AllowSectorsSeparatedByGates { get; set; }
+        public int MaxGateCount { get; set; } = 1;
 
         #endregion
 
@@ -396,19 +413,9 @@ namespace TWXProxy.Core
             if (database == null)
                 return (0, 0, 0);
 
-            AnalyzeBubbles(database);
-
-            foreach (var bubble in _bubbleList)
-            {
-                if (_bubblesCovered[bubble.Gate - 1] != 0)
-                    continue;
-
-                _totalBubbles++;
-                if (bubble.Gapped)
-                    _gappedBubbles++;
-            }
-
-            return (_totalBubbles, _gappedBubbles, _totalBubbles - _gappedBubbles);
+            IReadOnlyList<BubbleInfo> bubbles = GetBubbles();
+            int gappedBubbles = bubbles.Count(bubble => bubble.Gapped);
+            return (bubbles.Count, gappedBubbles, bubbles.Count - gappedBubbles);
         }
 
         public IReadOnlyList<BubbleInfo> GetBubbles()
@@ -419,17 +426,7 @@ namespace TWXProxy.Core
 
             AnalyzeBubbles(database);
 
-            return _bubbleList
-                .Where(bubble => _bubblesCovered[bubble.Gate - 1] == 0)
-                .OrderBy(bubble => bubble.Gate)
-                .Select(bubble => new BubbleInfo(
-                    bubble.Gate,
-                    bubble.Deepest,
-                    bubble.Size,
-                    bubble.MaxDepth,
-                    bubble.Gapped,
-                    bubble.Sectors))
-                .ToArray();
+            return BuildBubbleInfos(database);
         }
 
         public void ExportBubbles(StreamWriter writer)
@@ -487,6 +484,7 @@ namespace TWXProxy.Core
                     }
                 }
             }
+
         }
 
         private void AnalyzeBubbles(ITWXDatabase database)
@@ -524,6 +522,9 @@ namespace TWXProxy.Core
                     }
                 }
             }
+
+            if (MaxGateCount > 1)
+                AnalyzeMultiGateBubbles(database, MaxGateCount);
         }
 
         private void CheckBubble(int gate, ushort interior)
@@ -546,6 +547,7 @@ namespace TWXProxy.Core
                     MaxDepth = maxDepth,
                     Gapped = gapped,
                     Sectors = sectors,
+                    Gates = new[] { (ushort)gate },
                 };
 
                 _bubbleList.Add(bubble);
@@ -603,11 +605,429 @@ namespace TWXProxy.Core
                     MaxDepth = gateCountedDepth,
                     Gapped = gapped,
                     Sectors = mergedSectors,
+                    Gates = new[] { (ushort)gate },
                 };
 
                 _bubbleList.Add(bubble);
                 MarkBubbleCovered(bubble.Sectors);
             }
+        }
+
+        private IReadOnlyList<BubbleInfo> BuildBubbleInfos(ITWXDatabase database)
+        {
+            return _bubbleList
+                .Where(bubble => bubble.Gate > 0 && bubble.Gate <= _bubblesCovered.Length)
+                .Where(bubble => _bubblesCovered[bubble.Gate - 1] == 0)
+                .Select(bubble =>
+                {
+                    IReadOnlyList<ushort> gates = FindBoundaryGates(database, bubble.Sectors, bubble.Gate);
+                    return bubble with { Gates = gates };
+                })
+                .GroupBy(bubble => BuildSectorSetKey(bubble.Sectors))
+                .Select(group =>
+                {
+                    Bubble primary = group
+                        .OrderBy(bubble => bubble.Gate)
+                        .ThenByDescending(bubble => bubble.MaxDepth)
+                        .First();
+                    IReadOnlyList<ushort> gates = group
+                        .SelectMany(bubble => bubble.Gates.Count > 0 ? bubble.Gates : new[] { bubble.Gate })
+                        .Where(gate => gate > 0)
+                        .Distinct()
+                        .OrderBy(gate => gate)
+                        .ToArray();
+
+                    return new BubbleInfo(
+                        gates.Count > 0 ? gates[0] : primary.Gate,
+                        primary.Deepest,
+                        primary.Size,
+                        primary.MaxDepth,
+                        group.Any(bubble => bubble.Gapped),
+                        primary.Sectors,
+                        gates.Count > 0 ? gates : new[] { primary.Gate });
+                })
+                .OrderBy(bubble => bubble.Gate)
+                .ToArray();
+        }
+
+        private void AnalyzeMultiGateBubbles(ITWXDatabase database, int maxGateCount)
+        {
+            if (maxGateCount < 2 || _maxBubbleSize <= 0)
+                return;
+
+            int sectorCount = database.SectorCount;
+            if (sectorCount <= 0 || sectorCount == int.MaxValue)
+                return;
+
+            ushort[][] linkedNeighbors = BuildUndirectedLinkedNeighborIndex(database, sectorCount);
+            ushort outsideRoot = ChooseOutsideRoot(database, linkedNeighbors);
+            if (outsideRoot == 0)
+                return;
+
+            var seenSectorSets = new HashSet<string>(
+                _bubbleList.Select(bubble => BuildSectorSetKey(bubble.Sectors)),
+                StringComparer.Ordinal);
+
+            int[] discovery = new int[sectorCount + 1];
+            int[] low = new int[sectorCount + 1];
+            int[] parent = new int[sectorCount + 1];
+            int[] nextNeighborIndex = new int[sectorCount + 1];
+            int[] subtreeSize = new int[sectorCount + 1];
+            int[] subtreeStart = new int[sectorCount + 1];
+            bool[] touchesRemovedGate = new bool[sectorCount + 1];
+            var traversalOrder = new List<ushort>(sectorCount);
+            var stack = new Stack<ushort>(sectorCount);
+
+            for (ushort removedGate = 1; removedGate <= sectorCount; removedGate++)
+            {
+                if (linkedNeighbors[removedGate].Length == 0)
+                    continue;
+
+                ushort root = outsideRoot != removedGate
+                    ? outsideRoot
+                    : ChooseOutsideRoot(database, linkedNeighbors, removedGate);
+                if (root == 0)
+                    continue;
+
+                Array.Clear(discovery, 0, discovery.Length);
+                Array.Clear(low, 0, low.Length);
+                Array.Clear(parent, 0, parent.Length);
+                Array.Clear(nextNeighborIndex, 0, nextNeighborIndex.Length);
+                Array.Clear(subtreeSize, 0, subtreeSize.Length);
+                Array.Clear(subtreeStart, 0, subtreeStart.Length);
+                Array.Clear(touchesRemovedGate, 0, touchesRemovedGate.Length);
+                traversalOrder.Clear();
+                stack.Clear();
+
+                int time = 0;
+                EnterTarjanVertex(
+                    root,
+                    removedGate,
+                    linkedNeighbors,
+                    discovery,
+                    low,
+                    subtreeSize,
+                    subtreeStart,
+                    touchesRemovedGate,
+                    traversalOrder,
+                    ref time);
+                stack.Push(root);
+
+                while (stack.Count > 0)
+                {
+                    ushort current = stack.Peek();
+                    ushort[] neighbors = linkedNeighbors[current];
+                    if (nextNeighborIndex[current] < neighbors.Length)
+                    {
+                        ushort neighbor = neighbors[nextNeighborIndex[current]++];
+                        if (neighbor == removedGate)
+                        {
+                            touchesRemovedGate[current] = true;
+                            continue;
+                        }
+
+                        if (discovery[neighbor] == 0)
+                        {
+                            parent[neighbor] = current;
+                            EnterTarjanVertex(
+                                neighbor,
+                                removedGate,
+                                linkedNeighbors,
+                                discovery,
+                                low,
+                                subtreeSize,
+                                subtreeStart,
+                                touchesRemovedGate,
+                                traversalOrder,
+                                ref time);
+                            stack.Push(neighbor);
+                            continue;
+                        }
+
+                        if (neighbor != parent[current])
+                            low[current] = Math.Min(low[current], discovery[neighbor]);
+
+                        continue;
+                    }
+
+                    stack.Pop();
+                    int currentParent = parent[current];
+                    if (currentParent == 0)
+                        continue;
+
+                    if (low[current] >= discovery[currentParent] &&
+                        touchesRemovedGate[current] &&
+                        subtreeSize[current] > 1 &&
+                        subtreeSize[current] <= _maxBubbleSize)
+                    {
+                        IReadOnlyList<ushort> sectors = CopySubtreeSectors(
+                            traversalOrder,
+                            subtreeStart[current],
+                            subtreeSize[current]);
+                        var gates = new SortedSet<ushort> { removedGate, (ushort)currentParent };
+                        if (gates.Count <= maxGateCount)
+                        {
+                            string key = BuildSectorSetKey(sectors);
+                            if (seenSectorSets.Add(key))
+                            {
+                                (ushort deepest, ushort maxDepth) = CalculateMultiGateDepth(
+                                    linkedNeighbors,
+                                    sectors,
+                                    gates);
+                                _bubbleList.Add(new Bubble
+                                {
+                                    Gate = gates.First(),
+                                    Deepest = deepest,
+                                    Size = (ushort)sectors.Count,
+                                    MaxDepth = maxDepth,
+                                    Gapped = false,
+                                    Sectors = sectors,
+                                    Gates = gates.ToArray(),
+                                });
+                                MarkBubbleCovered(sectors);
+                            }
+                        }
+                    }
+
+                    low[currentParent] = Math.Min(low[currentParent], low[current]);
+                    if (subtreeSize[currentParent] <= _maxBubbleSize)
+                    {
+                        subtreeSize[currentParent] += subtreeSize[current];
+                        if (subtreeSize[currentParent] > _maxBubbleSize)
+                            subtreeSize[currentParent] = _maxBubbleSize + 1;
+                    }
+
+                    touchesRemovedGate[currentParent] |= touchesRemovedGate[current];
+                }
+            }
+        }
+
+        private static void EnterTarjanVertex(
+            ushort vertex,
+            ushort removedGate,
+            ushort[][] linkedNeighbors,
+            int[] discovery,
+            int[] low,
+            int[] subtreeSize,
+            int[] subtreeStart,
+            bool[] touchesRemovedGate,
+            List<ushort> traversalOrder,
+            ref int time)
+        {
+            discovery[vertex] = ++time;
+            low[vertex] = discovery[vertex];
+            subtreeSize[vertex] = 1;
+            subtreeStart[vertex] = traversalOrder.Count;
+            touchesRemovedGate[vertex] = linkedNeighbors[vertex].Contains(removedGate);
+            traversalOrder.Add(vertex);
+        }
+
+        private static IReadOnlyList<ushort> CopySubtreeSectors(
+            IReadOnlyList<ushort> traversalOrder,
+            int start,
+            int count)
+        {
+            var sectors = new ushort[count];
+            for (int i = 0; i < count; i++)
+                sectors[i] = traversalOrder[start + i];
+            Array.Sort(sectors);
+            return sectors;
+        }
+
+        private static (ushort Deepest, ushort MaxDepth) CalculateMultiGateDepth(
+            ushort[][] linkedNeighbors,
+            IReadOnlyList<ushort> sectors,
+            IReadOnlyCollection<ushort> gates)
+        {
+            if (sectors.Count == 0)
+                return (0, 0);
+
+            var sectorSet = new HashSet<ushort>(sectors);
+            var distance = new Dictionary<ushort, ushort>();
+            var queue = new Queue<ushort>();
+
+            foreach (ushort gate in gates)
+            {
+                foreach (ushort neighbor in linkedNeighbors[gate])
+                {
+                    if (!sectorSet.Contains(neighbor) || distance.ContainsKey(neighbor))
+                        continue;
+
+                    distance[neighbor] = 1;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            while (queue.Count > 0)
+            {
+                ushort current = queue.Dequeue();
+                ushort nextDistance = (ushort)(distance[current] + 1);
+                foreach (ushort neighbor in linkedNeighbors[current])
+                {
+                    if (!sectorSet.Contains(neighbor) || distance.ContainsKey(neighbor))
+                        continue;
+
+                    distance[neighbor] = nextDistance;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            ushort deepest = sectors[0];
+            ushort maxDepth = 0;
+            foreach (ushort sector in sectors)
+            {
+                ushort sectorDepth = distance.TryGetValue(sector, out ushort value) ? value : (ushort)0;
+                if (sectorDepth > maxDepth || (sectorDepth == maxDepth && sector > deepest))
+                {
+                    deepest = sector;
+                    maxDepth = sectorDepth;
+                }
+            }
+
+            return (deepest, maxDepth);
+        }
+
+        private static ushort ChooseOutsideRoot(
+            ITWXDatabase database,
+            ushort[][] linkedNeighbors,
+            ushort excluded = 0)
+        {
+            DataHeader? header = (database as ModDatabase)?.DBHeader;
+            ushort[] preferred =
+            {
+                header?.StarDock ?? 0,
+                header?.Rylos ?? 0,
+                header?.AlphaCentauri ?? 0,
+                1,
+            };
+
+            foreach (ushort sector in preferred)
+            {
+                if (sector > 0 &&
+                    sector != excluded &&
+                    sector < linkedNeighbors.Length &&
+                    linkedNeighbors[sector].Length > 0)
+                {
+                    return sector;
+                }
+            }
+
+            for (ushort sector = 1; sector < linkedNeighbors.Length; sector++)
+            {
+                if (sector != excluded && linkedNeighbors[sector].Length > 0)
+                    return sector;
+            }
+
+            return 0;
+        }
+
+        private static ushort[][] BuildUndirectedLinkedNeighborIndex(ITWXDatabase database, int sectorCount)
+        {
+            var sectors = new SectorData?[sectorCount + 1];
+            var usable = new bool[sectorCount + 1];
+            for (int sectorNumber = 1; sectorNumber <= sectorCount; sectorNumber++)
+            {
+                sectors[sectorNumber] = database.LoadSector(sectorNumber) as SectorData;
+                usable[sectorNumber] = sectors[sectorNumber] != null && HasUsableWarpList(sectors[sectorNumber]!);
+            }
+
+            var links = new List<ushort>[sectorCount + 1];
+            for (int sectorNumber = 0; sectorNumber <= sectorCount; sectorNumber++)
+                links[sectorNumber] = new List<ushort>();
+
+            for (ushort sectorNumber = 1; sectorNumber <= sectorCount; sectorNumber++)
+            {
+                SectorData? sector = sectors[sectorNumber];
+                if (sector == null || !usable[sectorNumber])
+                    continue;
+
+                for (int i = 0; i < 6; i++)
+                {
+                    ushort warp = sector.Warp[i];
+                    if (warp == 0)
+                        break;
+
+                    if (warp <= sectorCount && usable[warp])
+                        AddUndirectedLink(links, sectorNumber, warp);
+                }
+
+                foreach (ushort warpIn in sector.WarpsIn)
+                {
+                    if (warpIn > 0 && warpIn <= sectorCount && usable[warpIn])
+                        AddUndirectedLink(links, sectorNumber, warpIn);
+                }
+            }
+
+            var neighbors = new ushort[sectorCount + 1][];
+            for (int sectorNumber = 0; sectorNumber <= sectorCount; sectorNumber++)
+            {
+                links[sectorNumber].Sort();
+                neighbors[sectorNumber] = links[sectorNumber].ToArray();
+            }
+
+            return neighbors;
+        }
+
+        private static void AddUndirectedLink(List<ushort>[] links, ushort first, ushort second)
+        {
+            if (first == second)
+                return;
+
+            if (!links[first].Contains(second))
+                links[first].Add(second);
+            if (!links[second].Contains(first))
+                links[second].Add(first);
+        }
+
+        private static string BuildSectorSetKey(IReadOnlyList<ushort> sectors)
+        {
+            return string.Join(",", sectors.OrderBy(sector => sector));
+        }
+
+        private static IReadOnlyList<ushort> FindBoundaryGates(
+            ITWXDatabase database,
+            IReadOnlyList<ushort> sectors,
+            ushort fallbackGate)
+        {
+            var interior = new HashSet<ushort>(sectors);
+            var gates = new SortedSet<ushort>();
+            AddGateIfValid(database, interior, gates, fallbackGate);
+
+            foreach (ushort sectorNumber in sectors)
+            {
+                if (database.LoadSector(sectorNumber) is not SectorData sector)
+                    continue;
+
+                for (int i = 0; i < 6; i++)
+                {
+                    ushort warp = sector.Warp[i];
+                    if (warp == 0)
+                        break;
+
+                    AddGateIfValid(database, interior, gates, warp);
+                }
+
+                foreach (ushort warpIn in sector.WarpsIn)
+                    AddGateIfValid(database, interior, gates, warpIn);
+            }
+
+            return gates.Count > 0 ? gates.ToArray() : new[] { fallbackGate };
+        }
+
+        private static void AddGateIfValid(
+            ITWXDatabase database,
+            HashSet<ushort> interior,
+            SortedSet<ushort> gates,
+            ushort candidate)
+        {
+            if (candidate == 0 || interior.Contains(candidate))
+                return;
+
+            Sector? sector = database.LoadSector(candidate);
+            if (sector == null || !HasUsableWarpList(sector))
+                return;
+
+            gates.Add(candidate);
         }
 
         #endregion

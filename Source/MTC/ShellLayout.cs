@@ -227,12 +227,15 @@ public partial class MainWindow
         RecreateClassicShellControls();
         _tacticalMap = null;
         bool hasSidebarSections = HasVisibleStatusPanelSections();
+        bool showNotesPanel = ShouldShowNotesPanel();
 
         // Margin lets the gray BgChrome peek in on all four sides as a frame.
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(200) : new GridLength(0) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(6) : new GridLength(0) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(10) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(NotesPanelWidth) : new GridLength(0) });
 
         if (hasSidebarSections)
         {
@@ -244,6 +247,13 @@ public partial class MainWindow
         var termArea = BuildTerminalArea();
         Grid.SetColumn(termArea, 2);
         grid.Children.Add(termArea);
+
+        if (showNotesPanel)
+        {
+            Control notesPanel = BuildNotesPanel();
+            Grid.SetColumn(notesPanel, 4);
+            grid.Children.Add(notesPanel);
+        }
 
         return new Border
         {
@@ -323,6 +333,8 @@ public partial class MainWindow
         CreateDeckPanel("ship", "SHIP BAY", "SYSTEMS", BuildDeckShipPanel(), canClose: true);
         CreateDeckPanel("intel", "COMMAND MATRIX", "INTEL", BuildDeckCenterPanels(), canClose: true);
         CreateDeckPanel("logo", "AUXILIARY PANEL", "STANDBY", BuildLogoPanel(), canClose: true);
+        if (ShouldShowNotesPanel())
+            CreateDeckPanel("notes", "NOTES", "GAME", BuildNotesPanel(), canClose: false);
         Dispatcher.UIThread.Post(EnsureDeckPanelsInitialized, DispatcherPriority.Loaded);
 
         Grid.SetRow(surfaceRoot, 1);
@@ -456,6 +468,15 @@ public partial class MainWindow
                 BodyHeight = Math.Min(220, Math.Max(180, surfaceHeight * 0.28)),
                 ZIndex = 150,
                 Closed = true,
+            },
+            "notes" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = Math.Max(24, surfaceWidth - NotesPanelWidth - 42),
+                Top = 18,
+                Width = NotesPanelWidth + 34,
+                BodyHeight = fullBodyHeight,
+                ZIndex = 160,
             },
             _ => new DeckPanelState
             {
@@ -2046,6 +2067,7 @@ public partial class MainWindow
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
         RefreshCommWindowMenuState();
+        RefreshNotesMenuState();
         RefreshHaggleDetailsMenuState();
         RefreshBottomBarMenuState();
     }
@@ -2179,6 +2201,7 @@ public partial class MainWindow
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
         _viewCommWindow.Click += (_, _) => ToggleCommWindow();
+        _viewNotes.Click += (_, _) => ToggleNotesPanel();
         _viewShowHaggleDetails.Click += async (_, _) => await ToggleShowHaggleDetailsAsync();
         _viewBottomBar.Click += (_, _) => ToggleBottomBar();
         var skinMenu = new MenuItem
@@ -2190,7 +2213,7 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpAbout    = new MenuItem { Header = "_About" };
@@ -2231,6 +2254,7 @@ public partial class MainWindow
         };
 
         RefreshCommWindowMenuState();
+        RefreshNotesMenuState();
         return menu;
     }
 

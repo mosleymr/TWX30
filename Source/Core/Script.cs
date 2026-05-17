@@ -1870,14 +1870,13 @@ namespace TWXProxy.Core
                         // Pascal TWX sends the response directly; source '*' characters have
                         // already been serialized to carriage returns (#13) by the compiler.
                         string output = response;
-                        
-                        // Send to game server via ModDatabase (cast to concrete type for SendToServerAsync)
+
                         if (GlobalModules.TWXDatabase is ModDatabase database)
                         {
-                            // Convert string to bytes (Latin1 encoding to preserve high-byte chars like chr(145))
+                            // Convert string to bytes (Latin1 encoding to preserve high-byte chars like chr(145)).
                             byte[] data = Encoding.Latin1.GetBytes(output);
-                            
-                            // Blocking send to preserve send order
+
+                            // Blocking send to preserve script send order.
                             database.SendToServerAsync(data).GetAwaiter().GetResult();
                         }
                         
@@ -1942,7 +1941,6 @@ namespace TWXProxy.Core
                         else
                         {
                             GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
-
                             bool handlerPaused = _paused; // did the handler itself pause (e.g. its own waitOn)?
 
                             if (handlerPaused && lifeCycle == 0 && outerWaitActive)
@@ -2088,6 +2086,7 @@ namespace TWXProxy.Core
                     }
                     ScriptRef.SetCurrentLine(text);
                     ScriptRef.SetCurrentAnsiLine(CurrentAnsiTextLine);
+
                     return Execute();
                 }
             }
@@ -4400,7 +4399,7 @@ namespace TWXProxy.Core
             }
 
             if (GlobalModules.VerboseDebugMode)
-            GlobalModules.DebugLog($"[GotoLabel] Found label '{normalized}' at position {labelPos}\n");
+                GlobalModules.DebugLog($"[GotoLabel] Found label '{normalized}' at position {labelPos}\n");
             _codePos = labelPos;
         }
 
@@ -4422,7 +4421,8 @@ namespace TWXProxy.Core
 
         public void Gosub(string labelName)
         {
-            GlobalModules.DebugLog($"[GOSUB] Called with label '{labelName}'\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[GOSUB] Called with label '{labelName}'\n");
             // Push current position and jump to label
             _subStack.Push(_codePos);
             GotoLabel(labelName);
@@ -4465,7 +4465,8 @@ namespace TWXProxy.Core
                 throw new ScriptException("Return without gosub");
 
             int returnPos = _subStack.Pop();
-            GlobalModules.DebugLog($"[RETURN] Restoring codePos={returnPos}, remainingDepth={_subStack.Count}\n");
+            if (GlobalModules.VerboseDebugMode)
+                GlobalModules.DebugLog($"[RETURN] Restoring codePos={returnPos}, remainingDepth={_subStack.Count}\n");
             _codePos = returnPos;
             CleanupCompletedMenuHandlerDepths();
         }

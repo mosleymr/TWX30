@@ -36,6 +36,7 @@ public class TacticalMapControl : Control
     private const float MinZoomFactor = 0.45f;
     private const float MaxZoomFactor = 1.75f;
     private const float ZoomStep = 0.12f;
+    private const int PreviewDefaultContextSectors = 16;
     private const int PreviewMaxHighlightedSectors = 20;
     private const int PreviewMaxContextSectors = 360;
     private static readonly HexCell[] HexDirections =
@@ -1060,7 +1061,7 @@ public class TacticalMapControl : Control
 
         var queue = new Queue<(int SectorNumber, int Depth)>();
         var visited = new HashSet<int>(includedSectors);
-        foreach (int sectorNumber in includedSectors)
+        foreach (int sectorNumber in includedSectors.OrderBy(sectorNumber => sectorNumber))
             queue.Enqueue((sectorNumber, 0));
 
         while (queue.Count > 0)
@@ -1073,7 +1074,7 @@ public class TacticalMapControl : Control
             if (sector == null)
                 continue;
 
-            foreach (int linkedSector in EnumerateLinkedSectors(sector))
+            foreach (int linkedSector in EnumerateLinkedSectors(sector).OrderBy(sectorNumber => sectorNumber))
             {
                 if (!visited.Add(linkedSector))
                     continue;
@@ -1502,19 +1503,32 @@ public class TacticalMapControl : Control
         if (!_previewZoomControlsDepth)
             return _previewSurroundingDepth;
 
-        return Math.Max(_previewSurroundingDepth, GetVisibleDepth());
+        return Math.Max(_previewSurroundingDepth, GetPreviewZoomDepth());
     }
 
     private int GetPreviewContextSectorLimit()
     {
         return _zoomFactor switch
         {
-            >= 1.55f => 28,
-            >= 1.30f => 48,
-            >= 1.05f => 84,
-            >= 0.80f => 140,
-            >= 0.60f => 230,
+            >= 1.30f => 8,
+            >= 1.05f => 12,
+            >= 0.75f => PreviewDefaultContextSectors,
+            >= 0.60f => 32,
+            >= 0.50f => 72,
+            >= 0.45f => 140,
             _ => PreviewMaxContextSectors,
+        };
+    }
+
+    private int GetPreviewZoomDepth()
+    {
+        return _zoomFactor switch
+        {
+            >= 1.05f => 1,
+            >= 0.75f => 2,
+            >= 0.60f => 3,
+            >= 0.50f => 4,
+            _ => 5,
         };
     }
 
