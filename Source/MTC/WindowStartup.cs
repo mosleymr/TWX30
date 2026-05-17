@@ -62,6 +62,7 @@ public partial class MainWindow
         _telnet.TextLineAnsiReceived += (ansiLine, strippedLine) =>
         {
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
+            ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
             HandlePotentialCommLine(ansiLine);
             ProcessStandaloneNativeHaggleLine(strippedLine);
         };
@@ -90,6 +91,7 @@ public partial class MainWindow
                 if (_state.Sector != sn)
                 {
                     _state.Sector = sn;
+                    ObserveGameAgentCurrentSectorChanged(sn);
                     _state.NotifyChanged();
                 }
             });
@@ -212,6 +214,11 @@ public partial class MainWindow
             _mombotKeepaliveTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
+            _gameAgentWindow?.Close();
+            _gameAgentWindow = null;
+            _gameAgentReplayWindow?.Close();
+            _gameAgentReplayWindow = null;
+            _gameAgent.Dispose();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();
             _gameFileLock = null;

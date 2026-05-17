@@ -30,6 +30,7 @@ public partial class MainWindow
     private void OnTelnetConnected()
     {
         _state.Connected = true;
+        ObserveGameAgentConnectionChanged(connected: true);
         RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
         // Open (or create) the sector database for this game connection
         OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
@@ -47,6 +48,7 @@ public partial class MainWindow
     private void OnTelnetDisconnected()
     {
         _state.Connected = false;
+        ObserveGameAgentConnectionChanged(connected: false);
         _sessionLog.CloseLog();
         // Flush and close the database
         try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }

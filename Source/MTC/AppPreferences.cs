@@ -85,6 +85,14 @@ public class AppPreferences
     public bool HasMainWindowPosition { get; private set; }
     public int MainWindowX { get; private set; }
     public int MainWindowY { get; private set; }
+    public string GameAgentProvider { get; set; } = "lmstudio";
+    public string GameAgentLmStudioEndpoint { get; set; } = "http://127.0.0.1:1234/v1/chat/completions";
+    public int GameAgentLmStudioPort { get; set; } = 1234;
+    public int GameAgentOllamaPort { get; set; } = 11434;
+    public string GameAgentOpenAiApiKey { get; set; } = string.Empty;
+    public string GameAgentAnthropicApiKey { get; set; } = string.Empty;
+    public int GameAgentContextLimitCharacters { get; set; } = 32768;
+    public Dictionary<string, string> GameAgentProviderModels { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     private static string LegacySharedPrefsPath()
         => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
@@ -170,6 +178,22 @@ public class AppPreferences
                         new XAttribute("X", MainWindowX.ToString(CultureInfo.InvariantCulture)),
                         new XAttribute("Y", MainWindowY.ToString(CultureInfo.InvariantCulture)))
                     : null,
+                new XElement("GameAgent",
+                    new XElement("Provider", NormalizeGameAgentProvider(GameAgentProvider)),
+                    new XElement("LmStudioEndpoint", NormalizeGameAgentEndpoint(GameAgentLmStudioEndpoint)),
+                    new XElement("LmStudioPort", NormalizeGameAgentPort(GameAgentLmStudioPort, 1234)),
+                    new XElement("OllamaPort", NormalizeGameAgentPort(GameAgentOllamaPort, 11434)),
+                    new XElement("OpenAiApiKey", GameAgentOpenAiApiKey),
+                    new XElement("AnthropicApiKey", GameAgentAnthropicApiKey),
+                    new XElement("ContextLimitCharacters", NormalizeGameAgentContextLimit(GameAgentContextLimitCharacters)),
+                    new XElement("ProviderModels",
+                        GameAgentProviderModels
+                            .Where(pair => !string.IsNullOrWhiteSpace(pair.Key) &&
+                                           !string.IsNullOrWhiteSpace(pair.Value))
+                            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                            .Select(pair => new XElement("Model",
+                                new XAttribute("Provider", NormalizeGameAgentProvider(pair.Key)),
+                                pair.Value.Trim())))),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -276,6 +300,29 @@ public class AppPreferences
                 int.TryParse((string?)mainWindowPosition.Attribute("Y"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowY))
             {
                 prefs.SetMainWindowPosition(mainWindowX, mainWindowY);
+            }
+
+            XElement? gameAgent = root.Element("GameAgent");
+            if (gameAgent != null)
+            {
+                prefs.GameAgentProvider = NormalizeGameAgentProvider((string?)gameAgent.Element("Provider"));
+                prefs.GameAgentLmStudioEndpoint = NormalizeGameAgentEndpoint((string?)gameAgent.Element("LmStudioEndpoint"));
+                if (int.TryParse((string?)gameAgent.Element("LmStudioPort"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int lmStudioPort))
+                    prefs.GameAgentLmStudioPort = NormalizeGameAgentPort(lmStudioPort, 1234);
+                if (int.TryParse((string?)gameAgent.Element("OllamaPort"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int ollamaPort))
+                    prefs.GameAgentOllamaPort = NormalizeGameAgentPort(ollamaPort, 11434);
+                prefs.GameAgentOpenAiApiKey = ((string?)gameAgent.Element("OpenAiApiKey") ?? string.Empty).Trim();
+                prefs.GameAgentAnthropicApiKey = ((string?)gameAgent.Element("AnthropicApiKey") ?? string.Empty).Trim();
+                if (int.TryParse((string?)gameAgent.Element("ContextLimitCharacters"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int contextLimit))
+                    prefs.GameAgentContextLimitCharacters = NormalizeGameAgentContextLimit(contextLimit);
+
+                foreach (XElement model in gameAgent.Element("ProviderModels")?.Elements("Model") ?? Enumerable.Empty<XElement>())
+                {
+                    string provider = NormalizeGameAgentProvider((string?)model.Attribute("Provider"));
+                    string value = ((string?)model ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        prefs.GameAgentProviderModels[provider] = value;
+                }
             }
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
@@ -445,6 +492,41 @@ public class AppPreferences
 
     public static int NormalizeMemoryLimitKb(int value, int defaultValue)
         => value > 0 ? value : defaultValue;
+
+    public static string NormalizeGameAgentProvider(string? value)
+    {
+        string provider = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return provider switch
+        {
+            "local" => "local",
+            "local-observer" => "local",
+            "ollama" => "ollama",
+            "openai" => "openai",
+            "anthropic" => "anthropic",
+            "lmstudio" => "lmstudio",
+            "lm-studio" => "lmstudio",
+            _ => "lmstudio",
+        };
+    }
+
+    public static string NormalizeGameAgentEndpoint(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? "http://127.0.0.1:1234/v1/chat/completions"
+            : value.Trim();
+
+    public static int NormalizeGameAgentContextLimit(int value)
+    {
+        const int min = 16384;
+        const int max = 262144;
+        const int step = 16384;
+        if (value < min || value > max)
+            return min;
+        int offset = value - min;
+        return min + (offset / step * step);
+    }
+
+    public static int NormalizeGameAgentPort(int value, int defaultValue)
+        => value >= 1 && value <= 65535 ? value : defaultValue;
 
     private static string? ResolveRecentFilePath(string? path, string programDirectory)
     {

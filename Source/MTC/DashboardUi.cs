@@ -969,6 +969,7 @@ public partial class MainWindow
             _state.TranswarpDrive1 = s.TransWarp1;
             _state.TranswarpDrive2 = s.TransWarp2;
 
+            ObserveGameAgentShipStatus(s);
             _state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
 
             // Ship status can update many times per macro burst; persist it after the burst quiets.

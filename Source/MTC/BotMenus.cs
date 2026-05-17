@@ -44,8 +44,18 @@ public partial class MainWindow
         _quickMenu.ItemsSource = BuildQuickMenuItems(canRunProxyScripts);
         _quickMenu.IsEnabled = canRunProxyScripts;
         _scriptsMenu.IsEnabled = canRunProxyScripts;
+        RebuildAiMenu();
         RefreshNativeAppMenu();
         RefreshNativeDockMenu();
+    }
+
+    private void RebuildAiMenu()
+    {
+        List<object> items = BuildAiMenuItems();
+        _aiMenu.ItemsSource = items;
+        bool hasItems = items.OfType<MenuItem>().Any(item => item.IsEnabled);
+        _aiMenu.IsEnabled = hasItems;
+        _aiMenu.IsVisible = hasItems;
     }
 
     private List<object> BuildProxyMenuItems(string gameName, bool hasGame, bool hasDatabase, bool hasInterpreter, bool canPlayCapture)
@@ -346,6 +356,24 @@ public partial class MainWindow
         if (groups.Count == 0)
             items.Add(new MenuItem { Header = "No quick-load scripts found", IsEnabled = false });
 
+        return items;
+    }
+
+    private List<object> BuildAiMenuItems()
+    {
+        var gameAgentItem = new MenuItem { Header = "_Game Agent" };
+        gameAgentItem.Click += (_, _) => OpenGameAgentWindow();
+        var configureItem = new MenuItem { Header = "_Configure Game Agent..." };
+        configureItem.Click += (_, _) => _ = ConfigureGameAgentAsync();
+        var replayItem = new MenuItem { Header = "Game Agent _Replay..." };
+        replayItem.Click += (_, _) => _ = OpenGameAgentReplayWindowAsync();
+
+        var items = new List<object>
+        {
+            gameAgentItem,
+            configureItem,
+            replayItem,
+        };
         return items;
     }
 

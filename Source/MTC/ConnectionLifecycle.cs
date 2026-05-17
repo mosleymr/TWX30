@@ -358,6 +358,7 @@ public partial class MainWindow
                         string scriptRemainder = remainder;
                         string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
+                        ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                             Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
@@ -403,6 +404,7 @@ public partial class MainWindow
                 {
                     gi.FeedShipStatusLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
+                    ObserveGameAgentServerLine(lineStripped, lineRaw, isPrompt: false);
                     if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
                         Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                     ObserveComputerShipTypeLine(lineStripped);
@@ -471,6 +473,7 @@ public partial class MainWindow
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = true;
+                ObserveGameAgentConnectionChanged(connected: true);
                 SetTerminalConnected(true);
                 OnGameConnected();
                 _ = TryAutoStartNativeBotAsync("server-connect");
@@ -495,6 +498,7 @@ public partial class MainWindow
             Dispatcher.UIThread.Post(() =>
             {
                 _state.Connected = false;
+                ObserveGameAgentConnectionChanged(connected: false);
                 // In embedded mode the proxy is still alive after a server
                 // disconnect, so keep the terminal "connected" unless the
                 // GameInstance itself is being torn down.

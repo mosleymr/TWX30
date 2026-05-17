@@ -1105,6 +1105,7 @@ public partial class MainWindow
                 if (TryInterceptMombotCommandPrompt(remaining))
                     return;
 
+                ObserveGameAgentClientInput(remaining);
                 forward(remaining);
                 return;
             }
@@ -1116,6 +1117,7 @@ public partial class MainWindow
         if (TryInterceptMombotCommandPrompt(bytes))
             return;
 
+        ObserveGameAgentClientInput(bytes);
         forward(bytes);
     }
 
