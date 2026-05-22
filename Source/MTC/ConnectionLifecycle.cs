@@ -149,8 +149,8 @@ public partial class MainWindow
         gi.BroadCastMsgs = gameConfig.BroadcastMessages;
         gi.Logger.LogEnabled = false;
         gi.Logger.LogData = false;
-        gi.Logger.LogANSI = gameConfig.LogAnsi;
         gi.Logger.LogAnsiCompanion = gameConfig.LogAnsiCompanion;
+        gi.Logger.LogANSI = gameConfig.LogAnsiCompanion ? false : gameConfig.LogAnsi;
         gi.Logger.BinaryLogs = gameConfig.LogBinary;
         gi.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         gi.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;
@@ -601,6 +601,7 @@ public partial class MainWindow
         _mombot.AttachSession(gi, _sessionDb, interpreter, GetOrCreateEmbeddedMombotConfig(gameConfig));
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
+        await LoadEmbeddedExpansionModulesAsync(gameName, programDir, effectiveScriptDir, gi, interpreter);
         OnNativeHaggleChanged(gi.NativeHaggleEnabled, Core.NativeHaggleChangeSource.Config);
         AppPaths.EnsureDirectories();
 
@@ -664,6 +665,7 @@ public partial class MainWindow
             gi.NativeHaggleStatsChanged -= OnNativeHaggleStatsChanged;
         if (gi != null)
             gi.ShipStatusUpdated -= OnShipStatusUpdated;
+        await DisposeEmbeddedExpansionModulesAsync();
         if (gi != null)
         {
             TraceRuntimeStop($"[MTC.StopEmbedded] awaiting GameInstance.StopAsync");
@@ -699,4 +701,60 @@ public partial class MainWindow
         TraceRuntimeStop($"[MTC.StopEmbedded] complete game={_embeddedGameName ?? "-"}");
     }
 
+    private async Task LoadEmbeddedExpansionModulesAsync(
+        string gameName,
+        string programDir,
+        string scriptDirectory,
+        Core.GameInstance gameInstance,
+        Core.ModInterpreter interpreter)
+    {
+        await DisposeEmbeddedExpansionModulesAsync();
+
+        try
+        {
+            _moduleHost = await Core.ExpansionModuleHost.CreateAsync(new Core.ExpansionModuleHostOptions
+            {
+                HostTargets = Core.ExpansionHostTargets.Mtc,
+                HostName = "MTC",
+                GameName = gameName,
+                ProgramDir = programDir,
+                ScriptDirectory = scriptDirectory,
+                ModuleDataRootDirectory = AppPaths.ModuleDataDir,
+                ModuleDirectories = new[]
+                {
+                    AppPaths.ModulesDir,
+                    Core.SharedPaths.LegacyModulesDir,
+                },
+                GameInstance = gameInstance,
+                Interpreter = interpreter,
+                Database = _sessionDb,
+            });
+
+            Core.GlobalModules.DebugLog(
+                $"[MTC.ModuleHost] Loaded {_moduleHost.LoadedModules.Count} module(s) for game '{gameName}'.\n");
+        }
+        catch (Exception ex)
+        {
+            _moduleHost = null;
+            Core.GlobalModules.DebugLog($"[MTC.ModuleHost] Failed to initialize modules: {ex}\n");
+        }
+    }
+
+    private async Task DisposeEmbeddedExpansionModulesAsync()
+    {
+        Core.ExpansionModuleHost? moduleHost = _moduleHost;
+        _moduleHost = null;
+
+        if (moduleHost == null)
+            return;
+
+        try
+        {
+            await moduleHost.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Core.GlobalModules.DebugLog($"[MTC.ModuleHost] Failed to dispose modules: {ex}\n");
+        }
+    }
 }

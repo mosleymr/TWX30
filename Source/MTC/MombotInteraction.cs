@@ -1212,37 +1212,30 @@ public partial class MainWindow
             macroText,
             ValidateTemporaryMacroText,
             allowHotkeyAssignment: true,
-            existingBindings: _appPrefs.MacroBindings);
-        bool accepted = await dialog.ShowDialog<bool>(this);
-        if (!accepted)
-        {
-            FocusActiveTerminal();
-            return;
-        }
-
-        if (!TryDecodeTemporaryMacroText(dialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
-        {
-            ShowMacroNotice(parseError ?? "temporary macro is invalid");
-            FocusActiveTerminal();
-            return;
-        }
-
-        _temporaryMacroChunks.Clear();
-        if (updatedMacroBytes.Length > 0)
-            _temporaryMacroChunks.Add(updatedMacroBytes);
-        UpdateTemporaryMacroControls();
-
-        if (dialog.AssignToHotkey)
-        {
-            UpsertConfiguredMacroBinding(dialog.AssignedHotkey, dialog.MacroText);
-            ShowMacroNotice($"saved quick macro to {dialog.AssignedHotkey}");
-        }
-
-        string? error = await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, dialog.PlayCount);
-        if (!string.IsNullOrWhiteSpace(error))
-            ShowMacroNotice(error);
-
+            existingBindings: _appPrefs.MacroBindings,
+            playAsync: PlayQuickMacroFromDialogAsync);
+        await dialog.ShowDialog<bool>(this);
         FocusActiveTerminal();
+        return;
+
+        async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
+        {
+            if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
+                return parseError ?? "temporary macro is invalid";
+
+            _temporaryMacroChunks.Clear();
+            if (updatedMacroBytes.Length > 0)
+                _temporaryMacroChunks.Add(updatedMacroBytes);
+            UpdateTemporaryMacroControls();
+
+            if (playDialog.AssignToHotkey)
+            {
+                UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
+                ShowMacroNotice($"saved quick macro to {playDialog.AssignedHotkey}");
+            }
+
+            return await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, playDialog.PlayCount);
+        }
     }
 
     private Task<string?> PlayTemporaryMacroBurstAsync(IReadOnlyList<byte[]> macroChunks, int count)
@@ -2173,7 +2166,17 @@ public partial class MainWindow
         _parser.Feed(command);
         _parser.Feed("\r\n");
 
+        RecordMombotInteractiveCommandInGameLog(command);
         ExecuteMombotLocalInput(command);
+    }
+
+    private void RecordMombotInteractiveCommandInGameLog(string command)
+    {
+        var gameInstance = _gameInstance;
+        if (gameInstance == null || string.IsNullOrWhiteSpace(command))
+            return;
+
+        gameInstance.Logger.RecordServerText(">" + command + "\r");
     }
 
     private void ResetMombotPromptState()
@@ -4673,6 +4676,7 @@ public partial class MainWindow
     private void ExecuteMombotLocalInput(string input)
     {
         RecordMombotCommandHistory(input);
+        EnsureEmbeddedMombotClientAudible();
 
         try
         {

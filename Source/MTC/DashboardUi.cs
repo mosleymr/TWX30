@@ -547,6 +547,8 @@ public partial class MainWindow
         if (!opening)
             CaptureCommWindowHeights();
         _commWindowVisible = opening;
+        SaveInWindowLayoutPreferences();
+        _appPrefs.Save();
 
         ApplyCommWindowVisibility();
         RefreshCommWindowUi();
@@ -675,6 +677,8 @@ public partial class MainWindow
 
         if (_deckCommPanelBorder is { IsVisible: true } && _deckCommPanelBorder.Bounds.Height >= CommWindowMinHeight)
             _deckCommWindowHeight = _deckCommPanelBorder.Bounds.Height;
+
+        SaveInWindowLayoutPreferences();
     }
 
     private void ApplyCommWindowVisibility()

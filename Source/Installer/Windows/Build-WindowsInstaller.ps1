@@ -5,7 +5,9 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
-    [string]$ProgramDirDefault = 'C:\twxproxy'
+    [string]$ProgramDirDefault = 'C:\twxproxy',
+
+    [string]$MombotReleaseSource = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +41,13 @@ function Invoke-DotNetPublish {
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceRoot = Resolve-Path (Join-Path $scriptRoot '..\..')
 $repoRoot = Resolve-Path (Join-Path $sourceRoot '..')
-$scriptsSource = Join-Path $repoRoot 'scripts'
+if ([string]::IsNullOrWhiteSpace($MombotReleaseSource)) {
+    $MombotReleaseSource = $env:MOMBOT_RELEASE_SOURCE
+}
+if ([string]::IsNullOrWhiteSpace($MombotReleaseSource)) {
+    $MombotReleaseSource = 'C:\tw2002\mombot\mombot5.0\Release\mombot'
+}
+$mombotReleaseSourcePath = (Resolve-Path -LiteralPath $MombotReleaseSource).ProviderPath
 $payloadRoot = Join-Path $scriptRoot "artifacts\$Architecture\payload"
 $programDirPayload = Join-Path $payloadRoot 'ProgramDir'
 $scriptsPayload = Join-Path $payloadRoot 'scripts'
@@ -49,13 +57,19 @@ $outputRoot = Join-Path $scriptRoot "artifacts\$Architecture"
 $rid = "win-$Architecture"
 $twxpRid = if ($Architecture -eq 'x64') { 'win-x64' } else { 'win-arm64' }
 $wixProject = Join-Path $scriptRoot 'TWXWindowsInstaller.wixproj'
+$sourceControlBuildProperties = @(
+    '-p:EnableSourceControlManagerQueries=false',
+    '-p:ContinuousIntegrationBuild=false'
+)
 
 Write-Host "==> Cleaning payload for $Architecture"
 Remove-Item $payloadRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $programDirPayload, $scriptsPayload, $mtcPayload, $twxpPayload | Out-Null
 
-Write-Host "==> Staging scripts payload"
-Copy-Item (Join-Path $scriptsSource '*') $scriptsPayload -Recurse -Force
+Write-Host "==> Staging Mombot scripts payload from $mombotReleaseSourcePath"
+$mombotPayload = Join-Path $scriptsPayload 'mombot'
+New-Item -ItemType Directory -Force -Path $mombotPayload | Out-Null
+Get-ChildItem -LiteralPath $mombotReleaseSourcePath -Force | Copy-Item -Destination $mombotPayload -Recurse -Force
 
 Write-Host "==> Publishing MTC ($rid) - single-file self-contained"
 Invoke-DotNetPublish -Arguments @(
@@ -66,6 +80,7 @@ Invoke-DotNetPublish -Arguments @(
     '-p:PublishSingleFile=true',
     '-p:IncludeNativeLibrariesForSelfExtract=true',
     '-p:EnableCompressionInSingleFile=true',
+    $sourceControlBuildProperties,
     '-o', $mtcPayload
 ) -ErrorMessage "MTC publish failed for $rid."
 
@@ -76,6 +91,7 @@ try {
         '-c', $Configuration,
         '-r', $rid,
         '-p:PublishAot=true',
+        $sourceControlBuildProperties,
         '-o', $programDirPayload
     ) -ErrorMessage "TWXC NativeAOT publish failed for $rid."
 } catch {
@@ -88,6 +104,7 @@ try {
         '-p:PublishSingleFile=true',
         '-p:IncludeNativeLibrariesForSelfExtract=true',
         '-p:EnableCompressionInSingleFile=true',
+        $sourceControlBuildProperties,
         '-o', $programDirPayload
     ) -ErrorMessage "TWXC fallback publish failed for $rid."
 }
@@ -99,6 +116,7 @@ try {
         '-c', $Configuration,
         '-r', $rid,
         '-p:PublishAot=true',
+        $sourceControlBuildProperties,
         '-o', $programDirPayload
     ) -ErrorMessage "TWXD NativeAOT publish failed for $rid."
 } catch {
@@ -111,6 +129,7 @@ try {
         '-p:PublishSingleFile=true',
         '-p:IncludeNativeLibrariesForSelfExtract=true',
         '-p:EnableCompressionInSingleFile=true',
+        $sourceControlBuildProperties,
         '-o', $programDirPayload
     ) -ErrorMessage "TWXD fallback publish failed for $rid."
 }
@@ -124,6 +143,7 @@ Invoke-DotNetPublish -Arguments @(
     '-p:PublishSingleFile=true',
     '-p:IncludeNativeLibrariesForSelfExtract=true',
     '-p:EnableCompressionInSingleFile=true',
+    $sourceControlBuildProperties,
     '-o', $twxpPayload
 ) -ErrorMessage "TWXP publish failed for $twxpRid."
 
@@ -133,6 +153,8 @@ dotnet build $wixProject `
     -p:InstallerPlatform=$Architecture `
     -p:ProgramDirDefault="$ProgramDirDefault" `
     -p:PayloadRoot="$payloadRoot" `
+    -p:EnableSourceControlManagerQueries=false `
+    -p:ContinuousIntegrationBuild=false `
     -p:SuppressValidation=true
 
 $builtMsi = Join-Path $scriptRoot "bin\$Configuration\$Architecture\TWXProxy-$Architecture.msi"

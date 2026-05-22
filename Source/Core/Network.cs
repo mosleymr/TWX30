@@ -295,6 +295,8 @@ namespace TWXProxy.Core
             _nativeHaggle.StatsChanged += () => NativeHaggleStatsChanged?.Invoke();
             _log.ProgramDir = GlobalModules.ProgramDir;
             _log.SetLogIdentity(gameName);
+            GlobalModules.ConfigureDatabaseCorrectionLogging(
+                Path.Combine(GlobalModules.ProgramDir, "logs", $"{SharedPaths.SanitizeFileComponent(gameName)}_db_errors.log"));
             _log.ScriptLoggingScope = _interpreter;
             _log.SetPlaybackTargets(
                 (payload, token) => SendPlaybackToLocalAsync(payload, token),
@@ -2294,6 +2296,24 @@ namespace TWXProxy.Core
             // messages remain visible while scripts mute server output.  Do not
             // defer those behind server dispatch, or a deafing script can appear
             // to hang without showing its own progress message.
+            if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
+                return;
+
+            SendToLocalAsync(data, broadcastDeaf: broadcastDeaf).Wait();
+        }
+
+        public void BroadcastLiteral(string message)
+        {
+            byte[] data = Encoding.Latin1.GetBytes(message ?? string.Empty);
+            if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
+                return;
+
+            SendToLocalAsync(data).Wait();
+        }
+
+        public void BroadcastLiteral(string message, bool broadcastDeaf)
+        {
+            byte[] data = Encoding.Latin1.GetBytes(message ?? string.Empty);
             if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
 

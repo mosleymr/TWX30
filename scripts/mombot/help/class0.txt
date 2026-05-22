@@ -1,2 +1,7 @@
-CLASS0 - Sends over Sub-Space known Class 0 Port
-         Locations
+                     
+   
+                 <<<< class0 >>>>
+   
+     Reports both Class 0 sectors if known.
+      
+     class0 (sector)

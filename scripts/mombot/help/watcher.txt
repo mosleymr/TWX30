@@ -1,6 +1,0 @@
-                     
-   
-                <<<< watcher >>>>
-   
-     mgrid - Mayhem Corp Gridder v2.0 for TWX Proxy 3.x
-     Authors: Shadow, Rider, and LoneStar

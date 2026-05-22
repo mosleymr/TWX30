@@ -194,7 +194,10 @@ namespace TWXProxy.Core
         public static string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
         public static string PortHaggleDebugLogPath { get; set; } = "/tmp/twxp_haggle_debug.log";
         public static string PlanetHaggleDebugLogPath { get; set; } = "/tmp/twxp_neg_debug.log";
+        public static string DatabaseCorrectionLogPath { get; set; } = "/tmp/twxp_db_errors.log";
+        public static bool DatabaseCorrectionLoggingEnabled { get; set; } = false;
         private static readonly object _debugLock = new object();
+        private static readonly object _databaseCorrectionLogLock = new object();
         private static readonly object _debugWorkerLock = new object();
         private static readonly ConcurrentQueue<string> _pendingDebugMessages = new();
         private static readonly AutoResetEvent _debugQueueSignal = new AutoResetEvent(false);
@@ -218,7 +221,24 @@ namespace TWXProxy.Core
                 Directory.CreateDirectory(directory);
 
             if (_debugWriter != null && !resetFile)
-                return;
+            {
+                bool logFileStillVisible = true;
+                try
+                {
+                    logFileStillVisible = File.Exists(DebugLogPath);
+                }
+                catch
+                {
+                    // If the visibility check fails, keep the existing writer.
+                    logFileStillVisible = true;
+                }
+
+                if (logFileStillVisible)
+                    return;
+
+                _debugWriter.Dispose();
+                _debugWriter = null;
+            }
 
             bool fileExists = File.Exists(DebugLogPath);
             long existingLength = 0;
@@ -494,6 +514,30 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void ConfigureDatabaseCorrectionLogging(string? databaseCorrectionLogPath, bool? enabled = null)
+        {
+            if (enabled.HasValue)
+                DatabaseCorrectionLoggingEnabled = enabled.Value;
+
+            if (string.IsNullOrWhiteSpace(databaseCorrectionLogPath))
+                return;
+
+            lock (_databaseCorrectionLogLock)
+            {
+                DatabaseCorrectionLogPath = databaseCorrectionLogPath;
+                try
+                {
+                    string? directory = Path.GetDirectoryName(DatabaseCorrectionLogPath);
+                    if (!string.IsNullOrWhiteSpace(directory))
+                        Directory.CreateDirectory(directory);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[DB CORRECTION LOG INIT ERROR] {ex.Message}");
+                }
+            }
+        }
+
         /// <summary>
         /// Initialize/clear the debug log file. Call this at application startup.
         /// </summary>
@@ -583,6 +627,33 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Console.WriteLine($"[AUTORECORDER LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void DatabaseCorrectionLog(string source, string message)
+        {
+            if (!DatabaseCorrectionLoggingEnabled)
+                return;
+
+            try
+            {
+                lock (_databaseCorrectionLogLock)
+                {
+                    string? directory = Path.GetDirectoryName(DatabaseCorrectionLogPath);
+                    if (!string.IsNullOrWhiteSpace(directory))
+                        Directory.CreateDirectory(directory);
+
+                    bool writeHeader = !File.Exists(DatabaseCorrectionLogPath);
+                    using var writer = new StreamWriter(DatabaseCorrectionLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096);
+                    if (writeHeader)
+                        writer.WriteLine($"=== TWX Database Correction Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+
+                    writer.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{source}] {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DB CORRECTION LOG ERROR] {ex.Message}: {message}");
             }
         }
 

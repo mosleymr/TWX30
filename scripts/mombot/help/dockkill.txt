@@ -1,5 +1,14 @@
-DOCKKILL - StarDock Kill Mode
-           Continually scans the Current Sector for an enemy
-           and send an attack wave on sight.
-
-          dockkill [on/off]
+                     
+   
+                <<<< dockkill >>>>
+   
+     Scans for targets and autokills in sector.
+              
+       Options: 
+           {off} - Turns off script 
+           {pod} - Only shoots pods
+          {meat} - meatgrinder mode
+           {cap} - capture instead of kill
+            {dt} - doubletap mode
+            {sg} - shotgun mode
+      {defender} - pops a planet before attacking

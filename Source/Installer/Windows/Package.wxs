@@ -203,7 +203,7 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Scripts library (installed under Program Files\TWXProxy\scripts) -->
+    <!-- Mombot scripts library (installed under Program Files\TWXProxy\scripts\mombot) -->
     <ComponentGroup Id="ScriptsPayload">
       <Files Directory="SCRIPTSDIR" Include="$(var.PayloadRoot)\scripts\**" />
     </ComponentGroup>
@@ -237,8 +237,8 @@
       </Feature>
 
       <Feature Id="FeatureScripts"
-               Title="Scripts"
-               Description="Bundled TWX script library installed to the scripts folder."
+               Title="Mombot Scripts"
+               Description="Bundled Mombot script library installed to the scripts\mombot folder."
                Level="1">
         <ComponentGroupRef Id="ScriptsPayload" />
       </Feature>

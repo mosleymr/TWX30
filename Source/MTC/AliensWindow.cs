@@ -271,12 +271,12 @@ internal sealed class AliensWindow : Window
         return "current game";
     }
 
-    private static Control BuildAlienGroupCard(AlienGroup group)
+    private Control BuildAlienGroupCard(AlienGroup group)
     {
         var titleRow = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
-            ColumnSpacing = 12,
+            ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"),
+            ColumnSpacing = 10,
         };
 
         var titleBlock = new StackPanel
@@ -309,10 +309,29 @@ internal sealed class AliensWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         };
 
+        var copyButton = new Button
+        {
+            Content = "Copy",
+            Padding = new Thickness(12, 5),
+            Background = BgCardAlt,
+            BorderBrush = Edge,
+            BorderThickness = new Thickness(1.25),
+            Foreground = ColText,
+            CornerRadius = new CornerRadius(9),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold,
+            MinWidth = 72,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        copyButton.Click += async (_, _) => await CopyAlienSectorsAsync(copyButton, group);
+
         Grid.SetColumn(titleBlock, 0);
         Grid.SetColumn(countText, 1);
+        Grid.SetColumn(copyButton, 2);
         titleRow.Children.Add(titleBlock);
         titleRow.Children.Add(countText);
+        titleRow.Children.Add(copyButton);
 
         var sectorText = new TextBlock
         {
@@ -342,12 +361,31 @@ internal sealed class AliensWindow : Window
                         BorderBrush = Edge,
                         BorderThickness = new Thickness(1),
                         CornerRadius = new CornerRadius(12),
-                        Padding = new Thickness(12, 10),
+                        Padding = new Thickness(10, 10),
                         Child = sectorText,
                     },
                 },
             },
         };
+    }
+
+    private async System.Threading.Tasks.Task CopyAlienSectorsAsync(Button button, AlienGroup group)
+    {
+        string previous = button.Content?.ToString() ?? "Copy";
+        string sectorList = string.Join(" ", group.Sectors.Select(row => row.Sector.ToString()));
+
+        try
+        {
+            bool copied = await ClipboardHelper.TrySetTextAsync(this, sectorList);
+            button.Content = copied ? "Copied" : "Failed";
+            button.Foreground = copied ? ColAccentHot : ColWarning;
+            await System.Threading.Tasks.Task.Delay(900);
+        }
+        finally
+        {
+            button.Content = previous;
+            button.ClearValue(Button.ForegroundProperty);
+        }
     }
 
     private static Control BuildEmptyCard(string title, string message)

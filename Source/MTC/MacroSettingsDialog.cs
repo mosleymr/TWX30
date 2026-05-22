@@ -13,7 +13,7 @@ namespace MTC;
 
 public sealed class MacroSettingsDialog : Window
 {
-    private const string RowColumns = "128,*,78";
+    private const string RowColumns = "128,*,68,68";
 
     private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(5, 24, 30));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(8, 45, 56));
@@ -35,6 +35,7 @@ public sealed class MacroSettingsDialog : Window
         public required ComboBox HotkeyCombo { get; init; }
         public required TextBox MacroTextBox { get; init; }
         public required Button PlayButton { get; init; }
+        public required Button BurstButton { get; init; }
     }
 
     private readonly List<MacroRowState> _rows = [];
@@ -45,18 +46,29 @@ public sealed class MacroSettingsDialog : Window
         IsVisible = false,
         TextWrapping = TextWrapping.Wrap,
     };
+    private readonly TextBlock _statusText = new()
+    {
+        Foreground = FgMuted,
+        IsVisible = false,
+        TextWrapping = TextWrapping.Wrap,
+    };
     private readonly Button _removeButton;
 
     private MacroRowState? _selectedRow;
     private readonly Func<string, int, Task<string?>> _playMacroAsync;
+    private readonly Action<IReadOnlyList<AppPreferences.MacroBinding>> _saveMacros;
 
     public IReadOnlyList<AppPreferences.MacroBinding> Result { get; private set; } = Array.Empty<AppPreferences.MacroBinding>();
 
-    public MacroSettingsDialog(IReadOnlyList<AppPreferences.MacroBinding> defaults, Func<string, int, Task<string?>> playMacroAsync)
+    public MacroSettingsDialog(
+        IReadOnlyList<AppPreferences.MacroBinding> defaults,
+        Func<string, int, Task<string?>> playMacroAsync,
+        Action<IReadOnlyList<AppPreferences.MacroBinding>> saveMacros)
     {
         _playMacroAsync = playMacroAsync;
+        _saveMacros = saveMacros;
         Title = "Macros";
-        Width = 780;
+        Width = 860;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -194,7 +206,7 @@ public sealed class MacroSettingsDialog : Window
         headerRow.Children.Add(macroHeader);
         var runHeader = new TextBlock
         {
-            Text = "Test",
+            Text = "Play",
             Foreground = FgLabel,
             FontWeight = FontWeight.Bold,
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -202,6 +214,16 @@ public sealed class MacroSettingsDialog : Window
         };
         Grid.SetColumn(runHeader, 2);
         headerRow.Children.Add(runHeader);
+        var burstHeader = new TextBlock
+        {
+            Text = "Burst",
+            Foreground = FgLabel,
+            FontWeight = FontWeight.Bold,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(burstHeader, 3);
+        headerRow.Children.Add(burstHeader);
 
         foreach (AppPreferences.MacroBinding binding in defaults)
             AddRow(new AppPreferences.MacroBinding { Hotkey = NormalizeHotkey(binding.Hotkey), Macro = binding.Macro ?? string.Empty });
@@ -234,6 +256,7 @@ public sealed class MacroSettingsDialog : Window
                     headerRow,
                     rowsScroll,
                     _errorText,
+                    _statusText,
                 },
             },
         };
@@ -253,7 +276,7 @@ public sealed class MacroSettingsDialog : Window
 
         var btnCancel = new Button
         {
-            Content = "Cancel",
+            Content = "Quit",
             MinWidth = 80,
             Background = BgButtonSoft,
             Foreground = FgNormal,
@@ -271,7 +294,8 @@ public sealed class MacroSettingsDialog : Window
             }
 
             Result = bindings;
-            Close(true);
+            _saveMacros(bindings);
+            ShowStatus("Macros saved.");
         };
 
         btnCancel.Click += (_, _) => Close(false);
@@ -345,6 +369,20 @@ public sealed class MacroSettingsDialog : Window
         Grid.SetColumn(playButton, 2);
         rowGrid.Children.Add(playButton);
 
+        var burstButton = new Button
+        {
+            Content = "Burst",
+            Width = 68,
+            Background = BgButton,
+            Foreground = FgNormal,
+            BorderBrush = AccentBorder,
+            CornerRadius = new CornerRadius(8),
+            IsEnabled = !string.IsNullOrWhiteSpace(binding.Macro),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        Grid.SetColumn(burstButton, 3);
+        rowGrid.Children.Add(burstButton);
+
         var border = new Border
         {
             Background = AccentFill,
@@ -361,16 +399,20 @@ public sealed class MacroSettingsDialog : Window
             HotkeyCombo = hotkeyCombo,
             MacroTextBox = macroTextBox,
             PlayButton = playButton,
+            BurstButton = burstButton,
         };
 
         border.PointerPressed += (_, _) => SelectRow(state);
         hotkeyCombo.GotFocus += (_, _) => SelectRow(state);
         macroTextBox.GotFocus += (_, _) => SelectRow(state);
-        playButton.Click += async (_, _) => await PlayMacroAsync(state);
+        playButton.Click += async (_, _) => await PlayMacroOnceAsync(state);
+        burstButton.Click += async (_, _) => await BurstMacroAsync(state);
         hotkeyCombo.SelectionChanged += (_, _) => ClearError();
         macroTextBox.TextChanged += (_, _) =>
         {
-            state.PlayButton.IsEnabled = !string.IsNullOrWhiteSpace(macroTextBox.Text);
+            bool hasMacro = !string.IsNullOrWhiteSpace(macroTextBox.Text);
+            state.PlayButton.IsEnabled = hasMacro;
+            state.BurstButton.IsEnabled = hasMacro;
             ClearError();
         };
 
@@ -458,17 +500,29 @@ public sealed class MacroSettingsDialog : Window
 
     private void ShowError(string message)
     {
+        _statusText.Text = string.Empty;
+        _statusText.IsVisible = false;
         _errorText.Text = message;
         _errorText.IsVisible = true;
+    }
+
+    private void ShowStatus(string message)
+    {
+        _errorText.Text = string.Empty;
+        _errorText.IsVisible = false;
+        _statusText.Text = message;
+        _statusText.IsVisible = true;
     }
 
     private void ClearError()
     {
         _errorText.Text = string.Empty;
         _errorText.IsVisible = false;
+        _statusText.Text = string.Empty;
+        _statusText.IsVisible = false;
     }
 
-    private async Task PlayMacroAsync(MacroRowState row)
+    private async Task PlayMacroOnceAsync(MacroRowState row)
     {
         SelectRow(row);
         ClearError();
@@ -477,6 +531,23 @@ public sealed class MacroSettingsDialog : Window
         if (string.IsNullOrWhiteSpace(macro))
         {
             ShowError("Enter a macro before using Play.");
+            return;
+        }
+
+        string? error = await _playMacroAsync(macro, 1);
+        if (!string.IsNullOrWhiteSpace(error))
+            ShowError(error);
+    }
+
+    private async Task BurstMacroAsync(MacroRowState row)
+    {
+        SelectRow(row);
+        ClearError();
+
+        string macro = row.MacroTextBox.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(macro))
+        {
+            ShowError("Enter a macro before using Burst.");
             return;
         }
 

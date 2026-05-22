@@ -7,6 +7,7 @@ Console.SetOut(TextWriter.Null);
 AppPaths.EnsureDirectories();
 GlobalModules.ProgramDir = AppPaths.ProgramDir;
 GlobalModules.DebugLogPath = Path.Combine(AppPaths.LogsDir, "twxp_debug.log");
+GlobalModules.ConfigureDatabaseCorrectionLogging(Path.Combine(AppPaths.LogsDir, "twxp_db_errors.log"), false);
 GlobalModules.InitializeDebugLog();
 
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>

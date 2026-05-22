@@ -14,7 +14,6 @@ GlobalModules.ProgramDir = MTC.AppPaths.ProgramDir;
 GlobalModules.PreferPreparedVm = prefs.PreparedVmEnabled;
 GlobalModules.EnableVmMetrics = prefs.VmMetricsEnabled;
 MTC.AppPaths.EnsureDebugLogDir();
-MTC.AppPaths.ResetStartupDebugLogs();
 var defaultDebug = new MTC.EmbeddedMtcDebugConfig();
 GlobalModules.ConfigureDebugLogging(
     MTC.AppPaths.GetDebugLogPath(),
@@ -28,6 +27,9 @@ GlobalModules.ConfigureHaggleDebugLogging(
     defaultDebug.DebugPortHaggleEnabled,
     MTC.AppPaths.GetPlanetHaggleDebugLogPath(),
     defaultDebug.DebugPlanetHaggleEnabled);
+GlobalModules.ConfigureDatabaseCorrectionLogging(
+    MTC.AppPaths.GetDatabaseCorrectionLogPath(),
+    defaultDebug.DebugLoggingEnabled && defaultDebug.DebugDatabaseChanges);
 
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 {

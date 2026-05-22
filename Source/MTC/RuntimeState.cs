@@ -714,7 +714,14 @@ public partial class MainWindow
     {
         EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
         string gameName = GetDebugLogGameName();
-        bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, gameName).ShowDialog<bool>(this);
+        EmbeddedGameConfig? gameConfig = _embeddedGameConfig;
+        if (gameConfig == null && !string.IsNullOrWhiteSpace(gameName))
+        {
+            gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+            _embeddedGameConfig = gameConfig;
+        }
+
+        bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, gameConfig, gameName).ShowDialog<bool>(this);
         if (!saved)
         {
             Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
@@ -726,6 +733,7 @@ public partial class MainWindow
         RefreshRuntimeScriptDirectoryFromPreferences();
         await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
+        ApplySessionLogSettings(_embeddedGameConfig);
         ApplyRedAlertPreference();
         RebuildScriptsMenu();
         Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
@@ -765,28 +773,15 @@ public partial class MainWindow
                     Macro = binding.Macro,
                 })
                 .ToArray(),
-            PlayConfiguredMacroBurstAsync);
+            PlayConfiguredMacroBurstAsync,
+            SaveMacroBindings);
 
         _macroSettingsDialog = dialog;
         UpdateTerminalLiveSelector();
 
         try
         {
-            bool saved = await dialog.ShowDialog<bool>(this);
-            if (!saved)
-                return;
-
-            _appPrefs.MacroBindings.Clear();
-            foreach (AppPreferences.MacroBinding binding in dialog.Result)
-            {
-                _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
-                {
-                    Hotkey = binding.Hotkey,
-                    Macro = binding.Macro,
-                });
-            }
-
-            _appPrefs.Save();
+            await dialog.ShowDialog<bool>(this);
         }
         finally
         {
@@ -795,6 +790,21 @@ public partial class MainWindow
 
             UpdateTerminalLiveSelector();
         }
+    }
+
+    private void SaveMacroBindings(IReadOnlyList<AppPreferences.MacroBinding> bindings)
+    {
+        _appPrefs.MacroBindings.Clear();
+        foreach (AppPreferences.MacroBinding binding in bindings)
+        {
+            _appPrefs.MacroBindings.Add(new AppPreferences.MacroBinding
+            {
+                Hotkey = binding.Hotkey,
+                Macro = binding.Macro,
+            });
+        }
+
+        _appPrefs.Save();
     }
 
     private void ApplyDebugLoggingPreferences()
@@ -825,6 +835,11 @@ public partial class MainWindow
             debugPrefs.DebugPortHaggleEnabled,
             AppPaths.GetPlanetHaggleDebugLogPath(),
             debugPrefs.DebugPlanetHaggleEnabled);
+        Core.GlobalModules.ConfigureDatabaseCorrectionLogging(
+            string.IsNullOrWhiteSpace(debugGameName)
+                ? AppPaths.GetDatabaseCorrectionLogPath()
+                : AppPaths.GetDatabaseCorrectionLogPathForGame(debugGameName),
+            debugPrefs.DebugLoggingEnabled && debugPrefs.DebugDatabaseChanges);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
         _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
         RefreshSessionLogTarget();
@@ -897,8 +912,8 @@ public partial class MainWindow
 
         _sessionLog.LogEnabled = gameConfig.LogEnabled;
         _sessionLog.LogData = gameConfig.LogEnabled;
-        _sessionLog.LogANSI = gameConfig.LogAnsi;
         _sessionLog.LogAnsiCompanion = gameConfig.LogAnsiCompanion;
+        _sessionLog.LogANSI = gameConfig.LogAnsiCompanion ? false : gameConfig.LogAnsi;
         _sessionLog.BinaryLogs = gameConfig.LogBinary;
         _sessionLog.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         _sessionLog.MaxPlayDelay = gameConfig.MaxPlayDelay;

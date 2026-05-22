@@ -301,14 +301,14 @@ namespace TWXProxy.Core
             if (Name.Length >= 2 && Name.StartsWith("$$"))
                 return; // don't dump system variables
 
-            GlobalModules.Server?.Broadcast(
+            GlobalModules.Server?.BroadcastLiteral(
                 $"{tab}{AnsiCodes.ANSI_15}\"{AnsiCodes.ANSI_7}{Name}{AnsiCodes.ANSI_15}\" = \"{AnsiCodes.ANSI_7}{Value}{AnsiCodes.ANSI_15}\"\r\n");
 
             if (_vars.Count > 0)
             {
                 // Dump array contents
                 string arrayType = _arraySize > 0 ? "Static" : "Dynamic";
-                GlobalModules.Server?.Broadcast(
+                GlobalModules.Server?.BroadcastLiteral(
                     $"{tab}{AnsiCodes.ANSI_15}{arrayType} array of \"{AnsiCodes.ANSI_7}{Name}{AnsiCodes.ANSI_15}\" (size {_vars.Count})\r\n");
 
                 foreach (var v in _vars)
@@ -862,6 +862,34 @@ namespace TWXProxy.Core
                    c == ScriptConstants.OP_NOTEQUAL;
         }
 
+        private static bool IsNumericLiteralSign(string text, int index)
+        {
+            if (index < 0 || index + 1 >= text.Length)
+                return false;
+
+            char c = text[index];
+            if (c != '-' && c != '+')
+                return false;
+
+            char next = text[index + 1];
+            return char.IsDigit(next) || next == '.';
+        }
+
+        private static bool IsSimpleVariableToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token) || token[0] != '$')
+                return false;
+
+            return token.IndexOfAny(new[] { '(', ')', '+', '-', '*', '/', '%', '&', '=', '<', '>' }) < 0;
+        }
+
+        private static bool StartsSignedNumericSetVarValue(List<string> paramLine, StringBuilder pendingToken)
+        {
+            return paramLine.Count == 1
+                   && string.Equals(paramLine[0], "SETVAR", StringComparison.OrdinalIgnoreCase)
+                   && IsSimpleVariableToken(pendingToken.ToString());
+        }
+
         #endregion
 
         #region Compilation Methods
@@ -1064,7 +1092,28 @@ namespace TWXProxy.Core
                     break;
                 }
 
-                if (!inQuote && IsOperator(c))
+                if (!inQuote && IsNumericLiteralSign(processed, i) && linked)
+                {
+                    // Unary numeric sign on the right side of an operator, e.g. "$a <= -60".
+                    sb.Append(c);
+                    linked = false;
+                }
+                else if (!inQuote && IsNumericLiteralSign(processed, i) && sb.Length == 0)
+                {
+                    // Negative/positive numeric literal as a fresh command parameter.
+                    sb.Append(c);
+                    linked = false;
+                }
+                else if (!inQuote && IsNumericLiteralSign(processed, i) && (last == ' ' || last == '\t') && !linked && StartsSignedNumericSetVarValue(paramLine, sb))
+                {
+                    // Pascal missed this SETVAR boundary and compiled "$x -60" as "$x-60".
+                    // Keep other "$value -1" forms as binary subtraction for script parity.
+                    paramLine.Add(sb.ToString());
+                    sb.Clear();
+                    sb.Append(c);
+                    linked = false;
+                }
+                else if (!inQuote && IsOperator(c))
                 {
                     if (linked)
                         throw new Exception($"Operation syntax error at line {lineNumber}");
@@ -1173,6 +1222,8 @@ namespace TWXProxy.Core
                 if (depth > 0) continue;
                 if (ops.IndexOf(c) >= 0)
                 {
+                    if (i == 0 && IsNumericLiteralSign(eq, i))
+                        continue;
                     if (i == 0)
                         throw new Exception($"SplitOperator: operator '{(int)c}' at position 0 in \"{eq}\"");
                     if (i == eq.Length - 1)

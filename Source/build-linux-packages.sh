@@ -7,7 +7,7 @@ export COPY_EXTENDED_ATTRIBUTES_DISABLE=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BIN_ROOT="${REPO_ROOT}/bin"
-SCRIPTS_SOURCE="${REPO_ROOT}/scripts"
+MOMBOT_RELEASE_SOURCE="${MOMBOT_RELEASE_SOURCE:-/Users/mosleym/tw2002/mombot/mombot5.0/Release/mombot}"
 RID="${RID:-linux-x64}"
 VERSION="${VERSION:-$(date +%Y.%m.%d.%H%M)}"
 DEB_ARCH="${DEB_ARCH:-amd64}"
@@ -26,7 +26,10 @@ The twx30 package installs every component:
   - Mayhem Tradewars Client
   - Tradewars Proxy
   - twxc and twxd
-  - bundled TWX scripts copied into <programdir>/scripts
+  - bundled Mombot scripts copied into <programdir>/scripts/mombot
+
+Set MOMBOT_RELEASE_SOURCE to override the Mombot release tree used for the
+scripts payload.
 EOF
   exit 0
 elif [[ $# -gt 0 ]]; then
@@ -152,7 +155,7 @@ stage_tools() {
 stage_scripts() {
   local root_dir="$1"
 
-  copy_tree_clean "$SCRIPTS_SOURCE" "${root_dir}/opt/twx30/scripts"
+  copy_tree_clean "$MOMBOT_RELEASE_SOURCE" "${root_dir}/opt/twx30/scripts/mombot"
 }
 
 stage_doc() {
@@ -169,11 +172,11 @@ ${summary}
 Default user program directory:
   ~/twxproxy
 
-Bundled scripts, when this package includes them, are staged in:
-  /opt/twx30/scripts
+Bundled Mombot scripts, when this package includes them, are staged in:
+  /opt/twx30/scripts/mombot
 
 During package installation, scripts are also copied into:
-  <programdir>/scripts
+  <programdir>/scripts/mombot
 
 The installer resolves <programdir> from TWX30_PROGRAMDIR, then the invoking
 sudo user, then the current login user. If no user home can be resolved, the
@@ -525,7 +528,7 @@ require_executable "${BIN_ROOT}/${RID}/twxc"
 require_executable "${BIN_ROOT}/${RID}/twxd"
 require_file "${SCRIPT_DIR}/MTC/mtc2.png"
 require_file "${SCRIPT_DIR}/TWXP/Resources/AppIcon/appicon.svg"
-require_dir "$SCRIPTS_SOURCE"
+require_dir "$MOMBOT_RELEASE_SOURCE"
 
 work_dir="$(mktemp -d "/tmp/twx30-linux-packages-XXXXXX")"
 trap 'rm -rf "$work_dir"' EXIT
@@ -542,4 +545,4 @@ rm -f \
   "${OUTPUT_DIR}/twx30-scripts-${RID}.deb" \
   "${OUTPUT_DIR}/twx30-scripts-${RID}.rpm"
 build_package_pair "$work_dir" all twx30 "twx30-${RID}" \
-  "TWX30 TradeWars client, proxy, compiler tools, and bundled scripts." "$fpm_bin"
+  "TWX30 TradeWars client, proxy, compiler tools, and bundled Mombot scripts." "$fpm_bin"

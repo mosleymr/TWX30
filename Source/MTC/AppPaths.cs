@@ -153,25 +153,22 @@ public static class AppPaths
     public static string GetPlanetHaggleDebugLogPath(string? scriptDirectory = null)
         => Path.Combine(GetDebugLogDir(scriptDirectory), "mtc_neg_debug.log");
 
+    public static string GetDatabaseCorrectionLogPath(string? scriptDirectory = null)
+        => GetDatabaseCorrectionLogPathForGame(null, scriptDirectory);
+
+    public static string GetDatabaseCorrectionLogPathForGame(string? gameName, string? scriptDirectory = null)
+        => Path.Combine(
+            GetDebugLogDir(scriptDirectory),
+            $"{SanitizeLogIdentity(gameName)}_db_errors.log");
+
     public static void EnsureDebugLogDir(string? scriptDirectory = null)
         => Directory.CreateDirectory(GetDebugLogDir(scriptDirectory));
 
     public static void ResetStartupDebugLogs(string? scriptDirectory = null)
     {
-        string logDir = GetDebugLogDir(scriptDirectory);
-        Directory.CreateDirectory(logDir);
-
-        foreach (string path in Directory.EnumerateFiles(logDir, "*_debug.log"))
-        {
-            try
-            {
-                File.Delete(path);
-            }
-            catch
-            {
-                // Ignore startup cleanup failures; logging will still fall back to append/create.
-            }
-        }
+        // Multiple MTC instances can share a program directory. Deleting every
+        // *_debug.log here can unlink another running game's active log file.
+        EnsureDebugLogDir(scriptDirectory);
     }
 
     private static string SanitizeLogIdentity(string? gameName)

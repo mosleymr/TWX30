@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -27,13 +28,16 @@ public sealed class MacroPlayDialog : Window
     private static readonly IBrush AccentFill = new SolidColorBrush(Color.FromRgb(9, 58, 69));
 
     private readonly Func<string, string?>? _macroValidator;
+    private readonly Func<MacroPlayDialog, Task<string?>>? _playAsync;
     private readonly IReadOnlyList<AppPreferences.MacroBinding> _existingBindings;
     private readonly TextBox _macroTextBox;
     private readonly TextBox _countTextBox;
     private readonly TextBlock _errorText;
+    private readonly TextBlock _statusText;
     private readonly CheckBox? _assignHotkeyCheckBox;
     private readonly ComboBox? _hotkeyCombo;
     private readonly TextBlock? _hotkeyHint;
+    private readonly Button _playButton;
 
     public int PlayCount { get; private set; } = 1;
     public string MacroText { get; private set; } = string.Empty;
@@ -45,9 +49,11 @@ public sealed class MacroPlayDialog : Window
         Func<string, string?>? macroValidator = null,
         bool allowHotkeyAssignment = false,
         IReadOnlyList<AppPreferences.MacroBinding>? existingBindings = null,
-        string? preferredHotkey = null)
+        string? preferredHotkey = null,
+        Func<MacroPlayDialog, Task<string?>>? playAsync = null)
     {
         _macroValidator = macroValidator;
+        _playAsync = playAsync;
         _existingBindings = existingBindings ?? Array.Empty<AppPreferences.MacroBinding>();
         Title = "Play Macro";
         Width = 640;
@@ -224,9 +230,16 @@ public sealed class MacroPlayDialog : Window
             TextWrapping = TextWrapping.Wrap,
         };
 
-        var btnGo = new Button
+        _statusText = new TextBlock
         {
-            Content = "Go",
+            Foreground = FgMuted,
+            IsVisible = false,
+            TextWrapping = TextWrapping.Wrap,
+        };
+
+        _playButton = new Button
+        {
+            Content = "Play",
             MinWidth = 80,
             Background = BgButton,
             Foreground = FgNormal,
@@ -239,7 +252,7 @@ public sealed class MacroPlayDialog : Window
 
         var btnCancel = new Button
         {
-            Content = "Cancel",
+            Content = _playAsync == null ? "Cancel" : "Close",
             MinWidth = 80,
             Background = BgButtonSoft,
             Foreground = FgNormal,
@@ -248,7 +261,7 @@ public sealed class MacroPlayDialog : Window
             Padding = new Thickness(14, 8),
         };
 
-        btnGo.Click += (_, _) => TryAccept();
+        _playButton.Click += async (_, _) => await TryPlayOrAcceptAsync();
         btnCancel.Click += (_, _) => Close(false);
 
         var buttons = new StackPanel
@@ -256,7 +269,7 @@ public sealed class MacroPlayDialog : Window
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 12, 0, 0),
-            Children = { btnGo, btnCancel },
+            Children = { _playButton, btnCancel },
         };
 
         Content = new StackPanel
@@ -269,6 +282,7 @@ public sealed class MacroPlayDialog : Window
                 editorCard,
                 controlsCard,
                 _errorText,
+                _statusText,
                 buttons,
             },
         };
@@ -285,21 +299,19 @@ public sealed class MacroPlayDialog : Window
             }
             else if (e.Key == Key.Enter || e.Key == Key.Return)
             {
-                TryAccept();
+                _ = TryPlayOrAcceptAsync();
                 e.Handled = true;
             }
         };
     }
 
-    private void TryAccept()
+    private async Task TryPlayOrAcceptAsync()
     {
-        _errorText.Text = string.Empty;
-        _errorText.IsVisible = false;
+        ClearMessages();
 
         if (!int.TryParse((_countTextBox.Text ?? string.Empty).Trim(), out int count) || count < 1 || count > 1000)
         {
-            _errorText.Text = "Enter a whole number from 1 to 1000.";
-            _errorText.IsVisible = true;
+            ShowError("Enter a whole number from 1 to 1000.");
             return;
         }
 
@@ -307,8 +319,7 @@ public sealed class MacroPlayDialog : Window
         string? macroError = _macroValidator?.Invoke(macroText);
         if (!string.IsNullOrWhiteSpace(macroError))
         {
-            _errorText.Text = macroError;
-            _errorText.IsVisible = true;
+            ShowError(macroError);
             return;
         }
 
@@ -318,7 +329,50 @@ public sealed class MacroPlayDialog : Window
         AssignedHotkey = AssignToHotkey
             ? NormalizeHotkey(_hotkeyCombo?.SelectedItem as string)
             : string.Empty;
-        Close(true);
+
+        if (_playAsync == null)
+        {
+            Close(true);
+            return;
+        }
+
+        _playButton.IsEnabled = false;
+        try
+        {
+            string? playError = await _playAsync(this);
+            if (!string.IsNullOrWhiteSpace(playError))
+                ShowError(playError);
+            else
+                ShowStatus(PlayCount == 1 ? "Macro played." : $"Macro played {PlayCount} times.");
+        }
+        finally
+        {
+            _playButton.IsEnabled = true;
+        }
+    }
+
+    private void ClearMessages()
+    {
+        _errorText.Text = string.Empty;
+        _errorText.IsVisible = false;
+        _statusText.Text = string.Empty;
+        _statusText.IsVisible = false;
+    }
+
+    private void ShowError(string message)
+    {
+        _statusText.Text = string.Empty;
+        _statusText.IsVisible = false;
+        _errorText.Text = message;
+        _errorText.IsVisible = true;
+    }
+
+    private void ShowStatus(string message)
+    {
+        _errorText.Text = string.Empty;
+        _errorText.IsVisible = false;
+        _statusText.Text = message;
+        _statusText.IsVisible = true;
     }
 
     private void FocusCountTextBox()

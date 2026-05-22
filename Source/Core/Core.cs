@@ -267,6 +267,8 @@ namespace TWXProxy.Core
     {
         void Broadcast(string message);
         void Broadcast(string message, bool broadcastDeaf);
+        void BroadcastLiteral(string message);
+        void BroadcastLiteral(string message, bool broadcastDeaf);
         void ClientMessage(string message);
         void AddQuickText(string key, string value);
         void ClearQuickText(string? key = null);

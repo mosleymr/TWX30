@@ -195,7 +195,7 @@ internal static class mombotCatalog
         else if (normalized.EndsWith(".ts", StringComparison.OrdinalIgnoreCase))
             normalized = normalized[..^3];
 
-        return normalized;
+        return normalized.ToLowerInvariant();
     }
 
     public static bool TryGetCommandSpec(string canonical, out mombotCommandSpec? command)

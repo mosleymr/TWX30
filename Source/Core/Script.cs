@@ -4505,7 +4505,7 @@ namespace TWXProxy.Core
                 return;
 
             string scriptName = _cmp.ScriptFile;
-            server.Broadcast($"\r\n{AnsiCodes.ANSI_15}Variables for {AnsiCodes.ANSI_7}{scriptName}{AnsiCodes.ANSI_15}\r\n");
+            server.BroadcastLiteral($"\r\n{AnsiCodes.ANSI_15}Variables for {AnsiCodes.ANSI_7}{scriptName}{AnsiCodes.ANSI_15}\r\n");
 
             bool found = false;
             foreach (var param in _cmp.ParamList.OfType<VarParam>())
@@ -4521,7 +4521,7 @@ namespace TWXProxy.Core
             }
 
             if (!found)
-                server.Broadcast($"  {AnsiCodes.ANSI_8}No matching variables.\r\n");
+                server.BroadcastLiteral($"  {AnsiCodes.ANSI_8}No matching variables.\r\n");
         }
 
         public void DumpTriggers()
@@ -4530,7 +4530,7 @@ namespace TWXProxy.Core
             if (server == null)
                 return;
 
-            server.Broadcast($"\r\n{AnsiCodes.ANSI_15}Triggers for {AnsiCodes.ANSI_7}{ScriptName}{AnsiCodes.ANSI_15}\r\n");
+            server.BroadcastLiteral($"\r\n{AnsiCodes.ANSI_15}Triggers for {AnsiCodes.ANSI_7}{ScriptName}{AnsiCodes.ANSI_15}\r\n");
 
             bool found = false;
             foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
@@ -4539,17 +4539,17 @@ namespace TWXProxy.Core
                 if (triggerList.Count > 0)
                 {
                     found = true;
-                    server.Broadcast($"  {AnsiCodes.ANSI_11}{triggerType}{AnsiCodes.ANSI_15}\r\n");
+                    server.BroadcastLiteral($"  {AnsiCodes.ANSI_11}{triggerType}{AnsiCodes.ANSI_15}\r\n");
                     foreach (var trigger in triggerList)
                     {
-                        server.Broadcast(
+                        server.BroadcastLiteral(
                             $"    {AnsiCodes.ANSI_7}{trigger.Name}{AnsiCodes.ANSI_15} = {AnsiCodes.ANSI_7}{trigger.Value}{AnsiCodes.ANSI_15}\r\n");
                     }
                 }
             }
 
             if (!found)
-                server.Broadcast($"  {AnsiCodes.ANSI_8}No active triggers.\r\n");
+                server.BroadcastLiteral($"  {AnsiCodes.ANSI_8}No active triggers.\r\n");
         }
 
         public IReadOnlyList<ScriptVariableInfo> GetVariableSnapshot()

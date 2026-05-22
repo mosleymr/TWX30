@@ -73,6 +73,7 @@ public partial class MainWindow : Window
     private AppPreferences  _appPrefs = new();
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
+    private Core.ExpansionModuleHost?      _moduleHost;     // embedded proxy expansion modules
     private Core.GameFileLock?             _gameFileLock;
     private readonly Core.NativeHaggleEngine _standaloneNativeHaggle = new();
     private readonly GameAgentRuntime        _gameAgent = new();

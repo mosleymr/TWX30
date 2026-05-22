@@ -73,6 +73,10 @@ public class AppPreferences
     public bool EnableRedAlertMode { get; set; } = true;
     public bool ShowHaggleDetails { get; set; }
     public bool ShowBottomBar { get; set; } = true;
+    public bool ShowCommWindow { get; set; }
+    public double ClassicCommWindowHeight { get; set; } = 140;
+    public double DeckCommWindowHeight { get; set; } = 150;
+    public bool ShowNotesPanel { get; set; }
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
@@ -85,6 +89,9 @@ public class AppPreferences
     public bool HasMainWindowPosition { get; private set; }
     public int MainWindowX { get; private set; }
     public int MainWindowY { get; private set; }
+    public bool HasMainWindowSize { get; private set; }
+    public double MainWindowWidth { get; private set; }
+    public double MainWindowHeight { get; private set; }
     public string GameAgentProvider { get; set; } = "lmstudio";
     public string GameAgentLmStudioEndpoint { get; set; } = "http://127.0.0.1:1234/v1/chat/completions";
     public int GameAgentLmStudioPort { get; set; } = 1234;
@@ -164,6 +171,10 @@ public class AppPreferences
                 new XElement("EnableRedAlertMode", EnableRedAlertMode),
                 new XElement("ShowHaggleDetails", ShowHaggleDetails),
                 new XElement("ShowBottomBar", ShowBottomBar),
+                new XElement("ShowCommWindow", ShowCommWindow),
+                new XElement("ClassicCommWindowHeight", ClassicCommWindowHeight.ToString(CultureInfo.InvariantCulture)),
+                new XElement("DeckCommWindowHeight", DeckCommWindowHeight.ToString(CultureInfo.InvariantCulture)),
+                new XElement("ShowNotesPanel", ShowNotesPanel),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
@@ -173,10 +184,20 @@ public class AppPreferences
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
                 new XElement("LastNativeMombotBotName", LastNativeMombotBotName),
-                HasMainWindowPosition
+                HasMainWindowPosition || HasMainWindowSize
                     ? new XElement("MainWindowPosition",
-                        new XAttribute("X", MainWindowX.ToString(CultureInfo.InvariantCulture)),
-                        new XAttribute("Y", MainWindowY.ToString(CultureInfo.InvariantCulture)))
+                        HasMainWindowPosition
+                            ? new XAttribute("X", MainWindowX.ToString(CultureInfo.InvariantCulture))
+                            : null,
+                        HasMainWindowPosition
+                            ? new XAttribute("Y", MainWindowY.ToString(CultureInfo.InvariantCulture))
+                            : null,
+                        HasMainWindowSize
+                            ? new XAttribute("Width", MainWindowWidth.ToString(CultureInfo.InvariantCulture))
+                            : null,
+                        HasMainWindowSize
+                            ? new XAttribute("Height", MainWindowHeight.ToString(CultureInfo.InvariantCulture))
+                            : null)
                     : null,
                 new XElement("GameAgent",
                     new XElement("Provider", NormalizeGameAgentProvider(GameAgentProvider)),
@@ -281,6 +302,14 @@ public class AppPreferences
                 prefs.ShowHaggleDetails = showHaggleDetails;
             if (bool.TryParse((string?)root.Element("ShowBottomBar"), out bool showBottomBar))
                 prefs.ShowBottomBar = showBottomBar;
+            if (bool.TryParse((string?)root.Element("ShowCommWindow"), out bool showCommWindow))
+                prefs.ShowCommWindow = showCommWindow;
+            if (double.TryParse((string?)root.Element("ClassicCommWindowHeight"), NumberStyles.Float, CultureInfo.InvariantCulture, out double classicCommWindowHeight))
+                prefs.ClassicCommWindowHeight = classicCommWindowHeight;
+            if (double.TryParse((string?)root.Element("DeckCommWindowHeight"), NumberStyles.Float, CultureInfo.InvariantCulture, out double deckCommWindowHeight))
+                prefs.DeckCommWindowHeight = deckCommWindowHeight;
+            if (bool.TryParse((string?)root.Element("ShowNotesPanel"), out bool showNotesPanel))
+                prefs.ShowNotesPanel = showNotesPanel;
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
@@ -295,11 +324,19 @@ public class AppPreferences
                 prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
             prefs.LastNativeMombotBotName = ((string?)root.Element("LastNativeMombotBotName") ?? string.Empty).Trim();
             XElement? mainWindowPosition = root.Element("MainWindowPosition");
-            if (mainWindowPosition != null &&
-                int.TryParse((string?)mainWindowPosition.Attribute("X"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowX) &&
-                int.TryParse((string?)mainWindowPosition.Attribute("Y"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowY))
+            if (mainWindowPosition != null)
             {
-                prefs.SetMainWindowPosition(mainWindowX, mainWindowY);
+                if (int.TryParse((string?)mainWindowPosition.Attribute("X"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowX) &&
+                    int.TryParse((string?)mainWindowPosition.Attribute("Y"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowY))
+                {
+                    prefs.SetMainWindowPosition(mainWindowX, mainWindowY);
+                }
+
+                if (double.TryParse((string?)mainWindowPosition.Attribute("Width"), NumberStyles.Float, CultureInfo.InvariantCulture, out double mainWindowWidth) &&
+                    double.TryParse((string?)mainWindowPosition.Attribute("Height"), NumberStyles.Float, CultureInfo.InvariantCulture, out double mainWindowHeight))
+                {
+                    prefs.SetMainWindowSize(mainWindowWidth, mainWindowHeight);
+                }
             }
 
             XElement? gameAgent = root.Element("GameAgent");
@@ -419,6 +456,27 @@ public class AppPreferences
         HasMainWindowPosition = true;
         MainWindowX = x;
         MainWindowY = y;
+        return true;
+    }
+
+    public bool SetMainWindowSize(double width, double height)
+    {
+        if (width < 400 || height < 300 || double.IsNaN(width) || double.IsNaN(height) ||
+            double.IsInfinity(width) || double.IsInfinity(height))
+        {
+            return false;
+        }
+
+        if (HasMainWindowSize &&
+            Math.Abs(MainWindowWidth - width) < 0.5 &&
+            Math.Abs(MainWindowHeight - height) < 0.5)
+        {
+            return false;
+        }
+
+        HasMainWindowSize = true;
+        MainWindowWidth = width;
+        MainWindowHeight = height;
         return true;
     }
 

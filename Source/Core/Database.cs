@@ -693,16 +693,31 @@ namespace TWXProxy.Core
 
             if (isStarDock)
             {
+                if (GlobalModules.DatabaseCorrectionLoggingEnabled &&
+                    _header.StarDock != 0 && _header.StarDock != ushort.MaxValue && _header.StarDock != sector.Number)
+                    GlobalModules.DatabaseCorrectionLog(
+                        "Database.SaveSector",
+                        $"Stardock corrected from sector {_header.StarDock} to {sector.Number} while saving port '{sector.SectorPort?.Name ?? string.Empty}'.");
                 _header.StarDock = (ushort)sector.Number;
             }
 
             if (isAlpha)
             {
+                if (GlobalModules.DatabaseCorrectionLoggingEnabled &&
+                    _header.AlphaCentauri != 0 && _header.AlphaCentauri != ushort.MaxValue && _header.AlphaCentauri != sector.Number)
+                    GlobalModules.DatabaseCorrectionLog(
+                        "Database.SaveSector",
+                        $"Alpha Centauri corrected from sector {_header.AlphaCentauri} to {sector.Number} while saving port '{sector.SectorPort?.Name ?? string.Empty}'.");
                 _header.AlphaCentauri = (ushort)sector.Number;
             }
 
             if (isRylos)
             {
+                if (GlobalModules.DatabaseCorrectionLoggingEnabled &&
+                    _header.Rylos != 0 && _header.Rylos != ushort.MaxValue && _header.Rylos != sector.Number)
+                    GlobalModules.DatabaseCorrectionLog(
+                        "Database.SaveSector",
+                        $"Rylos corrected from sector {_header.Rylos} to {sector.Number} while saving port '{sector.SectorPort?.Name ?? string.Empty}'.");
                 _header.Rylos = (ushort)sector.Number;
             }
 
@@ -753,6 +768,12 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog(
                     $"[ModDatabase] Repaired landmark header sectors SD {_header.StarDock}->{stardock}, " +
                     $"Alpha {_header.AlphaCentauri}->{alpha}, Rylos {_header.Rylos}->{rylos}\n");
+                if (GlobalModules.DatabaseCorrectionLoggingEnabled)
+                {
+                    GlobalModules.DatabaseCorrectionLog(
+                        "Database.RepairLandmarks",
+                        $"Landmark headers repaired: Stardock {_header.StarDock}->{stardock}, Alpha {_header.AlphaCentauri}->{alpha}, Rylos {_header.Rylos}->{rylos}.");
+                }
                 _header.StarDock = stardock;
                 _header.AlphaCentauri = alpha;
                 _header.Rylos = rylos;

@@ -49,7 +49,7 @@ public class AdvancedProxySettingsDialog : Window
         Background = BgPanel;
 
         var portHaggleOptions = (availablePortModes ?? Core.NativeHaggleModes.BuiltInModes
-                .Where(info => info.SupportsPortTrades)
+                .Where(info => info.SupportsPortTrades && !ShouldHideFromNormalMenu(info))
                 .ToList())
             .Select(info => new HaggleModeOption(info.Id, info.DisplayName, info.IsBuiltIn))
             .ToList();
@@ -132,6 +132,9 @@ public class AdvancedProxySettingsDialog : Window
             Children = { portHaggleRow, planetHaggleRow, buttons },
         };
     }
+
+    private static bool ShouldHideFromNormalMenu(Core.NativeHaggleModeInfo info)
+        => string.Equals(info.Id, Core.NativeHaggleModes.Baseline, StringComparison.OrdinalIgnoreCase);
 
     private static StackPanel BuildRow(string label, Control input)
     {

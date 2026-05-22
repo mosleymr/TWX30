@@ -1,2 +1,8 @@
-MOWFUEL - Mows to unfigged upgraded fuel ports in grid.           
-          Does not do so safely.
+                     
+   
+                <<<< mowfuel >>>>
+   
+     Mows to unfigged upgraded fuel ports in grid.
+     Does not do so safely.
+            
+       Usage: mowfuel

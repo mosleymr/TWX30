@@ -1514,8 +1514,8 @@ public partial class MainWindow
             ["$newGameDay1"] = newGame,
             ["$BOT~NEWGAMEOLDER"] = newGame == "1" ? "0" : "1",
             ["$newGameOlder"] = newGame == "1" ? "0" : "1",
-            ["$BOT~ISSHIPDESTROYED"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed ? "1" : "0",
-            ["$bot~isShipDestroyed"] = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed ? "1" : "0",
+            ["$BOT~ISSHIPDESTROYED"] = HasNativeMombotShipDestroyedFlag() ? "1" : "0",
+            ["$bot~isShipDestroyed"] = HasNativeMombotShipDestroyedFlag() ? "1" : "0",
             ["$command_to_issue"] = relogSettings.BotCommand,
             ["$BOT~STARTMACRO"] = postLoginMacro,
             ["$bot~startMacro"] = postLoginMacro,
@@ -1852,7 +1852,7 @@ public partial class MainWindow
             case MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed:
                 PersistMombotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
                 PersistMombotVars("0", "$BOT~NEWGAMEOLDER", "$newGameOlder");
-                PersistMombotVars("1", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
+                PersistMombotVars(HasNativeMombotShipDestroyedFlag() ? "1" : "0", "$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
                 break;
             default:
                 PersistMombotVars("0", "$BOT~NEWGAMEDAY1", "$newGameDay1");
@@ -2443,12 +2443,7 @@ public partial class MainWindow
 
     private static IReadOnlyList<string> BuildDefaultMombotAliasConfigFileLines()
     {
-        return new[]
-        {
-            "# mombot command aliases",
-            "# format: alias[,alias...]=real command",
-            string.Empty,
-        };
+        return MTC.mombot.mombotService.BuildDefaultAliasConfigFileLines();
     }
 
     private static void EnsureMombotGameFolderMigrated(string legacyFolderPath, string folderPath)

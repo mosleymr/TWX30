@@ -145,8 +145,10 @@ From `Source/`:
 The top-level `bin/` directory is local/generated output and is not committed to GitHub. SourceForge is the
 only supported release route for MTC, TWXP, TWXC, and TWXD binary packages.
 
-The macOS package presents installer choices for MTC, TWXP, compiler tools, and bundled scripts. Linux
+The macOS package presents installer choices for MTC, TWXP, compiler tools, and bundled Mombot scripts. Linux
 uses split `.deb`/`.rpm` packages for the same choices because APT/RPM installs are not interactive.
+Installer script payloads are sourced from the Mombot `Release/mombot` tree and install only `scripts/mombot`.
+Set `MOMBOT_RELEASE_SOURCE` if the release tree is in a different location.
 
 `./build-twxc.sh` is the default TWXC build/install path. It publishes standalone binaries for all
 release targets into the top-level `bin/<rid>/` directory, and on macOS it also installs the current-host
@@ -190,6 +192,7 @@ Current work in this branch has been focused on:
 
 - The shared Core library is the compatibility-critical layer.
 - `TWXC`, `TWXD`, `MTC`, and the embedded proxy all depend on the same runtime behavior.
+- Native port and planet haggle mode behavior is summarized in [`../docs/haggle-modes.md`](../docs/haggle-modes.md).
 - VM optimization work is being tracked separately in [`../docs/vm-optimization-design.md`](../docs/vm-optimization-design.md).
 - Script-runtime compatibility drifts and accepted behavior differences are tracked in
   [`SCRIPT_COMMAND_COMPAT_NOTES.md`](SCRIPT_COMMAND_COMPAT_NOTES.md).

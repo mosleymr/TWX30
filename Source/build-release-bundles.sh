@@ -32,10 +32,13 @@ Outputs:
   - TWX30/bin/<rid>/twxp
   - TWX30/bin/<rid>/twxc
   - TWX30/bin/<rid>/twxd
-  - bundled scripts in packages that support script payloads
+  - bundled Mombot scripts in packages that support script payloads
   - TWX30/bin/twx30-osx-<arch>.pkg
   - TWX30/bin/twx30-linux-x64.deb
   - TWX30/bin/twx30-linux-x64.rpm
+
+Set MOMBOT_RELEASE_SOURCE to override the Mombot Release/mombot tree used for
+the installer script payload.
 EOF
   exit 0
 elif [[ $# -gt 0 ]]; then

@@ -129,7 +129,7 @@ public partial class MainWindow
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
-        RestoreMainWindowPositionIfPossible();
+        RestoreMainWindowBoundsIfPossible();
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
         _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
@@ -150,6 +150,7 @@ public partial class MainWindow
         }
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
+        RestoreInWindowLayoutPreferences();
 
         _statusRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _statusRefreshTimer.Tick += (_, _) =>
@@ -167,6 +168,7 @@ public partial class MainWindow
 
         Content = BuildLayout();
         PositionChanged += (_, _) => OnMainWindowPositionChanged();
+        SizeChanged += (_, _) => OnMainWindowSizeChanged();
 
         ApplyDebugLoggingPreferences();
         ApplyRedAlertPreference();
@@ -207,6 +209,9 @@ public partial class MainWindow
         {
             SaveCurrentNotesNow();
             _notesSaveTimer?.Stop();
+            CaptureMainWindowSize();
+            CaptureCommWindowHeights();
+            SaveInWindowLayoutPreferences();
             _appPrefs.Save();
             _nativeAppMenuReady = false;
             _nativeAppMenuAttached = false;
@@ -228,6 +233,50 @@ public partial class MainWindow
         };
     }
 
+    private void RestoreInWindowLayoutPreferences()
+    {
+        _commWindowVisible = _appPrefs.ShowCommWindow;
+        _classicCommWindowHeight = NormalizeStoredPanelHeight(
+            _appPrefs.ClassicCommWindowHeight,
+            ClassicCommWindowDefaultHeight);
+        _deckCommWindowHeight = NormalizeStoredPanelHeight(
+            _appPrefs.DeckCommWindowHeight,
+            DeckCommWindowDefaultHeight);
+        _notesPanelVisible = _appPrefs.ShowNotesPanel;
+    }
+
+    private void SaveInWindowLayoutPreferences()
+    {
+        _appPrefs.ShowCommWindow = _commWindowVisible;
+        _appPrefs.ClassicCommWindowHeight = NormalizeStoredPanelHeight(
+            _classicCommWindowHeight,
+            ClassicCommWindowDefaultHeight);
+        _appPrefs.DeckCommWindowHeight = NormalizeStoredPanelHeight(
+            _deckCommWindowHeight,
+            DeckCommWindowDefaultHeight);
+        _appPrefs.ShowNotesPanel = _notesPanelVisible;
+    }
+
+    private static double NormalizeStoredPanelHeight(double value, double fallback)
+        => value >= CommWindowMinHeight && value <= 1000 && !double.IsNaN(value) && !double.IsInfinity(value)
+            ? value
+            : fallback;
+
+    private void RestoreMainWindowBoundsIfPossible()
+    {
+        RestoreMainWindowSizeIfPossible();
+        RestoreMainWindowPositionIfPossible();
+    }
+
+    private void RestoreMainWindowSizeIfPossible()
+    {
+        if (!_appPrefs.HasMainWindowSize)
+            return;
+
+        Width = Math.Max(MinWidth, _appPrefs.MainWindowWidth);
+        Height = Math.Max(MinHeight, _appPrefs.MainWindowHeight);
+    }
+
     private void RestoreMainWindowPositionIfPossible()
     {
         if (!_appPrefs.HasMainWindowPosition)
@@ -238,6 +287,24 @@ public partial class MainWindow
             return;
 
         Position = savedPosition;
+    }
+
+    private void OnMainWindowSizeChanged()
+    {
+        if (_suppressMainWindowPositionPersistence || WindowState != WindowState.Normal)
+            return;
+
+        CaptureMainWindowSize();
+    }
+
+    private void CaptureMainWindowSize()
+    {
+        if (WindowState != WindowState.Normal)
+            return;
+
+        double width = Bounds.Width > 0 ? Bounds.Width : Width;
+        double height = Bounds.Height > 0 ? Bounds.Height : Height;
+        _appPrefs.SetMainWindowSize(width, height);
     }
 
     private void OnMainWindowPositionChanged()

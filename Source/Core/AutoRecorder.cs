@@ -86,6 +86,7 @@ namespace TWXProxy.Core
         private bool _portReportHasFuel;  // Fuel Ore line was received
         private bool _portReportHasOrg;   // Organics line was received
         private int  _pendingPortReportSectorOverride;
+        private PortStaticSnapshot? _portReportOriginalSnapshot;
 
         // CIM (Computer Information Menu) download state.
         // Pascal: TDisplay dCIM → dPortCIM or dWarpCIM.
@@ -974,6 +975,7 @@ namespace TWXProxy.Core
                     {
                         ushort previousDock = db.DBHeader.StarDock;
                         bool changed = previousDock != (ushort)dockSector;
+                        LogLandmarkCorrection("Stardock", previousDock, dockSector, "AutoRecorder.StarDockPrompt");
                         db.DBHeader.StarDock = (ushort)dockSector;
 
                         var dock = GetOrCreate(db, dockSector);
@@ -1020,6 +1022,9 @@ namespace TWXProxy.Core
                     var sec = GetOrCreate(db, _portReportSector);
                     if (sec != null)
                     {
+                        _portReportOriginalSnapshot = GlobalModules.DatabaseCorrectionLoggingEnabled
+                            ? CapturePortStaticSnapshot(sec.SectorPort)
+                            : null;
                         sec.SectorPort ??= new Port();
                         string reportName = m.Groups[1].Value.Trim();
                         if (!string.IsNullOrEmpty(reportName))
@@ -3080,12 +3085,18 @@ namespace TWXProxy.Core
             var sec = GetOrCreate(db, fromSector);
             if (sec == null) return;
 
+            var observedWarps = sectors
+                .Take(6)
+                .Where(sn => sn > 0)
+                .Select(sn => (ushort)sn)
+                .ToList();
+            LogWarpStaticCorrection(fromSector, sec, observedWarps, "AutoRecorder.DensityScan");
+
             for (int i = 0; i < 6; i++) sec.Warp[i] = 0;
             int idx = 0;
-            foreach (int sn in sectors)
+            foreach (ushort sn in observedWarps)
             {
-                if (idx >= 6) break;
-                sec.Warp[idx++] = (ushort)sn;
+                sec.Warp[idx++] = sn;
             }
             sec.WarpCount = (byte)Math.Min(idx, 6);
 
@@ -3098,21 +3109,27 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
 
-            // Clear existing warps
-            for (int i = 0; i < 6; i++) sector.Warp[i] = 0;
-
             // Parse "4497 - 5489 - 6477 - 15024 - 19702"
             // Also handles parenthesised unexplored sectors: "(3583) - 4497 - (6198)"
-            int idx = 0;
+            var observedWarps = new List<ushort>();
             foreach (var token in warpsPart.Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries))
             {
-                if (idx >= 6) break;
+                if (observedWarps.Count >= 6) break;
                 // Strip surrounding parentheses from unexplored-sector notation
                 var clean = token.Trim().Trim('(', ')');
                 if (ushort.TryParse(clean, out ushort w))
-                    sector.Warp[idx++] = w;
+                    observedWarps.Add(w);
             }
-            sector.WarpCount = (byte)Math.Min(idx, 6);
+
+            LogWarpStaticCorrection(sectorNum, sector, observedWarps, "AutoRecorder.SectorDisplay");
+
+            // Clear existing warps
+            for (int i = 0; i < 6; i++) sector.Warp[i] = 0;
+
+            for (int i = 0; i < observedWarps.Count; i++)
+                sector.Warp[i] = observedWarps[i];
+
+            sector.WarpCount = (byte)Math.Min(observedWarps.Count, 6);
 
             // Pascal SectorCompleted() sets etHolo (the maximum explored level) whenever
             // a full sector display finishes — this covers both direct visits and holo scans.
@@ -3140,26 +3157,47 @@ namespace TWXProxy.Core
             ushort previousAlpha = db.DBHeader.AlphaCentauri;
             ushort previousRylos = db.DBHeader.Rylos;
 
+            PortStaticSnapshot? beforePort = GlobalModules.DatabaseCorrectionLoggingEnabled
+                ? CapturePortStaticSnapshot(sector.SectorPort)
+                : null;
             sector.SectorPort ??= new Port();
-            sector.SectorPort.Name = m.Groups[1].Value.Trim();
+            string observedName = m.Groups[1].Value.Trim();
+            sector.SectorPort.Name = observedName;
             sector.SectorPort.Dead = false;
             sector.SectorPort.BuildTime = 0;
 
+            byte observedClass = sector.SectorPort.ClassIndex;
             if (byte.TryParse(m.Groups[2].Value, out byte cls))
+            {
+                observedClass = cls;
                 sector.SectorPort.ClassIndex = cls;
+            }
 
             // Parse S/B notation from optional group 3, e.g. "(SBB)"
             // B = port Buys this product (player sells to port)
             // S = port Sells this product (player buys from port)
+            string? observedType = null;
             if (m.Groups[3].Success)
             {
                 string notation = m.Groups[3].Value.ToUpperInvariant();
                 if (notation.Length == 3)
                 {
+                    observedType = notation;
                     sector.SectorPort.BuyProduct[ProductType.FuelOre]   = notation[0] == 'B';
                     sector.SectorPort.BuyProduct[ProductType.Organics]  = notation[1] == 'B';
                     sector.SectorPort.BuyProduct[ProductType.Equipment] = notation[2] == 'B';
                 }
+            }
+
+            if (beforePort.HasValue)
+            {
+                LogPortStaticCorrection(
+                    sectorNum,
+                    beforePort.Value,
+                    observedName,
+                    observedClass,
+                    observedType,
+                    "AutoRecorder.SectorDisplay");
             }
 
             // A Ports line means we have a real sector scan (D command or holo scan).
@@ -3171,20 +3209,20 @@ namespace TWXProxy.Core
                 if (sector.Update == default) sector.Update = DateTime.Now;
             }
 
+            bool navShowsStarDock =
+                sector.SectorPort.ClassIndex == 9 &&
+                (!navPointPreview || rawLine.IndexOf("(StarDock)", StringComparison.OrdinalIgnoreCase) >= 0);
+            bool navShowsAlpha =
+                sector.SectorPort.ClassIndex == 0 &&
+                string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase);
+            bool navShowsRylos =
+                sector.SectorPort.ClassIndex == 0 &&
+                string.Equals(sector.SectorPort.Name, "Rylos", StringComparison.OrdinalIgnoreCase);
+
             db.SaveSector(sector);
 
             if (navPointPreview)
             {
-                bool navShowsStarDock =
-                    sector.SectorPort.ClassIndex == 9 &&
-                    rawLine.IndexOf("(StarDock)", StringComparison.OrdinalIgnoreCase) >= 0;
-                bool navShowsAlpha =
-                    sector.SectorPort.ClassIndex == 0 &&
-                    string.Equals(sector.SectorPort.Name, "Alpha Centauri", StringComparison.OrdinalIgnoreCase);
-                bool navShowsRylos =
-                    sector.SectorPort.ClassIndex == 0 &&
-                    string.Equals(sector.SectorPort.Name, "Rylos", StringComparison.OrdinalIgnoreCase);
-
                 if (!navShowsStarDock)
                     db.DBHeader.StarDock = previousDock;
                 if (!navShowsAlpha)
@@ -3212,7 +3250,7 @@ namespace TWXProxy.Core
             {
                 LandmarkSectorsChanged?.Invoke();
             }
-            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port={sector.SectorPort.Name} class={cls}\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port={sector.SectorPort.Name} class={observedClass}\n");
         }
 
         /// <summary>
@@ -3268,13 +3306,27 @@ namespace TWXProxy.Core
             // then timestamp and close the report block.
             if (pt == ProductType.Equipment && _portReportHasFuel && _portReportHasOrg)
             {
-                if (sector.SectorPort.ClassIndex == 0)
-                    sector.SectorPort.ClassIndex = DeriveClassIndex(
-                        sector.SectorPort.BuyProduct[ProductType.FuelOre],
-                        sector.SectorPort.BuyProduct[ProductType.Organics],
-                        sector.SectorPort.BuyProduct[ProductType.Equipment]);
+                byte derivedClass = DeriveClassIndex(
+                    sector.SectorPort.BuyProduct[ProductType.FuelOre],
+                    sector.SectorPort.BuyProduct[ProductType.Organics],
+                    sector.SectorPort.BuyProduct[ProductType.Equipment]);
+                string derivedType = FormatPortType(sector.SectorPort);
+
+                if (_portReportOriginalSnapshot.HasValue)
+                {
+                    LogPortStaticCorrection(
+                        _portReportSector,
+                        _portReportOriginalSnapshot.Value,
+                        sector.SectorPort.Name,
+                        derivedClass,
+                        derivedType,
+                        "AutoRecorder.PortReport");
+                }
+
+                sector.SectorPort.ClassIndex = derivedClass;
                 sector.SectorPort.Update = DateTime.Now;
                 _inPortReport = false;
+                _portReportOriginalSnapshot = null;
                 GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port report complete: sector={_portReportSector} class={sector.SectorPort.ClassIndex}\n");
             }
 
@@ -3521,6 +3573,155 @@ namespace TWXProxy.Core
             return sector;
         }
 
+        private readonly struct PortStaticSnapshot
+        {
+            public PortStaticSnapshot(string name, byte classIndex, string portType, bool hasKnownType)
+            {
+                Name = name;
+                ClassIndex = classIndex;
+                PortType = portType;
+                HasKnownType = hasKnownType;
+            }
+
+            public string Name { get; }
+            public byte ClassIndex { get; }
+            public string PortType { get; }
+            public bool HasKnownType { get; }
+            public bool HasKnownClass => ClassIndex >= 1 && ClassIndex <= 8;
+            public bool HasKnownName => IsMeaningfulPortName(Name);
+            public bool HasIdentity => HasKnownName || HasKnownClass || HasKnownType;
+        }
+
+        private static PortStaticSnapshot CapturePortStaticSnapshot(Port? port)
+        {
+            if (port == null)
+                return new PortStaticSnapshot(string.Empty, 0, string.Empty, false);
+
+            bool hasKnownType = port.ClassIndex >= 1 && port.ClassIndex <= 8;
+            return new PortStaticSnapshot(
+                port.Name ?? string.Empty,
+                port.ClassIndex,
+                hasKnownType ? FormatPortType(port) : string.Empty,
+                hasKnownType);
+        }
+
+        private static bool IsMeaningfulPortName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return false;
+
+            string trimmed = name.Trim();
+            return !trimmed.Equals("???", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string FormatPortType(Port port)
+            => FormatPortType(
+                port.BuyProduct.TryGetValue(ProductType.FuelOre, out bool fuel) && fuel,
+                port.BuyProduct.TryGetValue(ProductType.Organics, out bool organics) && organics,
+                port.BuyProduct.TryGetValue(ProductType.Equipment, out bool equipment) && equipment);
+
+        private static string FormatPortType(bool buyFuel, bool buyOrganics, bool buyEquipment)
+            => string.Create(3, (buyFuel, buyOrganics, buyEquipment), static (chars, state) =>
+            {
+                chars[0] = state.buyFuel ? 'B' : 'S';
+                chars[1] = state.buyOrganics ? 'B' : 'S';
+                chars[2] = state.buyEquipment ? 'B' : 'S';
+            });
+
+        private static string CleanLogValue(string value)
+            => value.Replace("\r", " ").Replace("\n", " ").Trim();
+
+        private static void LogPortStaticCorrection(
+            int sectorNum,
+            PortStaticSnapshot before,
+            string observedName,
+            byte observedClass,
+            string? observedType,
+            string source)
+        {
+            if (!GlobalModules.DatabaseCorrectionLoggingEnabled)
+                return;
+
+            if (!before.HasIdentity)
+                return;
+
+            var changes = new List<string>();
+            if (before.HasKnownName &&
+                IsMeaningfulPortName(observedName) &&
+                !string.Equals(before.Name, observedName, StringComparison.OrdinalIgnoreCase))
+            {
+                changes.Add($"name '{CleanLogValue(before.Name)}' -> '{CleanLogValue(observedName)}'");
+            }
+
+            if (before.HasKnownClass &&
+                observedClass >= 1 && observedClass <= 8 &&
+                before.ClassIndex != observedClass)
+            {
+                changes.Add($"class {before.ClassIndex} -> {observedClass}");
+            }
+
+            if (before.HasKnownType &&
+                !string.IsNullOrWhiteSpace(observedType) &&
+                observedType.Length == 3 &&
+                !string.Equals(before.PortType, observedType, StringComparison.OrdinalIgnoreCase))
+            {
+                changes.Add($"type {before.PortType} -> {observedType.ToUpperInvariant()}");
+            }
+
+            if (changes.Count == 0)
+                return;
+
+            GlobalModules.DatabaseCorrectionLog(
+                source,
+                $"Sector {sectorNum} port static correction: {string.Join("; ", changes)}.");
+        }
+
+        private static List<ushort> CaptureWarpSnapshot(SectorData sector)
+            => sector.Warp
+                .Where(warp => warp > 0)
+                .ToList();
+
+        private static string FormatWarpList(IEnumerable<ushort> warps)
+            => string.Join(" - ", warps);
+
+        private static bool WarpListsMatch(IReadOnlyList<ushort> left, IReadOnlyList<ushort> right)
+            => left.Count == right.Count &&
+               left.OrderBy(warp => warp).SequenceEqual(right.OrderBy(warp => warp));
+
+        private static void LogWarpStaticCorrection(
+            int sectorNum,
+            SectorData sector,
+            IReadOnlyList<ushort> observedWarps,
+            string source)
+        {
+            if (!GlobalModules.DatabaseCorrectionLoggingEnabled)
+                return;
+
+            if (sector.Explored != ExploreType.Yes)
+                return;
+
+            var before = CaptureWarpSnapshot(sector);
+            if (before.Count == 0 || WarpListsMatch(before, observedWarps))
+                return;
+
+            GlobalModules.DatabaseCorrectionLog(
+                source,
+                $"Sector {sectorNum} warps corrected from [{FormatWarpList(before)}] to [{FormatWarpList(observedWarps)}].");
+        }
+
+        private static void LogLandmarkCorrection(string landmarkName, ushort previousSector, int observedSector, string source)
+        {
+            if (!GlobalModules.DatabaseCorrectionLoggingEnabled)
+                return;
+
+            if (previousSector == 0 || previousSector == ushort.MaxValue || previousSector == observedSector)
+                return;
+
+            GlobalModules.DatabaseCorrectionLog(
+                source,
+                $"{landmarkName} corrected from sector {previousSector} to {observedSector}.");
+        }
+
         // ── CIM helpers ────────────────────────────────────────────────────────
 
         /// <summary>
@@ -3579,6 +3780,9 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sect);
             if (sector == null) return;
 
+            PortStaticSnapshot? beforePort = GlobalModules.DatabaseCorrectionLoggingEnabled
+                ? CapturePortStaticSnapshot(sector.SectorPort)
+                : null;
             sector.SectorPort ??= new Port();
 
             sector.SectorPort.ProductAmount[ProductType.FuelOre]   = (ushort)Math.Min(ore,   ushort.MaxValue);
@@ -3589,27 +3793,39 @@ namespace TWXProxy.Core
             sector.SectorPort.ProductPercent[ProductType.Equipment] = (byte)pEquip;
             sector.SectorPort.Update = DateTime.Now;
 
-            // Buy/sell detection: only update when the port hasn't been named yet.
-            // Pascal: if (S.SPort.Name = '') then ... detect from line positions.
-            // We detect via token scanning: '-' token before each product amount.
-            if (string.IsNullOrEmpty(sector.SectorPort.Name))
+            // Buy/sell detection: detect via token scanning. A CIM report is a
+            // fresh observation, so let it correct stale port class/type while
+            // preserving any known port name. TW can emit buys as either
+            // "- 2270" or "-65530", so consume both marker forms.
+            var origTokens = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            bool buyFuel = false, buyOrg = false, buyEquip = false;
+
+            int ti = 1; // skip sector number token
+            buyFuel = ConsumePortCimBuyMarker(origTokens, ref ti);
+            ti += 2; // skip amount + percent% tokens
+            buyOrg = ConsumePortCimBuyMarker(origTokens, ref ti);
+            ti += 2; // skip amount + percent%
+            buyEquip = ConsumePortCimBuyMarker(origTokens, ref ti);
+
+            byte observedClass = DeriveClassIndex(buyFuel, buyOrg, buyEquip);
+            string observedType = FormatPortType(buyFuel, buyOrg, buyEquip);
+            if (beforePort.HasValue)
             {
-                var origTokens = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                bool buyFuel = false, buyOrg = false, buyEquip = false;
-
-                int ti = 1; // skip sector number token
-                if (ti < origTokens.Length && origTokens[ti] == "-") { buyFuel = true; ti++; }
-                ti += 2; // skip amount + percent% tokens
-                if (ti < origTokens.Length && origTokens[ti] == "-") { buyOrg = true; ti++; }
-                ti += 2; // skip amount + percent%
-                if (ti < origTokens.Length && origTokens[ti] == "-") { buyEquip = true; }
-
-                sector.SectorPort.BuyProduct[ProductType.FuelOre]   = buyFuel;
-                sector.SectorPort.BuyProduct[ProductType.Organics]  = buyOrg;
-                sector.SectorPort.BuyProduct[ProductType.Equipment] = buyEquip;
-                sector.SectorPort.ClassIndex = DeriveClassIndex(buyFuel, buyOrg, buyEquip);
-                sector.SectorPort.Name = "???";
+                LogPortStaticCorrection(
+                    sect,
+                    beforePort.Value,
+                    sector.SectorPort.Name,
+                    observedClass,
+                    observedType,
+                    "AutoRecorder.PortCIM");
             }
+
+            sector.SectorPort.BuyProduct[ProductType.FuelOre]   = buyFuel;
+            sector.SectorPort.BuyProduct[ProductType.Organics]  = buyOrg;
+            sector.SectorPort.BuyProduct[ProductType.Equipment] = buyEquip;
+            sector.SectorPort.ClassIndex = observedClass;
+            if (string.IsNullOrEmpty(sector.SectorPort.Name))
+                sector.SectorPort.Name = "???";
 
             // Pascal: if (S.Explored = etNo) → mark as calc-explored
             if (sector.Explored == ExploreType.No)
@@ -3621,6 +3837,17 @@ namespace TWXProxy.Core
 
             db.SaveSector(sector);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Port CIM: sector={sect} ore={ore}/{pOre}% org={org}/{pOrg}% equip={equip}/{pEquip}%\n");
+        }
+
+        private static bool ConsumePortCimBuyMarker(string[] tokens, ref int tokenIndex)
+        {
+            if (tokenIndex >= tokens.Length || !tokens[tokenIndex].StartsWith("-", StringComparison.Ordinal))
+                return false;
+
+            if (tokens[tokenIndex] == "-")
+                tokenIndex++;
+
+            return true;
         }
 
         private void BeginPortCimBatch()
@@ -3712,6 +3939,7 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sect);
             if (sector == null) { _inWarpCIM = false; return; }
 
+            var observedWarps = new List<ushort>();
             for (int i = 0; i < 6; i++)
             {
                 if (i + 1 < tokens.Length && int.TryParse(tokens[i + 1], out int w))
@@ -3722,13 +3950,16 @@ namespace TWXProxy.Core
                         _inWarpCIM = false;
                         return;
                     }
-                    sector.Warp[i] = (ushort)w;
-                }
-                else
-                {
-                    sector.Warp[i] = 0;
+                    if (w > 0)
+                        observedWarps.Add((ushort)w);
                 }
             }
+
+            LogWarpStaticCorrection(sect, sector, observedWarps, "AutoRecorder.WarpCIM");
+
+            for (int i = 0; i < 6; i++)
+                sector.Warp[i] = i < observedWarps.Count ? observedWarps[i] : (ushort)0;
+            sector.WarpCount = (byte)Math.Min(observedWarps.Count, 6);
 
             if (sector.Explored == ExploreType.No)
             {

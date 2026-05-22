@@ -25,6 +25,10 @@ At runtime, TWX30 uses the stored `ProgramDir` value on Windows to derive:
 - the default scripts directory: `ProgramDir\scripts`
 - `twxp.cfg`: `ProgramDir\twxp.cfg`
 
+The installer ships only the Mombot script tree under `ProgramDir\scripts\mombot`.
+That payload is staged from the same `mombot5.0\Release\mombot` tree used to
+build `mombot.zip`.
+
 ## Prerequisites
 
 Run the Windows installer build scripts on Windows with:
@@ -45,6 +49,10 @@ Optional arguments:
 
 - `-Configuration Release`
 - `-ProgramDirDefault C:\twxproxy`
+- `-MombotReleaseSource C:\tw2002\mombot\mombot5.0\Release\mombot`
+
+`MOMBOT_RELEASE_SOURCE` can also be set in the environment when the release
+tree lives somewhere else.
 
 ## Build Both Installers
 

@@ -118,6 +118,7 @@ internal class EmbeddedMtcDebugConfig
     public bool ScriptTraceDebugLogging { get; set; }
     public bool AutoRecorderDebugLogging { get; set; }
     public bool TriggerDebugLogging { get; set; }
+    public bool DebugDatabaseChanges { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
 }

@@ -1,1 +1,5 @@
-ROB - Attempts to Rob credits from port in Sector
+                     
+   
+                  <<<< rob >>>>
+   
+     Attempts to rob a port

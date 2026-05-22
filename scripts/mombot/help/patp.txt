@@ -14,5 +14,5 @@
          [buyhalf]        empties ports halfway
          [docim]          does cim check before patp
          [destroyports]   destroys every port it drains if you 
-         [bubble]         only visits bubble sectors  
                           have enough fighters
+         [bubble]         only visits bubble sectors  

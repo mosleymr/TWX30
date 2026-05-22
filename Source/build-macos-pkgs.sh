@@ -7,7 +7,7 @@ export COPY_EXTENDED_ATTRIBUTES_DISABLE=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BIN_ROOT="${REPO_ROOT}/bin"
-SCRIPTS_SOURCE="${REPO_ROOT}/scripts"
+MOMBOT_RELEASE_SOURCE="${MOMBOT_RELEASE_SOURCE:-/Users/mosleym/tw2002/mombot/mombot5.0/Release/mombot}"
 MTC_ICON_SOURCE="${SCRIPT_DIR}/MTC/mtc2.png"
 TWXP_ICON_SOURCE="${SCRIPT_DIR}/TWXP/TWXProxy_Icon.ico"
 
@@ -23,15 +23,18 @@ Each package is a macOS product installer with selectable choices:
   - Mayhem Tradewars Client
   - Tradewars Proxy
   - Compiler Package (twxc and twxd)
-  - Bundled TWX scripts
+  - Bundled Mombot scripts
 
 During installation, tools and scripts use the TWX program directory stored in
 ~/Library/twxproxy/programdir.txt when present. Otherwise it defaults to
-~/twxproxy and stores that path for both apps. Scripts are copied into:
-  - <programdir>/scripts
+~/twxproxy and stores that path for both apps. Mombot scripts are copied into:
+  - <programdir>/scripts/mombot
 
 Set RID_LIST to narrow the target list, e.g.:
   RID_LIST=osx-arm64 ./build-macos-pkgs.sh
+
+Set MOMBOT_RELEASE_SOURCE to override the Mombot release tree used for the
+scripts payload.
 EOF
   exit 0
 elif [[ $# -gt 0 ]]; then
@@ -348,7 +351,7 @@ write_distribution() {
   <choice id="tools" title="Compiler Package" description="Install twxc and twxd into the configured TWX program directory." selected="true" visible="true" enabled="true">
     <pkg-ref id="com.mayhem.twx30.tools.${rid}"/>
   </choice>
-  <choice id="scripts" title="Bundled TWX Scripts" description="Populate the configured TWX scripts directory with the bundled scripts." selected="true" visible="true" enabled="true">
+  <choice id="scripts" title="Bundled Mombot Scripts" description="Populate the configured TWX scripts directory with bundled Mombot scripts only." selected="true" visible="true" enabled="true">
     <pkg-ref id="com.mayhem.twx30.scripts.${rid}"/>
   </choice>
   <pkg-ref id="com.mayhem.twx30.mtc.${rid}" version="${VERSION}" auth="Root">mtc.pkg</pkg-ref>
@@ -374,7 +377,7 @@ for rid in "${RIDS[@]}"; do
   require_binary "${BIN_ROOT}/${rid}/twxp"
   require_binary "${BIN_ROOT}/${rid}/twxc"
   require_binary "${BIN_ROOT}/${rid}/twxd"
-  require_dir "$SCRIPTS_SOURCE"
+  require_dir "$MOMBOT_RELEASE_SOURCE"
 
   work_dir="$(mktemp -d "/tmp/twx30-macos-pkg-${rid}-XXXXXX")"
   components_dir="${work_dir}/components"
@@ -420,7 +423,7 @@ for rid in "${RIDS[@]}"; do
   scripts_scripts="${work_dir}/scripts-scripts"
   scripts_payload_dir="${scripts_root}/Library/Application Support/TWX30/InstallerScripts/${rid}/scripts"
   mkdir -p "$scripts_payload_dir" "$scripts_scripts"
-  copy_tree_clean "$SCRIPTS_SOURCE" "$scripts_payload_dir"
+  copy_tree_clean "$MOMBOT_RELEASE_SOURCE" "${scripts_payload_dir}/mombot"
   write_programdir_postinstall "${scripts_scripts}/postinstall" "$rid" "scripts"
   build_component_pkg "$scripts_root" "$scripts_scripts" "com.mayhem.twx30.scripts.${rid}" "${components_dir}/scripts.pkg"
 

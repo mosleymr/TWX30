@@ -1,4 +1,5 @@
-UNLOCK - Unlocks ship so that corp members can trade ships 
-         with bot.
-
-         - Originally written by Lonestar
+                     
+   
+                 <<<< unlock >>>>
+   
+     unlock - unlock ship in citadel to it can be traded

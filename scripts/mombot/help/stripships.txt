@@ -1,2 +1,7 @@
-Stripship - Strips fighters from all empty ships 
-            and deploys them into the sector.
+                     
+   
+               <<<< stripships >>>>
+   
+     Strips fighters from all empty ships and deploys them into the sector.
+            
+       Usage: stripships

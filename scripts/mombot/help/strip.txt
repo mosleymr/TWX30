@@ -13,3 +13,5 @@
                 {oc}   - Strip organic colonists
                 {ec}   - Strip equipment colonists
                {fig}   - Strip fighters
+          
+               Originally written by Mind Dagger

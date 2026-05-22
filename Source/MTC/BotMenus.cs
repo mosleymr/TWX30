@@ -246,7 +246,7 @@ public partial class MainWindow
 
         var ansiCompanion = new MenuItem
         {
-            Header = (_embeddedGameConfig?.LogAnsiCompanion ?? false) ? "Disable ANSI Companion Log" : "Record ANSI Companion Log",
+            Header = (_embeddedGameConfig?.LogAnsiCompanion ?? false) ? "Disable ANSI Game Log" : "Create ANSI Game Log",
             IsEnabled = hasGame,
         };
         ansiCompanion.Click += (_, _) => _ = ToggleAnsiCompanionLoggingAsync();
@@ -282,17 +282,26 @@ public partial class MainWindow
 
         EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         config.LogAnsiCompanion = !config.LogAnsiCompanion;
+        if (config.LogAnsiCompanion)
+        {
+            config.LogEnabled = true;
+            config.LogAnsi = false;
+        }
+
         _embeddedGameConfig = config;
         ApplySessionLogSettings(config);
         if (_gameInstance != null)
+        {
+            _gameInstance.Logger.LogANSI = config.LogAnsiCompanion ? false : config.LogAnsi;
             _gameInstance.Logger.LogAnsiCompanion = config.LogAnsiCompanion;
+        }
         await SaveEmbeddedGameConfigAsync(gameName, config);
 
         string safeGameName = Core.SharedPaths.SanitizeFileComponent(gameName);
         string ansiPath = Path.Combine(AppPaths.GetDebugLogDir(), $"{DateTime.Today:yyyy-MM-dd} {safeGameName}_ansi.log");
         string status = config.LogAnsiCompanion ? "enabled" : "disabled";
         string pathText = config.LogAnsiCompanion ? $": {ansiPath}" : string.Empty;
-        _parser.Feed($"\x1b[1;36m[ANSI companion log {status}{pathText}]\x1b[0m\r\n");
+        _parser.Feed($"\x1b[1;36m[ANSI game log {status}{pathText}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();
         RefreshNativeAppMenu();

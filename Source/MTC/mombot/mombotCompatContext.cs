@@ -18,6 +18,9 @@ internal sealed record mombotCommandContext(
 
 internal sealed class mombotCompatContext
 {
+    private const string DefaultValidPrompts =
+        "Command <Underground> Do How Corporate Citadel Planet Computer Terra <StarDock> <FedPolice> <Tavern> <Libram <Galactic <Hardware <Shipyards>";
+
     public IReadOnlyDictionary<string, string> BuildVariableSnapshot(
         Core.ModDatabase? database,
         mombotConfig config,
@@ -48,6 +51,7 @@ internal sealed class mombotCompatContext
         string alphaCentauri = ReadCurrentAny(FormatSector(database?.DBHeader.AlphaCentauri), "$MAP~ALPHA_CENTAURI", "$MAP~alpha_centauri", "$BOT~ALPHA_CENTAURI", "$alpha_centauri");
         string backdoor = ReadCurrentAny("0", "$MAP~BACKDOOR", "$MAP~backdoor", "$backdoor");
         string botTurnLimit = ReadCurrentAny("0", "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+        string validPrompts = ReadCurrentNonZeroAny(DefaultValidPrompts, "$BOT~VALIDPROMPTS", "$bot~validPrompts");
         string planetFile = ReadCurrentAny(string.Empty, "$PLANET~PLANET_FILE", "$PLANET~planet_file", "$planet~planet_file");
         string shipCapFile = ReadCurrentAny(string.Empty, "$SHIP~CAP_FILE", "$SHIP~cap_file", "$ship~cap_file");
         string planetNumber = ReadCurrentAny("0", "$PLANET~PLANET", "$planet~planet");
@@ -141,6 +145,7 @@ internal sealed class mombotCompatContext
         SetVars(vars, botIsDeaf, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
         SetVars(vars, silentRunning, "$BOT~SILENT_RUNNING", "$bot~silent_running", "$silent_running", "$SWITCHBOARD~SILENT_RUNNING", "$switchboard~silent_running");
         SetVars(vars, botTurnLimit, "$BOT~BOT_TURN_LIMIT", "$bot~bot_turn_limit", "$bot_turn_limit");
+        SetVars(vars, validPrompts, "$BOT~VALIDPROMPTS", "$bot~validPrompts");
         SetVars(vars, unlimitedGame, "$PLAYER~UNLIMITEDGAME", "$PLAYER~unlimitedGame", "$unlimitedGame");
         SetVars(vars, planetFile, "$PLANET~PLANET_FILE", "$PLANET~planet_file", "$planet~planet_file");
         SetVars(vars, shipCapFile, "$SHIP~CAP_FILE", "$SHIP~cap_file", "$ship~cap_file");
@@ -276,6 +281,21 @@ internal sealed class mombotCompatContext
             string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
             if (!string.IsNullOrWhiteSpace(value))
                 return value;
+        }
+
+        return fallback;
+    }
+
+    private static string ReadCurrentNonZeroAny(string fallback, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            if (!string.IsNullOrWhiteSpace(value) &&
+                !string.Equals(value.Trim(), "0", StringComparison.OrdinalIgnoreCase))
+            {
+                return value;
+            }
         }
 
         return fallback;

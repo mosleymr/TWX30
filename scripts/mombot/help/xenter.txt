@@ -1,5 +1,0 @@
-                     
-   
-                 <<<< xenter >>>>
-   
-     xenter - exit/enter to clear sector of enemy mines/fighters 

@@ -283,16 +283,17 @@ public sealed class DataMiningWindow : Window
     {
         public Border Host { get; init; } = null!;
         public ComboBox Field { get; init; } = null!;
+        public Control NumberGroup { get; init; } = null!;
         public OperatorPicker Operator { get; init; } = null!;
         public TextBox Number { get; init; } = null!;
-        public TextBlock OwnerLabel { get; init; } = null!;
+        public Control OwnerGroup { get; init; } = null!;
         public ComboBox OwnerMode { get; init; } = null!;
         public TextBox OwnerText { get; init; } = null!;
-        public TextBlock PortLabel { get; init; } = null!;
+        public Control PortGroup { get; init; } = null!;
         public ComboBox PortType { get; init; } = null!;
-        public TextBlock ShieldLabel { get; init; } = null!;
+        public Control ShieldGroup { get; init; } = null!;
         public ComboBox ShieldState { get; init; } = null!;
-        public TextBlock BoolLabel { get; init; } = null!;
+        public Control BoolGroup { get; init; } = null!;
         public ComboBox BoolValue { get; init; } = null!;
         public Button Remove { get; init; } = null!;
     }
@@ -413,8 +414,8 @@ public sealed class DataMiningWindow : Window
         _getState = getState;
 
         Title = "Find";
-        Width = 1760;
-        Height = 640;
+        Width = 1540;
+        Height = 620;
         MinWidth = 1180;
         MinHeight = 460;
         Background = BgWin;
@@ -479,7 +480,7 @@ public sealed class DataMiningWindow : Window
 
         var split = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("760,6,430,6,*"),
+            ColumnDefinitions = new ColumnDefinitions("620,6,380,6,*"),
             Children =
             {
                 BuildCriteriaPane(),
@@ -548,7 +549,7 @@ public sealed class DataMiningWindow : Window
             BorderBrush = Edge,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            MinWidth = 720,
+            MinWidth = 560,
             Padding = new Thickness(12),
             Child = new DockPanel
             {
@@ -681,21 +682,9 @@ public sealed class DataMiningWindow : Window
         var saveButton = BuildSmallActionButton("Save", SaveLoadButtonWidth);
         saveButton.Click += (_, _) => SaveCurrentQuery();
 
-        var addButton = BuildSmallActionButton("+ Add condition", 130, primary: true);
+        var savedPanel = BuildSavedQueryPanel(loadButton, saveButton);
+        var addButton = BuildSmallActionButton("+ Add condition", 136, primary: true);
         addButton.Click += (_, _) => AddQueryRow();
-
-        var toolbar = new WrapPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(0, 0, 0, 4),
-        };
-        AddToolbarItem(toolbar, BuildSmallLabel("Saved"));
-        AddToolbarItem(toolbar, _savedQueryPicker);
-        AddToolbarItem(toolbar, loadButton);
-        AddToolbarItem(toolbar, BuildSmallLabel("Name"));
-        AddToolbarItem(toolbar, _savedQueryName);
-        AddToolbarItem(toolbar, saveButton);
-        AddToolbarItem(toolbar, addButton);
 
         AddDefaultQueryRow();
 
@@ -708,18 +697,58 @@ public sealed class DataMiningWindow : Window
                 {
                     new TextBlock
                     {
-                        Text = "Stack conditions, then search. Every row must match.",
+                        Text = "Build a sentence-like query. Every condition must match.",
                         Foreground = ColMuted,
                         FontSize = SmallFontSize,
                         TextWrapping = TextWrapping.Wrap,
                     },
-                    toolbar,
+                    savedPanel,
                     _queryRowsHost,
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 10,
+                        Children =
+                        {
+                            addButton,
+                            new TextBlock
+                            {
+                                Text = "Add another filter below the current stack.",
+                                Foreground = ColMuted,
+                                FontSize = SmallFontSize,
+                                VerticalAlignment = VerticalAlignment.Center,
+                            },
+                        }
+                    },
                 }
             },
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(0, 8, 0, 0),
+        };
+    }
+
+    private Control BuildSavedQueryPanel(Button loadButton, Button saveButton)
+    {
+        var panel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+        };
+        AddToolbarItem(panel, BuildSmallLabel("Saved"));
+        AddToolbarItem(panel, _savedQueryPicker!);
+        AddToolbarItem(panel, loadButton);
+        AddToolbarItem(panel, BuildSmallLabel("Save as"));
+        AddToolbarItem(panel, _savedQueryName!);
+        AddToolbarItem(panel, saveButton);
+
+        return new Border
+        {
+            Background = BgCardAlt,
+            BorderBrush = InnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(8, 8, 0, 2),
+            Child = panel,
         };
     }
 
@@ -728,60 +757,42 @@ public sealed class DataMiningWindow : Window
 
     private void AddQueryRow(SavedFinderQueryRow? saved = null)
     {
-        var field = BuildCombo(SectorQueryFieldLabels, string.IsNullOrWhiteSpace(saved?.Field) ? "Fighters" : saved!.Field, 132);
-        var op = BuildOperatorPicker(OperatorLabels, string.IsNullOrWhiteSpace(saved?.Operator) ? DefaultOperatorLabel : saved!.Operator, 50);
-        var number = BuildTextBox(string.IsNullOrWhiteSpace(saved?.Value) ? "0" : saved!.Value, 84);
-        var ownerMode = BuildCombo(OwnerModeLabels, string.IsNullOrWhiteSpace(saved?.OwnerMode) ? "Any owner" : saved!.OwnerMode, 112);
-        var ownerText = BuildTextBox(saved?.OwnerText ?? string.Empty, 150);
+        var field = BuildCombo(SectorQueryFieldLabels, string.IsNullOrWhiteSpace(saved?.Field) ? "Fighters" : saved!.Field, 130);
+        var op = BuildOperatorPicker(OperatorLabels, string.IsNullOrWhiteSpace(saved?.Operator) ? DefaultOperatorLabel : saved!.Operator, 46);
+        var number = BuildTextBox(string.IsNullOrWhiteSpace(saved?.Value) ? "0" : saved!.Value, 78);
+        var ownerMode = BuildCombo(OwnerModeLabels, string.IsNullOrWhiteSpace(saved?.OwnerMode) ? "Any owner" : saved!.OwnerMode, 108);
+        var ownerText = BuildTextBox(saved?.OwnerText ?? string.Empty, 132);
         ownerText.Watermark = "owner";
-        var portType = BuildCombo(PortTypeLabels, string.IsNullOrWhiteSpace(saved?.PortType) ? "Any" : saved!.PortType, 164);
-        var shieldState = BuildCombo(PlanetShieldLabels, string.IsNullOrWhiteSpace(saved?.PlanetShield) ? "Any shield" : saved!.PlanetShield, 130);
-        var boolValue = BuildCombo(BooleanLabels, (saved?.BooleanValue ?? true) ? "True" : "False", 86);
+        var portType = BuildCombo(PortTypeLabels, string.IsNullOrWhiteSpace(saved?.PortType) ? "Any" : saved!.PortType, 150);
+        var shieldState = BuildCombo(PlanetShieldLabels, string.IsNullOrWhiteSpace(saved?.PlanetShield) ? "Any shield" : saved!.PlanetShield, 120);
+        var boolValue = BuildCombo(BooleanLabels, (saved?.BooleanValue ?? true) ? "True" : "False", 76);
         var remove = BuildSmallActionButton("-", 32);
 
-        var rowBody = new StackPanel
+        var numberGroup = BuildInlineGroup(string.Empty, op, number);
+        var ownerGroup = BuildInlineGroup("Owner", ownerMode, ownerText);
+        var portGroup = BuildInlineGroup("Port", portType);
+        var shieldGroup = BuildInlineGroup("Shield", shieldState);
+        var boolGroup = BuildInlineGroup("is", boolValue);
+
+        var rowFlow = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+        };
+        AddFlowItem(rowFlow, field);
+        AddFlowItem(rowFlow, numberGroup);
+        AddFlowItem(rowFlow, ownerGroup);
+        AddFlowItem(rowFlow, portGroup);
+        AddFlowItem(rowFlow, shieldGroup);
+        AddFlowItem(rowFlow, boolGroup);
+
+        var rowBody = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            ColumnSpacing = 8,
             Children =
             {
-                remove,
-                field,
-                op,
-                number,
-                new TextBlock
-                {
-                    Text = "owned by",
-                    Foreground = ColMuted,
-                    FontSize = SmallFontSize,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                ownerMode,
-                ownerText,
-                new TextBlock
-                {
-                    Text = "type",
-                    Foreground = ColMuted,
-                    FontSize = SmallFontSize,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                portType,
-                new TextBlock
-                {
-                    Text = "shield",
-                    Foreground = ColMuted,
-                    FontSize = SmallFontSize,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                shieldState,
-                new TextBlock
-                {
-                    Text = "is",
-                    Foreground = ColMuted,
-                    FontSize = SmallFontSize,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
-                boolValue,
+                rowFlow,
+                remove.WithColumn(1),
             }
         };
 
@@ -793,20 +804,21 @@ public sealed class DataMiningWindow : Window
                 BorderBrush = InnerEdge,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(8),
+                Padding = new Thickness(8, 7),
                 Child = rowBody,
             },
             Field = field,
+            NumberGroup = numberGroup,
             Operator = op,
             Number = number,
-            OwnerLabel = (TextBlock)rowBody.Children[4],
+            OwnerGroup = ownerGroup,
             OwnerMode = ownerMode,
             OwnerText = ownerText,
-            PortLabel = (TextBlock)rowBody.Children[7],
+            PortGroup = portGroup,
             PortType = portType,
-            ShieldLabel = (TextBlock)rowBody.Children[9],
+            ShieldGroup = shieldGroup,
             ShieldState = shieldState,
-            BoolLabel = (TextBlock)rowBody.Children[11],
+            BoolGroup = boolGroup,
             BoolValue = boolValue,
             Remove = remove,
         };
@@ -818,6 +830,38 @@ public sealed class DataMiningWindow : Window
         _queryRows.Add(row);
         _queryRowsHost.Children.Add(row.Host);
         UpdateQueryRowShape(row);
+    }
+
+    private static Control BuildInlineGroup(string label, params Control[] controls)
+    {
+        var group = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        if (!string.IsNullOrWhiteSpace(label))
+        {
+            group.Children.Add(new TextBlock
+            {
+                Text = label,
+                Foreground = ColMuted,
+                FontSize = SmallFontSize,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+
+        foreach (Control control in controls)
+            group.Children.Add(control);
+
+        return group;
+    }
+
+    private static void AddFlowItem(WrapPanel panel, Control control)
+    {
+        control.Margin = new Thickness(0, 0, 8, 6);
+        panel.Children.Add(control);
     }
 
     private void RemoveQueryRow(QueryBuilderRowControls row)
@@ -849,16 +893,17 @@ public sealed class DataMiningWindow : Window
         bool boolean = !deployment && !numeric && !port && !planets;
         bool customOwner = ParseOwnerMode(row.OwnerMode.SelectedItem?.ToString()) == OwnerFilterMode.Custom;
 
+        row.NumberGroup.IsVisible = numeric || deployment || planets;
         row.Operator.IsVisible = numeric || deployment || planets;
         row.Number.IsVisible = numeric || deployment || planets;
-        row.OwnerLabel.IsVisible = deployment || planets;
+        row.OwnerGroup.IsVisible = deployment || planets;
         row.OwnerMode.IsVisible = deployment || planets;
         row.OwnerText.IsVisible = (deployment || planets) && customOwner;
-        row.PortLabel.IsVisible = port;
+        row.PortGroup.IsVisible = port;
         row.PortType.IsVisible = port;
-        row.ShieldLabel.IsVisible = planets;
+        row.ShieldGroup.IsVisible = planets;
         row.ShieldState.IsVisible = planets;
-        row.BoolLabel.IsVisible = boolean;
+        row.BoolGroup.IsVisible = boolean;
         row.BoolValue.IsVisible = boolean;
     }
 
@@ -3357,13 +3402,6 @@ public sealed class DataMiningWindow : Window
         _previewHeader.Text = message;
         _previewHeader.Foreground = ColMuted;
         _resultsHost.Children.Clear();
-        _resultsHost.Children.Add(new TextBlock
-        {
-            Text = message,
-            Foreground = ColMuted,
-            FontSize = BodyFontSize,
-            Margin = new Thickness(4),
-        });
     }
 
     private void ShowMessage(string message, IBrush brush)

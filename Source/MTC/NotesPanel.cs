@@ -43,7 +43,6 @@ public partial class MainWindow
     {
         if (!TryResolveNotesGameName(out _))
         {
-            _notesPanelVisible = false;
             RefreshNotesMenuState();
             return;
         }
@@ -52,6 +51,8 @@ public partial class MainWindow
             SaveCurrentNotesNow();
 
         _notesPanelVisible = !_notesPanelVisible;
+        _appPrefs.ShowNotesPanel = _notesPanelVisible;
+        _appPrefs.Save();
         ApplySelectedSkinSafe();
         RefreshNotesMenuState();
 
@@ -76,8 +77,14 @@ public partial class MainWindow
             SaveCurrentNotesNow();
             _notesGameName = null;
             _notesFilePath = null;
-            _notesPanelVisible = false;
             _notesTextBox = null;
+            RefreshNotesMenuState();
+            return;
+        }
+
+        if (_notesPanelVisible && _notesTextBox == null)
+        {
+            ApplySelectedSkinSafe();
             RefreshNotesMenuState();
             return;
         }

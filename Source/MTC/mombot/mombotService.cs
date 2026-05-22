@@ -95,6 +95,49 @@ internal sealed class mombotService
     public IReadOnlyList<mombotCommandSpec> InitialCommands => mombotCatalog.InitialCommands;
     public mombotSettings Settings => mombotSettings.Load();
 
+    internal static IReadOnlyList<string> BuildDefaultAliasConfigFileLines()
+    {
+        return new[]
+        {
+            "# mombot command aliases",
+            "# format: alias[,alias...]=real command",
+            string.Empty,
+            "?=help",
+            "l=land",
+            "x=xport",
+            "qss=status",
+            "d=dep",
+            "w=with",
+            "k=keep",
+            "sec=sector",
+            "sect=sector",
+            "secto=sector",
+            "exit=xenter",
+            "cn=cn9",
+            "emx=reset",
+            "finder=find",
+            "pinfo=pscan",
+            "parm=param",
+            "params=param",
+            "parms=param",
+            "shipstore=storeship",
+            "holotorp=htorp",
+            "logout=logoff",
+            "loguo=logoff",
+            "m=mow",
+            "p=pwarp",
+            "t=twarp",
+            "b=bwarp",
+            "massupgrade=upgrade",
+            "corp_info=corpinfo",
+            "setparms=setparam",
+            "plimp,climp,pmine,cmine=deploy",
+            "mines=deploy",
+            "pe,ped,pel,pelk,pex,pxe,pxed,pxedx,pxel,pxelk,pxex=invader",
+            "photon=foton",
+        };
+    }
+
     public void AttachSession(
         Core.GameInstance? gameInstance,
         Core.ModDatabase? database,
@@ -448,7 +491,15 @@ internal sealed class mombotService
                 return true;
             }
 
-            results = ExecuteCommandLine(context.CommandLine, selfCommand: true, route: "local", userName: "self");
+            mombotCommandContext dispatchContext = NormalizeDispatchContext(
+                context.CommandName,
+                context.Parameters,
+                selfCommand: true,
+                route: "local",
+                userName: "self",
+                trustedSelfCommand: context.TrustedSelfCommand,
+                typedParameterLine: context.TypedParameterLine);
+            results = new[] { ExecuteCommandContext(dispatchContext) };
             return true;
         }
 
@@ -487,7 +538,8 @@ internal sealed class mombotService
             context.SelfCommand,
             context.Route,
             context.UserName,
-            context.TrustedSelfCommand);
+            context.TrustedSelfCommand,
+            context.TypedParameterLine);
 
         if (!IsAuthorized(dispatchContext))
             return watcherHandled;
@@ -533,19 +585,22 @@ internal sealed class mombotService
         }
 
         string rawCommand = NormalizeRawCommandToken(words[0]);
-        List<string> rawParameters = words.Skip(1).Take(8).ToList();
+        List<string> rawParameters = words.Skip(1).ToList();
+        string typedParameterLine = BuildTypedParameterLine(words, 1);
         mombotCommandContext dispatchContext = NormalizeDispatchContext(
             rawCommand,
             rawParameters,
             selfCommand,
             route,
             userName,
-            trustedSelfCommand);
+            trustedSelfCommand,
+            typedParameterLine);
         return ExecuteCommandContext(dispatchContext);
     }
 
     private mombotDispatchResult ExecuteCommandContext(mombotCommandContext dispatchContext)
     {
+        EnsureLocalSelfCommandAudible(dispatchContext);
         ApplyDispatchContextVars(dispatchContext);
         string canonical = dispatchContext.CommandName;
 
@@ -566,6 +621,17 @@ internal sealed class mombotService
         string message = $"mombot: {FormatModeName(canonical)} is not a valid command.";
         PublishMessage(message);
         return new mombotDispatchResult(false, mombotDispatchKind.Invalid, canonical, message);
+    }
+
+    private void EnsureLocalSelfCommandAudible(mombotCommandContext context)
+    {
+        if (!context.SelfCommand || !string.Equals(context.Route, "local", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        ApplySessionVar("$BOT~BOTISDEAF", "0");
+        ApplySessionVar("$BOT~botIsDeaf", "0");
+        ApplySessionVar("$bot~botIsDeaf", "0");
+        ApplySessionVar("$botIsDeaf", "0");
     }
 
     private bool ShouldHandleNatively(string canonical)
@@ -959,15 +1025,15 @@ internal sealed class mombotService
         module = null;
 
         string localRoot = Path.Combine(scriptRoot, "local");
-        if (!Directory.Exists(localRoot))
+        if (!TryResolveExistingDirectory(localRoot, out string resolvedLocalRoot))
             return false;
 
-        if (TryResolveLegacyLocalModuleCandidate(localRoot, canonical, out module))
+        if (TryResolveLegacyLocalModuleCandidate(resolvedLocalRoot, canonical, out module))
             return true;
 
         foreach (string category in mombotCatalog.Categories)
         {
-            if (TryResolveCategorizedLocalModuleCandidate(localRoot, category, canonical, out module))
+            if (TryResolveCategorizedLocalModuleCandidate(resolvedLocalRoot, category, canonical, out module))
                 return true;
         }
 
@@ -981,8 +1047,8 @@ internal sealed class mombotService
     {
         module = null;
 
-        string hiddenPath = Path.Combine(localRoot, "_" + canonical + ".cts");
-        if (File.Exists(hiddenPath))
+        string hiddenCandidate = Path.Combine(localRoot, "_" + canonical + ".cts");
+        if (TryResolveExistingFile(hiddenCandidate, out string hiddenPath))
         {
             module = new mombotResolvedModule(
                 BuildLoadReference(hiddenPath),
@@ -993,8 +1059,8 @@ internal sealed class mombotService
             return true;
         }
 
-        string visiblePath = Path.Combine(localRoot, canonical + ".cts");
-        if (!File.Exists(visiblePath))
+        string visibleCandidate = Path.Combine(localRoot, canonical + ".cts");
+        if (!TryResolveExistingFile(visibleCandidate, out string visiblePath))
             return false;
 
         module = new mombotResolvedModule(
@@ -1015,19 +1081,20 @@ internal sealed class mombotService
         module = null;
 
         string categoryRoot = Path.Combine(localRoot, category.ToLowerInvariant());
-        if (!Directory.Exists(categoryRoot))
+        if (!TryResolveExistingDirectory(categoryRoot, out string resolvedCategoryRoot))
             return false;
 
         foreach (string fileName in new[] { "_" + canonical + ".cts", canonical + ".cts" })
         {
             string? match = Directory
-                .EnumerateFiles(categoryRoot, fileName, SearchOption.AllDirectories)
-                .OrderBy(path => Path.GetRelativePath(categoryRoot, path), StringComparer.OrdinalIgnoreCase)
+                .EnumerateFiles(resolvedCategoryRoot, "*.cts", SearchOption.AllDirectories)
+                .Where(path => string.Equals(Path.GetFileName(path), fileName, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => Path.GetRelativePath(resolvedCategoryRoot, path), StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault();
             if (string.IsNullOrWhiteSpace(match))
                 continue;
 
-            string relativePath = Path.GetRelativePath(categoryRoot, match);
+            string relativePath = Path.GetRelativePath(resolvedCategoryRoot, match);
             string type = ResolveLocalCategoryType(category, relativePath);
             bool hidden = Path.GetFileName(match).StartsWith("_", StringComparison.OrdinalIgnoreCase);
             module = new mombotResolvedModule(
@@ -1090,11 +1157,11 @@ internal sealed class mombotService
             return false;
 
         string directory = Path.Combine(scriptRoot, "preload");
-        if (!Directory.Exists(directory))
+        if (!TryResolveExistingDirectory(directory, out string resolvedDirectory))
             return false;
 
-        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
-        if (!File.Exists(hiddenPath))
+        string hiddenCandidate = Path.Combine(resolvedDirectory, "_" + canonical + ".cts");
+        if (!TryResolveExistingFile(hiddenCandidate, out string hiddenPath))
             return false;
 
         module = new mombotResolvedModule(
@@ -1118,11 +1185,11 @@ internal sealed class mombotService
         string directory = string.IsNullOrWhiteSpace(type)
             ? Path.Combine(scriptRoot, category.ToLowerInvariant())
             : Path.Combine(scriptRoot, category.ToLowerInvariant(), type.ToLowerInvariant());
-        if (!Directory.Exists(directory))
+        if (!TryResolveExistingDirectory(directory, out string resolvedDirectory))
             return false;
 
-        string hiddenPath = Path.Combine(directory, "_" + canonical + ".cts");
-        if (File.Exists(hiddenPath))
+        string hiddenCandidate = Path.Combine(resolvedDirectory, "_" + canonical + ".cts");
+        if (TryResolveExistingFile(hiddenCandidate, out string hiddenPath))
         {
             module = new mombotResolvedModule(
                 BuildLoadReference(hiddenPath),
@@ -1133,8 +1200,8 @@ internal sealed class mombotService
             return true;
         }
 
-        string visiblePath = Path.Combine(directory, canonical + ".cts");
-        if (!File.Exists(visiblePath))
+        string visibleCandidate = Path.Combine(resolvedDirectory, canonical + ".cts");
+        if (!TryResolveExistingFile(visibleCandidate, out string visiblePath))
             return false;
 
         module = new mombotResolvedModule(
@@ -1179,6 +1246,78 @@ internal sealed class mombotService
         return Path.GetFullPath(Path.Combine(GetProgramDirectory(), normalized));
     }
 
+    private static bool TryResolveExistingDirectory(string directory, out string resolved)
+    {
+        resolved = directory;
+        if (Directory.Exists(directory))
+        {
+            resolved = Path.GetFullPath(directory);
+            return true;
+        }
+
+        string? parent = Path.GetDirectoryName(directory);
+        string leaf = Path.GetFileName(directory);
+        if (string.IsNullOrWhiteSpace(parent) ||
+            string.IsNullOrWhiteSpace(leaf) ||
+            !TryResolveExistingDirectory(parent, out string resolvedParent))
+        {
+            return false;
+        }
+
+        try
+        {
+            string? match = Directory
+                .EnumerateDirectories(resolvedParent)
+                .FirstOrDefault(path => string.Equals(Path.GetFileName(path), leaf, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(match))
+                return false;
+
+            resolved = Path.GetFullPath(match);
+            return true;
+        }
+        catch
+        {
+            resolved = directory;
+            return false;
+        }
+    }
+
+    private static bool TryResolveExistingFile(string filePath, out string resolved)
+    {
+        resolved = filePath;
+        if (File.Exists(filePath))
+        {
+            resolved = Path.GetFullPath(filePath);
+            return true;
+        }
+
+        string? directory = Path.GetDirectoryName(filePath);
+        string fileName = Path.GetFileName(filePath);
+        if (string.IsNullOrWhiteSpace(directory) ||
+            string.IsNullOrWhiteSpace(fileName) ||
+            !TryResolveExistingDirectory(directory, out string resolvedDirectory))
+        {
+            return false;
+        }
+
+        try
+        {
+            string? match = Directory
+                .EnumerateFiles(resolvedDirectory)
+                .FirstOrDefault(path => string.Equals(Path.GetFileName(path), fileName, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(match))
+                return false;
+
+            resolved = Path.GetFullPath(match);
+            return true;
+        }
+        catch
+        {
+            resolved = filePath;
+            return false;
+        }
+    }
+
     private string? GetAliasConfigPath()
     {
         string? scriptRoot = GetAbsoluteScriptRoot();
@@ -1191,6 +1330,7 @@ internal sealed class mombotService
     private void ReloadCommandAliases()
     {
         _commandAliases.Clear();
+        LoadCommandAliasesFromLines(BuildDefaultAliasConfigFileLines(), _commandAliases);
 
         string? filePath = GetAliasConfigPath();
         if (!string.IsNullOrWhiteSpace(filePath) &&
@@ -1199,6 +1339,38 @@ internal sealed class mombotService
         {
             foreach ((string alias, string canonical) in loaded)
                 _commandAliases[alias] = canonical;
+        }
+    }
+
+    private static void LoadCommandAliasesFromLines(IEnumerable<string> lines, Dictionary<string, string> aliases)
+    {
+        foreach (string rawLine in lines)
+        {
+            string line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line) ||
+                line.StartsWith("#", StringComparison.Ordinal) ||
+                line.StartsWith(";", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            int separator = line.IndexOf('=');
+            if (separator <= 0 || separator >= line.Length - 1)
+                continue;
+
+            string aliasList = line[..separator].Trim();
+            string canonical = mombotCatalog.NormalizeCommandName(line[(separator + 1)..].Trim());
+            if (string.IsNullOrWhiteSpace(aliasList) || string.IsNullOrWhiteSpace(canonical))
+                continue;
+
+            foreach (string aliasCandidate in aliasList.Split(','))
+            {
+                string alias = mombotCatalog.NormalizeCommandName(aliasCandidate.Trim());
+                if (string.IsNullOrWhiteSpace(alias))
+                    continue;
+
+                aliases[alias] = canonical;
+            }
         }
     }
 
@@ -1226,13 +1398,13 @@ internal sealed class mombotService
                     continue;
 
                 string aliasList = line[..separator].Trim();
-                string canonical = line[(separator + 1)..].Trim();
+                string canonical = mombotCatalog.NormalizeCommandName(line[(separator + 1)..].Trim());
                 if (string.IsNullOrWhiteSpace(aliasList) || string.IsNullOrWhiteSpace(canonical))
                     continue;
 
                 foreach (string aliasCandidate in aliasList.Split(','))
                 {
-                    string alias = aliasCandidate.Trim();
+                    string alias = mombotCatalog.NormalizeCommandName(aliasCandidate.Trim());
                     if (string.IsNullOrWhiteSpace(alias))
                         continue;
 
@@ -1521,6 +1693,7 @@ internal sealed class mombotService
 
         string commandName = words[0];
         List<string> parameters = words.Skip(1).Take(8).ToList();
+        string typedParameterLine = BuildTypedParameterLine(words, 1);
         context = new mombotCommandContext(
             BuildNormalizedCommandLine(commandName, parameters),
             commandName,
@@ -1529,7 +1702,7 @@ internal sealed class mombotService
             route,
             userName,
             string.Empty,
-            string.Join(" ", parameters),
+            typedParameterLine,
             trustedSelfCommand);
         return true;
     }
@@ -1549,8 +1722,9 @@ internal sealed class mombotService
 
         string commandName = words[1];
         List<string> parameters = words.Skip(2).Take(8).ToList();
+        string typedParameterLine = BuildTypedParameterLine(words, 2);
         string normalized = BuildNormalizedCommandLine(commandName, parameters);
-        context = new mombotCommandContext(normalized, commandName, parameters, false, route, userName, string.Empty, string.Join(" ", parameters));
+        context = new mombotCommandContext(normalized, commandName, parameters, false, route, userName, string.Empty, typedParameterLine);
         return true;
     }
 
@@ -1624,13 +1798,21 @@ internal sealed class mombotService
             .ToList();
     }
 
+    private static string BuildTypedParameterLine(IReadOnlyList<string> words, int parameterStartIndex)
+    {
+        return words.Count <= parameterStartIndex
+            ? string.Empty
+            : string.Join(" ", words.Skip(parameterStartIndex));
+    }
+
     private mombotCommandContext NormalizeDispatchContext(
         string commandName,
         IReadOnlyList<string> rawParameters,
         bool selfCommand,
         string route,
         string userName,
-        bool trustedSelfCommand)
+        bool trustedSelfCommand,
+        string typedParameterLine)
     {
         string typedCommandName = string.IsNullOrWhiteSpace(commandName)
             ? string.Empty
@@ -1654,7 +1836,7 @@ internal sealed class mombotService
             route,
             userName,
             typedCommandName,
-            string.Join(" ", typedParameters),
+            typedParameterLine,
             trustedSelfCommand);
     }
 

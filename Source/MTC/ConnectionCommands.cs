@@ -241,8 +241,8 @@ public partial class MainWindow
         _gameInstance.BroadCastMsgs = gameConfig.BroadcastMessages;
         _gameInstance.Logger.LogEnabled = false;
         _gameInstance.Logger.LogData = false;
-        _gameInstance.Logger.LogANSI = gameConfig.LogAnsi;
         _gameInstance.Logger.LogAnsiCompanion = gameConfig.LogAnsiCompanion;
+        _gameInstance.Logger.LogANSI = gameConfig.LogAnsiCompanion ? false : gameConfig.LogAnsi;
         _gameInstance.Logger.BinaryLogs = gameConfig.LogBinary;
         _gameInstance.Logger.NotifyPlayCuts = gameConfig.NotifyPlayCuts;
         _gameInstance.Logger.MaxPlayDelay = gameConfig.MaxPlayDelay;

@@ -17,5 +17,7 @@
              {half}   sell half of port (neg only for now) 
             {upequ}   upgrade good equipment ports
             {uporg}   upgrade good organics ports
+        {checkmcic}   make small trades at non-upgraded ports missing mcic
          {upmcic #}   maximum mcic to upgrade (default: -60)
        {sellmcic #}   minimum mcic to sell product (default: none)
+         {minpct #}   minimum percent to sell to a port (default: 50)

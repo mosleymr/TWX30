@@ -1,6 +1,8 @@
-MAX - Upgrades a Port in sector to its maximum
-
-      max/maxport [f/o/e] {noexp}
-
-     {noexp}  - Performs upgrade without increasing
-                Experience.
+                     
+   
+                  <<<< max >>>>
+   
+     Upgrades a port product as much as possible.  
+              
+     Options: 
+     {noexp} - Upgrades port without experience increase.

@@ -14,6 +14,58 @@ As of the current review:
 The differences documented below are behavioral differences in existing commands,
 not command-name or command-arity drift.
 
+## Mombot Command-Line Variables
+
+### Classic script-bot behavior
+
+- `$BOT~PARM1` through `$BOT~PARM8` are the legacy positional slots used by Mombot
+  dispatch.
+- `$BOT~USER_COMMAND_LINE` / `$USER_COMMAND_LINE` are also available to scripts that
+  need to reparse the typed command tail directly.
+
+### Current TWX30/native Mombot behavior
+
+- Native Mombot keeps the legacy eight-slot limit for `$BOT~PARM1` through
+  `$BOT~PARM8`.
+- Native Mombot does not truncate `$BOT~USER_COMMAND_LINE` / `$USER_COMMAND_LINE` to
+  those eight slots; those variables carry the full typed parameter tail.
+- The classic script-bot dispatcher also preserves words beyond the first eight when a
+  stock rewritten command line is loaded.
+
+### Practical meaning
+
+- Existing scripts that consume only `$BOT~PARM1..8` keep their historical behavior.
+- Scripts that parse `$BOT~USER_COMMAND_LINE` directly can see options after the eighth
+  positional parameter in both native Mombot and the classic script bot.
+
+## Signed Numeric Literals
+
+### Pascal TWX27 behavior
+
+- The Pascal compiler tokenized `+` and `-` as binary operators.
+- Standalone negative values such as `setVar $x -60` were not reliably parsed as a
+  signed numeric literal.
+- Scripts commonly used explicit subtraction, such as `setVar $x (0 - 60)`, when they
+  needed a negative constant.
+
+### Current TWX30 behavior
+
+- TWX30 accepts signed numeric literals in common value and comparison positions:
+  - `setVar $x -60`
+  - `if ($mcic <= -60)`
+  - `setVar $x (-60)`
+- The compiler still preserves legacy compact subtraction expressions:
+  - `($i -1)` compiles as `$i - 1`
+  - `$i -1` compiles as `$i - 1`
+
+### Practical meaning
+
+- Existing scripts that use the Pascal-safe `(0 - n)` spelling continue to work.
+- Scripts that use the more natural `-n` spelling for constants now compile to the
+  intended negative value in TWXC and in MTC's embedded compiler.
+- This is a deliberate TWX30 compatibility improvement, not a claim that Pascal TWX27
+  accepted every standalone negative-literal spelling.
+
 ## `LOGGING` vs `REQRECORDING`
 
 These are related, but they control two different systems.
