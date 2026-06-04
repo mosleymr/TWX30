@@ -2,10 +2,13 @@
 Source/bin/
 obj/
 */bin/
+**/bin/
 */obj/
+**/obj/
 *.user
 *.suo
 .vs/
+.vscode/
 .DS_Store
 
 # Build outputs in root
@@ -26,6 +29,10 @@ Source/TWXP/publish/
 Source/Installer/Windows/artifacts/
 Source/Installer/Windows/bin/
 Source/Installer/Windows/obj/
+/Source/Installer/Windows/artifacts/
+/Source/Installer/Windows/bin/
+/Source/Installer/Windows/obj/
+Source/**/__pycache__/
 
 # Local-only notes
 RELOG_LOOP_FIX.md

@@ -1,7 +1,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="TWX Proxy"
-           Manufacturer="TWXProxy"
+  <Package Name="twxproxy 3.0 beta1"
+           Manufacturer="twxproxy"
            Version="$(var.ProductVersion)"
            UpgradeCode="$(var.UpgradeCode)"
            Language="1033"

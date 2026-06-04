@@ -107,6 +107,20 @@ namespace TWXProxy.Core
         public string Param { get; set; } = string.Empty;
         public int LifeCycle { get; set; }
         public DelayTimer? Timer { get; set; }
+        public bool IsCancelled { get; set; }
+    }
+
+    internal static class ScriptDiagnosticOutput
+    {
+        public static void Write(string message)
+        {
+            GlobalModules.TWXServer?.BroadcastLiteral(message);
+        }
+
+        public static void Write(ITWXServer? server, string message)
+        {
+            server?.BroadcastLiteral(message);
+        }
     }
 
     #endregion
@@ -411,7 +425,7 @@ namespace TWXProxy.Core
                 {
                     GlobalModules.DebugLog($"[ModInterpreter.Load] Loading script failed for '{filename}': {ex}\n");
                     GlobalModules.FlushDebugLog();
-                    GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Loading script failed: {ex.Message}\r\n");
+                    ScriptDiagnosticOutput.Write($"\r\n[ERROR] Loading script failed: {ex.Message}\r\n");
                     Console.WriteLine($"[ERROR] Loading script failed: {ex.Message}\r\n{ex.StackTrace}");
                     Stop(Count - 1);
                     throw; // Rethrow so caller knows it failed
@@ -437,7 +451,7 @@ namespace TWXProxy.Core
                 {
                     GlobalModules.DebugLog($"[ModInterpreter.Load] Compiling script failed for '{filename}': {ex}\n");
                     GlobalModules.FlushDebugLog();
-                    GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Compiling script failed: {ex.Message}\r\n");
+                    ScriptDiagnosticOutput.Write($"\r\n[ERROR] Compiling script failed: {ex.Message}\r\n");
                     Console.WriteLine($"[ERROR] Compiling script failed: {ex.Message}\r\n{ex.StackTrace}");
                     // TWXServer.Broadcast($"\r\n{AnsiCodes.ANSI_15}Script compilation error: {AnsiCodes.ANSI_7}{ex.Message}\r\n\r\n");
                     Stop(Count - 1);
@@ -523,7 +537,7 @@ namespace TWXProxy.Core
                     if (iterations >= maxIterations)
                     {
                         Console.WriteLine($"[ModInterpreter] WARNING: Script hit max iterations ({maxIterations}) - may be in infinite loop");
-                        server?.ClientMessage($"\r\n[WARNING] Script hit execution limit - check for infinite loops\r\n");
+                        ScriptDiagnosticOutput.Write(server, $"\r\n[WARNING] Script hit execution limit - check for infinite loops\r\n");
                     }
                     
                     GlobalModules.DebugLog($"[DEBUG] Script execution {(completed ? "completed" : "paused")}.\n");
@@ -531,7 +545,7 @@ namespace TWXProxy.Core
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[ModInterpreter] Script execution error: {ex.Message}\r\n{ex.StackTrace}");
-                    GlobalModules.TWXServer?.ClientMessage($"\r\nScript execution error: {ex.Message}\r\n");
+                    ScriptDiagnosticOutput.Write($"\r\nScript execution error: {ex.Message}\r\n");
                 }
             }
         }
@@ -1126,7 +1140,7 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 GlobalModules.DebugLog($"[ModInterpreter.HandleConnectionAccepted] Failed to load login script '{loginScript}': {ex}\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[ERROR] Login script failed: {ex.Message}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[ERROR] Login script failed: {ex.Message}\r\n");
             }
         }
 
@@ -1310,9 +1324,9 @@ namespace TWXProxy.Core
                 return;
 
             if (string.IsNullOrEmpty(searchName))
-                server.ClientMessage("Dumping all script variables\r\n");
+                server.BroadcastLiteral("Dumping all script variables\r\n");
             else
-                server.ClientMessage($"Dumping all script variables containing '{searchName}'\r\n");
+                server.BroadcastLiteral($"Dumping all script variables containing '{searchName}'\r\n");
 
             // Dump variables in all scripts
             foreach (var script in _scriptList)
@@ -1320,7 +1334,7 @@ namespace TWXProxy.Core
                 script.DumpVars(searchName);
             }
 
-            server.ClientMessage("Variable dump complete.\r\n");
+            server.BroadcastLiteral("Variable dump complete.\r\n");
         }
 
         public void DumpTriggers()
@@ -1605,6 +1619,7 @@ namespace TWXProxy.Core
         private List<IScriptWindow> _windowList;
         private List<object> _menuItemList;
         private Dictionary<TriggerType, List<Trigger>> _triggers;
+        private readonly object _triggerLock = new();
         private bool _waitingForAuth;
         private bool _waitForActive;
         private bool _waitingForInput;
@@ -1699,9 +1714,13 @@ namespace TWXProxy.Core
 
         public void Dispose()
         {
-            string triggerSummary = string.Join(", ",
-                Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>()
-                    .Select(triggerType => $"{triggerType}={_triggers[triggerType].Count}"));
+            string triggerSummary;
+            lock (_triggerLock)
+            {
+                triggerSummary = string.Join(", ",
+                    Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>()
+                        .Select(triggerType => $"{triggerType}={_triggers[triggerType].Count}"));
+            }
             GlobalModules.DebugLog(
                 $"[Script.Dispose] script='{ScriptName}' persistenceId='{PersistenceId}' " +
                 $"paused={_paused} pauseReason={_pausedReason} waitForActive={_waitForActive} " +
@@ -1728,12 +1747,15 @@ namespace TWXProxy.Core
             }
 
             // Free up trigger lists
-            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            lock (_triggerLock)
             {
-                while (_triggers[triggerType].Count > 0)
+                foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
                 {
-                    FreeTrigger(_triggers[triggerType][0]);
-                    _triggers[triggerType].RemoveAt(0);
+                    while (_triggers[triggerType].Count > 0)
+                    {
+                        FreeTrigger(_triggers[triggerType][0]);
+                        _triggers[triggerType].RemoveAt(0);
+                    }
                 }
             }
 
@@ -1817,6 +1839,7 @@ namespace TWXProxy.Core
 
         private void FreeTrigger(Trigger trigger)
         {
+            trigger.IsCancelled = true;
             trigger.Timer?.Dispose();
             trigger.Timer = null;
         }
@@ -1826,11 +1849,19 @@ namespace TWXProxy.Core
             // Check through triggers for matches with Text
             bool result = false;
             handled = false;
+            bool matched = false;
+            int lifeCycle = 0;
+            string labelName = string.Empty;
+            string response = string.Empty;
             string currentAnsiLine = !textOutTrigger && HasCurrentTextContext
                 ? CurrentAnsiTextLine
                 : ScriptRef.GetGlobalCurrentAnsiLine();
 
-            GlobalModules.TriggerDebugLog($"[CheckTriggers] Text='{text}', triggerCount={triggerList.Count}, TriggersActive={TriggersActive}, Locked={Locked}, textOut={textOutTrigger}, force={forceTrigger}\n");
+            int triggerCount;
+            lock (_triggerLock)
+                triggerCount = triggerList.Count;
+
+            GlobalModules.TriggerDebugLog($"[CheckTriggers] Text='{text}', triggerCount={triggerCount}, TriggersActive={TriggersActive}, Locked={Locked}, textOut={textOutTrigger}, force={forceTrigger}\n");
 
             if ((!textOutTrigger && !forceTrigger && !TriggersActive) || Locked)
             {
@@ -1838,165 +1869,173 @@ namespace TWXProxy.Core
                 return false; // triggers are not enabled or locked in stasis (waiting on menu?)
             }
 
-            int i = 0;
-
-            while (i < triggerList.Count)
+            lock (_triggerLock)
             {
-                GlobalModules.TriggerDebugLog($"[CheckTriggers] Checking trigger {i}: value='{triggerList[i].Value}', label='{triggerList[i].LabelName}'\n");
-                if (text.Contains(triggerList[i].Value) || string.IsNullOrEmpty(triggerList[i].Value))
+                int i = 0;
+
+                while (i < triggerList.Count)
                 {
-                    _lastLineHandled = true;
-                    GlobalModules.TriggerDebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
-                    // Save trigger values
-                    int lifeCycle = triggerList[i].LifeCycle;
-                    string labelName = triggerList[i].LabelName;
-                    string response = triggerList[i].Response;
-
-                    // New lifecycle option
-                    if (lifeCycle > 0)
+                    Trigger trigger = triggerList[i];
+                    GlobalModules.TriggerDebugLog($"[CheckTriggers] Checking trigger {i}: value='{trigger.Value}', label='{trigger.LabelName}'\n");
+                    if (text.Contains(trigger.Value) || string.IsNullOrEmpty(trigger.Value))
                     {
-                        triggerList[i].LifeCycle = lifeCycle - 1;
-                        if (triggerList[i].LifeCycle == 0)
+                        _lastLineHandled = true;
+                        matched = true;
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] MATCH! Trigger {i} matched\n");
+                        // Save trigger values before any handler code can mutate the list.
+                        lifeCycle = trigger.LifeCycle;
+                        labelName = trigger.LabelName;
+                        response = trigger.Response;
+
+                        // New lifecycle option
+                        if (lifeCycle > 0)
                         {
-                            handled = true;
-                            FreeTrigger(triggerList[i]);
-                            triggerList.RemoveAt(i);
+                            trigger.LifeCycle = lifeCycle - 1;
+                            if (trigger.LifeCycle == 0)
+                            {
+                                handled = true;
+                                FreeTrigger(trigger);
+                                triggerList.RemoveAt(i);
+                            }
                         }
-                    }
 
-                    if (!string.IsNullOrEmpty(response))
-                    {
-                        // Handle autotrigger response - send the compiled bytes as-is.
-                        // Pascal TWX sends the response directly; source '*' characters have
-                        // already been serialized to carriage returns (#13) by the compiler.
-                        string output = response;
-
-                        if (GlobalModules.TWXDatabase is ModDatabase database)
-                        {
-                            // Convert string to bytes (Latin1 encoding to preserve high-byte chars like chr(145)).
-                            byte[] data = Encoding.Latin1.GetBytes(output);
-
-                            // Blocking send to preserve script send order.
-                            database.SendToServerAsync(data).GetAwaiter().GetResult();
-                        }
-                        
-                        return result;
+                        break;
                     }
                     else
                     {
-                        try
-                        {
-                            // Set CURRENTLINE to the text that triggered this handler
-                            // This allows the handler to parse the triggering line
-                            string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
-                            SetCurrentTextContext(currentLine, currentAnsiLine);
-                            ScriptRef.SetCurrentLine(currentLine);
-                            ScriptRef.SetCurrentAnsiLine(currentAnsiLine);
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
-                            
-                            GotoLabel(labelName);
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
-                        }
-                        catch (Exception ex)
-                        {
-                            // Script is not in execution - error handling for gotos outside execute loop
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel FAILED: {ex.Message}\n");
-                            // TWXServer.Broadcast($"{AnsiCodes.ANSI_15}Script run-time error (trigger activation): {AnsiCodes.ANSI_7}{ex.Message}\r\n");
-                            SelfTerminate();
-                            result = true;
-                        }
+                        i++;
                     }
+                }
+            }
 
-                    if (!result)
+            if (matched)
+            {
+                if (!string.IsNullOrEmpty(response))
+                {
+                    // Handle autotrigger response - send the compiled bytes as-is.
+                    // Pascal TWX sends the response directly; source '*' characters have
+                    // already been serialized to carriage returns (#13) by the compiler.
+                    string output = response;
+
+                    if (GlobalModules.TWXDatabase is ModDatabase database)
                     {
-                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
-                        TriggersActive = false;
+                        // Convert string to bytes (Latin1 encoding to preserve high-byte chars like chr(145)).
+                        byte[] data = Encoding.Latin1.GetBytes(output);
 
-                        // Save the current pause state before running the handler.
-                        // We must clear _paused so that Execute() can actually run the handler
-                        // code (it returns immediately when _paused is true).
-                        bool wasPaused = _paused;
-                        PauseReason savedPauseReason = _pausedReason;
-                        _paused = false;
-                        _pausedReason = PauseReason.None;
-
-                        // For PERSISTENT triggers (LifeCycle == 0) that fire while the outer
-                        // code is mid-waitOn, the handler must NOT permanently overwrite the
-                        // instruction pointer or the waitFor state.  The handler's variable
-                        // side-effects are still useful, but the outer execution position must
-                        // be restored afterwards so that the outer waitOn resumes correctly.
-                        // NOTE: SetTextLineTrigger uses LifeCycle = 1 (one-shot) to match the
-                        // original Pascal TWX where all triggers are removed before firing.
-                        // This path is only relevant for any future LifeCycle = 0 triggers.
-                        bool outerWaitActive = _waitForActive;   // true when mid-waitOn
-                        int  savedCodePos    = _codePos;
-                        string savedWaitText = _waitText;
-
-                        if (Execute())
-                        {
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
-                            result = true; // script was self-terminated
-                        }
-                        else
-                        {
-                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
-                            bool handlerPaused = _paused; // did the handler itself pause (e.g. its own waitOn)?
-
-                            if (handlerPaused && lifeCycle == 0 && outerWaitActive)
-                            {
-                                // Persistent trigger (LifeCycle==0) fired while the outer script
-                                // was mid-waitOn.  Restore the pre-trigger IP and waitFor state
-                                // so the outer waitOn resumes from the correct bytecode spot.
-                                GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger fired mid-waitOn; restoring outer IP and waitFor state\n");
-                                _codePos      = savedCodePos;
-                                _waitForActive = outerWaitActive;  // true
-                                _waitText      = savedWaitText;
-                                _paused        = true;
-                                _pausedReason  = savedPauseReason;
-                            }
-                            else if (handlerPaused)
-                            {
-                                // Handler registered its own waitOn/pause and paused.
-                                // Leave the handler's pause as the effective state.
-                                GlobalModules.TriggerDebugLog($"[CheckTriggers] Handler paused itself (new waitOn); leaving handler pause in place\n");
-                            }
-                            else if (wasPaused)
-                            {
-                                // Handler completed without pausing.
-                                if (lifeCycle > 0)
-                                {
-                                    // One-shot trigger (waitOn): the outer pause is consumed by
-                                    // this trigger firing.  Script continues from here.
-                                    GlobalModules.TriggerDebugLog($"[CheckTriggers] One-shot trigger satisfied outer pause — script continues\n");
-                                    // _paused already false — nothing to do
-                                }
-                                else
-                                {
-                                    // Persistent trigger (setTextLineTrigger): handler ran to
-                                    // completion without setting its own waitOn.  Restore the
-                                    // outer pause so the main script keeps waiting.
-                                    GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger handler done; restoring outer pause\n");
-                                    _paused = true;
-                                    _pausedReason = savedPauseReason;
-                                    _resetLoopDetectionOnNextExecute = true;
-                                }
-                            }
-                            // If !wasPaused: script was not paused before, nothing to restore.
-                        }
+                        // Blocking send to preserve script send order.
+                        database.SendToServerAsync(data).GetAwaiter().GetResult();
                     }
 
-                    if (result)
-                    {
-                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Returning true from CheckTriggers\n");
-                        return result;
-                    }
-
-                    break;
+                    return result;
                 }
                 else
                 {
-                    i++;
+                    try
+                    {
+                        // Set CURRENTLINE to the text that triggered this handler
+                        // This allows the handler to parse the triggering line
+                        string currentLine = textOutTrigger ? NormalizeTextOutCurrentLine(text) : text;
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Setting CURRENTLINE to '{currentLine}'\n");
+                        SetCurrentTextContext(currentLine, currentAnsiLine);
+                        ScriptRef.SetCurrentLine(currentLine);
+                        ScriptRef.SetCurrentAnsiLine(currentAnsiLine);
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
+                        
+                        GotoLabel(labelName);
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
+                    }
+                    catch (Exception ex)
+                    {
+                        // Script is not in execution - error handling for gotos outside execute loop
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel FAILED: {ex.Message}\n");
+                        // TWXServer.Broadcast($"{AnsiCodes.ANSI_15}Script run-time error (trigger activation): {AnsiCodes.ANSI_7}{ex.Message}\r\n");
+                        SelfTerminate();
+                        result = true;
+                    }
+                }
+
+                if (!result)
+                {
+                    GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling Execute() to run handler\n");
+                    TriggersActive = false;
+
+                    // Save the current pause state before running the handler.
+                    // We must clear _paused so that Execute() can actually run the handler
+                    // code (it returns immediately when _paused is true).
+                    bool wasPaused = _paused;
+                    PauseReason savedPauseReason = _pausedReason;
+                    _paused = false;
+                    _pausedReason = PauseReason.None;
+
+                    // For PERSISTENT triggers (LifeCycle == 0) that fire while the outer
+                    // code is mid-waitOn, the handler must NOT permanently overwrite the
+                    // instruction pointer or the waitFor state.  The handler's variable
+                    // side-effects are still useful, but the outer execution position must
+                    // be restored afterwards so that the outer waitOn resumes correctly.
+                    // NOTE: SetTextLineTrigger uses LifeCycle = 1 (one-shot) to match the
+                    // original Pascal TWX where all triggers are removed before firing.
+                    // This path is only relevant for any future LifeCycle = 0 triggers.
+                    bool outerWaitActive = _waitForActive;   // true when mid-waitOn
+                    int  savedCodePos    = _codePos;
+                    string savedWaitText = _waitText;
+
+                    if (Execute())
+                    {
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned true (script terminated)\n");
+                        result = true; // script was self-terminated
+                    }
+                    else
+                    {
+                        GlobalModules.TriggerDebugLog($"[CheckTriggers] Execute() returned false (handler completed)\n");
+                        bool handlerPaused = _paused; // did the handler itself pause (e.g. its own waitOn)?
+
+                        if (handlerPaused && lifeCycle == 0 && outerWaitActive)
+                        {
+                            // Persistent trigger (LifeCycle==0) fired while the outer script
+                            // was mid-waitOn.  Restore the pre-trigger IP and waitFor state
+                            // so the outer waitOn resumes from the correct bytecode spot.
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger fired mid-waitOn; restoring outer IP and waitFor state\n");
+                            _codePos      = savedCodePos;
+                            _waitForActive = outerWaitActive;  // true
+                            _waitText      = savedWaitText;
+                            _paused        = true;
+                            _pausedReason  = savedPauseReason;
+                        }
+                        else if (handlerPaused)
+                        {
+                            // Handler registered its own waitOn/pause and paused.
+                            // Leave the handler's pause as the effective state.
+                            GlobalModules.TriggerDebugLog($"[CheckTriggers] Handler paused itself (new waitOn); leaving handler pause in place\n");
+                        }
+                        else if (wasPaused)
+                        {
+                            // Handler completed without pausing.
+                            if (lifeCycle > 0)
+                            {
+                                // One-shot trigger (waitOn): the outer pause is consumed by
+                                // this trigger firing.  Script continues from here.
+                                GlobalModules.TriggerDebugLog($"[CheckTriggers] One-shot trigger satisfied outer pause — script continues\n");
+                                // _paused already false — nothing to do
+                            }
+                            else
+                            {
+                                // Persistent trigger (setTextLineTrigger): handler ran to
+                                // completion without setting its own waitOn.  Restore the
+                                // outer pause so the main script keeps waiting.
+                                GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger handler done; restoring outer pause\n");
+                                _paused = true;
+                                _pausedReason = savedPauseReason;
+                                _resetLoopDetectionOnNextExecute = true;
+                            }
+                        }
+                        // If !wasPaused: script was not paused before, nothing to restore.
+                    }
+                }
+
+                if (result)
+                {
+                    GlobalModules.TriggerDebugLog($"[CheckTriggers] Returning true from CheckTriggers\n");
+                    return result;
                 }
             }
 
@@ -2030,14 +2069,17 @@ namespace TWXProxy.Core
 
         private bool TriggerExists(string name)
         {
-            // Check through all trigger lists to see if this trigger name is in use
-            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            lock (_triggerLock)
             {
-                var triggerList = _triggers[triggerType];
-                if (triggerList.Any(t => t.Name == name))
-                    return true;
+                // Check through all trigger lists to see if this trigger name is in use
+                foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+                {
+                    var triggerList = _triggers[triggerType];
+                    if (triggerList.Any(t => t.Name == name))
+                        return true;
+                }
+                return false;
             }
-            return false;
         }
 
         public bool TextOutEvent(string text, ref bool handled)
@@ -2104,78 +2146,92 @@ namespace TWXProxy.Core
             // Check through EventTriggers for matches with Text
             if (eventNameUpper == "SCRIPT STOPPED")
             {
-                int eventCount = _triggers[TriggerType.Event].Count(t => t.Value == "SCRIPT STOPPED");
+                int eventCount;
+                lock (_triggerLock)
+                    eventCount = _triggers[TriggerType.Event].Count(t => t.Value == "SCRIPT STOPPED");
                 GlobalModules.DebugLog($"[Script.ProgramEvent] Script='{ScriptName}' received SCRIPT STOPPED, eventTriggerCount={eventCount}\n");
                 GlobalModules.FlushDebugLog();
             }
 
-            GlobalModules.DebugLog($"[Script.ProgramEvent] Script='{ScriptName}' event='{eventNameUpper}' triggerCount={_triggers[TriggerType.Event].Count}\n");
+            int triggerCount;
+            lock (_triggerLock)
+                triggerCount = _triggers[TriggerType.Event].Count;
+            GlobalModules.DebugLog($"[Script.ProgramEvent] Script='{ScriptName}' event='{eventNameUpper}' triggerCount={triggerCount}\n");
             GlobalModules.FlushDebugLog();
 
             bool result = false;
-            int i = 0;
+            bool matched = false;
+            string labelName = string.Empty;
 
-            while (i < _triggers[TriggerType.Event].Count)
+            lock (_triggerLock)
             {
-                var trigger = _triggers[TriggerType.Event][i];
+                int i = 0;
 
-                bool matchFound = trigger.Value == eventNameUpper &&
-                    ((!exclusive && matchText.Contains(trigger.Param)) ||
-                     (exclusive && trigger.Param == matchText) ||
-                     string.IsNullOrEmpty(matchText) ||
-                     string.IsNullOrEmpty(trigger.Param));
-
-                if (matchFound)
+                while (i < _triggers[TriggerType.Event].Count)
                 {
-                    GlobalModules.DebugLog($"[Script.ProgramEvent] MATCHED trigger='{trigger.Name}' label='{trigger.LabelName}'\n");
-                    GlobalModules.FlushDebugLog();
+                    var trigger = _triggers[TriggerType.Event][i];
 
-                    // Remove this trigger and enact it
-                    string labelName = trigger.LabelName;
-                    FreeTrigger(_triggers[TriggerType.Event][i]);
-                    _triggers[TriggerType.Event].RemoveAt(i);
+                    bool matchFound = trigger.Value == eventNameUpper &&
+                        ((!exclusive && matchText.Contains(trigger.Param)) ||
+                         (exclusive && trigger.Param == matchText) ||
+                         string.IsNullOrEmpty(matchText) ||
+                         string.IsNullOrEmpty(trigger.Param));
 
-                    try
+                    if (matchFound)
                     {
-                        GotoLabel(labelName);
+                        matched = true;
+                        GlobalModules.DebugLog($"[Script.ProgramEvent] MATCHED trigger='{trigger.Name}' label='{trigger.LabelName}'\n");
+                        GlobalModules.FlushDebugLog();
+
+                        // Remove this trigger and enact it
+                        labelName = trigger.LabelName;
+                        FreeTrigger(trigger);
+                        _triggers[TriggerType.Event].RemoveAt(i);
+                        break;
                     }
-                    catch (Exception)
+                    else
                     {
-                        // Script is not in execution - error handling for gotos outside execute loop
-                        SelfTerminate();
-                        result = true;
+                        i++;
                     }
-
-                    if (!result)
-                    {
-                        TriggersActive = false;
-
-                        // Clear _paused so Execute() can actually run the handler
-                        // (Execute returns immediately when _paused is true).
-                        bool wasPaused = _paused;
-                        PauseReason savedPauseReason = _pausedReason;
-                        _paused = false;
-                        _pausedReason = PauseReason.None;
-
-                        if (Execute())
-                        {
-                            result = true; // script was self-terminated
-                        }
-                        else if (wasPaused && !_paused)
-                        {
-                            // Handler ran to completion without re-pausing; restore original pause
-                            // so the outer PAUSE loop continues where it left off.
-                            _paused = true;
-                            _pausedReason = savedPauseReason;
-                            _resetLoopDetectionOnNextExecute = true;
-                        }
-                    }
-
-                    break;
                 }
-                else
+            }
+
+            if (matched)
+            {
+                try
                 {
-                    i++;
+                    GotoLabel(labelName);
+                }
+                catch (Exception)
+                {
+                    // Script is not in execution - error handling for gotos outside execute loop
+                    SelfTerminate();
+                    result = true;
+                }
+
+                if (!result)
+                {
+                    TriggersActive = false;
+
+                    // Clear _paused so Execute() can actually run the handler
+                    // (Execute returns immediately when _paused is true).
+                    bool wasPaused = _paused;
+                    PauseReason savedPauseReason = _pausedReason;
+                    _paused = false;
+                    _pausedReason = PauseReason.None;
+
+                    if (Execute())
+                    {
+                        result = true; // script was self-terminated
+                    }
+                    else if (wasPaused && !_paused)
+                    {
+                        // Handler ran to completion without re-pausing; restore original pause
+                        // so the outer PAUSE loop continues where it left off.
+                        _paused = true;
+                        _pausedReason = savedPauseReason;
+                        _resetLoopDetectionOnNextExecute = true;
+                    }
                 }
             }
 
@@ -2185,20 +2241,34 @@ namespace TWXProxy.Core
         public bool EventActive(string eventName)
         {
             // Check for events matching this event name
-            return _triggers[TriggerType.Event].Any(t => t.Value == eventName);
+            lock (_triggerLock)
+                return _triggers[TriggerType.Event].Any(t => t.Value == eventName);
         }
 
         private void DelayTimerEvent(object? sender, ElapsedEventArgs e)
         {
-            if (sender is not DelayTimer timer || timer.DelayTrigger == null)
+            if (sender is not DelayTimer timer)
                 return;
 
-            string labelName = timer.DelayTrigger.LabelName;
+            string labelName;
             bool term = false;
 
-            // Remove the trigger and its timer
-            _triggers[TriggerType.Delay].Remove(timer.DelayTrigger);
-            FreeTrigger(timer.DelayTrigger);
+            lock (_triggerLock)
+            {
+                Trigger? trigger = timer.DelayTrigger;
+                if (trigger == null || trigger.IsCancelled)
+                    return;
+
+                int triggerIndex = _triggers[TriggerType.Delay].IndexOf(trigger);
+                if (triggerIndex < 0)
+                    return;
+
+                labelName = trigger.LabelName;
+
+                // Remove the trigger and its timer before running the handler.
+                _triggers[TriggerType.Delay].RemoveAt(triggerIndex);
+                FreeTrigger(trigger);
+            }
 
             try
             {
@@ -2244,48 +2314,60 @@ namespace TWXProxy.Core
 
         public void SetAutoTrigger(string name, string value, string response, int lifeCycle)
         {
-            if (TriggerExists(name))
-                throw new Exception($"Trigger already exists: '{name}'");
-
-            var trigger = new Trigger
+            lock (_triggerLock)
             {
-                Name = name,
-                LabelName = string.Empty,
-                Response = response,
-                Value = value,
-                Timer = null,
-                LifeCycle = lifeCycle
-            };
+                if (TriggerExists(name))
+                    throw new Exception($"Trigger already exists: '{name}'");
 
-            _triggers[TriggerType.TextAuto].Add(trigger);
+                var trigger = new Trigger
+                {
+                    Name = name,
+                    LabelName = string.Empty,
+                    Response = response,
+                    Value = value,
+                    Timer = null,
+                    LifeCycle = lifeCycle
+                };
+
+                _triggers[TriggerType.TextAuto].Add(trigger);
+            }
         }
 
         public void SetTextLineTrigger(string name, string labelName, string value)
         {
-            KillTrigger(name); // upsert: replace any existing trigger with this name
-            var trigger = CreateTrigger(name, labelName, value);
-            // LifeCycle = 1 (one-shot, default from CreateTrigger): matches Pascal behavior where
-            // all triggers are unconditionally removed before their handler runs.  "Persistence"
-            // in scripts like InfoQuick's :line loop is achieved by the handler re-registering
-            // the trigger itself, exactly as in the original Pascal TWX.
-            _triggers[TriggerType.TextLine].Add(trigger);
+            lock (_triggerLock)
+            {
+                KillTrigger(name); // upsert: replace any existing trigger with this name
+                var trigger = CreateTrigger(name, labelName, value);
+                // LifeCycle = 1 (one-shot, default from CreateTrigger): matches Pascal behavior where
+                // all triggers are unconditionally removed before their handler runs.  "Persistence"
+                // in scripts like InfoQuick's :line loop is achieved by the handler re-registering
+                // the trigger itself, exactly as in the original Pascal TWX.
+                _triggers[TriggerType.TextLine].Add(trigger);
+            }
         }
 
         public void SetTextOutTrigger(string name, string labelName, string value)
         {
-            KillTrigger(name); // upsert: replace any existing trigger with this name
-            var trigger = CreateTrigger(name, labelName, value);
-            // LifeCycle = 1 (one-shot): matches Pascal behavior.
-            _triggers[TriggerType.TextOut].Add(trigger);
+            lock (_triggerLock)
+            {
+                KillTrigger(name); // upsert: replace any existing trigger with this name
+                var trigger = CreateTrigger(name, labelName, value);
+                // LifeCycle = 1 (one-shot): matches Pascal behavior.
+                _triggers[TriggerType.TextOut].Add(trigger);
+            }
         }
 
         public void SetTextTrigger(string name, string labelName, string value)
         {
-            // Upsert: remove any existing trigger with this name first.
-            // In the original Pascal TWX, re-registering a waitOn is valid and simply
-            // replaces the old entry (e.g. when a persistent handler re-issues the same waitOn).
-            KillTrigger(name);
-            _triggers[TriggerType.Text].Add(CreateTrigger(name, labelName, value));
+            lock (_triggerLock)
+            {
+                // Upsert: remove any existing trigger with this name first.
+                // In the original Pascal TWX, re-registering a waitOn is valid and simply
+                // replaces the old entry (e.g. when a persistent handler re-issues the same waitOn).
+                KillTrigger(name);
+                _triggers[TriggerType.Text].Add(CreateTrigger(name, labelName, value));
+            }
         }
 
         public void SetEventTrigger(string name, string labelName, string value, string param)
@@ -2296,26 +2378,29 @@ namespace TWXProxy.Core
                 _cmp.ExtendLabelName(ref labelName, _execScriptID);
             }
 
-            if (TriggerExists(name))
-                throw new Exception($"Trigger already exists: '{name}'");
-
             GlobalModules.TriggerDebugLog($"[SETEVENTTRIGGER] name='{name}' label='{labelName}' event='{value}' param='{param}'\n");
 
-            var trigger = new Trigger
+            lock (_triggerLock)
             {
-                Name = name,
-                LabelName = labelName,
-                Response = string.Empty,
-                Value = value.ToUpperInvariant(),
-                Param = param,
-                Timer = null,
-                LifeCycle = 1
-            };
+                if (TriggerExists(name))
+                    throw new Exception($"Trigger already exists: '{name}'");
 
-            if (trigger.Value == "TIME HIT")
-                _owner.CountTimerEvent();
+                var trigger = new Trigger
+                {
+                    Name = name,
+                    LabelName = labelName,
+                    Response = string.Empty,
+                    Value = value.ToUpperInvariant(),
+                    Param = param,
+                    Timer = null,
+                    LifeCycle = 1
+                };
 
-            _triggers[TriggerType.Event].Add(trigger);
+                if (trigger.Value == "TIME HIT")
+                    _owner.CountTimerEvent();
+
+                _triggers[TriggerType.Event].Add(trigger);
+            }
         }
 
         public void SetDelayTrigger(string name, string labelName, int value)
@@ -2326,31 +2411,33 @@ namespace TWXProxy.Core
                 _cmp.ExtendLabelName(ref labelName, _execScriptID);
             }
 
-            if (TriggerExists(name))
-                throw new Exception($"Trigger already exists: '{name}'");
-
-            var trigger = new Trigger
+            lock (_triggerLock)
             {
-                Name = name,
-                LabelName = labelName,
-                Response = string.Empty,
-                Value = string.Empty,
-                Param = string.Empty,
-                LifeCycle = 1
-            };
+                if (TriggerExists(name))
+                    throw new Exception($"Trigger already exists: '{name}'");
 
-            var timer = new DelayTimer
-            {
-                Interval = value,
-                DelayTrigger = trigger,
-                AutoReset = false
-            };
+                var trigger = new Trigger
+                {
+                    Name = name,
+                    LabelName = labelName,
+                    Response = string.Empty,
+                    Value = string.Empty,
+                    Param = string.Empty,
+                    LifeCycle = 1
+                };
 
-            timer.Elapsed += DelayTimerEvent;
-            trigger.Timer = timer;
-            timer.Start();
+                var timer = new DelayTimer
+                {
+                    Interval = value,
+                    DelayTrigger = trigger,
+                    AutoReset = false
+                };
 
-            _triggers[TriggerType.Delay].Add(trigger);
+                timer.Elapsed += DelayTimerEvent;
+                trigger.Timer = timer;
+                _triggers[TriggerType.Delay].Add(trigger);
+                timer.Start();
+            }
         }
 
         public void KillTrigger(string name)
@@ -2358,20 +2445,23 @@ namespace TWXProxy.Core
             if (_cmp != null)
                 _cmp.ExtendName(ref name, _execScriptID);
 
-            // Remove trigger by name from all trigger lists
-            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            lock (_triggerLock)
             {
-                var triggerList = _triggers[triggerType];
-                for (int i = 0; i < triggerList.Count; i++)
+                // Remove trigger by name from all trigger lists
+                foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
                 {
-                    if (triggerList[i].Name == name)
+                    var triggerList = _triggers[triggerType];
+                    for (int i = 0; i < triggerList.Count; i++)
                     {
-                        if (triggerList[i].Value == "TIME HIT")
-                            _owner.UnCountTimerEvent();
+                        if (triggerList[i].Name == name)
+                        {
+                            if (triggerList[i].Value == "TIME HIT")
+                                _owner.UnCountTimerEvent();
 
-                        FreeTrigger(triggerList[i]);
-                        triggerList.RemoveAt(i);
-                        return;
+                            FreeTrigger(triggerList[i]);
+                            triggerList.RemoveAt(i);
+                            return;
+                        }
                     }
                 }
             }
@@ -2379,17 +2469,20 @@ namespace TWXProxy.Core
 
         public void KillAllTriggers()
         {
-            // Remove all triggers
-            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            lock (_triggerLock)
             {
-                var triggerList = _triggers[triggerType];
-                while (triggerList.Count > 0)
+                // Remove all triggers
+                foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
                 {
-                    if (triggerList[0].Value == "TIME HIT")
-                        _owner.UnCountTimerEvent();
+                    var triggerList = _triggers[triggerType];
+                    while (triggerList.Count > 0)
+                    {
+                        if (triggerList[0].Value == "TIME HIT")
+                            _owner.UnCountTimerEvent();
 
-                    FreeTrigger(triggerList[0]);
-                    triggerList.RemoveAt(0);
+                        FreeTrigger(triggerList[0]);
+                        triggerList.RemoveAt(0);
+                    }
                 }
             }
         }
@@ -2727,7 +2820,7 @@ namespace TWXProxy.Core
                     $"[Array Access Error] base='{varParam.Name}' indexes=[{string.Join(", ", indexes)}] message='{ex.Message}'\n");
                 if (!ShouldSuppressArrayAccessError(ex.Message, indexes))
                 {
-                    GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                    ScriptDiagnosticOutput.Write($"[Array Access Error] {ex.Message}\r\n");
                 }
                 return baseParam;  // Return base param if index fails
             }
@@ -3237,7 +3330,7 @@ namespace TWXProxy.Core
                     $"[Array Access Error] base='{varParam.Name}' indexes=[{string.Join(", ", indexValues)}] message='{ex.Message}'\n");
                 if (!ShouldSuppressArrayAccessError(ex.Message, indexValues))
                 {
-                    GlobalModules.TWXServer?.ClientMessage($"[Array Access Error] {ex.Message}\r\n");
+                    ScriptDiagnosticOutput.Write($"[Array Access Error] {ex.Message}\r\n");
                 }
                 return baseParam;
             }
@@ -3437,7 +3530,7 @@ namespace TWXProxy.Core
                     if (cmd == null)
                     {
                         if (cmdID >= _owner.ScriptRef.CmdCount)
-                            server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
 
                         goto NextInstruction;
                     }
@@ -3572,7 +3665,7 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -3583,7 +3676,7 @@ namespace TWXProxy.Core
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.ExecuteLegacyParsed] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -3662,7 +3755,7 @@ namespace TWXProxy.Core
                     if (instruction.Handler == null)
                     {
                         if (_owner.ScriptRef != null && cmdID >= _owner.ScriptRef.CmdCount)
-                            server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
 
                         goto NextInstruction;
                     }
@@ -3804,7 +3897,7 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -3815,7 +3908,7 @@ namespace TWXProxy.Core
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.ExecutePrepared] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = prepared.CodeLength;
                 return Finish(true);
             }
@@ -4009,7 +4102,7 @@ namespace TWXProxy.Core
                             // Create a placeholder if parameter doesn't exist
                             if (paramID < 0 || paramID >= cmp.ParamList.Count)
                             {
-                                server?.ClientMessage($"Warning: Parameter ID {paramID} not found in list (count={cmp.ParamList.Count}), using empty string\r\n");
+                                ScriptDiagnosticOutput.Write(server, $"Warning: Parameter ID {paramID} not found in list (count={cmp.ParamList.Count}), using empty string\r\n");
                                 Console.WriteLine($"Warning: Parameter ID {paramID} not found in ParamList (count={cmp.ParamList.Count})");
                                 
                                 // Skip array index data if it's a VAR type
@@ -4070,7 +4163,7 @@ namespace TWXProxy.Core
                                 // Debug: show variable names for PARAM_VAR (only if enabled)
                                 if (_enableVariableDebug && paramType == ScriptConstants.PARAM_VAR && param is VarParam varParam)
                                 {
-                                    server?.ClientMessage($"  [VAR {paramID}] = {varParam.Name} (value='{varParam.Value}')\r\n");
+                                    ScriptDiagnosticOutput.Write(server, $"  [VAR {paramID}] = {varParam.Name} (value='{varParam.Value}')\r\n");
                                 }
                             }
                         }
@@ -4137,18 +4230,18 @@ namespace TWXProxy.Core
                             // 1. Unimplemented parameter type
                             // 2. Bytecode misalignment 
                             // 3. Corrupted script file
-                            server?.ClientMessage($"ERROR: Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos-1}\r\n");
-                            server?.ClientMessage($"  Current command ID: {cmdID}\r\n");
-                            server?.ClientMessage($"  Parameters read so far: {paramCount-1}\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"ERROR: Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos-1}\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"  Current command ID: {cmdID}\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"  Parameters read so far: {paramCount-1}\r\n");
                             
                             int prevStart = Math.Max(0, _codePos - 17);
                             int prevLen = Math.Min(16, _codePos - 1 - prevStart);
                             if (prevLen > 0)
-                                server?.ClientMessage($"  Previous {prevLen} bytes: {BitConverter.ToString(code, prevStart, prevLen)}\r\n");
+                                ScriptDiagnosticOutput.Write(server, $"  Previous {prevLen} bytes: {BitConverter.ToString(code, prevStart, prevLen)}\r\n");
                             
                             int nextLen = Math.Min(16, code.Length - _codePos);
                             if (nextLen > 0)
-                                server?.ClientMessage($"  Next {nextLen} bytes: {BitConverter.ToString(code, _codePos, nextLen)}\r\n");
+                                ScriptDiagnosticOutput.Write(server, $"  Next {nextLen} bytes: {BitConverter.ToString(code, _codePos, nextLen)}\r\n");
                             
                             // This is a fatal error - we cannot safely continue
                             throw new Exception($"Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos-1}. Cannot safely parse remaining bytecode.");
@@ -4162,7 +4255,7 @@ namespace TWXProxy.Core
                     // Execute command (with bounds checking for compatibility)
                     if (cmdID >= _owner.ScriptRef.CmdCount)
                     {
-                        server?.ClientMessage($"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount-1}), skipping\r\n");
+                        ScriptDiagnosticOutput.Write(server, $"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount-1}), skipping\r\n");
                         continue; // Skip unknown commands for version compatibility
                     }
                     
@@ -4307,7 +4400,7 @@ namespace TWXProxy.Core
                     Console.WriteLine(innerMsg);
                     GlobalModules.DebugLog(innerMsg + "\n");
                 }
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = code.Length; // terminate this script
                 return Finish(true);
             }
@@ -4319,7 +4412,7 @@ namespace TWXProxy.Core
                 Console.WriteLine(msg);
                 Console.WriteLine($"[Script.Execute] Stack trace: {ex.StackTrace}");
                 GlobalModules.DebugLog(msg + "\n");
-                GlobalModules.TWXServer?.ClientMessage($"\r\n[Script error] {formattedMessage}\r\n");
+                ScriptDiagnosticOutput.Write($"\r\n[Script error] {formattedMessage}\r\n");
                 _codePos = code.Length; // terminate this script
                 return Finish(true);
             }
@@ -4533,17 +4626,20 @@ namespace TWXProxy.Core
             server.BroadcastLiteral($"\r\n{AnsiCodes.ANSI_15}Triggers for {AnsiCodes.ANSI_7}{ScriptName}{AnsiCodes.ANSI_15}\r\n");
 
             bool found = false;
-            foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
+            lock (_triggerLock)
             {
-                var triggerList = _triggers[triggerType];
-                if (triggerList.Count > 0)
+                foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
                 {
-                    found = true;
-                    server.BroadcastLiteral($"  {AnsiCodes.ANSI_11}{triggerType}{AnsiCodes.ANSI_15}\r\n");
-                    foreach (var trigger in triggerList)
+                    var triggerList = _triggers[triggerType];
+                    if (triggerList.Count > 0)
                     {
-                        server.BroadcastLiteral(
-                            $"    {AnsiCodes.ANSI_7}{trigger.Name}{AnsiCodes.ANSI_15} = {AnsiCodes.ANSI_7}{trigger.Value}{AnsiCodes.ANSI_15}\r\n");
+                        found = true;
+                        server.BroadcastLiteral($"  {AnsiCodes.ANSI_11}{triggerType}{AnsiCodes.ANSI_15}\r\n");
+                        foreach (var trigger in triggerList)
+                        {
+                            server.BroadcastLiteral(
+                                $"    {AnsiCodes.ANSI_7}{trigger.Name}{AnsiCodes.ANSI_15} = {AnsiCodes.ANSI_7}{trigger.Value}{AnsiCodes.ANSI_15}\r\n");
+                        }
                     }
                 }
             }
@@ -4573,13 +4669,9 @@ namespace TWXProxy.Core
             foreach (var triggerType in Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>())
             {
                 Trigger[] snapshot;
-                try
+                lock (_triggerLock)
                 {
                     snapshot = _triggers[triggerType].ToArray();
-                }
-                catch
-                {
-                    continue;
                 }
 
                 foreach (var trigger in snapshot)
@@ -4913,9 +5005,14 @@ namespace TWXProxy.Core
         /// Used by ActivateTriggers to decide whether a code-exhausted script should be
         /// kept alive (it still needs to respond to events) or cleaned up.
         /// </summary>
-        public bool HasActiveTriggers =>
-            _waitForActive ||
-            _triggers.Values.Any(list => list.Count > 0);
+        public bool HasActiveTriggers
+        {
+            get
+            {
+                lock (_triggerLock)
+                    return _waitForActive || _triggers.Values.Any(list => list.Count > 0);
+            }
+        }
         public string? LoadEventName { get; set; }
         public bool PreferPreparedExecution { get; set; } = false;
         public IExecutionObserver? ExecutionObserver { get; set; }

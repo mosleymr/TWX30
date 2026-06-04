@@ -53,6 +53,13 @@ public class GameInfoWindow : Window
         string Name,
         string ShipType,
         string Owner);
+    private sealed record AlienRow(
+        int Sector,
+        string Race,
+        string Name,
+        int Fighters,
+        string ShipName,
+        string ShipType);
     private sealed record GameSettingRow(string Label, GameSettingFormat Format, params string[] VariableNames);
 
     private readonly Func<Core.ModDatabase?> _getDb;
@@ -65,6 +72,7 @@ public class GameInfoWindow : Window
     private readonly StackPanel _planetsContent;
     private readonly StackPanel _portsContent;
     private readonly StackPanel _shipsContent;
+    private readonly StackPanel _aliensContent;
 
     private OwnershipFilter _fighterFilter = OwnershipFilter.All;
     private OwnershipFilter _planetFilter = OwnershipFilter.All;
@@ -76,6 +84,8 @@ public class GameInfoWindow : Window
     private bool _portSortDescending;
     private string _shipSortColumn = "sector";
     private bool _shipSortDescending;
+    private string _alienSortColumn = "sector";
+    private bool _alienSortDescending;
 
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(0x00, 0x00, 0x00));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(0x08, 0x08, 0x08));
@@ -184,6 +194,7 @@ public class GameInfoWindow : Window
         _planetsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _portsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
         _shipsContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
+        _aliensContent = new StackPanel { Margin = new Thickness(12), Spacing = 8 };
 
         var tabs = new TabControl
         {
@@ -248,6 +259,16 @@ public class GameInfoWindow : Window
                         VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                         HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
                     }
+                },
+                new TabItem
+                {
+                    Header = "Aliens",
+                    Content = new ScrollViewer
+                    {
+                        Content = _aliensContent,
+                        VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                        HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                    }
                 }
             }
         };
@@ -291,6 +312,7 @@ public class GameInfoWindow : Window
         _planetsContent.Children.Clear();
         _portsContent.Children.Clear();
         _shipsContent.Children.Clear();
+        _aliensContent.Children.Clear();
 
         Core.ModDatabase? db = _getDb();
         if (db == null)
@@ -303,6 +325,7 @@ public class GameInfoWindow : Window
             RenderEmptyTab(_planetsContent, "No active database.");
             RenderEmptyTab(_portsContent, "No active database.");
             RenderEmptyTab(_shipsContent, "No active database.");
+            RenderEmptyTab(_aliensContent, "No active database.");
             return;
         }
 
@@ -317,6 +340,7 @@ public class GameInfoWindow : Window
             RenderEmptyTab(_planetsContent, "Universe size is not known yet.");
             RenderEmptyTab(_portsContent, "Universe size is not known yet.");
             RenderEmptyTab(_shipsContent, "Universe size is not known yet.");
+            RenderEmptyTab(_aliensContent, "Universe size is not known yet.");
             return;
         }
 
@@ -329,6 +353,7 @@ public class GameInfoWindow : Window
         RenderPlanets(db, totalSectors);
         RenderPorts(db, totalSectors);
         RenderShips(db, totalSectors);
+        RenderAliens(db, totalSectors);
     }
 
     private void RenderStats(Core.ModDatabase db, int totalSectors)
@@ -336,6 +361,7 @@ public class GameInfoWindow : Window
         int knownPorts = 0;
         int visitedSectors = 0;
         int knownSectors = 0;
+        int alienSightings = 0;
         int solSector = 0;
         int rylosSector = 0;
         int alphaSector = 0;
@@ -350,6 +376,8 @@ public class GameInfoWindow : Window
                 knownSectors++;
             if (sector.Explored == Core.ExploreType.Yes)
                 visitedSectors++;
+
+            alienSightings += sector.Traders.Count(trader => IsAlienDisplayLabel(trader.DisplayLabel));
 
             if (sector.SectorPort == null || string.IsNullOrWhiteSpace(sector.SectorPort.Name))
                 continue;
@@ -392,6 +420,7 @@ public class GameInfoWindow : Window
         AddOverviewSpacer();
         AddOverviewLine("Known ports.......:", knownPorts.ToString(), ColYellow);
         AddOverviewLine("Known bubbles.....:", totalBubbles.ToString(), ColBlue);
+        AddOverviewLine("Aliens seen.......:", alienSightings.ToString(), ColYellow);
         AddOverviewLine("Explored sectors..:", $"{visitedSectors} ({FormatPercent(visitedSectors, totalSectors)})", ColCyan);
         AddOverviewLine("Known sectors.....:", $"{knownSectors} ({FormatPercent(knownSectors, totalSectors)})", ColMagenta);
         AddOverviewLine("Number of sectors.:", totalSectors.ToString(), ColRed);
@@ -894,6 +923,67 @@ public class GameInfoWindow : Window
         _shipsContent.Children.Add(rowsPanel);
     }
 
+    private void RenderAliens(Core.ModDatabase db, int totalSectors)
+    {
+        Dictionary<string, string> raceLookup = BuildAlienRaceLookup(db, totalSectors);
+        var rows = new List<AlienRow>();
+
+        for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
+        {
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null || sector.Traders.Count == 0)
+                continue;
+
+            foreach (Core.Trader trader in sector.Traders)
+            {
+                if (!IsAlienDisplayLabel(trader.DisplayLabel))
+                    continue;
+
+                rows.Add(new AlienRow(
+                    sectorNumber,
+                    ResolveAlienRace(sector, trader.DisplayLabel, raceLookup),
+                    string.IsNullOrWhiteSpace(trader.Name) ? "-" : trader.Name.Trim(),
+                    trader.Fighters,
+                    string.IsNullOrWhiteSpace(trader.ShipName) ? "-" : trader.ShipName.Trim(),
+                    string.IsNullOrWhiteSpace(trader.ShipType) ? "-" : trader.ShipType.Trim()));
+            }
+        }
+
+        rows = SortAliens(rows).ToList();
+
+        _aliensContent.Children.Add(BuildTableHeader(
+            "80,170,260,110,240,280",
+            (HeaderLabel("Sector", _alienSortColumn == "sector", _alienSortDescending), true, () => ToggleSort("alien", "sector")),
+            (HeaderLabel("Alien Race", _alienSortColumn == "race", _alienSortDescending), false, () => ToggleSort("alien", "race")),
+            (HeaderLabel("Alien Name", _alienSortColumn == "name", _alienSortDescending), false, () => ToggleSort("alien", "name")),
+            (HeaderLabel("Fighters", _alienSortColumn == "fighters", _alienSortDescending), true, () => ToggleSort("alien", "fighters")),
+            (HeaderLabel("Ship Name", _alienSortColumn == "ship", _alienSortDescending), false, () => ToggleSort("alien", "ship")),
+            (HeaderLabel("Ship Type", _alienSortColumn == "type", _alienSortDescending), false, () => ToggleSort("alien", "type"))));
+
+        if (rows.Count == 0)
+        {
+            RenderEmptyTab(_aliensContent, "No recorded alien ship sightings.");
+            return;
+        }
+
+        var rowsPanel = new StackPanel { Spacing = 2 };
+        for (int i = 0; i < rows.Count; i++)
+        {
+            AlienRow row = rows[i];
+            rowsPanel.Children.Add(BuildDataRow(
+                "80,170,260,110,240,280",
+                i,
+                (row.Sector.ToString(), true),
+                (row.Race, false),
+                (row.Name, false),
+                (row.Fighters > 0 ? row.Fighters.ToString("N0") : "-", true),
+                (row.ShipName, false),
+                (row.ShipType, false)));
+        }
+
+        _aliensContent.Children.Add(rowsPanel);
+    }
+
     private IEnumerable<FighterRow> SortFighters(IEnumerable<FighterRow> rows) => _fighterSortColumn switch
     {
         "owner" => _fighterSortDescending
@@ -956,6 +1046,28 @@ public class GameInfoWindow : Window
             : rows.OrderBy(r => r.Sector).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
     };
 
+    private IEnumerable<AlienRow> SortAliens(IEnumerable<AlienRow> rows) => _alienSortColumn switch
+    {
+        "race" => _alienSortDescending
+            ? rows.OrderByDescending(r => r.Race, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Race, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "name" => _alienSortDescending
+            ? rows.OrderByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "fighters" => _alienSortDescending
+            ? rows.OrderByDescending(r => r.Fighters).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Fighters).ThenBy(r => r.Sector),
+        "ship" => _alienSortDescending
+            ? rows.OrderByDescending(r => r.ShipName, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.ShipName, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "type" => _alienSortDescending
+            ? rows.OrderByDescending(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        _ => _alienSortDescending
+            ? rows.OrderByDescending(r => r.Sector).ThenByDescending(r => r.Race, StringComparer.OrdinalIgnoreCase)
+            : rows.OrderBy(r => r.Sector).ThenBy(r => r.Race, StringComparer.OrdinalIgnoreCase)
+    };
+
     private static IEnumerable<T> SortNullable<T>(
         IEnumerable<T> rows,
         Func<T, int?> keySelector,
@@ -1014,6 +1126,73 @@ public class GameInfoWindow : Window
     private static bool IsFriendlyOwner(string owner, GameState? state)
         => SectorOwnershipClassifier.IsFriendlyOwner(owner, state);
 
+    private static bool IsAlienDisplayLabel(string? label)
+    {
+        if (string.IsNullOrWhiteSpace(label))
+            return false;
+
+        string value = label.Trim();
+        return !value.Equals("Traders", StringComparison.OrdinalIgnoreCase) &&
+               !value.Equals("Federals", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, string> BuildAlienRaceLookup(Core.ModDatabase db, int totalSectors)
+    {
+        var lookup = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
+        {
+            Core.SectorData? sector = db.GetSector(sectorNumber);
+            if (sector == null)
+                continue;
+
+            if (!AliensWindow.TryNormalizeAlienConstellation(sector.Constellation, out string constellation))
+                continue;
+
+            string race = AliensWindow.BuildRaceLabel(constellation);
+            AddAlienRaceLookup(lookup, race, race);
+            AddAlienRaceLookup(lookup, constellation, race);
+        }
+
+        return lookup;
+    }
+
+    private static void AddAlienRaceLookup(Dictionary<string, string> lookup, string keySource, string race)
+    {
+        string key = NormalizeAlienRaceKey(keySource);
+        if (string.IsNullOrEmpty(key))
+            return;
+
+        lookup.TryAdd(key, race);
+        if (key.Length > 8)
+            lookup.TryAdd(key[..8], race);
+    }
+
+    private static string ResolveAlienRace(Core.SectorData sector, string label, IReadOnlyDictionary<string, string> raceLookup)
+    {
+        if (AliensWindow.TryNormalizeAlienConstellation(sector.Constellation, out string constellation))
+            return AliensWindow.BuildRaceLabel(constellation);
+
+        string key = NormalizeAlienRaceKey(label);
+        if (raceLookup.TryGetValue(key, out string? race))
+            return race;
+
+        if (key.Length > 8 && raceLookup.TryGetValue(key[..8], out race))
+            return race;
+
+        return string.IsNullOrWhiteSpace(label) ? "Alien" : label.Trim();
+    }
+
+    private static string NormalizeAlienRaceKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        return new string(value
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+    }
+
     private void ToggleSort(string table, string column)
     {
         switch (table)
@@ -1029,6 +1208,9 @@ public class GameInfoWindow : Window
                 break;
             case "ship":
                 (_shipSortColumn, _shipSortDescending) = ToggleSortState(_shipSortColumn, _shipSortDescending, column);
+                break;
+            case "alien":
+                (_alienSortColumn, _alienSortDescending) = ToggleSortState(_alienSortColumn, _alienSortDescending, column);
                 break;
         }
 

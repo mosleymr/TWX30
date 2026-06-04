@@ -54,7 +54,7 @@ namespace TWXProxy.Core
 
     public static class DatabaseConstants
     {
-        public const int DatabaseVersion = 14;
+        public const int DatabaseVersion = 15;
         public static readonly string[] DayNames = { "Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat" };
     }
 
@@ -2023,17 +2023,23 @@ namespace TWXProxy.Core
             writer.Write(trader.ShipType);
             writer.Write(trader.ShipName);
             writer.Write(trader.Fighters);
+            writer.Write(trader.DisplayLabel);
         }
 
         private Trader ReadTrader(BinaryReader reader)
         {
-            return new Trader
+            var trader = new Trader
             {
                 Name = reader.ReadString(),
                 ShipType = reader.ReadString(),
                 ShipName = reader.ReadString(),
                 Fighters = reader.ReadInt32()
             };
+
+            if (_header.Version >= 15 && reader.BaseStream.Position < reader.BaseStream.Length)
+                trader.DisplayLabel = reader.ReadString();
+
+            return trader;
         }
 
         #endregion

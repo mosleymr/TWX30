@@ -1,16 +1,16 @@
-# TWX Proxy 3.0
+# twxproxy 3.0 beta1
 
 Trade Wars 2002 proxy, scripting, compiler, and decompiler toolchain rewritten in C# on .NET 10.
 
-**Version:** 3.0.1  
-**Original Author:** Remco Mulder  
-**C# Port / Ongoing Development:** Matt Mosley  
-**TWX 2.6 / 2.7 Lineage:** David O. McCartney (MicroBlaster)  
+**Version:** 3.0 beta1
+**Original Author:** Remco Mulder
+**C# Port / Ongoing Development:** Matt Mosley
+**TWX 2.6 / 2.7 Lineage:** David O. McCartney (MicroBlaster)
 **License:** GPL v2+
 
 ## Overview
 
-TWX30 is the modern C# rewrite of the classic TWXProxy codebase. The repository includes:
+twxproxy 3.0 beta1 is the modern C# rewrite of the classic TWXProxy codebase. The repository includes:
 
 - a shared Core runtime used by the proxy, compiler, decompiler, and client apps
 - `TWXC`, which compiles TWX source scripts (`.ts`) to compiled bytecode (`.cts`)
@@ -193,6 +193,8 @@ Current work in this branch has been focused on:
 - The shared Core library is the compatibility-critical layer.
 - `TWXC`, `TWXD`, `MTC`, and the embedded proxy all depend on the same runtime behavior.
 - Native port and planet haggle mode behavior is summarized in [`../docs/haggle-modes.md`](../docs/haggle-modes.md).
+- Empirical merch pricing formulas for port MCIC / percent estimation are documented in
+  [`MERCH_PORT_PRICE_FORMULAS.md`](MERCH_PORT_PRICE_FORMULAS.md).
 - VM optimization work is being tracked separately in [`../docs/vm-optimization-design.md`](../docs/vm-optimization-design.md).
 - Script-runtime compatibility drifts and accepted behavior differences are tracked in
   [`SCRIPT_COMMAND_COMPAT_NOTES.md`](SCRIPT_COMMAND_COMPAT_NOTES.md).

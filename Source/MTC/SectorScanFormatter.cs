@@ -196,7 +196,7 @@ internal static class SectorScanFormatter
         if (value.Equals("JemHada", StringComparison.OrdinalIgnoreCase) ||
             value.Equals("Jem'Hada", StringComparison.OrdinalIgnoreCase))
             return "Jem'Hada";
-        return "Traders";
+        return value;
     }
 
     private static string FormatTraderLabel(string label) =>
@@ -204,7 +204,8 @@ internal static class SectorScanFormatter
         {
             "Federals" => "Federals: ",
             "Jem'Hada" => "Jem'Hada: ",
-            _ => TraderLabel,
+            "Traders" => TraderLabel,
+            _ => $"{label}: ",
         };
 
     private static string FormatConstellation(string? constellation)

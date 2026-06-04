@@ -204,12 +204,57 @@ namespace TWXProxy.Core
         private static Thread? _debugWorkerThread = null;
         private static long _pendingDebugMessageCount = 0;
         private static int _droppedDebugMessageCount = 0;
+        private static int _debugFlushRequested = 0;
         private const int MaxPendingDebugMessages = 16384;
+        private const long MaxDebugLogBytes = 512L * 1024 * 1024;
         private static StreamWriter? _debugWriter = null;
+        private static string? _debugWriterPath = null;
         private static StreamWriter? _portHaggleWriter = null;
         private static StreamWriter? _planetHaggleWriter = null;
 
         private static bool LogWriterEnabled => DebugMode || EnableVmMetrics;
+
+        private static void CloseDebugWriterUnsafe()
+        {
+            _debugWriter?.Dispose();
+            _debugWriter = null;
+            _debugWriterPath = null;
+        }
+
+        private static void RotateOversizedDebugLogUnsafe()
+        {
+            if (!File.Exists(DebugLogPath))
+                return;
+
+            long existingLength;
+            try
+            {
+                existingLength = new FileInfo(DebugLogPath).Length;
+            }
+            catch
+            {
+                return;
+            }
+
+            if (existingLength < MaxDebugLogBytes)
+                return;
+
+            string directory = Path.GetDirectoryName(DebugLogPath) ?? string.Empty;
+            string fileName = Path.GetFileName(DebugLogPath);
+            string rotatedPath = Path.Combine(
+                directory,
+                $"{fileName}.{DateTime.Now:yyyyMMdd-HHmmss}.old");
+
+            try
+            {
+                File.Move(DebugLogPath, rotatedPath, overwrite: true);
+            }
+            catch
+            {
+                // Rotation is best-effort. If the file cannot be moved, continue
+                // appending rather than risking gameplay behavior.
+            }
+        }
 
         private static void EnsureLogWriter(bool resetFile)
         {
@@ -219,6 +264,12 @@ namespace TWXProxy.Core
             string? directory = Path.GetDirectoryName(DebugLogPath);
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
+
+            if (_debugWriter != null &&
+                !string.Equals(_debugWriterPath, DebugLogPath, StringComparison.Ordinal))
+            {
+                CloseDebugWriterUnsafe();
+            }
 
             if (_debugWriter != null && !resetFile)
             {
@@ -236,9 +287,11 @@ namespace TWXProxy.Core
                 if (logFileStillVisible)
                     return;
 
-                _debugWriter.Dispose();
-                _debugWriter = null;
+                CloseDebugWriterUnsafe();
             }
+
+            if (!resetFile)
+                RotateOversizedDebugLogUnsafe();
 
             bool fileExists = File.Exists(DebugLogPath);
             long existingLength = 0;
@@ -259,6 +312,7 @@ namespace TWXProxy.Core
             {
                 AutoFlush = false
             };
+            _debugWriterPath = DebugLogPath;
 
             if (resetFile || !fileExists || existingLength == 0)
             {
@@ -295,7 +349,8 @@ namespace TWXProxy.Core
                 _debugQueueSignal.WaitOne(250);
                 try
                 {
-                    DrainQueuedDebugMessages(flushWriter: true);
+                    bool flushRequested = Interlocked.Exchange(ref _debugFlushRequested, 0) != 0;
+                    DrainQueuedDebugMessages(flushWriter: flushRequested || !_pendingDebugMessages.IsEmpty);
                 }
                 catch
                 {
@@ -328,9 +383,10 @@ namespace TWXProxy.Core
         {
             lock (_debugLock)
             {
-                if (!LogWriterEnabled && _debugWriter == null)
+                if (!LogWriterEnabled)
                 {
                     ClearQueuedDebugMessages();
+                    CloseDebugWriterUnsafe();
                     return;
                 }
 
@@ -359,6 +415,13 @@ namespace TWXProxy.Core
                 if (flushWriter && (wrote || _debugWriter != null))
                     _debugWriter?.Flush();
             }
+        }
+
+        private static void RequestDebugWriterFlush()
+        {
+            Interlocked.Exchange(ref _debugFlushRequested, 1);
+            EnsureDebugWorker();
+            _debugQueueSignal.Set();
         }
 
         private static void WriteLogMessage(string message)
@@ -428,6 +491,7 @@ namespace TWXProxy.Core
             bool scriptTraceEnabled = false,
             bool autoRecorderEnabled = true)
         {
+            bool signalWriter = false;
             lock (_debugLock)
             {
                 string resolvedPath = string.IsNullOrWhiteSpace(debugLogPath)
@@ -445,10 +509,6 @@ namespace TWXProxy.Core
                     !scriptTraceChanged && !autoRecorderChanged && writerStateMatches)
                     return;
 
-                DrainQueuedDebugMessages(flushWriter: true);
-                _debugWriter?.Dispose();
-                _debugWriter = null;
-
                 DebugLogPath = resolvedPath;
                 DebugMode = enabled;
                 VerboseDebugMode = verboseEnabled;
@@ -459,12 +519,16 @@ namespace TWXProxy.Core
                 if (!LogWriterEnabled)
                 {
                     ClearQueuedDebugMessages();
-                    return;
                 }
 
+                signalWriter = true;
+            }
+
+            if (signalWriter)
+            {
                 try
                 {
-                    EnsureLogWriter(resetFile: false);
+                    RequestDebugWriterFlush();
                 }
                 catch (Exception ex)
                 {
@@ -548,19 +612,20 @@ namespace TWXProxy.Core
         }
 
         /// <summary>
-        /// Flush any buffered debug log entries to disk. Call after pauses / trigger events.
+        /// Request that buffered debug log entries be flushed by the background writer.
+        /// This must not perform disk I/O on caller threads because many call sites are
+        /// UI or gameplay-sensitive paths.
         /// </summary>
         public static void FlushDebugLog()
         {
-            if (!LogWriterEnabled && !PortHaggleDebugMode && !PlanetHaggleDebugMode) return;
+            if (!LogWriterEnabled &&
+                Volatile.Read(ref _pendingDebugMessageCount) == 0 &&
+                !PortHaggleDebugMode &&
+                !PlanetHaggleDebugMode) return;
             try
             {
-                DrainQueuedDebugMessages(flushWriter: true);
-                lock (_debugLock)
-                {
-                    _portHaggleWriter?.Flush();
-                    _planetHaggleWriter?.Flush();
-                }
+                if (LogWriterEnabled || Volatile.Read(ref _pendingDebugMessageCount) > 0)
+                    RequestDebugWriterFlush();
             }
             catch { /* ignore */ }
         }

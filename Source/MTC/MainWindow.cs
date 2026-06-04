@@ -43,7 +43,7 @@ public partial class MainWindow : Window
         int TunnelMaxSize,
         bool AllowSeparatedByGates);
 
-    private const string BaseWindowTitle = "Mayhem Tradewars Client v1.0";
+    private const string BaseWindowTitle = "Mayhem Tradewars Client 1.0 beta1";
     private const int MaxCommEntries = 500;
     private const double ClassicCommWindowDefaultHeight = 140;
     private const double DeckCommWindowDefaultHeight = 150;
@@ -55,6 +55,8 @@ public partial class MainWindow : Window
     private const double DeckPanelGridSize = 18;
     private const int TemporaryMacroMaxCharacters = 200;
     private const int EmbeddedLocalClientIndex = 0;
+    private static readonly TimeSpan OnlineAutoRefreshPollInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan OnlineAutoRefreshQuietPeriod = TimeSpan.FromSeconds(2);
     private static readonly double[] TerminalFontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
 
     // ── Core components ────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _redAlertTimer;
     private readonly Core.ShipInfoParser _shipParser = new();
     private readonly DispatcherTimer _mombotKeepaliveTimer;
+    private readonly DispatcherTimer _onlineAutoRefreshTimer;
     // ── Current saved profile path (null = not yet saved) ──────────────────
     private string?         _currentProfilePath;
     private AppPreferences  _appPrefs = new();
@@ -155,6 +158,7 @@ public partial class MainWindow : Window
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
     private MacroSettingsDialog? _macroSettingsDialog;
+    private MacroPlayDialog? _quickMacroPlayWindow;
     private readonly Button _statusMacrosButton = new();
     private readonly Button _statusStopAllButton = new();
     private readonly Button _statusCommButton = new();
@@ -185,7 +189,11 @@ public partial class MainWindow : Window
     private bool _statusMacrosHovered;
     private int _sessionLogDrainScheduled;
     private int _infoPanelsRefreshPostScheduled;
+    private int _onlineAutoRefreshRunning;
+    private int _serverInputPendingCharacters;
     private long _lastInfoPanelsRefreshTicks;
+    private long _lastGameTrafficTicks;
+    private long _lastOnlineRefreshTicks;
     private DispatcherTimer? _infoPanelsRefreshTimer;
     private DispatcherTimer? _currentGameConfigSaveTimer;
     private bool _currentGameConfigSaveRunning;
@@ -267,6 +275,8 @@ public partial class MainWindow : Window
     private bool _mombotHotkeyPromptOpen;
     private bool _mombotScriptPromptOpen;
     private bool _mombotPreferencesOpen;
+    private bool _mombotPreferencesMenuDeafActive;
+    private bool _mombotPreferencesMenuDeafRestore;
     private bool _mombotPreferencesCaptureSingleKey;
     private string _mombotPreferencesInputPrompt = string.Empty;
     private string _mombotPreferencesInputBuffer = string.Empty;
@@ -317,7 +327,9 @@ public partial class MainWindow : Window
     private string _currentComputerShipType = string.Empty;
     private bool _awaitingComputerShipTypeLine;
     private readonly List<string> _onlinePlayers = [];
+    private readonly List<string> _pendingOnlinePlayers = [];
     private volatile bool _capturingOnlinePlayers;
+    private bool _onlinePlayersCaptureSawPlayer;
     private sealed record StoredBotSection(
         string SectionName,
         string Alias,

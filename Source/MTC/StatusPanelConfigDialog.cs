@@ -27,6 +27,15 @@ internal sealed class StatusPanelConfigDialog : Window
     {
         public required AppPreferences.StatusPanelSectionPreference Section { get; init; }
         public required CheckBox VisibleCheckBox { get; init; }
+        public ComboBox? OnlineRefreshComboBox { get; init; }
+    }
+
+    private sealed class OnlineRefreshIntervalOption
+    {
+        public required string Label { get; init; }
+        public required int Seconds { get; init; }
+
+        public override string ToString() => Label;
     }
 
     private readonly List<AppPreferences.StatusPanelSectionPreference> _sections;
@@ -50,6 +59,7 @@ internal sealed class StatusPanelConfigDialog : Window
                 Id = section.Id,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineRefreshIntervalSeconds = AppPreferences.NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             })
             .ToList();
 
@@ -66,6 +76,7 @@ internal sealed class StatusPanelConfigDialog : Window
                         Id = row.Section.Id,
                         Visible = row.VisibleCheckBox.IsChecked == true,
                         Order = index,
+                        OnlineRefreshIntervalSeconds = GetOnlineRefreshIntervalSeconds(row),
                     })
                     .ToList(),
             };
@@ -164,6 +175,11 @@ internal sealed class StatusPanelConfigDialog : Window
                 MoveSection(currentIndex, currentIndex + 1);
             };
 
+            bool isOnline = string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase);
+            ComboBox? onlineRefreshComboBox = isOnline
+                ? BuildOnlineRefreshComboBox(section.OnlineRefreshIntervalSeconds)
+                : null;
+
             var row = new Grid
             {
                 ColumnDefinitions =
@@ -171,14 +187,39 @@ internal sealed class StatusPanelConfigDialog : Window
                     new ColumnDefinition(GridLength.Star),
                     new ColumnDefinition(GridLength.Auto),
                     new ColumnDefinition(GridLength.Auto),
+                    new ColumnDefinition(GridLength.Auto),
                 },
                 ColumnSpacing = 10,
             };
 
             Grid.SetColumn(checkBox, 0);
-            Grid.SetColumn(upButton, 1);
-            Grid.SetColumn(downButton, 2);
             row.Children.Add(checkBox);
+
+            if (onlineRefreshComboBox != null)
+            {
+                var refreshOptions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "Update every",
+                            Foreground = FgMuted,
+                            VerticalAlignment = VerticalAlignment.Center,
+                        },
+                        onlineRefreshComboBox,
+                    },
+                };
+
+                Grid.SetColumn(refreshOptions, 1);
+                row.Children.Add(refreshOptions);
+            }
+
+            Grid.SetColumn(upButton, 2);
+            Grid.SetColumn(downButton, 3);
             row.Children.Add(upButton);
             row.Children.Add(downButton);
 
@@ -186,6 +227,7 @@ internal sealed class StatusPanelConfigDialog : Window
             {
                 Section = section,
                 VisibleCheckBox = checkBox,
+                OnlineRefreshComboBox = onlineRefreshComboBox,
             });
 
             _rowsHost.Children.Add(new Border
@@ -215,7 +257,42 @@ internal sealed class StatusPanelConfigDialog : Window
     private void CaptureVisibleState()
     {
         for (int index = 0; index < _rows.Count; index++)
+        {
             _sections[index].Visible = _rows[index].VisibleCheckBox.IsChecked == true;
+            _sections[index].OnlineRefreshIntervalSeconds = GetOnlineRefreshIntervalSeconds(_rows[index]);
+        }
+    }
+
+    private static int GetOnlineRefreshIntervalSeconds(SectionRow row)
+        => row.OnlineRefreshComboBox?.SelectedItem is OnlineRefreshIntervalOption option
+            ? AppPreferences.NormalizeOnlineRefreshIntervalSeconds(option.Seconds)
+            : AppPreferences.NormalizeOnlineRefreshIntervalSeconds(row.Section.OnlineRefreshIntervalSeconds);
+
+    private static ComboBox BuildOnlineRefreshComboBox(int selectedSeconds)
+    {
+        var options = new List<OnlineRefreshIntervalOption>
+        {
+            new() { Label = "30 seconds", Seconds = 30 },
+            new() { Label = "1 minute", Seconds = 60 },
+            new() { Label = "2 minutes", Seconds = 120 },
+            new() { Label = "5 minutes", Seconds = 300 },
+        };
+
+        int normalizedSeconds = AppPreferences.NormalizeOnlineRefreshIntervalSeconds(selectedSeconds);
+        return new ComboBox
+        {
+            ItemsSource = options,
+            SelectedItem = options.First(option => option.Seconds == normalizedSeconds),
+            Width = 135,
+            MinHeight = 34,
+            Padding = new Thickness(10, 5),
+            Background = BgPanel,
+            Foreground = FgText,
+            BorderBrush = BdInput,
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
     }
 
     private static Button BuildActionButton(string text, IBrush background)

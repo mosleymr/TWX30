@@ -69,7 +69,7 @@ namespace TWXD
             if (args.Length == 0)
             {
                 // Display program description
-                Console.WriteLine($"TWXD - TWX Proxy decompilation utility v{Constants.ProgramVersion}");
+                Console.WriteLine($"TWXD - TWX Proxy decompilation utility {Constants.DisplayVersion}");
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();
                 Console.WriteLine("Usage: TWXD [--compact-whitespace] [--in-place] [--output <file.ts> | --output-dir <dir>] [--backup-existing | --overwrite-existing] script.cts");

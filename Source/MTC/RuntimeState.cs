@@ -105,6 +105,10 @@ public partial class MainWindow
     /// <summary>Call when TCP connection is established.</summary>
     private void OnGameConnected()
     {
+        long now = Stopwatch.GetTimestamp();
+        Volatile.Write(ref _lastGameTrafficTicks, now);
+        Volatile.Write(ref _lastOnlineRefreshTicks, now);
+        ResetServerCommandTyping();
         _fileConnect.IsEnabled    = false;
         _fileDisconnect.IsEnabled = true;
         UpdateHaggleToggleState();
@@ -117,6 +121,9 @@ public partial class MainWindow
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
     private void OnGameDisconnected()
     {
+        Volatile.Write(ref _lastGameTrafficTicks, 0);
+        Volatile.Write(ref _lastOnlineRefreshTicks, 0);
+        ResetServerCommandTyping();
         ClearOnlinePlayers();
         ClearRedAlert();
         SaveCurrentNotesNow();
@@ -272,8 +279,9 @@ public partial class MainWindow
         if (!HasMombotInteractiveState() && !clearBotIsDeaf)
             return;
 
+        bool restoredPreferencesMenuDeaf = _mombotPreferencesMenuDeafActive;
         ResetMombotPromptState();
-        if (clearBotIsDeaf)
+        if (clearBotIsDeaf && !restoredPreferencesMenuDeaf)
             PersistMombotBoolean(false, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
 
         _parser.Feed("\r\x1b[K");

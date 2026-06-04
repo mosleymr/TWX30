@@ -656,7 +656,7 @@ namespace TWXProxy.Core
                                 OpenMenu(matchingItem.Name, 0);
                                 return true;
                             }
-                            GlobalModules.TWXServer?.ClientMessage($"\r\nMenu item '{matchingItem.Description}' has no submenu defined.\r\n");
+                            GlobalModules.TWXServer?.BroadcastLiteral($"\r\nMenu item '{matchingItem.Description}' has no submenu defined.\r\n");
                             return true;
                         }
                         

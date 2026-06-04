@@ -2122,7 +2122,7 @@ namespace TWXProxy.Core
             }
             catch (Exception ex)
             {
-                GlobalModules.TWXServer?.ClientMessage($"[AddMenu] Error: {ex.Message}\r\n");
+                ScriptDiagnosticOutput.Write($"[AddMenu] Error: {ex.Message}\r\n");
             }
             return CmdAction.None;
         }
@@ -2709,7 +2709,7 @@ namespace TWXProxy.Core
                 if (!File.Exists(dbPath))
                 {
                     if (GlobalModules.TWXServer != null)
-                        GlobalModules.TWXServer.ClientMessage($"Error: Database {dbName} does not exist.");
+                        GlobalModules.TWXServer.BroadcastLiteral($"Error: Database {dbName} does not exist.");
                     return CmdAction.None;
                 }
                 
@@ -2949,7 +2949,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[OpenDatabase] Error: {ex.Message}");
                 if (GlobalModules.TWXServer != null)
-                    GlobalModules.TWXServer.ClientMessage($"Error opening database: {ex.Message}");
+                    GlobalModules.TWXServer.BroadcastLiteral($"Error opening database: {ex.Message}");
             }
             return CmdAction.None;
         }
@@ -2985,7 +2985,7 @@ namespace TWXProxy.Core
                 if (!File.Exists(dbPath))
                 {
                     if (GlobalModules.TWXServer != null)
-                        GlobalModules.TWXServer.ClientMessage($"Error: Database {dbName} does not exist.");
+                        GlobalModules.TWXServer.BroadcastLiteral($"Error: Database {dbName} does not exist.");
                     return CmdAction.None;
                 }
                 
@@ -3050,7 +3050,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[ResetDatabase] Error: {ex.Message}");
                 if (GlobalModules.TWXServer != null)
-                    GlobalModules.TWXServer.ClientMessage($"Error resetting database: {ex.Message}");
+                    GlobalModules.TWXServer.BroadcastLiteral($"Error resetting database: {ex.Message}");
             }
             return CmdAction.None;
         }

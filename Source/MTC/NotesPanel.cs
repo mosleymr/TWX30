@@ -97,6 +97,13 @@ public partial class MainWindow
 
     private Control BuildNotesPanel()
     {
+        TextBox? previousTextBox = _notesTextBox;
+        string? previousGameName = _notesGameName;
+        string? previousFilePath = _notesFilePath;
+        string previousText = previousTextBox?.Text ?? string.Empty;
+        string previousStatus = _notesStatusText?.Text ?? string.Empty;
+        bool previousDirty = _notesDirty;
+
         _notesHeaderText = new TextBlock
         {
             Foreground = HudAccent,
@@ -159,17 +166,60 @@ public partial class MainWindow
             Child = body,
         };
 
-        LoadNotesForActiveGame();
+        if (!TryRestoreRebuiltNotesPanel(previousGameName, previousFilePath, previousText, previousStatus, previousDirty))
+            LoadNotesForActiveGame(forceReloadCurrentPath: true);
+
         return panel;
     }
 
-    private void LoadNotesForActiveGame()
+    private bool TryRestoreRebuiltNotesPanel(
+        string? previousGameName,
+        string? previousFilePath,
+        string previousText,
+        string previousStatus,
+        bool previousDirty)
+    {
+        if (_notesTextBox == null ||
+            string.IsNullOrWhiteSpace(previousFilePath) ||
+            !TryResolveNotesGameName(out string gameName))
+        {
+            return false;
+        }
+
+        string path = AppPaths.NotesPathForGame(gameName);
+        if (!string.Equals(previousFilePath, path, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previousGameName, gameName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        _notesLoading = true;
+        try
+        {
+            _notesGameName = gameName;
+            _notesFilePath = path;
+            _notesTextBox.Text = previousText;
+            _notesDirty = previousDirty;
+            if (_notesStatusText != null && !string.IsNullOrWhiteSpace(previousStatus))
+                _notesStatusText.Text = previousStatus;
+        }
+        finally
+        {
+            _notesLoading = false;
+            UpdateNotesHeader();
+        }
+
+        return true;
+    }
+
+    private void LoadNotesForActiveGame(bool forceReloadCurrentPath = false)
     {
         if (_notesTextBox == null || !TryResolveNotesGameName(out string gameName))
             return;
 
         string path = AppPaths.NotesPathForGame(gameName);
-        if (string.Equals(_notesFilePath, path, StringComparison.OrdinalIgnoreCase) &&
+        if (!forceReloadCurrentPath &&
+            string.Equals(_notesFilePath, path, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(_notesGameName, gameName, StringComparison.OrdinalIgnoreCase))
         {
             UpdateNotesHeader();

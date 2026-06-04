@@ -15,12 +15,12 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private const int MombotCommandHistoryLimit = 100;
+
     private void SyncMombotPromptStateFromLine(string line, string? ansiLine = null)
     {
         string trimmedLine = Core.AnsiCodes.NormalizeTerminalText(line).TrimStart();
-        if ((trimmedLine.StartsWith("Your ", StringComparison.OrdinalIgnoreCase) &&
-                trimmedLine.Contains(" has been destroyed!", StringComparison.OrdinalIgnoreCase)) ||
-            trimmedLine.StartsWith("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
+        if (trimmedLine.StartsWith("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
         {
             MarkNativeMombotShipDestroyed();
         }
@@ -1105,6 +1105,7 @@ public partial class MainWindow
                 if (TryInterceptMombotCommandPrompt(remaining))
                     return;
 
+                ObserveForwardedServerInput(remaining);
                 ObserveGameAgentClientInput(remaining);
                 forward(remaining);
                 return;
@@ -1117,9 +1118,47 @@ public partial class MainWindow
         if (TryInterceptMombotCommandPrompt(bytes))
             return;
 
+        ObserveForwardedServerInput(bytes);
         ObserveGameAgentClientInput(bytes);
         forward(bytes);
     }
+
+    private void ObserveForwardedServerInput(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            return;
+
+        MarkGameTrafficActivity();
+        int pendingCharacters = Volatile.Read(ref _serverInputPendingCharacters);
+        foreach (byte value in bytes)
+        {
+            switch (value)
+            {
+                case 0x0D:
+                case 0x0A:
+                    pendingCharacters = 0;
+                    break;
+
+                case 0x08:
+                case 0x7F:
+                    pendingCharacters = Math.Max(0, pendingCharacters - 1);
+                    break;
+
+                default:
+                    if (value >= 0x20)
+                        pendingCharacters = Math.Min(4096, pendingCharacters + 1);
+                    break;
+            }
+        }
+
+        Volatile.Write(ref _serverInputPendingCharacters, pendingCharacters);
+    }
+
+    private bool HasPendingUserTypedServerCommand()
+        => Volatile.Read(ref _serverInputPendingCharacters) > 0;
+
+    private void ResetServerCommandTyping()
+        => Volatile.Write(ref _serverInputPendingCharacters, 0);
 
     private void StartTemporaryMacroRecording()
     {
@@ -1190,22 +1229,28 @@ public partial class MainWindow
         ShowMacroNotice($"temporary macro recorder stopped at {TemporaryMacroMaxCharacters} characters");
     }
 
-    private async Task PlayTemporaryMacroAsync()
+    private Task PlayTemporaryMacroAsync()
     {
         if (_temporaryMacroRecording)
-            return;
+            return Task.CompletedTask;
 
         if (!HasActiveMacroConnection())
         {
             ShowMacroNotice("temporary macro playback requires an active connection");
-            return;
+            return Task.CompletedTask;
         }
 
         string macroText = GetTemporaryMacroText();
         if (string.IsNullOrWhiteSpace(macroText))
         {
             ShowMacroNotice("temporary macro is empty");
-            return;
+            return Task.CompletedTask;
+        }
+
+        if (_quickMacroPlayWindow is { IsVisible: true })
+        {
+            _quickMacroPlayWindow.Activate();
+            return Task.CompletedTask;
         }
 
         var dialog = new MacroPlayDialog(
@@ -1214,9 +1259,18 @@ public partial class MainWindow
             allowHotkeyAssignment: true,
             existingBindings: _appPrefs.MacroBindings,
             playAsync: PlayQuickMacroFromDialogAsync);
-        await dialog.ShowDialog<bool>(this);
-        FocusActiveTerminal();
-        return;
+
+        dialog.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_quickMacroPlayWindow, dialog))
+                _quickMacroPlayWindow = null;
+
+            FocusActiveTerminal();
+        };
+
+        _quickMacroPlayWindow = dialog;
+        dialog.Show(this);
+        return Task.CompletedTask;
 
         async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
         {
@@ -2181,6 +2235,9 @@ public partial class MainWindow
 
     private void ResetMombotPromptState()
     {
+        if (_mombotPreferencesOpen || _mombotPreferencesMenuDeafActive)
+            ExitMombotPreferencesMenuDeaf();
+
         _mombotPromptOpen = false;
         _mombotHotkeyPromptOpen = false;
         _mombotScriptPromptOpen = false;
@@ -2301,12 +2358,12 @@ public partial class MainWindow
         _mombotPreferencesTraderListNextCursor = 2;
         _mombotPreferencesTraderListHasMore = false;
 
+        EnterMombotPreferencesMenuDeaf();
         string subspace = ReadCurrentMombotVar("0", "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
         string botPassword = ReadCurrentMombotVar(string.Empty, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
         if (string.IsNullOrWhiteSpace(botPassword) && !string.Equals(subspace, "0", StringComparison.OrdinalIgnoreCase))
             PersistMombotVars(subspace, "$BOT~BOT_PASSWORD", "$bot~bot_password", "$bot_password");
 
-        PersistMombotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
         RenderMombotPreferencesPage();
     }
 
@@ -2315,13 +2372,84 @@ public partial class MainWindow
         if (!_mombotPreferencesOpen)
             return;
 
-        PersistMombotBoolean(false, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        ExitMombotPreferencesMenuDeaf();
         _mombotPreferencesOpen = false;
         ClearMombotPreferencesInputState();
         _parser.Feed("\r\x1b[K");
         _buffer.Dirty = true;
         FocusActiveTerminal();
         ApplyMombotExecutionRefresh();
+    }
+
+    private void EnterMombotPreferencesMenuDeaf()
+    {
+        if (_gameInstance == null)
+            return;
+
+        if (!_mombotPreferencesMenuDeafActive)
+        {
+            _mombotPreferencesMenuDeafRestore = AnyMombotClientDeaf();
+            _mombotPreferencesMenuDeafActive = true;
+        }
+
+        SetMombotClientsDeaf(true);
+        PersistMombotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+    }
+
+    private void ExitMombotPreferencesMenuDeaf()
+    {
+        if (!_mombotPreferencesMenuDeafActive)
+            return;
+
+        if (_mombotPreferencesMenuDeafRestore)
+        {
+            SetMombotClientsDeaf(true);
+            PersistMombotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        }
+        else
+        {
+            SetMombotClientsDeaf(false);
+            PersistMombotBoolean(false, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+        }
+
+        _mombotPreferencesMenuDeafActive = false;
+        _mombotPreferencesMenuDeafRestore = false;
+    }
+
+    private bool AnyMombotClientDeaf()
+    {
+        if (_gameInstance == null)
+            return false;
+
+        int clientCount = _gameInstance.ClientCount;
+        for (int i = 0; i < clientCount; i++)
+        {
+            if (_gameInstance.GetClientType(i) == Core.ClientType.Deaf)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void SetMombotClientsDeaf(bool deaf)
+    {
+        if (_gameInstance == null)
+            return;
+
+        int clientCount = _gameInstance.ClientCount;
+        for (int i = 0; i < clientCount; i++)
+        {
+            Core.ClientType clientType = _gameInstance.GetClientType(i);
+            if (deaf)
+            {
+                if (clientType == Core.ClientType.Standard)
+                    _gameInstance.SetClientType(i, Core.ClientType.Deaf);
+            }
+            else if (clientType == Core.ClientType.Deaf)
+            {
+                _gameInstance.SetClientType(i, Core.ClientType.Standard);
+            }
+        }
     }
 
     private void ClearMombotPreferencesInputState()
@@ -4653,7 +4781,7 @@ public partial class MainWindow
         }
 
         _mombotCommandHistory.Add(trimmed);
-        if (_mombotCommandHistory.Count > 50)
+        if (_mombotCommandHistory.Count > MombotCommandHistoryLimit)
             _mombotCommandHistory.RemoveAt(0);
     }
 
@@ -4713,9 +4841,6 @@ public partial class MainWindow
 
     private void EnsureMombotCommandHistoryLoaded()
     {
-        if (_mombotCommandHistory.Count > 0)
-            return;
-
         string history = ReadCurrentMombotVar(
             string.Empty,
             "$BOT~HISTORYSTRING",
@@ -4724,8 +4849,15 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(history))
             return;
 
-        foreach (string entry in history.Split("<<|HS|>>", StringSplitOptions.RemoveEmptyEntries))
-            RememberMombotHistory(entry);
+        string[] entries = history.Split("<<|HS|>>", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (entries.Length == 0)
+            return;
+
+        _mombotCommandHistory.Clear();
+
+        // Mombot stores history newest-first; native prompt recall keeps oldest-to-newest.
+        for (int i = entries.Length - 1; i >= 0; i--)
+            RememberMombotHistory(entries[i]);
     }
 
     private async Task SendMombotServerMacroAsync(string macro)

@@ -152,13 +152,16 @@ def read_ship(reader: XdbReader) -> dict[str, Any]:
     }
 
 
-def read_trader(reader: XdbReader) -> dict[str, Any]:
-    return {
+def read_trader(reader: XdbReader, version: int = 0) -> dict[str, Any]:
+    trader = {
         "name": reader.read_string(),
         "type": reader.read_string(),
         "ship": reader.read_string(),
         "fighters": reader.read_i32(),
     }
+    if version >= 15:
+        trader["display_label"] = reader.read_string()
+    return trader
 
 
 def read_header(reader: XdbReader) -> dict[str, Any]:
@@ -190,7 +193,7 @@ def read_header(reader: XdbReader) -> dict[str, Any]:
     return header
 
 
-def read_sector(reader: XdbReader) -> dict[str, Any]:
+def read_sector(reader: XdbReader, version: int = 0) -> dict[str, Any]:
     sector = {
         "number": reader.read_i32(),
         "warps": [reader.read_u16() for _ in range(6)],
@@ -226,7 +229,7 @@ def read_sector(reader: XdbReader) -> dict[str, Any]:
     sector["warp_count"] = reader.read_u8()
     sector["explored"] = reader.read_u8()
     sector["ships"] = [read_ship(reader) for _ in range(reader.read_i32())]
-    sector["traders"] = [read_trader(reader) for _ in range(reader.read_i32())]
+    sector["traders"] = [read_trader(reader, version) for _ in range(reader.read_i32())]
     sector["planet_names"] = [reader.read_string() for _ in range(reader.read_i32())]
     sector["vars"] = {
         reader.read_string(): reader.read_string() for _ in range(reader.read_i32())
@@ -267,7 +270,7 @@ def load_xdb(path: Path) -> dict[str, Any]:
     sector_record_count = reader.read_i32()
     sectors = {}
     for _ in range(sector_record_count):
-        sector = read_sector(reader)
+        sector = read_sector(reader, header["version"])
         sectors[sector["number"]] = sector
 
     planets = {}

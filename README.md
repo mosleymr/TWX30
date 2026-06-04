@@ -1,8 +1,8 @@
-# TWX30
+# twxproxy 3.0 beta1
 
-TWX30 is the current C#/.NET rewrite of the classic TWX Proxy helper for Trade Wars 2002.
+twxproxy 3.0 beta1 is the current C#/.NET rewrite of the classic TWX Proxy helper for Trade Wars 2002.
 
-Current source version: `3.0.1`
+Current source version: `3.0 beta1`
 
 The active code lives under `Source/` and includes:
 

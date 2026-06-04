@@ -336,7 +336,7 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxTraderLine = new(
-            @"^\s*(?<label>Traders|Federals|Jem'?Hada)\s*:\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
+            @"^\s*(?<label>[A-Za-z][A-Za-z' ]{0,15})\s*:\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxShipLine = new(
@@ -519,6 +519,9 @@ namespace TWXProxy.Core
                 return;
 
             if (TryProcessTradeExperienceReward(rawLine))
+                return;
+
+            if (TryProcessPhotonMissileLaunch(rawLine, ansiLine))
                 return;
 
             // Log any line that looks warp-related so we can trace what the game sends
@@ -1838,6 +1841,33 @@ namespace TWXProxy.Core
             return true;
         }
 
+        private bool TryProcessPhotonMissileLaunch(string rawLine, string? ansiLine)
+        {
+            if (!IsPhotonMissileLaunchLine(rawLine))
+            {
+                string normalizedAnsiLine = string.IsNullOrWhiteSpace(ansiLine)
+                    ? string.Empty
+                    : NormalizeRecorderLine(ansiLine.TrimEnd('\r', '\n'));
+                if (!IsPhotonMissileLaunchLine(normalizedAnsiLine))
+                    return false;
+            }
+
+            EmitShipStatusDelta(new ShipStatusDelta
+            {
+                PhotonsDelta = -1
+            });
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Photon missile launched, photons delta=-1: '{rawLine}'\n");
+            return true;
+        }
+
+        private static bool IsPhotonMissileLaunchLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line))
+                return false;
+
+            return line.StartsWith("Photon Missile launched into sector", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void EmitPendingPlanetProductDelta(PlanetProductTransferKind confirmationKind, string confirmationProductName)
         {
             if (_pendingPlanetProductTransferKind == PlanetProductTransferKind.None ||
@@ -2152,7 +2182,7 @@ namespace TWXProxy.Core
             if (value.Equals("JemHada", StringComparison.OrdinalIgnoreCase) ||
                 value.Equals("Jem'Hada", StringComparison.OrdinalIgnoreCase))
                 return "Jem'Hada";
-            return "Traders";
+            return value;
         }
 
         private void ParseShipSummary(Match m)

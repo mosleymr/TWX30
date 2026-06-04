@@ -326,6 +326,7 @@ public partial class MainWindow
 
         gi.ServerDataReceived += (_, e) =>
         {
+            MarkGameTrafficActivity();
             string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
             string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
 

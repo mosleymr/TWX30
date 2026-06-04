@@ -43,7 +43,7 @@ namespace TWXC
             if (args.Length == 0)
             {
                 // Display program description
-                Console.WriteLine($"TWXC - TWX Proxy command line script compilation utility v{Constants.ProgramVersion}");
+                Console.WriteLine($"TWXC - TWX Proxy command line script compilation utility {Constants.DisplayVersion}");
                 Console.WriteLine("       (c) Remco Mulder (\"Xide\") 2002-2004");
                 Console.WriteLine("       (c) Matt Mosley (\"reaper\") 2026");
                 Console.WriteLine();

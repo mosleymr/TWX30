@@ -1038,7 +1038,7 @@ public partial class MainWindow
 
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            if (!ShouldDispatchOnlinePlayersLine(trimmed))
+            if (!ShouldDispatchOnlinePlayersLine(line))
                 return;
 
             string capturedLine = line;
@@ -1046,27 +1046,29 @@ public partial class MainWindow
             return;
         }
 
+        if (IsOnlinePlayersHeaderLine(line))
+        {
+            BeginOnlinePlayersCapture();
+            return;
+        }
+
         Match enteredMatch = OnlinePlayerEnteredGameRegex.Match(trimmed);
         if (enteredMatch.Success)
         {
+            if (_capturingOnlinePlayers)
+                CompleteOnlinePlayersCapture(commit: true);
+
             AddOnlinePlayer(enteredMatch.Groups[1].Value);
-            _capturingOnlinePlayers = false;
             return;
         }
 
         Match exitedMatch = OnlinePlayerExitedGameRegex.Match(trimmed);
         if (exitedMatch.Success)
         {
-            RemoveOnlinePlayer(exitedMatch.Groups[1].Value);
-            _capturingOnlinePlayers = false;
-            return;
-        }
+            if (_capturingOnlinePlayers)
+                CompleteOnlinePlayersCapture(commit: true);
 
-        if (trimmed.Equals("Who's Playing", StringComparison.OrdinalIgnoreCase))
-        {
-            _capturingOnlinePlayers = true;
-            _onlinePlayers.Clear();
-            RequestOnlinePanelRefresh();
+            RemoveOnlinePlayer(exitedMatch.Groups[1].Value);
             return;
         }
 
@@ -1074,61 +1076,271 @@ public partial class MainWindow
             return;
 
         if (string.IsNullOrWhiteSpace(trimmed))
-            return;
-
-        if (TryExtractOnlinePlayerName(trimmed, out string playerName))
         {
-            AddOnlinePlayer(playerName);
+            if (_onlinePlayersCaptureSawPlayer)
+                CompleteOnlinePlayersCapture(commit: true);
+
             return;
         }
 
-        _capturingOnlinePlayers = false;
+        if (TryExtractOnlinePlayerName(trimmed, out string playerName))
+        {
+            AddPendingOnlinePlayer(playerName);
+            return;
+        }
+
+        CompleteOnlinePlayersCapture(commit: true);
     }
 
-    private bool ShouldDispatchOnlinePlayersLine(string trimmed)
+    private bool ShouldDispatchOnlinePlayersLine(string line)
     {
+        if (IsOnlinePlayersHeaderLine(line))
+        {
+            _capturingOnlinePlayers = true;
+            return true;
+        }
+
         if (_capturingOnlinePlayers)
             return true;
 
+        string trimmed = line.Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
             return false;
 
-        return trimmed.Equals("Who's Playing", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.EndsWith(" enters the game.", StringComparison.OrdinalIgnoreCase) ||
+        return trimmed.EndsWith(" enters the game.", StringComparison.OrdinalIgnoreCase) ||
             trimmed.EndsWith(" exits the game.", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOnlinePlayersHeaderLine(string line)
+    {
+        if (string.IsNullOrEmpty(line))
+            return false;
+
+        int headerIndex = line.IndexOf(OnlinePlayersHeaderText, StringComparison.OrdinalIgnoreCase);
+        if (headerIndex < 0)
+            return false;
+
+        string before = line[..headerIndex];
+        string after = line[(headerIndex + OnlinePlayersHeaderText.Length)..];
+        return headerIndex >= 8 &&
+            before.All(char.IsWhiteSpace) &&
+            after.All(char.IsWhiteSpace);
     }
 
     private static bool TryExtractOnlinePlayerName(string line, out string playerName)
     {
         playerName = string.Empty;
 
-        Match withCorpMatch = OnlinePlayerLineWithCorpRegex.Match(line);
-        if (withCorpMatch.Success)
+        if (line.Contains(" on the move", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains(':', StringComparison.Ordinal) ||
+            line.Contains(',', StringComparison.Ordinal) ||
+            line.Contains('<', StringComparison.Ordinal) ||
+            line.Contains('>', StringComparison.Ordinal) ||
+            line.Contains('!', StringComparison.Ordinal) ||
+            line.Contains('?', StringComparison.Ordinal) ||
+            line.Contains('='))
         {
-            playerName = withCorpMatch.Groups[1].Value;
-            return true;
+            return false;
         }
 
-        Match withoutCorpMatch = OnlinePlayerLineWithoutCorpRegex.Match(line);
-        if (withoutCorpMatch.Success)
+        Match playerMatch = OnlinePlayerLineRegex.Match(line);
+        if (!playerMatch.Success)
+            return false;
+
+        playerName = StripOnlineTraderRank(playerMatch.Groups["description"].Value);
+        return !string.IsNullOrWhiteSpace(playerName);
+    }
+
+    private static string StripOnlineTraderRank(string value)
+    {
+        string playerName = value.Trim();
+        bool changed;
+        do
         {
-            playerName = withoutCorpMatch.Groups[1].Value;
-            return true;
+            changed = false;
+            foreach (string prefix in OnlineTraderRankPrefixes)
+            {
+                if (!playerName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                playerName = playerName[prefix.Length..].TrimStart();
+                changed = true;
+            }
+        } while (changed);
+
+        return playerName.Trim();
+    }
+
+    private void BeginOnlinePlayersCapture()
+    {
+        MarkOnlineRefreshObserved();
+        _capturingOnlinePlayers = true;
+        _onlinePlayersCaptureSawPlayer = false;
+        _pendingOnlinePlayers.Clear();
+    }
+
+    private void MarkOnlineRefreshObserved()
+    {
+        Volatile.Write(ref _lastOnlineRefreshTicks, Stopwatch.GetTimestamp());
+    }
+
+    private void MarkGameTrafficActivity()
+    {
+        Volatile.Write(ref _lastGameTrafficTicks, Stopwatch.GetTimestamp());
+    }
+
+    private async Task TrySendOnlineAutoRefreshAsync()
+    {
+        if (Interlocked.Exchange(ref _onlineAutoRefreshRunning, 1) != 0)
+            return;
+
+        try
+        {
+            if (!ShouldSendOnlineAutoRefresh())
+                return;
+
+            MarkOnlineRefreshObserved();
+            MarkGameTrafficActivity();
+            await SendOnlineRefreshCommandAsync();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _onlineAutoRefreshRunning, 0);
+        }
+    }
+
+    private bool ShouldSendOnlineAutoRefresh()
+    {
+        if (!IsOnlineStatusPanelActive())
+            return false;
+
+        if (!IsGameConnectionActive())
+            return false;
+
+        if (_capturingOnlinePlayers)
+            return false;
+
+        if (HasPendingUserTypedCommand())
+            return false;
+
+        TimeSpan onlineAutoRefreshInterval = GetOnlineAutoRefreshInterval();
+        long lastRefreshTicks = Volatile.Read(ref _lastOnlineRefreshTicks);
+        if (lastRefreshTicks != 0 &&
+            Stopwatch.GetElapsedTime(lastRefreshTicks) < onlineAutoRefreshInterval)
+        {
+            return false;
         }
 
-        return false;
+        return IsGameTrafficQuiet();
+    }
+
+    private bool IsOnlineStatusPanelActive()
+    {
+        if (_useCommandDeckSkin)
+            return false;
+
+        return _appPrefs.GetOrderedStatusPanelSections().Any(section =>
+            section.Visible &&
+            string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private TimeSpan GetOnlineAutoRefreshInterval()
+        => TimeSpan.FromSeconds(GetOnlineAutoRefreshIntervalSeconds());
+
+    private int GetOnlineAutoRefreshIntervalSeconds()
+    {
+        foreach (AppPreferences.StatusPanelSectionPreference section in _appPrefs.GetOrderedStatusPanelSections())
+        {
+            if (string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase))
+                return AppPreferences.NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds);
+        }
+
+        return AppPreferences.DefaultOnlineRefreshIntervalSeconds;
+    }
+
+    private bool HasPendingUserTypedCommand()
+        => HasPendingUserTypedServerCommand() || HasPendingNativeMombotCommandInput();
+
+    private bool HasPendingNativeMombotCommandInput()
+        => (_mombotPromptOpen && _mombotPromptBuffer.Length > 0) ||
+           (_mombotPreferencesOpen && _mombotPreferencesInputBuffer.Length > 0);
+
+    private bool IsGameConnectionActive()
+        => _gameInstance?.IsConnected == true || _telnet.IsConnected;
+
+    private bool IsGameTrafficQuiet()
+    {
+        if (HasPendingTerminalDisplayBacklog())
+            return false;
+
+        if (!_pendingSessionLogChunks.IsEmpty ||
+            Interlocked.CompareExchange(ref _sessionLogDrainScheduled, 0, 0) != 0)
+        {
+            return false;
+        }
+
+        if (_gameInstance?.HasPendingServerTraffic == true)
+            return false;
+
+        long lastTrafficTicks = Volatile.Read(ref _lastGameTrafficTicks);
+        return lastTrafficTicks == 0 ||
+            Stopwatch.GetElapsedTime(lastTrafficTicks) >= OnlineAutoRefreshQuietPeriod;
+    }
+
+    private async Task SendOnlineRefreshCommandAsync()
+    {
+        byte[] payload = System.Text.Encoding.ASCII.GetBytes("#\r");
+
+        if (_gameInstance?.IsConnected == true)
+        {
+            await _gameInstance.SendToServerAsync(payload);
+            return;
+        }
+
+        if (_telnet.IsConnected)
+            _telnet.SendRaw(payload);
+    }
+
+    private void CompleteOnlinePlayersCapture(bool commit)
+    {
+        if (commit)
+        {
+            _onlinePlayers.Clear();
+            foreach (string pendingPlayer in _pendingOnlinePlayers)
+                AddUniqueOnlinePlayer(_onlinePlayers, pendingPlayer);
+
+            RequestOnlinePanelRefresh();
+        }
+
+        _pendingOnlinePlayers.Clear();
+        _onlinePlayersCaptureSawPlayer = false;
+        _capturingOnlinePlayers = false;
+    }
+
+    private void AddPendingOnlinePlayer(string playerName)
+    {
+        if (AddUniqueOnlinePlayer(_pendingOnlinePlayers, playerName))
+            _onlinePlayersCaptureSawPlayer = true;
+    }
+
+    private static bool AddUniqueOnlinePlayer(List<string> players, string playerName)
+    {
+        string normalizedPlayerName = playerName.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedPlayerName))
+            return false;
+
+        if (players.Any(existing => string.Equals(existing, normalizedPlayerName, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        players.Add(normalizedPlayerName);
+        return true;
     }
 
     private void AddOnlinePlayer(string playerName)
     {
-        string normalizedPlayerName = playerName.Trim();
-        if (string.IsNullOrWhiteSpace(normalizedPlayerName))
+        if (!AddUniqueOnlinePlayer(_onlinePlayers, playerName))
             return;
 
-        if (_onlinePlayers.Any(existing => string.Equals(existing, normalizedPlayerName, StringComparison.OrdinalIgnoreCase)))
-            return;
-
-        _onlinePlayers.Add(normalizedPlayerName);
         RequestOnlinePanelRefresh();
     }
 
@@ -1374,11 +1586,7 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(_state.TraderName))
             return string.Empty;
 
-        string[] parts = _state.TraderName
-            .Trim()
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-        return parts.Length == 0 ? string.Empty : parts[^1];
+        return StripOnlineTraderRank(_state.TraderName);
     }
 
     private void ClearOnlinePlayers()
@@ -1390,6 +1598,8 @@ public partial class MainWindow
         }
 
         _capturingOnlinePlayers = false;
+        _onlinePlayersCaptureSawPlayer = false;
+        _pendingOnlinePlayers.Clear();
         _onlinePlayers.Clear();
         RequestOnlinePanelRefresh();
     }

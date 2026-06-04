@@ -39,12 +39,15 @@ public class AppPreferences
         public string Id { get; set; } = string.Empty;
         public bool Visible { get; set; } = true;
         public int Order { get; set; }
+        public int OnlineRefreshIntervalSeconds { get; set; } = DefaultOnlineRefreshIntervalSeconds;
     }
 
     public const string StatusPanelTrader = "trader";
     public const string StatusPanelOnline = "online";
     public const string StatusPanelHolds = "holds"; // legacy-only; folded into Ship Info
     public const string StatusPanelShipInfo = "ship";
+    public const int DefaultOnlineRefreshIntervalSeconds = 60;
+    public static readonly int[] OnlineRefreshIntervalSecondOptions = [30, 60, 120, 300];
 
     private static readonly string[] DefaultStatusPanelSectionOrder =
     [
@@ -243,7 +246,10 @@ public class AppPreferences
                         .Select(section => new XElement("Section",
                             new XAttribute("Id", NormalizeStatusPanelSectionId(section.Id)),
                             new XAttribute("Visible", section.Visible),
-                            new XAttribute("Order", section.Order))))
+                            new XAttribute("Order", section.Order),
+                            string.Equals(NormalizeStatusPanelSectionId(section.Id), StatusPanelOnline, StringComparison.OrdinalIgnoreCase)
+                                ? new XAttribute("OnlineRefreshIntervalSeconds", NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds))
+                                : null)))
             );
 
             Core.SharedConfigFile.ReplaceSection(document, Core.SharedConfigFile.MtcPrefsSectionName, section);
@@ -426,6 +432,8 @@ public class AppPreferences
                     Id = id,
                     Visible = ParseBool(section.Attribute("Visible"), defaultValue: true),
                     Order = ParseInt(section.Attribute("Order")),
+                    OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(
+                        ParseInt(section.Attribute("OnlineRefreshIntervalSeconds"), DefaultOnlineRefreshIntervalSeconds)),
                 });
             }
 
@@ -491,6 +499,7 @@ public class AppPreferences
                 Id = section.Id,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             })
             .ToList();
     }
@@ -515,6 +524,7 @@ public class AppPreferences
                 Id = normalizedId,
                 Visible = section.Visible,
                 Order = order++,
+                OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             });
         }
 
@@ -550,6 +560,11 @@ public class AppPreferences
 
     public static int NormalizeMemoryLimitKb(int value, int defaultValue)
         => value > 0 ? value : defaultValue;
+
+    public static int NormalizeOnlineRefreshIntervalSeconds(int value)
+        => OnlineRefreshIntervalSecondOptions.Contains(value)
+            ? value
+            : DefaultOnlineRefreshIntervalSeconds;
 
     public static string NormalizeGameAgentProvider(string? value)
     {
@@ -655,6 +670,7 @@ public class AppPreferences
                 Id = normalizedId,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             });
         }
 
@@ -672,6 +688,7 @@ public class AppPreferences
                     Id = defaultId,
                     Visible = true,
                     Order = int.MaxValue,
+                    OnlineRefreshIntervalSeconds = DefaultOnlineRefreshIntervalSeconds,
                 });
             }
         }
@@ -719,6 +736,11 @@ public class AppPreferences
         => int.TryParse(attribute?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
             ? value
             : 0;
+
+    private static int ParseInt(XAttribute? attribute, int defaultValue)
+        => int.TryParse(attribute?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value)
+            ? value
+            : defaultValue;
 
     private static bool ParseBool(XAttribute? attribute)
         => bool.TryParse(attribute?.Value, out bool value) && value;

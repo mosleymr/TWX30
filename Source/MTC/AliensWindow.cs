@@ -234,7 +234,7 @@ internal sealed class AliensWindow : Window
             .ToList();
     }
 
-    private static bool TryNormalizeAlienConstellation(string? value, out string constellation)
+    internal static bool TryNormalizeAlienConstellation(string? value, out string constellation)
     {
         constellation = string.Empty;
         if (string.IsNullOrWhiteSpace(value))
@@ -254,7 +254,7 @@ internal sealed class AliensWindow : Window
         return !string.IsNullOrWhiteSpace(constellation);
     }
 
-    private static string BuildRaceLabel(string constellation)
+    internal static string BuildRaceLabel(string constellation)
     {
         string race = Regex.Replace(constellation, @"\s+Space$", string.Empty, RegexOptions.IgnoreCase).Trim();
         return string.IsNullOrWhiteSpace(race) ? constellation : race;

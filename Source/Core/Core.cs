@@ -29,9 +29,12 @@ namespace TWXProxy.Core
 {
     public static class Constants
     {
-        public const string ProgramVersion = "3.0.1";
+        public const string ProductName = "twxproxy";
+        public const string DisplayVersion = "3.0 beta1";
+        public const string ProductDisplayName = "twxproxy 3.0 beta1";
+        public const string ProgramVersion = "3.0.0";
         public const int ReleaseNumber = 1;
-        public const string ReleaseVersion = "Beta";
+        public const string ReleaseVersion = "beta1";
         public const string SetupFile = "TWX26.dat";
         public const string EndLine = "\r\n";
     }

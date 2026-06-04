@@ -13,7 +13,7 @@ namespace MTC;
 
 public sealed class MacroSettingsDialog : Window
 {
-    private const string RowColumns = "128,*,68,68";
+    private const string RowColumns = "88,*,68,68,68";
 
     private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(5, 24, 30));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(8, 45, 56));
@@ -36,6 +36,7 @@ public sealed class MacroSettingsDialog : Window
         public required TextBox MacroTextBox { get; init; }
         public required Button PlayButton { get; init; }
         public required Button BurstButton { get; init; }
+        public required Button CopyButton { get; init; }
     }
 
     private readonly List<MacroRowState> _rows = [];
@@ -224,6 +225,16 @@ public sealed class MacroSettingsDialog : Window
         };
         Grid.SetColumn(burstHeader, 3);
         headerRow.Children.Add(burstHeader);
+        var copyHeader = new TextBlock
+        {
+            Text = "Copy",
+            Foreground = FgLabel,
+            FontWeight = FontWeight.Bold,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(copyHeader, 4);
+        headerRow.Children.Add(copyHeader);
 
         foreach (AppPreferences.MacroBinding binding in defaults)
             AddRow(new AppPreferences.MacroBinding { Hotkey = NormalizeHotkey(binding.Hotkey), Macro = binding.Macro ?? string.Empty });
@@ -329,7 +340,7 @@ public sealed class MacroSettingsDialog : Window
         {
             ItemsSource = TerminalControl.SupportedMacroHotkeys,
             SelectedItem = NormalizeHotkey(binding.Hotkey),
-            Width = 108,
+            Width = 76,
             Background = BgInput,
             Foreground = FgNormal,
             BorderBrush = BdInput,
@@ -383,6 +394,20 @@ public sealed class MacroSettingsDialog : Window
         Grid.SetColumn(burstButton, 3);
         rowGrid.Children.Add(burstButton);
 
+        var copyButton = new Button
+        {
+            Content = "Copy",
+            Width = 68,
+            Background = BgButtonSoft,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+            CornerRadius = new CornerRadius(8),
+            IsEnabled = !string.IsNullOrWhiteSpace(binding.Macro),
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        Grid.SetColumn(copyButton, 4);
+        rowGrid.Children.Add(copyButton);
+
         var border = new Border
         {
             Background = AccentFill,
@@ -400,6 +425,7 @@ public sealed class MacroSettingsDialog : Window
             MacroTextBox = macroTextBox,
             PlayButton = playButton,
             BurstButton = burstButton,
+            CopyButton = copyButton,
         };
 
         border.PointerPressed += (_, _) => SelectRow(state);
@@ -407,12 +433,14 @@ public sealed class MacroSettingsDialog : Window
         macroTextBox.GotFocus += (_, _) => SelectRow(state);
         playButton.Click += async (_, _) => await PlayMacroOnceAsync(state);
         burstButton.Click += async (_, _) => await BurstMacroAsync(state);
+        copyButton.Click += async (_, _) => await CopyMacroAsync(state);
         hotkeyCombo.SelectionChanged += (_, _) => ClearError();
         macroTextBox.TextChanged += (_, _) =>
         {
             bool hasMacro = !string.IsNullOrWhiteSpace(macroTextBox.Text);
             state.PlayButton.IsEnabled = hasMacro;
             state.BurstButton.IsEnabled = hasMacro;
+            state.CopyButton.IsEnabled = hasMacro;
             ClearError();
         };
 
@@ -562,6 +590,25 @@ public sealed class MacroSettingsDialog : Window
         string? error = await _playMacroAsync(updatedMacro, dialog.PlayCount);
         if (!string.IsNullOrWhiteSpace(error))
             ShowError(error);
+    }
+
+    private async Task CopyMacroAsync(MacroRowState row)
+    {
+        SelectRow(row);
+        ClearError();
+
+        string macro = row.MacroTextBox.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(macro))
+        {
+            ShowError("Enter a macro before using Copy.");
+            return;
+        }
+
+        bool copied = await ClipboardHelper.TrySetTextAsync(this, macro);
+        if (copied)
+            ShowStatus("Macro copied.");
+        else
+            ShowError("Unable to copy macro to the clipboard.");
     }
 
     private void UpdateActionState()

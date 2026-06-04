@@ -39,5 +39,11 @@ obj/
 */bin/
 */obj/
 MTC/publish/
+Installer/Windows/bin/
+Installer/Windows/obj/
+Installer/Windows/artifacts/
+Modules/*/bin/
+Modules/*/obj/
+**/__pycache__/
 *.user
 .DS_Store

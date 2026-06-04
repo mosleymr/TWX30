@@ -288,7 +288,6 @@ public sealed class MacroPlayDialog : Window
         };
 
         Opened += (_, _) => FocusCountTextBox();
-        Activated += (_, _) => FocusCountTextBox();
 
         KeyDown += (_, e) =>
         {
@@ -379,7 +378,6 @@ public sealed class MacroPlayDialog : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            Activate();
             _countTextBox.Focus(NavigationMethod.Tab);
             _countTextBox.SelectAll();
         }, DispatcherPriority.Input);

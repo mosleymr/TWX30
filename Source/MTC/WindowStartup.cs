@@ -63,6 +63,7 @@ public partial class MainWindow
         {
             Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
             ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
+            ObserveOnlinePlayersLine(strippedLine);
             HandlePotentialCommLine(ansiLine);
             ProcessStandaloneNativeHaggleLine(strippedLine);
         };
@@ -71,6 +72,7 @@ public partial class MainWindow
         RefreshSessionLogTarget();
         _telnet.AppDataDecoded += text =>
         {
+            MarkGameTrafficActivity();
             _sessionLog.RecordServerText(text);
         };
 
@@ -177,7 +179,7 @@ public partial class MainWindow
         RebuildScriptsMenu();
         RefreshNotesMenuState();
         _parser.Feed("\x1b[2J\x1b[H");
-        _parser.Feed("\x1b[1;33mMayhem Tradewars Client v1.0\x1b[0m\r\n");
+        _parser.Feed("\x1b[1;33mMayhem Tradewars Client 1.0 beta1\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
         _buffer.Dirty = true;
 
@@ -191,6 +193,13 @@ public partial class MainWindow
             _ = RunNativeMombotKeepaliveTickAsync();
         };
         _mombotKeepaliveTimer.Start();
+
+        _onlineAutoRefreshTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = OnlineAutoRefreshPollInterval,
+        };
+        _onlineAutoRefreshTimer.Tick += (_, _) => _ = TrySendOnlineAutoRefreshAsync();
+        _onlineAutoRefreshTimer.Start();
 
         Opened += (_, _) =>
         {
@@ -217,12 +226,15 @@ public partial class MainWindow
             _nativeAppMenuAttached = false;
             _nativeDockMenuAttached = false;
             _mombotKeepaliveTimer.Stop();
+            _onlineAutoRefreshTimer.Stop();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
             _gameAgentWindow?.Close();
             _gameAgentWindow = null;
             _gameAgentReplayWindow?.Close();
             _gameAgentReplayWindow = null;
+            _quickMacroPlayWindow?.Close();
+            _quickMacroPlayWindow = null;
             _gameAgent.Dispose();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();

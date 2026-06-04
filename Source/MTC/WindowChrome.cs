@@ -71,11 +71,9 @@ public partial class MainWindow
     private static readonly IBrush HoldsEqBrush = new SolidColorBrush(Color.FromRgb(96, 171, 194));
     private static readonly IBrush HoldsColsBrush = new SolidColorBrush(Color.FromRgb(164, 128, 198));
     private static readonly IBrush HoldsFreeBrush = new SolidColorBrush(Color.FromRgb(123, 145, 156));
-    private static readonly Regex OnlinePlayerLineWithCorpRegex = new(
-        @"^(?:[A-Za-z0-9][A-Za-z0-9'/-]*\s+)*([A-Za-z0-9][A-Za-z0-9'/-]*)\s+\[(\d+)\]\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex OnlinePlayerLineWithoutCorpRegex = new(
-        @"^(?:[A-Za-z0-9][A-Za-z0-9'/-]*\s+)+([A-Za-z0-9][A-Za-z0-9'/-]*)\s*$",
+    private const string OnlinePlayersHeaderText = "Who's Playing";
+    private static readonly Regex OnlinePlayerLineRegex = new(
+        @"^(?<description>[A-Za-z0-9][A-Za-z0-9'./ -]*?)(?:\s+\[(?<corp>\d+)\])?\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex OnlinePlayerEnteredGameRegex = new(
         @"^(.+?)\s+enters the game\.$",
@@ -83,6 +81,51 @@ public partial class MainWindow
     private static readonly Regex OnlinePlayerExitedGameRegex = new(
         @"^(.+?)\s+exits the game\.$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly string[] OnlineTraderRankPrefixes =
+    [
+        "Chief Warrant Officer ",
+        "Lieutenant Commander ",
+        "Gunnery Sergeant ",
+        "Enemy of Humankind ",
+        "Enemy of the People ",
+        "Enemy of the State ",
+        "Heinous Overlord ",
+        "Infamous Pirate ",
+        "Notorious Pirate ",
+        "Sergeant Major ",
+        "Smuggler Savant ",
+        "Staff Sergeant ",
+        "Dread Pirate ",
+        "Fleet Admiral ",
+        "Lance Corporal ",
+        "Lieutenant J.G. ",
+        "Prime Evil ",
+        "Rear Admiral ",
+        "Vice Admiral ",
+        "3rd Class ",
+        "2nd Class ",
+        "1st Class ",
+        "Ambassador ",
+        "Annoyance ",
+        "Commander ",
+        "Commodore ",
+        "Corporal ",
+        "Galactic Scourge ",
+        "Lieutenant ",
+        "Nuisance ",
+        "Private ",
+        "Sergeant ",
+        "Smuggler ",
+        "Terrorist ",
+        "Admiral ",
+        "Captain ",
+        "Civilian ",
+        "Menace ",
+        "Pirate ",
+        "Robber ",
+        "Class ",
+        "Enemy "
+    ];
     private const int FinderPrewarmMaxSize = Core.ModBubble.DefaultMaxBubbleSize;
 
     private static void SetBrushColor(IBrush brush, Color color)

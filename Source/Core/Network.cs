@@ -112,6 +112,20 @@ namespace TWXProxy.Core
                     return _clients.Count;
             }
         }
+        public bool HasPendingServerTraffic
+        {
+            get
+            {
+                if (!_serverSendQueue.IsEmpty ||
+                    Interlocked.CompareExchange(ref _serverSendPumpScheduled, 0, 0) != 0)
+                {
+                    return true;
+                }
+
+                lock (_deferredLocalOutputLock)
+                    return _serverDataDispatchDepth > 0 || _deferredLocalOutput.Count > 0;
+            }
+        }
         public string ActiveBotName { get; set; } = string.Empty;
         public Func<BotConfig, string, bool>? NativeBotActivator { get; set; }
         public Func<string, bool>? NativeBotStopper { get; set; }
@@ -980,7 +994,7 @@ namespace TWXProxy.Core
                     await stream.WriteAsync(new byte[] { 255, 251, 1 }, 0, 3, token);
                     await stream.FlushAsync(token);
 
-                    string banner = $"\r\nTWX Proxy Server v{Constants.ProgramVersion}{Constants.ReleaseNumber} ({Constants.ReleaseVersion})\r\n";
+                    string banner = $"\r\n{Constants.ProductDisplayName}\r\n";
                     await stream.WriteAsync(Encoding.ASCII.GetBytes(banner), token);
 
                     if (session.Type == ClientType.Mute || session.Type == ClientType.Stream)
