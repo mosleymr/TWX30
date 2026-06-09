@@ -14,6 +14,7 @@
     <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
     <!-- Suppress NU1510 for System.Text.Encoding.CodePages - needed for Database.cs Windows-1252 encoding -->
     <NoWarn>$(NoWarn);NU1510</NoWarn>
   </PropertyGroup>

@@ -1185,7 +1185,9 @@ public partial class MainWindow
 
         _temporaryMacroRecording = false;
         UpdateTemporaryMacroControls();
-        ShowMacroNotice($"temporary macro recording stopped ({GetTemporaryMacroText().Length} characters)");
+        string macroText = GetTemporaryMacroText();
+        UpdateOpenQuickMacroPlayWindow(macroText, "Updated from latest recording.");
+        ShowMacroNotice($"temporary macro recording stopped ({macroText.Length} characters)");
         FocusActiveTerminal();
     }
 
@@ -1226,6 +1228,7 @@ public partial class MainWindow
 
         _temporaryMacroRecording = false;
         UpdateTemporaryMacroControls();
+        UpdateOpenQuickMacroPlayWindow(GetTemporaryMacroText(), "Updated from latest recording.");
         ShowMacroNotice($"temporary macro recorder stopped at {TemporaryMacroMaxCharacters} characters");
     }
 
@@ -1290,6 +1293,14 @@ public partial class MainWindow
 
             return await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, playDialog.PlayCount);
         }
+    }
+
+    private void UpdateOpenQuickMacroPlayWindow(string macroText, string statusMessage)
+    {
+        if (_quickMacroPlayWindow is not { IsVisible: true } dialog)
+            return;
+
+        dialog.SetMacroText(macroText, statusMessage);
     }
 
     private Task<string?> PlayTemporaryMacroBurstAsync(IReadOnlyList<byte[]> macroChunks, int count)

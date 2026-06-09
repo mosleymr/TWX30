@@ -304,6 +304,17 @@ public sealed class MacroPlayDialog : Window
         };
     }
 
+    public void SetMacroText(string macroText, string? statusMessage = null)
+    {
+        _macroTextBox.Text = macroText;
+        MacroText = macroText;
+
+        if (!string.IsNullOrWhiteSpace(statusMessage))
+            ShowStatus(statusMessage);
+        else
+            ClearMessages();
+    }
+
     private async Task TryPlayOrAcceptAsync()
     {
         ClearMessages();

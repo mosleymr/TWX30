@@ -1135,14 +1135,18 @@ namespace TWXProxy.Core
 
         private async Task ReloadLastScriptAsync()
         {
-            if (string.IsNullOrEmpty(_lastScript))
+            string lastScript = _interpreter?.LastScript ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(lastScript))
+                lastScript = _lastScript;
+
+            if (string.IsNullOrWhiteSpace(lastScript))
             {
                 await _gameInstance.SendMessageAsync("\r\nNo script has been loaded yet.\r\n");
                 await ShowScriptMenuPromptAsync();
                 return;
             }
 
-            await LoadScriptAsync(_lastScript);
+            await LoadScriptAsync(lastScript);
         }
 
         private async Task UnloadScriptAsync(string scriptName)

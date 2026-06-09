@@ -4869,17 +4869,13 @@ namespace TWXProxy.Core
                         break;
                 }
                 
-                // After execution completes, restore or clear suspended custom menus.
+                // After script input completes, match TWX27 menu flow: GETINPUT /
+                // GETCONSOLEINPUT uses a transient script-input menu. When that
+                // input is answered, the previous script menu is not resurrected
+                // implicitly; scripts that want the menu back open it themselves.
                 if (GlobalModules.TWXMenu is MenuManager menuMgr)
                 {
-                    if (!completed && !_waitingForInput && !menuMgr.IsMenuOpen() && menuMgr.HasSuspendedMenu)
-                    {
-                        Console.WriteLine($"[Script.LocalInputEvent] Restoring suspended menu after input");
-                        _paused = true;
-                        _resetLoopDetectionOnNextExecute = true;
-                        menuMgr.RestoreSuspendedMenuIfNeeded();
-                    }
-                    else if (completed || _waitingForInput)
+                    if (completed || _waitingForInput)
                     {
                         menuMgr.ClearSuspendedMenu();
                     }
@@ -4889,12 +4885,12 @@ namespace TWXProxy.Core
                         _paused = true;
                         _resetLoopDetectionOnNextExecute = true;
 
-                        // If a handler explicitly reopened/redrew its menu (for example,
-                        // a GETINPUT handler ending with OPENMENU), Pascal does not emit
-                        // a second duplicate menu block. Only redisplay when a suspended
-                        // menu still needs restoring logic to finish the UI state.
                         if (menuMgr.HasSuspendedMenu)
-                            menuMgr.RedisplayCurrentMenu();
+                            menuMgr.ClearSuspendedMenu();
+                    }
+                    else if (menuMgr.HasSuspendedMenu)
+                    {
+                        menuMgr.ClearSuspendedMenu();
                     }
                 }
 

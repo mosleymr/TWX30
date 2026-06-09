@@ -192,7 +192,6 @@ namespace TWXProxy.Core
         MenuItem? GetMenuByName(string menuName);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
         void SuspendMenuForInput(bool clearDisplay = true);
-        void RestoreSuspendedMenuIfNeeded();
         bool HasSuspendedMenu { get; }
     }
 
@@ -275,31 +274,15 @@ namespace TWXProxy.Core
 
         public void CloseMenu(bool force)
         {
-            if (force)
-            {
-                if (_menuStack.Count == 0 && _suspendedMenuStack is not { Count: > 0 })
-                    return;
-
-                int clearedDepth = _menuStack.Count;
-                _menuStack.Clear();
-                _suspendedMenuStack = null;
-                Console.WriteLine($"[Menu] Closed menu stack (depth={clearedDepth})");
-                ClearMenuDisplay();
-                RestoreScriptMenuDeafeningIfNeeded();
+            if (_menuStack.Count == 0 && _suspendedMenuStack is not { Count: > 0 })
                 return;
-            }
 
-            if (_menuStack.Count > 0)
-            {
-                var menu = _menuStack.Pop();
-                Console.WriteLine($"[Menu] Closed menu '{menu.Name}'");
-
-                if (_menuStack.Count == 0)
-                {
-                    ClearMenuDisplay();
-                    RestoreScriptMenuDeafeningIfNeeded();
-                }
-            }
+            int clearedDepth = _menuStack.Count;
+            _menuStack.Clear();
+            _suspendedMenuStack = null;
+            Console.WriteLine($"[Menu] Closed menu stack (depth={clearedDepth}, force={force})");
+            ClearMenuDisplay();
+            RestoreScriptMenuDeafeningIfNeeded();
         }
 
         public void RemoveScriptMenus(object script)
@@ -447,19 +430,6 @@ namespace TWXProxy.Core
                 ClearMenuDisplay(restoreCurrentLine: false);
         }
 
-        public void RestoreSuspendedMenuIfNeeded()
-        {
-            if (_menuStack.Count > 0 || _suspendedMenuStack is not { Count: > 0 })
-                return;
-
-            foreach (MenuItem item in _suspendedMenuStack)
-                _menuStack.Push(item);
-
-            GlobalModules.DebugLog($"[Menu] Restored suspended menu stack (depth={_menuStack.Count})\n");
-            _suspendedMenuStack = null;
-            DisplayScriptMenu(_menuStack.Peek());
-        }
-
         public void ClearSuspendedMenu()
         {
             if (_suspendedMenuStack is not { Count: > 0 })
@@ -468,15 +438,6 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[Menu] Cleared suspended menu stack (depth={_suspendedMenuStack.Count})\n");
             _suspendedMenuStack = null;
             RestoreScriptMenuDeafeningIfNeeded();
-        }
-
-        public void RedisplayCurrentMenu()
-        {
-            if (_menuStack.Count > 0)
-            {
-                var currentMenu = _menuStack.Peek();
-                DisplayScriptMenu(currentMenu);
-            }
         }
 
         private static void SendMenuMessage(string message)
