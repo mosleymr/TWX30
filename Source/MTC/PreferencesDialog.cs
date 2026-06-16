@@ -38,6 +38,13 @@ internal class PreferencesDialog : Window
         new("1 MB", 1024),
     };
 
+    private static readonly RpcApprovalOption[] RpcApprovalOptions =
+    {
+        new("Approve actions", MtcRpcApprovalLevels.ApproveActions),
+        new("Read-only", MtcRpcApprovalLevels.ReadOnly),
+        new("Full automation", MtcRpcApprovalLevels.FullAutomation),
+    };
+
     public PreferencesDialog(
         AppPreferences prefs,
         EmbeddedMtcDebugConfig debugPrefs,
@@ -140,6 +147,28 @@ internal class PreferencesDialog : Window
         var cboHotkeyPrewarmLimit = BuildMemoryLimitComboBox(
             prefs.MombotHotkeyPrewarmLimitKb,
             AppPreferences.DefaultMombotHotkeyPrewarmLimitKb);
+        prefs.EnsureJsonRpcAuthToken();
+        var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server", prefs.JsonRpcEnabled);
+        var txtJsonRpcBind = BuildPathTextBox(
+            AppPreferences.NormalizeJsonRpcBindAddress(prefs.JsonRpcBindAddress),
+            "127.0.0.1");
+        var txtJsonRpcPort = BuildPathTextBox(
+            AppPreferences.NormalizeJsonRpcPort(prefs.JsonRpcPort).ToString(),
+            "7623");
+        txtJsonRpcPort.Width = 110;
+        txtJsonRpcPort.HorizontalAlignment = HorizontalAlignment.Left;
+        var txtJsonRpcToken = BuildPathTextBox(
+            AppPreferences.NormalizeJsonRpcAuthToken(prefs.JsonRpcAuthToken),
+            "bearer token");
+        var btnRegenerateRpcToken = new Button
+        {
+            Content = "Regenerate",
+            Background = BgButton,
+            Foreground = FgNormal,
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        btnRegenerateRpcToken.Click += (_, _) => txtJsonRpcToken.Text = AppPreferences.GenerateJsonRpcAuthToken();
+        var cboJsonRpcApproval = BuildRpcApprovalComboBox(prefs.JsonRpcApprovalLevel);
 
         chkDebug.IsCheckedChanged += (_, _) =>
         {
@@ -199,6 +228,16 @@ internal class PreferencesDialog : Window
             BuildMemoryLimitRow("Prepared cache retention", cboPreparedCacheLimit),
             BuildMemoryLimitRow("Mombot hotkey prewarm cap", cboHotkeyPrewarmLimit));
 
+        var integrationsSection = BuildSection(
+            "Integrations",
+            "Local JSON-RPC 2.0 access for reasoning engines and external tools.",
+            BuildCheckGroup(chkJsonRpc),
+            BuildTwoColumnRow(
+                BuildField("Bind address", txtJsonRpcBind, "Use 127.0.0.1 unless remote access is intentional."),
+                BuildField("Port", txtJsonRpcPort, "HTTP POST and WebSocket JSON-RPC port.")),
+            BuildField("Approval level", cboJsonRpcApproval, "Controls whether RPC actions are blocked, approved locally, or automated."),
+            BuildField("Bearer token", BuildTokenRow(txtJsonRpcToken, btnRegenerateRpcToken), "Use Authorization: Bearer <token>, or ?token=<token> for WebSocket clients."));
+
         var btnSave = new Button
         {
             Content             = "Save",
@@ -247,6 +286,14 @@ internal class PreferencesDialog : Window
             prefs.MombotHotkeyPrewarmLimitKb = GetMemoryLimitKb(
                 cboHotkeyPrewarmLimit,
                 AppPreferences.DefaultMombotHotkeyPrewarmLimitKb);
+            prefs.JsonRpcEnabled = chkJsonRpc.IsChecked == true;
+            prefs.JsonRpcBindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
+            prefs.JsonRpcPort = AppPreferences.NormalizeJsonRpcPort(
+                int.TryParse(txtJsonRpcPort.Text, out int jsonRpcPort) ? jsonRpcPort : 7623);
+            prefs.JsonRpcAuthToken = AppPreferences.NormalizeJsonRpcAuthToken(txtJsonRpcToken.Text);
+            prefs.JsonRpcApprovalLevel = cboJsonRpcApproval.SelectedItem is RpcApprovalOption rpcApproval
+                ? MtcRpcApprovalLevels.Normalize(rpcApproval.Value)
+                : MtcRpcApprovalLevels.ApproveActions;
             prefs.Save();
             Close(true);
         };
@@ -284,6 +331,7 @@ internal class PreferencesDialog : Window
                 diagnosticsSection,
                 alertsSection,
                 runtimeSection,
+                integrationsSection,
                 buttons,
             },
         };
@@ -484,6 +532,54 @@ internal class PreferencesDialog : Window
         return row;
     }
 
+    private static Grid BuildTwoColumnRow(Control left, Control right)
+    {
+        var row = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = new GridLength(14) },
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+            },
+        };
+        Grid.SetColumn(left, 0);
+        Grid.SetColumn(right, 2);
+        row.Children.Add(left);
+        row.Children.Add(right);
+        return row;
+    }
+
+    private static Grid BuildTokenRow(TextBox tokenBox, Button regenerateButton)
+    {
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(tokenBox, 0);
+        Grid.SetColumn(regenerateButton, 1);
+        row.Children.Add(tokenBox);
+        row.Children.Add(regenerateButton);
+        return row;
+    }
+
+    private static ComboBox BuildRpcApprovalComboBox(string selectedValue)
+    {
+        var combo = new ComboBox
+        {
+            ItemsSource = RpcApprovalOptions,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+            Width = 220,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        string normalized = MtcRpcApprovalLevels.Normalize(selectedValue);
+        combo.SelectedItem = RpcApprovalOptions.FirstOrDefault(option =>
+            string.Equals(option.Value, normalized, StringComparison.OrdinalIgnoreCase)) ?? RpcApprovalOptions[0];
+        return combo;
+    }
+
     private static int GetMemoryLimitKb(ComboBox combo, int defaultValue)
     {
         return combo.SelectedItem is MemoryLimitOption option
@@ -512,6 +608,20 @@ internal class PreferencesDialog : Window
 
         public string Label { get; }
         public int Kilobytes { get; }
+
+        public override string ToString() => Label;
+    }
+
+    private sealed class RpcApprovalOption
+    {
+        public RpcApprovalOption(string label, string value)
+        {
+            Label = label;
+            Value = value;
+        }
+
+        public string Label { get; }
+        public string Value { get; }
 
         public override string ToString() => Label;
     }

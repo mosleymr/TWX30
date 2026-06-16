@@ -741,6 +741,7 @@ public partial class MainWindow
         RefreshRuntimeScriptDirectoryFromPreferences();
         await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
+        ApplyJsonRpcPreferences();
         ApplySessionLogSettings(_embeddedGameConfig);
         ApplyRedAlertPreference();
         RebuildScriptsMenu();

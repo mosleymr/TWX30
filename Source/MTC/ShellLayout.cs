@@ -1863,6 +1863,8 @@ public partial class MainWindow
         }
 
         _terminalFontSize = normalized;
+        _appPrefs.TerminalFontSize = normalized;
+        _appPrefs.Save();
         _termCtrl.SetFontSize(normalized);
         _deckTermCtrl.SetFontSize(normalized);
         RefreshTerminalFontSizeUi();

@@ -51,6 +51,10 @@ internal sealed record mombotPrewarmModule(
     string CommandName,
     string ScriptPath);
 
+internal sealed record mombotTransientModeRestore(
+    string ParentMode,
+    string ParentLastLoadedModule);
+
 internal sealed class mombotService
 {
     private static readonly string[] WarmModuleCommands =
@@ -83,6 +87,7 @@ internal sealed class mombotService
     private mombotConfig _config = new();
     private readonly HashSet<string> _authorizedUsers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _commandAliases = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, mombotTransientModeRestore> _transientModeRestores = new(StringComparer.OrdinalIgnoreCase);
 
     public mombotConfig Config => _config;
     public mombotWatcher Watcher { get; } = new();
@@ -427,6 +432,9 @@ internal sealed class mombotService
         if (!Enabled)
             return;
 
+        if (TryRestoreTransientMode())
+            return;
+
         string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         if (string.IsNullOrWhiteSpace(lastLoadedModule))
             return;
@@ -440,6 +448,43 @@ internal sealed class mombotService
         ApplySessionVar("$BOT~MODE", "General");
         ApplySessionVar("$bot~mode", "General");
         ApplySessionVar("$mode", "General");
+    }
+
+    private bool TryRestoreTransientMode()
+    {
+        if (_transientModeRestores.Count == 0)
+            return false;
+
+        foreach (string transientModule in _transientModeRestores.Keys.ToArray())
+        {
+            if (IsScriptCurrentlyLoaded(transientModule))
+                continue;
+
+            if (TryRestoreTransientMode(transientModule))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool TryRestoreTransientMode(string transientModule)
+    {
+        if (!_transientModeRestores.Remove(transientModule, out mombotTransientModeRestore? restore))
+            return false;
+
+        if (!IsScriptCurrentlyLoaded(restore.ParentLastLoadedModule))
+            return false;
+
+        string restoredMode = string.IsNullOrWhiteSpace(restore.ParentMode)
+            ? "General"
+            : restore.ParentMode;
+
+        ApplySessionVar("$BOT~MODE", restoredMode);
+        ApplySessionVar("$bot~mode", restoredMode);
+        ApplySessionVar("$mode", restoredMode);
+        ApplySessionVar("$BOT~LAST_LOADED_MODULE", restore.ParentLastLoadedModule);
+        ApplySessionVar("$LAST_LOADED_MODULE", restore.ParentLastLoadedModule);
+        return true;
     }
 
     public bool TryResolveInitialCommand(string input, out mombotCommandSpec? command, out string canonical)
@@ -653,10 +698,15 @@ internal sealed class mombotService
         string currentLastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         bool isMode = string.Equals(module.Category, "Modes", StringComparison.OrdinalIgnoreCase);
         bool helpRequested = HasHelpParameter(context.Parameters);
+        // Bot scripts can send "'bot helper" and wait for the helper's switchboard reply.
+        // Treat that own-subspace dispatch as transient so it does not kill the caller.
+        bool transientModeCommand = isMode && !helpRequested && IsTrustedOwnSubspaceCommand(context);
+        bool replaceActiveMode = isMode && !helpRequested && !transientModeCommand;
         bool modeOffRequested = isMode &&
                                 !helpRequested &&
                                 context.Parameters.Any(parameter => string.Equals(parameter, "off", StringComparison.OrdinalIgnoreCase));
         string moduleUserCommandLine = BuildModuleUserCommandLine(context);
+        mombotTransientModeRestore? transientRestore = null;
 
         if (modeOffRequested)
         {
@@ -683,16 +733,35 @@ internal sealed class mombotService
             return true;
         }
 
-        if (isMode && !helpRequested && !string.IsNullOrWhiteSpace(currentLastLoadedModule))
+        if (replaceActiveMode && !string.IsNullOrWhiteSpace(currentLastLoadedModule))
             StopScriptByName(currentLastLoadedModule);
 
-        string effectiveLastLoadedModule = isMode && !helpRequested
+        if (transientModeCommand)
+        {
+            bool hasExistingTransient = _transientModeRestores.TryGetValue(module.ScriptReference, out transientRestore);
+            bool moduleIsCurrentParent = string.Equals(module.ScriptReference, currentLastLoadedModule, StringComparison.OrdinalIgnoreCase);
+            if (hasExistingTransient || !moduleIsCurrentParent)
+                StopScriptByName(module.ScriptReference);
+
+            transientRestore ??= new mombotTransientModeRestore(
+                Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General"),
+                currentLastLoadedModule);
+        }
+
+        string effectiveLastLoadedModule = replaceActiveMode || transientModeCommand
             ? module.ScriptReference
             : currentLastLoadedModule;
 
-        if (isMode && !helpRequested)
+        if (replaceActiveMode || transientModeCommand)
         {
             string modeName = FormatModeName(context.CommandName);
+
+            if (transientModeCommand)
+            {
+                if (transientRestore != null)
+                    _transientModeRestores[module.ScriptReference] = transientRestore;
+            }
+
             ApplySessionVar("$BOT~MODE", modeName);
             ApplySessionVar("$bot~mode", modeName);
             ApplySessionVar("$mode", modeName);
@@ -709,9 +778,12 @@ internal sealed class mombotService
             userCommandLineOverride: moduleUserCommandLine);
         Compat.ApplyVariableSnapshot(_interpreter, initialVars);
 
-        StopScriptByName(module.ScriptReference);
+        if (!transientModeCommand)
+            StopScriptByName(module.ScriptReference);
         if (!TryLoadScriptAtLabel(module.ScriptReference, string.Empty, initialVars, out string? error))
         {
+            if (transientModeCommand)
+                TryRestoreTransientMode(module.ScriptReference);
             string message = $"mombot: failed to load '{module.ScriptReference}': {error}";
             PublishMessage(message);
             result = new mombotDispatchResult(false, mombotDispatchKind.Script, context.CommandName, message, module.ScriptReference);
@@ -725,6 +797,13 @@ internal sealed class mombotService
     private static string BuildModuleUserCommandLine(mombotCommandContext context)
     {
         return context.TypedParameterLine;
+    }
+
+    private static bool IsTrustedOwnSubspaceCommand(mombotCommandContext context)
+    {
+        return context.TrustedSelfCommand &&
+               !context.SelfCommand &&
+               string.Equals(context.Route, "subspace", StringComparison.OrdinalIgnoreCase);
     }
 
     private mombotDispatchResult ExecuteNative(mombotCommandSpec command, mombotCommandContext context)

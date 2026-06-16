@@ -131,6 +131,7 @@ public partial class MainWindow
         // Load persisted preferences (recent file list etc.) before the first shell build
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
+        _terminalFontSize = GetNearestTerminalFontSize(_appPrefs.TerminalFontSize);
         RestoreMainWindowBoundsIfPossible();
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
@@ -173,6 +174,7 @@ public partial class MainWindow
         SizeChanged += (_, _) => OnMainWindowSizeChanged();
 
         ApplyDebugLoggingPreferences();
+        ApplyJsonRpcPreferences();
         ApplyRedAlertPreference();
         RebuildRecentMenu();
         RebuildProxyMenu();
@@ -235,6 +237,8 @@ public partial class MainWindow
             _gameAgentReplayWindow = null;
             _quickMacroPlayWindow?.Close();
             _quickMacroPlayWindow = null;
+            _jsonRpcServer?.Dispose();
+            _jsonRpcServer = null;
             _gameAgent.Dispose();
             if (_gameInstance != null) _ = _gameInstance.StopAsync();
             _gameFileLock?.Dispose();

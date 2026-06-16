@@ -572,7 +572,7 @@ internal sealed class GameAgentRuntime : IDisposable
         }
     }
 
-    private static GameAgentSectorSnapshot? BuildSectorSnapshot(Core.ModDatabase? database, int sectorNumber)
+    internal static GameAgentSectorSnapshot? BuildSectorSnapshot(Core.ModDatabase? database, int sectorNumber)
     {
         if (database == null || sectorNumber <= 0)
             return null;

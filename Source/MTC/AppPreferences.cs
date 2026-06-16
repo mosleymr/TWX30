@@ -80,6 +80,7 @@ public class AppPreferences
     public double ClassicCommWindowHeight { get; set; } = 140;
     public double DeckCommWindowHeight { get; set; } = 150;
     public bool ShowNotesPanel { get; set; }
+    public double TerminalFontSize { get; set; } = TerminalControl.DefaultFontSize;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
@@ -103,6 +104,11 @@ public class AppPreferences
     public string GameAgentAnthropicApiKey { get; set; } = string.Empty;
     public int GameAgentContextLimitCharacters { get; set; } = 32768;
     public Dictionary<string, string> GameAgentProviderModels { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool JsonRpcEnabled { get; set; }
+    public string JsonRpcBindAddress { get; set; } = "127.0.0.1";
+    public int JsonRpcPort { get; set; } = 7623;
+    public string JsonRpcAuthToken { get; set; } = GenerateJsonRpcAuthToken();
+    public string JsonRpcApprovalLevel { get; set; } = MtcRpcApprovalLevels.ApproveActions;
 
     private static string LegacySharedPrefsPath()
         => Path.Combine(AppPaths.AppDataDir, "prefs.xml");
@@ -178,6 +184,7 @@ public class AppPreferences
                 new XElement("ClassicCommWindowHeight", ClassicCommWindowHeight.ToString(CultureInfo.InvariantCulture)),
                 new XElement("DeckCommWindowHeight", DeckCommWindowHeight.ToString(CultureInfo.InvariantCulture)),
                 new XElement("ShowNotesPanel", ShowNotesPanel),
+                new XElement("TerminalFontSize", TerminalFontSize.ToString(CultureInfo.InvariantCulture)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
@@ -218,6 +225,12 @@ public class AppPreferences
                             .Select(pair => new XElement("Model",
                                 new XAttribute("Provider", NormalizeGameAgentProvider(pair.Key)),
                                 pair.Value.Trim())))),
+                new XElement("JsonRpc",
+                    new XElement("Enabled", JsonRpcEnabled),
+                    new XElement("BindAddress", NormalizeJsonRpcBindAddress(JsonRpcBindAddress)),
+                    new XElement("Port", NormalizeJsonRpcPort(JsonRpcPort)),
+                    new XElement("AuthToken", NormalizeJsonRpcAuthToken(JsonRpcAuthToken)),
+                    new XElement("ApprovalLevel", MtcRpcApprovalLevels.Normalize(JsonRpcApprovalLevel))),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -316,6 +329,8 @@ public class AppPreferences
                 prefs.DeckCommWindowHeight = deckCommWindowHeight;
             if (bool.TryParse((string?)root.Element("ShowNotesPanel"), out bool showNotesPanel))
                 prefs.ShowNotesPanel = showNotesPanel;
+            if (double.TryParse((string?)root.Element("TerminalFontSize"), NumberStyles.Float, CultureInfo.InvariantCulture, out double terminalFontSize))
+                prefs.TerminalFontSize = NormalizeTerminalFontSize(terminalFontSize);
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
@@ -367,6 +382,19 @@ public class AppPreferences
                         prefs.GameAgentProviderModels[provider] = value;
                 }
             }
+
+            XElement? jsonRpc = root.Element("JsonRpc");
+            if (jsonRpc != null)
+            {
+                if (bool.TryParse((string?)jsonRpc.Element("Enabled"), out bool jsonRpcEnabled))
+                    prefs.JsonRpcEnabled = jsonRpcEnabled;
+                prefs.JsonRpcBindAddress = NormalizeJsonRpcBindAddress((string?)jsonRpc.Element("BindAddress"));
+                if (int.TryParse((string?)jsonRpc.Element("Port"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int jsonRpcPort))
+                    prefs.JsonRpcPort = NormalizeJsonRpcPort(jsonRpcPort);
+                prefs.JsonRpcAuthToken = NormalizeJsonRpcAuthToken((string?)jsonRpc.Element("AuthToken"));
+                prefs.JsonRpcApprovalLevel = MtcRpcApprovalLevels.Normalize((string?)jsonRpc.Element("ApprovalLevel"));
+            }
+            prefs.EnsureJsonRpcAuthToken();
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
@@ -566,6 +594,11 @@ public class AppPreferences
             ? value
             : DefaultOnlineRefreshIntervalSeconds;
 
+    public static double NormalizeTerminalFontSize(double value)
+        => double.IsNaN(value) || double.IsInfinity(value)
+            ? TerminalControl.DefaultFontSize
+            : Math.Clamp(value, 8.0, 40.0);
+
     public static string NormalizeGameAgentProvider(string? value)
     {
         string provider = (value ?? string.Empty).Trim().ToLowerInvariant();
@@ -600,6 +633,30 @@ public class AppPreferences
 
     public static int NormalizeGameAgentPort(int value, int defaultValue)
         => value >= 1 && value <= 65535 ? value : defaultValue;
+
+    public static int NormalizeJsonRpcPort(int value)
+        => value is >= 1024 and <= 65535 ? value : 7623;
+
+    public static string NormalizeJsonRpcBindAddress(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? "127.0.0.1" : normalized;
+    }
+
+    public static string NormalizeJsonRpcAuthToken(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? GenerateJsonRpcAuthToken() : normalized;
+    }
+
+    public void EnsureJsonRpcAuthToken()
+    {
+        JsonRpcAuthToken = NormalizeJsonRpcAuthToken(JsonRpcAuthToken);
+    }
+
+    public static string GenerateJsonRpcAuthToken()
+        => Convert.ToHexString(Guid.NewGuid().ToByteArray()).ToLowerInvariant() +
+           Convert.ToHexString(Guid.NewGuid().ToByteArray()).ToLowerInvariant();
 
     private static string? ResolveRecentFilePath(string? path, string programDirectory)
     {

@@ -579,7 +579,6 @@ public partial class MainWindow
 
         return (!string.IsNullOrWhiteSpace(gameMenuPrompt) &&
                 string.Equals(normalized, gameMenuPrompt, StringComparison.OrdinalIgnoreCase)) ||
-               string.Equals(normalized, "[Pause] - [Press Space or Enter to continue]", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(normalized, "Enter your choice:", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(normalized, "Selection (? for menu):", StringComparison.OrdinalIgnoreCase);
     }
