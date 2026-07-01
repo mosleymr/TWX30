@@ -60,6 +60,7 @@ internal sealed class GameAgentContextSnapshot
     public GameAgentSectorSnapshot? CurrentSectorDetails { get; init; }
     public IReadOnlyList<GameAgentSectorSnapshot> AdjacentSectors { get; init; } = [];
     public IReadOnlyList<GameAgentEvent> RecentEvents { get; init; } = [];
+    public GameAgentCopilotRecommendation CopilotRecommendation { get; init; } = new();
 }
 
 internal sealed class GameAgentBotSnapshot
@@ -132,6 +133,17 @@ internal sealed class GameAgentTrainingSample
     public GameAgentContextSnapshot Context { get; init; } = new();
     public IReadOnlyList<GameAgentToolDescriptor> AvailableTools { get; init; } = [];
     public IReadOnlyList<GameAgentToolCallResult> ToolDryRuns { get; init; } = [];
+}
+
+internal sealed class GameAgentCorrectionSample
+{
+    public DateTimeOffset ExportedAt { get; init; } = DateTimeOffset.UtcNow;
+    public string Schema { get; init; } = "mtc.game-agent.correction-sample.v1";
+    public string Purpose { get; init; } = "interactive-training-correction";
+    public GameAgentContextSnapshot Context { get; init; } = new();
+    public GameAgentCopilotRecommendation Recommendation { get; init; } = new();
+    public string CorrectAction { get; init; } = string.Empty;
+    public string Note { get; init; } = string.Empty;
 }
 
 internal sealed class GameAgentRuntime : IDisposable
@@ -272,6 +284,7 @@ internal sealed class GameAgentRuntime : IDisposable
             CurrentSectorDetails = currentSector,
             AdjacentSectors = adjacentSectors,
             RecentEvents = recentEvents,
+            CopilotRecommendation = GameAgentCopilot.Recommend(prompt, state.Sector, recentEvents),
         };
     }
 
@@ -387,6 +400,7 @@ internal sealed class GameAgentRuntime : IDisposable
             ToolDryRuns =
             [
                 GameAgentToolRegistry.ObserveContext(context),
+                GameAgentToolRegistry.RecommendAction(context),
                 GameAgentToolRegistry.ListScripts(context.RunningScripts),
             ],
         };
@@ -394,6 +408,27 @@ internal sealed class GameAgentRuntime : IDisposable
         string dir = BuildAgentDirectory(context.GameName);
         Directory.CreateDirectory(dir);
         string path = Path.Combine(dir, $"sample-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(sample, PrettyJsonOptions), Encoding.UTF8);
+        return path;
+    }
+
+    public static string ExportCorrectionSample(
+        GameAgentContextSnapshot context,
+        GameAgentCopilotRecommendation recommendation,
+        string correctAction,
+        string note)
+    {
+        GameAgentCorrectionSample sample = new()
+        {
+            Context = context,
+            Recommendation = recommendation,
+            CorrectAction = correctAction.Trim(),
+            Note = note.Trim(),
+        };
+
+        string dir = BuildAgentDirectory(context.GameName);
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, $"correction-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
         File.WriteAllText(path, JsonSerializer.Serialize(sample, PrettyJsonOptions), Encoding.UTF8);
         return path;
     }
@@ -652,13 +687,13 @@ internal sealed class GameAgentRuntime : IDisposable
             return;
 
         if (sector.NavHaz > 0)
-            hazards.Add($"{prefix} sector {sector.Number} has {sector.NavHaz}% navhaz.");
+            hazards.Add($"{prefix} sector {sector.Number} has {sector.NavHaz}% navhaz; navhaz is the relevant movement damage risk.");
         if (sector.Anomaly)
-            hazards.Add($"{prefix} sector {sector.Number} has an anomaly.");
+            hazards.Add($"{prefix} sector {sector.Number} has an anomaly signal; do not treat anomaly alone as hull/cargo damage.");
         if (!string.IsNullOrWhiteSpace(sector.ArmidMines))
-            hazards.Add($"{prefix} sector {sector.Number} has armid mines: {sector.ArmidMines}.");
+            hazards.Add($"{prefix} sector {sector.Number} has armid mines: {sector.ArmidMines}; ownership matters, and your own deployed mines do not damage your ship when leaving.");
         if (!string.IsNullOrWhiteSpace(sector.LimpetMines))
-            hazards.Add($"{prefix} sector {sector.Number} has limpet mines: {sector.LimpetMines}.");
+            hazards.Add($"{prefix} sector {sector.Number} has limpet mines: {sector.LimpetMines}; limpets track ships and do not cause ship damage.");
         if (sector.Traders.Count > 0)
             hazards.Add($"{prefix} sector {sector.Number} has trader contacts: {string.Join("; ", sector.Traders.Take(3))}.");
         if (sector.Ships.Count > 0)
@@ -681,8 +716,14 @@ internal sealed class GameAgentRuntime : IDisposable
         if (port.ClassIndex is 0 or 9)
             return "(special)";
 
-        return $"({Product(port, Core.ProductType.FuelOre)}{Product(port, Core.ProductType.Organics)}{Product(port, Core.ProductType.Equipment)})";
+        char fuel = Product(port, Core.ProductType.FuelOre);
+        char organics = Product(port, Core.ProductType.Organics);
+        char equipment = Product(port, Core.ProductType.Equipment);
+        return $"({fuel}{organics}{equipment}: Fuel Ore {PortProductMeaning(fuel)}, Organics {PortProductMeaning(organics)}, Equipment {PortProductMeaning(equipment)}; B=buys from player, S=sells to player)";
     }
+
+    private static string PortProductMeaning(char code)
+        => code == 'B' ? "buying" : "selling";
 
     private static string FormatTrader(Core.Trader trader)
     {

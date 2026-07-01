@@ -399,6 +399,9 @@ public partial class MainWindow
         if (!TryGetMombotPromptNameFromLine(currentLine, out string promptName))
             return;
 
+        if (!IsNativeMombotStartupRefreshPrompt(promptName))
+            return;
+
         SetMombotCurrentVars(promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         _mombotStartupDataGatherRunning = true;
 
@@ -414,6 +417,12 @@ public partial class MainWindow
         _mombotStartupDataGatherPending = false;
 
         await FinalizeNativeMombotStartupAsync();
+    }
+
+    private static bool IsNativeMombotStartupRefreshPrompt(string promptName)
+    {
+        return string.Equals(promptName, "Command", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(promptName, "Citadel", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task FinalizeNativeMombotStartupAsync()
@@ -1575,6 +1584,77 @@ public partial class MainWindow
             : string.Equals(relogSettings.AfterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
                 ? relogSettings.MacroAfterLogin
                 : string.Empty;
+    }
+
+    private async Task ConfigureAndStartNativeMombotForAutoSetupAsync(ConnectionProfile profile)
+    {
+        if (_gameInstance == null || CurrentInterpreter == null)
+        {
+            await ShowMessageAsync("Auto Setup", "The embedded proxy is not running yet, so native MomBot could not be started.");
+            return;
+        }
+
+        string loginName = NormalizeMombotValue(profile.LoginName, treatSelfAsEmpty: true);
+        string password = NormalizeMombotValue(profile.Password);
+        string gameLetter = NormalizeGameLetter(profile.GameLetter);
+        if (string.IsNullOrWhiteSpace(loginName) ||
+            string.IsNullOrWhiteSpace(password) ||
+            string.IsNullOrWhiteSpace(gameLetter))
+        {
+            await ShowMessageAsync("Auto Setup", "Username, password, and game letter are required before native MomBot can start.");
+            return;
+        }
+
+        string configuredNativeBotName = NormalizeMombotValue(
+            _embeddedGameConfig?.mombot?.Name ??
+            _embeddedGameConfig?.Mtc?.mombot?.Name);
+        string botName = FirstMeaningfulMombotValue(
+            _appPrefs.LastNativeMombotBotName,
+            configuredNativeBotName,
+            _mombot.Settings.BotName,
+            "mombot");
+
+        _embeddedGameConfig ??= new EmbeddedGameConfig
+        {
+            Name = NormalizeGameName(profile.Name),
+            DatabasePath = DatabasePathForMode(profile.Name, profile.EmbeddedProxy),
+        };
+
+        MTC.mombot.mombotConfig nativeConfig = GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig);
+        NormalizeNativeMombotRuntimeConfig(nativeConfig);
+        nativeConfig.Configured = true;
+
+        var relogSettings = new MTC.mombot.mombotRelogDialogResult(
+            MTC.mombot.mombotRelogLoginType.NewGameAccountCreation,
+            botName,
+            loginName,
+            loginName,
+            password,
+            gameLetter,
+            DelayMinutes: 0,
+            AfterLoginAction: "nothing",
+            BotCommand: string.Empty,
+            MacroAfterLogin: string.Empty);
+
+        ApplyMombotRelogDialogResult(relogSettings);
+        await SaveCurrentGameConfigAsync();
+        _mombot.ApplyConfig(GetOrCreateEmbeddedMombotConfig(_embeddedGameConfig));
+        RefreshStatusBar();
+        RebuildProxyMenu();
+
+        StoredBotSection? nativeBot = LoadConfiguredBotSections().FirstOrDefault(bot => bot.IsNative);
+        if (nativeBot == null)
+        {
+            PublishMombotLocalMessage("No native MomBot configuration is available.");
+            return;
+        }
+
+        StopActiveExternalBot();
+        await StartInternalMombotAsync(
+            nativeBot.Config,
+            requestedBotName: string.Empty,
+            interactiveOfflinePrompt: false,
+            publishMissingGameMessage: true);
     }
 
     private async Task StopInternalMombotAsync()

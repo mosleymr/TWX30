@@ -439,7 +439,9 @@ namespace TWXProxy.Core
             if (File.Exists(filename))
             {
                 LoadDatabase();
-                if (RepairLandmarkHeadersFromSectorData())
+                bool repaired = RepairLandmarkHeadersFromSectorData();
+                repaired |= RepairLoadedPlanetSightings();
+                if (repaired)
                     SaveDatabase();
             }
             else
@@ -782,6 +784,146 @@ namespace TWXProxy.Core
             return changed;
         }
 
+        public bool RepairPlanetSightings()
+        {
+            bool repaired = RepairLoadedPlanetSightings();
+            if (repaired)
+                SaveDatabase();
+
+            return repaired;
+        }
+
+        private bool RepairLoadedPlanetSightings()
+        {
+            bool changed = false;
+
+            foreach (Planet provisional in _planets.Values
+                         .Where(p => p.Id < 0 && IsAnonymousPlanetSightingName(p.Name))
+                         .ToList())
+            {
+                changed |= _planets.TryRemove(provisional.Id, out _);
+            }
+
+            foreach (SectorData sector in _sectors.Values)
+            {
+                if (sector.PlanetNames.Count == 0)
+                    continue;
+
+                int removed = sector.PlanetNames.RemoveAll(IsAnonymousPlanetSightingName);
+                if (removed > 0)
+                    changed = true;
+            }
+
+            var knownPlanetSectorsByName = _planets.Values
+                .Where(p => p.Id > 0 && p.LastSector > 0)
+                .Select(p => new
+                {
+                    Name = NormalizePlanetNameForMatch(p.Name),
+                    p.LastSector
+                })
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name) &&
+                            !IsAnonymousPlanetSightingName(p.Name))
+                .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(p => p.LastSector).ToHashSet(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            if (knownPlanetSectorsByName.Count > 0)
+            {
+                foreach (Planet provisional in _planets.Values
+                             .Where(p => p.Id < 0 &&
+                                         knownPlanetSectorsByName.ContainsKey(NormalizePlanetNameForMatch(p.Name)))
+                             .ToList())
+                {
+                    changed |= _planets.TryRemove(provisional.Id, out _);
+                }
+
+                foreach (SectorData sector in _sectors.Values)
+                {
+                    if (sector.PlanetNames.Count == 0)
+                        continue;
+
+                    int removed = sector.PlanetNames.RemoveAll(name =>
+                    {
+                        string normalizedName = NormalizePlanetNameForMatch(name);
+                        return !string.IsNullOrWhiteSpace(normalizedName) &&
+                               knownPlanetSectorsByName.TryGetValue(normalizedName, out HashSet<int>? knownSectors) &&
+                               !knownSectors.Contains(sector.Number);
+                    });
+
+                    if (removed > 0)
+                        changed = true;
+                }
+            }
+
+            var authoritativeMobilePlanets = _planets.Values
+                .Where(p => p.Id > 0 &&
+                            p.LastSector > 0 &&
+                            TryGetNumberedMobilePlanetId(p.Name, out int namedId) &&
+                            namedId == p.Id)
+                .GroupBy(p => NormalizePlanetNameForMatch(p.Name), StringComparer.OrdinalIgnoreCase)
+                .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .OrderByDescending(p => p.Level)
+                        .ThenByDescending(p => p.LastSector)
+                        .First(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            foreach ((string normalizedName, Planet authoritative) in authoritativeMobilePlanets)
+            {
+                foreach (Planet duplicate in _planets.Values
+                             .Where(p => p.Id < 0 &&
+                                         PlanetDisplayNamesMatch(p.Name, normalizedName))
+                             .ToList())
+                {
+                    changed |= _planets.TryRemove(duplicate.Id, out _);
+                }
+
+                foreach (Planet duplicate in _planets.Values
+                             .Where(p => p.Id > 0 &&
+                                         p.Id != authoritative.Id &&
+                                         p.LastSector > 0 &&
+                                         PlanetDisplayNamesMatch(p.Name, normalizedName))
+                             .ToList())
+                {
+                    Planet update = ClonePlanet(duplicate);
+                    update.LastSector = 0;
+                    update.ObservedOrder = 0;
+                    _planets[update.Id] = update;
+                    changed = true;
+                }
+
+                foreach (SectorData sector in _sectors.Values)
+                {
+                    if (sector.PlanetNames.Count == 0)
+                        continue;
+
+                    if (sector.Number == authoritative.LastSector)
+                        continue;
+
+                    int removed = sector.PlanetNames.RemoveAll(name =>
+                        PlanetDisplayNamesMatch(name, normalizedName));
+                    if (removed > 0)
+                        changed = true;
+                }
+            }
+
+            foreach (SectorData sector in _sectors.Values)
+                changed |= TrimRepeatedKnownPlanetSightings(sector);
+
+            if (changed)
+            {
+                ResetNextProvisionalPlanetId();
+                Interlocked.Increment(ref _changeStamp);
+                GlobalModules.DebugLog("[ModDatabase] Repaired duplicate/stale planet sightings from loaded database\n");
+            }
+
+            return changed;
+        }
+
         /// <summary>
         /// Get all sectors that warp into the specified sector (backdoors)
         /// </summary>
@@ -809,13 +951,34 @@ namespace TWXProxy.Core
         /// <summary>Record or update a planet by its registry ID.</summary>
         public void SavePlanet(Planet planet)
         {
-            if (planet.Id != 0)
-            {
-                _planets.AddOrUpdate(
-                    planet.Id,
-                    _ => ClonePlanet(planet),
-                    (_, existing) => MergePlanet(existing, planet));
-            }
+            if (planet.Id == 0)
+                return;
+
+            SavePlanetWithSectorIndex(planet);
+        }
+
+        public void ClearPlanetSector(int planetId)
+        {
+            if (planetId == 0)
+                return;
+
+            if (!_planets.TryGetValue(planetId, out Planet? existing))
+                return;
+
+            Planet before = ClonePlanet(existing);
+            Planet after = _planets.AddOrUpdate(
+                planetId,
+                _ => before,
+                (_, existing) =>
+                {
+                    Planet update = ClonePlanet(existing);
+                    update.LastSector = 0;
+                    update.ObservedOrder = 0;
+                    return update;
+                });
+
+            SyncPlanetSectorMembership(before, after);
+            Interlocked.Increment(ref _changeStamp);
         }
 
         public Planet SaveOrAttachPlanetByOrder(Planet planet)
@@ -838,8 +1001,7 @@ namespace TWXProxy.Core
                     Planet merged = MergePlanet(provisional, planet);
                     merged.Id = planet.Id;
                     _planets.TryRemove(provisional.Id, out _);
-                    _planets.AddOrUpdate(merged.Id, _ => merged, (_, existing) => MergePlanet(existing, merged));
-                    return merged;
+                    return SavePlanetWithSectorIndex(merged);
                 }
             }
 
@@ -892,8 +1054,7 @@ namespace TWXProxy.Core
                     Planet merged = MergePlanet(match, planet);
                     merged.Id = planet.Id;
                     _planets.TryRemove(match.Id, out _);
-                    _planets.AddOrUpdate(merged.Id, _ => merged, (_, existing) => MergePlanet(existing, merged));
-                    return merged;
+                    return SavePlanetWithSectorIndex(merged);
                 }
             }
 
@@ -910,11 +1071,13 @@ namespace TWXProxy.Core
                 .Select((planet, index) => new Planet
                 {
                     Id = planet.Id,
-                    Name = planet.Name,
+                    Name = NormalizePlanetNameForMatch(planet.Name),
                     LastSector = sectorNumber,
                     ObservedOrder = index + 1,
+                    Owner = planet.Owner,
                     Shielded = planet.Shielded
                 })
+                .Where(planet => !string.IsNullOrWhiteSpace(planet.Name))
                 .ToList();
 
             var knownPlanets = _planets.Values
@@ -923,47 +1086,335 @@ namespace TWXProxy.Core
                 .ThenBy(p => p.Id)
                 .ToList();
 
+            TrimRepeatedKnownPlanetSightings(normalizedSightings, knownPlanets);
+
             var provisionalPlanets = _planets.Values
                 .Where(p => p.Id < 0 && p.LastSector == sectorNumber)
                 .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
                 .ThenBy(p => p.Id)
                 .ToList();
 
-            int matchedKnown = Math.Min(knownPlanets.Count, normalizedSightings.Count);
-            for (int i = 0; i < matchedKnown; i++)
+            bool removedAnonymousProvisionals = false;
+            foreach (Planet provisional in provisionalPlanets
+                         .Where(p => IsAnonymousPlanetSightingName(p.Name))
+                         .ToList())
             {
-                Planet update = ClonePlanet(normalizedSightings[i]);
-                update.Id = knownPlanets[i].Id;
-                SavePlanet(update);
+                removedAnonymousProvisionals |= _planets.TryRemove(provisional.Id, out _);
             }
 
-            foreach (Planet stale in knownPlanets.Skip(matchedKnown))
+            if (removedAnonymousProvisionals)
             {
-                Planet update = ClonePlanet(stale);
-                update.LastSector = 0;
-                update.ObservedOrder = 0;
-                SavePlanet(update);
+                provisionalPlanets = provisionalPlanets
+                    .Where(p => !IsAnonymousPlanetSightingName(p.Name))
+                    .ToList();
             }
 
-            int reusedProvisionals = 0;
-            for (int i = matchedKnown; i < normalizedSightings.Count; i++)
+            var matchedKnownIds = new HashSet<int>();
+            var matchedSightingIndexes = new HashSet<int>();
+
+            for (int i = 0; i < normalizedSightings.Count; i++)
             {
+                Planet sighting = normalizedSightings[i];
+                Planet? known = knownPlanets
+                    .Where(p => !matchedKnownIds.Contains(p.Id) &&
+                                PlanetDisplayNamesMatch(p.Name, sighting.Name))
+                    .OrderBy(p => p.ObservedOrder == sighting.ObservedOrder ? 0 : 1)
+                    .ThenBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                    .ThenBy(p => p.Id)
+                    .FirstOrDefault();
+
+                if (known == null)
+                    continue;
+
+                Planet update = ClonePlanet(sighting);
+                update.Id = known.Id;
+                SavePlanet(update);
+                matchedKnownIds.Add(known.Id);
+                matchedSightingIndexes.Add(i);
+            }
+
+            foreach (Planet stale in knownPlanets.Where(p => !matchedKnownIds.Contains(p.Id)))
+            {
+                // SavePlanet preserves zero sector values as "unknown"; stale sightings need an explicit clear.
+                ClearPlanetSector(stale.Id);
+            }
+
+            var matchedProvisionalIds = new HashSet<int>();
+            for (int i = 0; i < normalizedSightings.Count; i++)
+            {
+                if (matchedSightingIndexes.Contains(i))
+                    continue;
+
                 Planet sighting = ClonePlanet(normalizedSightings[i]);
-                if (reusedProvisionals < provisionalPlanets.Count)
+                if (IsAnonymousPlanetSightingName(sighting.Name))
+                    continue;
+
+                Planet? provisional = provisionalPlanets
+                    .Where(p => !matchedProvisionalIds.Contains(p.Id) &&
+                                PlanetDisplayNamesMatch(p.Name, sighting.Name))
+                    .OrderBy(p => p.ObservedOrder == sighting.ObservedOrder ? 0 : 1)
+                    .ThenBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                    .ThenBy(p => p.Id)
+                    .FirstOrDefault();
+
+                if (provisional != null)
                 {
-                    sighting.Id = provisionalPlanets[reusedProvisionals].Id;
-                    reusedProvisionals++;
+                    sighting.Id = provisional.Id;
+                    matchedProvisionalIds.Add(provisional.Id);
                 }
                 else
                 {
                     sighting.Id = AllocateProvisionalPlanetId();
+                    matchedProvisionalIds.Add(sighting.Id);
                 }
 
                 SavePlanet(sighting);
             }
 
-            foreach (Planet stale in provisionalPlanets.Skip(reusedProvisionals))
-                _planets.TryRemove(stale.Id, out _);
+            bool removedProvisionals = false;
+            foreach (Planet stale in provisionalPlanets.Where(p => !matchedProvisionalIds.Contains(p.Id)))
+                removedProvisionals |= _planets.TryRemove(stale.Id, out _);
+
+            if (removedProvisionals || removedAnonymousProvisionals)
+            {
+                ResetNextProvisionalPlanetId();
+                Interlocked.Increment(ref _changeStamp);
+            }
+        }
+
+        private Planet SavePlanetWithSectorIndex(Planet planet)
+        {
+            Planet? before = _planets.TryGetValue(planet.Id, out Planet? existing)
+                ? ClonePlanet(existing)
+                : null;
+
+            Planet after = _planets.AddOrUpdate(
+                planet.Id,
+                _ => ClonePlanet(planet),
+                (_, existing) => MergePlanet(existing, planet));
+
+            SyncPlanetSectorMembership(before, after);
+            Interlocked.Increment(ref _changeStamp);
+            return ClonePlanet(after);
+        }
+
+        private void SyncPlanetSectorMembership(Planet? before, Planet after)
+        {
+            if (after.Id == 0)
+                return;
+
+            int previousSector = before?.LastSector ?? 0;
+            int currentSector = after.LastSector;
+            string previousName = before?.Name ?? string.Empty;
+            string currentName = after.Name ?? string.Empty;
+
+            bool nameChanged = !PlanetDisplayNamesMatch(previousName, currentName);
+            if (previousSector > 0 && (previousSector != currentSector || nameChanged))
+            {
+                RemovePlanetDisplayNameFromSector(previousSector, before ?? after, currentName);
+            }
+
+            if (currentSector > 0 && !string.IsNullOrWhiteSpace(currentName))
+                AddOrUpdatePlanetDisplayNameInSector(currentSector, previousName, after);
+        }
+
+        private void RemovePlanetDisplayNameFromSector(int sectorNumber, Planet planet, string fallbackName)
+        {
+            string planetName = !string.IsNullOrWhiteSpace(planet.Name) ? planet.Name : fallbackName;
+            if (sectorNumber <= 0 || string.IsNullOrWhiteSpace(planetName))
+                return;
+
+            if (!_sectors.TryGetValue(sectorNumber, out SectorData? sector) || sector.PlanetNames.Count == 0)
+                return;
+
+            int index = FindPlanetDisplayNameIndex(sector.PlanetNames, planetName, planet.ObservedOrder);
+            if (index < 0)
+                return;
+
+            sector.PlanetNames.RemoveAt(index);
+            SaveSector(sector);
+        }
+
+        private void AddOrUpdatePlanetDisplayNameInSector(int sectorNumber, string previousName, Planet planet)
+        {
+            if (sectorNumber <= 0 || string.IsNullOrWhiteSpace(planet.Name))
+                return;
+
+            SectorData? sector = GetOrCreateSectorData(sectorNumber);
+            if (sector == null)
+                return;
+
+            string displayName = BuildPlanetSectorDisplayName(planet);
+            int currentIndex = FindPlanetDisplayNameIndex(sector.PlanetNames, displayName, planet.ObservedOrder);
+            if (currentIndex >= 0)
+            {
+                int preferredIndex = planet.ObservedOrder - 1;
+                if (preferredIndex < 0 || preferredIndex == currentIndex)
+                {
+                    if (!string.Equals(sector.PlanetNames[currentIndex], displayName, StringComparison.Ordinal))
+                    {
+                        sector.PlanetNames[currentIndex] = displayName;
+                        SaveSector(sector);
+                    }
+                    return;
+                }
+            }
+
+            int previousIndex = FindPlanetDisplayNameIndex(sector.PlanetNames, previousName, planet.ObservedOrder);
+            if (previousIndex >= 0)
+            {
+                int preferredIndex = planet.ObservedOrder - 1;
+                if (preferredIndex < 0 || preferredIndex == previousIndex)
+                {
+                    sector.PlanetNames[previousIndex] = displayName;
+                    SaveSector(sector);
+                    return;
+                }
+            }
+
+            int insertIndex = planet.ObservedOrder > 0
+                ? Math.Clamp(planet.ObservedOrder - 1, 0, sector.PlanetNames.Count)
+                : sector.PlanetNames.Count;
+            sector.PlanetNames.Insert(insertIndex, displayName);
+            SaveSector(sector);
+        }
+
+        private SectorData? GetOrCreateSectorData(int sectorNumber)
+        {
+            if (sectorNumber < 1 || (_header.Sectors > 0 && sectorNumber > _header.Sectors))
+                return null;
+
+            return _sectors.GetOrAdd(sectorNumber, sn => new SectorData { Number = sn });
+        }
+
+        private static int FindPlanetDisplayNameIndex(IReadOnlyList<string> names, string planetName, int observedOrder = 0)
+        {
+            if (string.IsNullOrWhiteSpace(planetName))
+                return -1;
+
+            int preferredIndex = observedOrder - 1;
+            if (preferredIndex >= 0 &&
+                preferredIndex < names.Count &&
+                PlanetDisplayNamesMatch(names[preferredIndex], planetName))
+            {
+                return preferredIndex;
+            }
+
+            for (int i = 0; i < names.Count; i++)
+            {
+                if (PlanetDisplayNamesMatch(names[i], planetName))
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private bool TrimRepeatedKnownPlanetSightings(SectorData sector)
+        {
+            if (sector.PlanetNames.Count == 0)
+                return false;
+
+            var knownPlanets = _planets.Values
+                .Where(p => p.Id > 0 && p.LastSector == sector.Number)
+                .OrderBy(p => p.ObservedOrder > 0 ? p.ObservedOrder : int.MaxValue)
+                .ThenBy(p => p.Id)
+                .ToList();
+
+            if (knownPlanets.Count == 0 || sector.PlanetNames.Count <= knownPlanets.Count)
+                return false;
+
+            var sightings = sector.PlanetNames
+                .Select((name, index) => new Planet
+                {
+                    Name = NormalizePlanetNameForMatch(name),
+                    ObservedOrder = index + 1
+                })
+                .Where(planet => !string.IsNullOrWhiteSpace(planet.Name))
+                .ToList();
+
+            if (!TrimRepeatedKnownPlanetSightings(sightings, knownPlanets))
+                return false;
+
+            int trimmedCount = sightings.Count;
+            if (trimmedCount >= sector.PlanetNames.Count)
+                return false;
+
+            sector.PlanetNames.RemoveRange(trimmedCount, sector.PlanetNames.Count - trimmedCount);
+
+            bool changed = true;
+            foreach (Planet duplicate in _planets.Values
+                         .Where(p => p.Id < 0 &&
+                                     p.LastSector == sector.Number &&
+                                     p.ObservedOrder > trimmedCount)
+                         .ToList())
+            {
+                changed |= _planets.TryRemove(duplicate.Id, out _);
+            }
+
+            return changed;
+        }
+
+        private static bool TrimRepeatedKnownPlanetSightings(List<Planet> sightings, IReadOnlyList<Planet> knownPlanets)
+        {
+            int knownCount = knownPlanets.Count;
+            if (knownCount == 0 || sightings.Count <= knownCount)
+                return false;
+
+            if (!PlanetSightingSequenceMatches(sightings, knownPlanets, 0))
+                return false;
+
+            int index = knownCount;
+            bool sawRepeatedBlock = false;
+            while (index + knownCount <= sightings.Count &&
+                   PlanetSightingSequenceMatches(sightings, knownPlanets, index))
+            {
+                sawRepeatedBlock = true;
+                index += knownCount;
+            }
+
+            if (!sawRepeatedBlock || index != sightings.Count)
+                return false;
+
+            sightings.RemoveRange(knownCount, sightings.Count - knownCount);
+            return true;
+        }
+
+        private static bool PlanetSightingSequenceMatches(
+            IReadOnlyList<Planet> sightings,
+            IReadOnlyList<Planet> knownPlanets,
+            int startIndex)
+        {
+            if (startIndex < 0 || startIndex + knownPlanets.Count > sightings.Count)
+                return false;
+
+            for (int i = 0; i < knownPlanets.Count; i++)
+            {
+                if (!PlanetDisplayNamesMatch(sightings[startIndex + i].Name, knownPlanets[i].Name))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool PlanetDisplayNamesMatch(string? left, string? right)
+        {
+            string normalizedLeft = NormalizePlanetNameForMatch(left);
+            string normalizedRight = NormalizePlanetNameForMatch(right);
+            return !string.IsNullOrWhiteSpace(normalizedLeft) &&
+                   !string.IsNullOrWhiteSpace(normalizedRight) &&
+                   string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsAnonymousPlanetSightingName(string? name) =>
+            string.Equals(NormalizePlanetNameForMatch(name), ".", StringComparison.Ordinal);
+
+        private static string BuildPlanetSectorDisplayName(Planet planet)
+        {
+            string name = string.IsNullOrWhiteSpace(planet.Name) ? "." : planet.Name.Trim();
+            return planet.Shielded == true &&
+                   !name.Contains("(Shielded)", StringComparison.OrdinalIgnoreCase)
+                ? $"{name} (Shielded)"
+                : name;
         }
 
         /// <summary>Look up a planet by registry ID; returns null if unknown.</summary>
@@ -1003,10 +1454,55 @@ namespace TWXProxy.Core
             var sectorPlanetNames = sector?.PlanetNames.ToList() ?? new List<string>();
 
             if (sectorPlanetNames.Count > 0 || sector?.Explored == ExploreType.Yes)
-                return sectorPlanetNames;
+                return GetCanonicalPlanetDisplayNames(sectorNumber, sectorPlanetNames);
 
             var planets = GetPlanetsInSector(sectorNumber);
             return planets.Select(p => p.Name ?? string.Empty).ToList();
+        }
+
+        private List<string> GetCanonicalPlanetDisplayNames(int sectorNumber, IReadOnlyList<string> sectorPlanetNames)
+        {
+            if (sectorPlanetNames.Count == 0)
+                return new List<string>();
+
+            var knownPlanets = GetPlanetsInSector(sectorNumber)
+                .Where(planet => !string.IsNullOrWhiteSpace(planet.Name))
+                .ToList();
+            if (knownPlanets.Count == 0)
+            {
+                return sectorPlanetNames
+                    .Where(name => !IsAnonymousPlanetSightingName(name))
+                    .ToList();
+            }
+
+            var remainingSightings = sectorPlanetNames.ToList();
+
+            var displayNames = new List<string>();
+            foreach (Planet planet in knownPlanets)
+            {
+                int sightingIndex = remainingSightings.FindIndex(sighting =>
+                    PlanetDisplayNamesMatch(sighting, planet.Name));
+                if (sightingIndex >= 0)
+                    remainingSightings.RemoveAt(sightingIndex);
+
+                displayNames.Add(BuildPlanetSectorDisplayName(planet));
+            }
+
+            foreach (string sighting in remainingSightings)
+            {
+                // When the ID-keyed records already account for the same visible
+                // planet name, leftover matching sector strings are stale display
+                // cache from an earlier render and should not be shown as extras.
+                if (knownPlanets.Any(planet => PlanetDisplayNamesMatch(planet.Name, sighting)))
+                    continue;
+
+                if (IsAnonymousPlanetSightingName(sighting))
+                    continue;
+
+                displayNames.Add(sighting);
+            }
+
+            return displayNames;
         }
 
         private static Planet ClonePlanet(Planet planet) => new()
@@ -1055,9 +1551,27 @@ namespace TWXProxy.Core
             string normalized = raw.Trim();
             normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
             normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+            normalized = normalized.Trim();
             normalized = Regex.Replace(normalized, @"\s*\(Shielded\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+            normalized = normalized.Trim();
             normalized = Regex.Replace(normalized, @"^\([A-Z]\)\s*", string.Empty, RegexOptions.IgnoreCase);
             return normalized.Trim();
+        }
+
+        private static bool TryGetNumberedMobilePlanetId(string? name, out int id)
+        {
+            id = 0;
+            string normalizedName = NormalizePlanetNameForMatch(name);
+            Match match = Regex.Match(normalizedName, @"^(\d+)\s+M$", RegexOptions.IgnoreCase);
+            return match.Success && int.TryParse(match.Groups[1].Value, out id);
+        }
+
+        private static string BuildPlanetSectorKey(int sectorNumber, string? planetName)
+        {
+            string normalizedName = NormalizePlanetNameForMatch(planetName);
+            return string.IsNullOrWhiteSpace(normalizedName)
+                ? string.Empty
+                : $"{sectorNumber}\u001f{normalizedName}";
         }
 
         private void ResetNextProvisionalPlanetId()

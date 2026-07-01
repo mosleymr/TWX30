@@ -27,10 +27,10 @@ public partial class MainWindow
             }
 
             _gameAgent.SetGameName(GetGameAgentGameName());
-            var window = new GameAgentWindow(BuildGameAgentContextSnapshot, _appPrefs);
+            var window = new GameAgentWindow(BuildGameAgentContextSnapshot, SendMtcRpcCommandAsync, ExecuteGameAgentMombotCommandAsync, _appPrefs);
             window.Closed += (_, _) => _gameAgentWindow = null;
             _gameAgentWindow = window;
-            window.Show(this);
+            ShowOwnedChildWindow(window, activate: false);
         }
         catch (Exception ex)
         {
@@ -56,8 +56,35 @@ public partial class MainWindow
                 _gameAgentReplayWindow = null;
         };
         _gameAgentReplayWindow = window;
-        window.Show(this);
+        ShowOwnedChildWindow(window, activate: false);
     }
+
+    private Task<MtcRpcActionResult> ExecuteGameAgentMombotCommandAsync(string command)
+        => InvokeMtcRpcUiAsync(() =>
+        {
+            string input = (command ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(input))
+                return Task.FromResult(MtcRpcActionResult.Fail("Mombot command is required."));
+
+            MTC.mombot.mombotStatusSnapshot snapshot = _mombot.GetStatusSnapshot();
+            if (!snapshot.Enabled)
+                return Task.FromResult(MtcRpcActionResult.Fail("Native MTC Mombot is not enabled; mombot commands are unavailable."));
+            if (!snapshot.AcceptSelfCommands)
+                return Task.FromResult(MtcRpcActionResult.Fail("Native MTC Mombot is not accepting local/self commands."));
+
+            try
+            {
+                ExecuteMombotLocalInput(input);
+                return Task.FromResult(MtcRpcActionResult.Ok("Mombot command submitted through the native MTC mombot dispatcher.", new Dictionary<string, string>
+                {
+                    ["command"] = input,
+                }));
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(MtcRpcActionResult.Fail(ex.Message));
+            }
+        });
 
     private async Task ConfigureGameAgentAsync()
     {

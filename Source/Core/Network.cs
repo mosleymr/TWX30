@@ -202,6 +202,14 @@ namespace TWXProxy.Core
         private void LogVerbose(string message) { if (Verbose) Console.WriteLine(message); }
 
         private static long UtcNowTicks() => DateTime.UtcNow.Ticks;
+
+        private static string FormatServerEndpoint(string serverAddress, int serverPort)
+        {
+            string host = string.IsNullOrWhiteSpace(serverAddress) ? "server" : serverAddress.Trim();
+            if (host.Contains(':') && !host.StartsWith('[') && !host.EndsWith(']'))
+                host = $"[{host}]";
+            return $"{host}:{serverPort}";
+        }
         
         // Telnet protocol constants
         private const byte IAC = 255;  // Interpret As Command
@@ -229,6 +237,8 @@ namespace TWXProxy.Core
         public string GameName => _gameName;
         public bool IsRunning => _isRunning;
         public bool IsConnected => _serverClient?.Connected ?? false;
+        public string ServerEndpoint => FormatServerEndpoint(_serverAddress, _serverPort);
+        public string ConnectingStatusText => $"Connecting to {ServerEndpoint}...";
         public bool IsLocalListenerActive
         {
             get
@@ -826,7 +836,7 @@ namespace TWXProxy.Core
                 await _serverClient.ConnectAsync(_serverAddress, _serverPort, token);
                 _serverStream = _serverClient.GetStream();
 
-                Log($"[{_gameName}] Connected to {_serverAddress}:{_serverPort}");
+                Log($"[{_gameName}] Connected to {ServerEndpoint}");
                 
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
@@ -1734,7 +1744,7 @@ namespace TWXProxy.Core
                         // Not connected, so connect
                         try
                         {
-                            await SendToLocalAsync(Encoding.ASCII.GetBytes("\r\nConnecting to server...\r\n"));
+                            await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\n{ConnectingStatusText}\r\n"));
                             await ConnectToServerAsync();
                             await SendToLocalAsync(Encoding.ASCII.GetBytes("Connected!\r\n"));
                         }

@@ -39,6 +39,7 @@ public partial class MainWindow
             QuerySectorAsync = QueryMtcRpcSectorAsync,
             ListScriptsAsync = ListMtcRpcScriptsAsync,
             SendCommandAsync = SendMtcRpcCommandAsync,
+            RunMombotCommandAsync = ExecuteGameAgentMombotCommandAsync,
             RunScriptAsync = RunMtcRpcScriptAsync,
             StopScriptAsync = StopMtcRpcScriptAsync,
             ApproveActionAsync = ApproveMtcRpcActionAsync,

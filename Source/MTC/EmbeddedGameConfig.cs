@@ -81,7 +81,7 @@ internal class EmbeddedMtcConfig
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
     public bool ListenForConnections { get; set; }
-    public int ScrollbackLines { get; set; } = 2000;
+    public int ScrollbackLines { get; set; } = TerminalBuffer.DefaultScrollbackLines;
     public EmbeddedMtcStatusBarConfig StatusBar { get; set; } = new();
     public EmbeddedMtcDebugConfig Debug { get; set; } = new();
     [JsonIgnore]

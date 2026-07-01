@@ -35,6 +35,13 @@ internal static class GameAgentToolRegistry
             },
             new()
             {
+                Name = "recommend_action",
+                Description = "Return the deterministic copilot's next structured action recommendation without sending anything.",
+                CanExecuteGameCommand = false,
+                RequiresApproval = false,
+            },
+            new()
+            {
                 Name = "query_sector",
                 Description = "Read known database details for the current or adjacent sector.",
                 CanExecuteGameCommand = false,
@@ -64,7 +71,14 @@ internal static class GameAgentToolRegistry
             new()
             {
                 Name = "send_command",
-                Description = "Disabled safety placeholder. Future versions may send approved commands.",
+                Description = "Send raw terminal input to the game stream.",
+                CanExecuteGameCommand = true,
+                RequiresApproval = true,
+            },
+            new()
+            {
+                Name = "run_mombot_command",
+                Description = "Run a native MTC Mombot command such as `t 1234` for twarp or `m 1234` for mow.",
                 CanExecuteGameCommand = true,
                 RequiresApproval = true,
             },
@@ -102,6 +116,9 @@ internal static class GameAgentToolRegistry
                 ["botMode"] = context.Bot.Mode,
             },
         };
+
+    public static GameAgentToolCallResult RecommendAction(GameAgentContextSnapshot context)
+        => GameAgentCopilot.RecommendAction(context);
 
     public static GameAgentToolCallResult QuerySector(GameAgentContextSnapshot context, int sectorNumber)
     {
@@ -189,6 +206,6 @@ internal static class GameAgentToolRegistry
             ToolName = toolName,
             Success = false,
             WouldRequireApproval = true,
-            Message = "Game command execution is disabled until observer and replay layers are reliable.",
+            Message = "Direct model command execution is disabled. Action requests use the Game Agent request runner or JSON-RPC action methods.",
         };
 }

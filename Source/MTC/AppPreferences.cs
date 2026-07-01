@@ -13,6 +13,7 @@ public class AppPreferences
 {
     public const int MaxRecentFiles = 5;
     public const int CurrentCommandDeckLayoutVersion = 4;
+    public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
 
@@ -81,6 +82,7 @@ public class AppPreferences
     public double DeckCommWindowHeight { get; set; } = 150;
     public bool ShowNotesPanel { get; set; }
     public double TerminalFontSize { get; set; } = TerminalControl.DefaultFontSize;
+    public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
@@ -164,6 +166,7 @@ public class AppPreferences
             if (string.IsNullOrWhiteSpace(ScriptsDirectory))
                 ScriptsDirectory = Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(ProgramDirectory);
 
+            ScrollbackLines = NormalizeScrollbackLines(ScrollbackLines);
             Core.SharedPathSettingsStore.Save(ProgramDirectory, ScriptsDirectory);
             string configPath = Core.SharedPaths.GetConfigFilePath(ProgramDirectory);
             var document = Core.SharedConfigFile.LoadOrCreate(configPath);
@@ -185,6 +188,7 @@ public class AppPreferences
                 new XElement("DeckCommWindowHeight", DeckCommWindowHeight.ToString(CultureInfo.InvariantCulture)),
                 new XElement("ShowNotesPanel", ShowNotesPanel),
                 new XElement("TerminalFontSize", TerminalFontSize.ToString(CultureInfo.InvariantCulture)),
+                new XElement("ScrollbackLines", NormalizeScrollbackLines(ScrollbackLines)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
@@ -331,6 +335,8 @@ public class AppPreferences
                 prefs.ShowNotesPanel = showNotesPanel;
             if (double.TryParse((string?)root.Element("TerminalFontSize"), NumberStyles.Float, CultureInfo.InvariantCulture, out double terminalFontSize))
                 prefs.TerminalFontSize = NormalizeTerminalFontSize(terminalFontSize);
+            if (int.TryParse((string?)root.Element("ScrollbackLines"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int scrollbackLines))
+                prefs.ScrollbackLines = NormalizeScrollbackLines(scrollbackLines);
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
@@ -598,6 +604,9 @@ public class AppPreferences
         => double.IsNaN(value) || double.IsInfinity(value)
             ? TerminalControl.DefaultFontSize
             : Math.Clamp(value, 8.0, 40.0);
+
+    public static int NormalizeScrollbackLines(int value)
+        => TerminalBuffer.NormalizeScrollbackLines(value);
 
     public static string NormalizeGameAgentProvider(string? value)
     {

@@ -1,5 +1,7 @@
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -52,9 +54,11 @@ internal class PreferencesDialog : Window
         string? gameName)
     {
         Title                 = "Preferences";
-        Width                 = 640;
-        SizeToContent         = SizeToContent.Height;
-        CanResize             = false;
+        Width                 = 720;
+        Height                = 620;
+        MinWidth              = 620;
+        MinHeight             = 480;
+        CanResize             = true;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background            = BgPanel;
 
@@ -147,6 +151,11 @@ internal class PreferencesDialog : Window
         var cboHotkeyPrewarmLimit = BuildMemoryLimitComboBox(
             prefs.MombotHotkeyPrewarmLimitKb,
             AppPreferences.DefaultMombotHotkeyPrewarmLimitKb);
+        var txtScrollbackLines = BuildPathTextBox(
+            AppPreferences.NormalizeScrollbackLines(prefs.ScrollbackLines).ToString(CultureInfo.InvariantCulture),
+            AppPreferences.DefaultScrollbackLines.ToString(CultureInfo.InvariantCulture));
+        txtScrollbackLines.Width = 120;
+        txtScrollbackLines.HorizontalAlignment = HorizontalAlignment.Left;
         prefs.EnsureJsonRpcAuthToken();
         var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server", prefs.JsonRpcEnabled);
         var txtJsonRpcBind = BuildPathTextBox(
@@ -223,8 +232,12 @@ internal class PreferencesDialog : Window
 
         var runtimeSection = BuildSection(
             "Runtime",
-            "Prepared script retention and Mombot hotkey prewarm limits.",
+            "Global terminal and script runtime behavior.",
             BuildCheckGroup(chkPreparedVm, chkVmMetrics),
+            BuildField(
+                "Scrollback lines",
+                txtScrollbackLines,
+                $"Global terminal scrollback retained for every game. Use 0 to disable; max {TerminalBuffer.MaximumScrollbackLines.ToString("N0", CultureInfo.InvariantCulture)}."),
             BuildMemoryLimitRow("Prepared cache retention", cboPreparedCacheLimit),
             BuildMemoryLimitRow("Mombot hotkey prewarm cap", cboHotkeyPrewarmLimit));
 
@@ -286,6 +299,10 @@ internal class PreferencesDialog : Window
             prefs.MombotHotkeyPrewarmLimitKb = GetMemoryLimitKb(
                 cboHotkeyPrewarmLimit,
                 AppPreferences.DefaultMombotHotkeyPrewarmLimitKb);
+            prefs.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(
+                int.TryParse(txtScrollbackLines.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int scrollbackLines)
+                    ? scrollbackLines
+                    : AppPreferences.DefaultScrollbackLines);
             prefs.JsonRpcEnabled = chkJsonRpc.IsChecked == true;
             prefs.JsonRpcBindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
             prefs.JsonRpcPort = AppPreferences.NormalizeJsonRpcPort(
@@ -308,36 +325,86 @@ internal class PreferencesDialog : Window
             Children            = { btnSave, btnCancel },
         };
 
-        Content = new StackPanel
+        var tabs = new TabControl
+        {
+            Background = BgPanel,
+            Foreground = FgNormal,
+            Items =
+            {
+                BuildTabItem("General", storageSection, alertsSection, runtimeSection),
+                BuildTabItem("Diagnostics", diagnosticsSection),
+                BuildTabItem("MPC", integrationsSection),
+            },
+        };
+
+        Content = new Grid
         {
             Margin   = new Thickness(18),
-            Spacing  = 12,
+            RowDefinitions =
+            {
+                new RowDefinition { Height = GridLength.Auto },
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = GridLength.Auto },
+            },
             Children =
             {
-                new TextBlock
+                new StackPanel
                 {
-                    Text = "MTC Preferences",
-                    Foreground = FgLabel,
-                    FontSize = 22,
-                    FontWeight = FontWeight.SemiBold,
+                    Spacing = 2,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "MTC Preferences",
+                            Foreground = FgLabel,
+                            FontSize = 22,
+                            FontWeight = FontWeight.SemiBold,
+                        },
+                        new TextBlock
+                        {
+                            Text = "Tune paths, diagnostics, runtime behavior, and MPC integrations.",
+                            Foreground = FgMuted,
+                            Margin = new Thickness(0, 0, 0, 8),
+                        },
+                    },
                 },
-                new TextBlock
-                {
-                    Text = "Tune paths, diagnostics, and runtime cache behavior.",
-                    Foreground = FgMuted,
-                    Margin = new Thickness(0, -8, 0, 2),
-                },
-                storageSection,
-                diagnosticsSection,
-                alertsSection,
-                runtimeSection,
-                integrationsSection,
+                tabs,
                 buttons,
             },
         };
+        Grid.SetRow(tabs, 1);
+        Grid.SetRow(buttons, 2);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    private static TabItem BuildTabItem(string title, params Control[] sections)
+    {
+        var content = new StackPanel
+        {
+            Spacing = 12,
+            Margin = new Thickness(0, 12, 8, 4),
+        };
+        foreach (Control section in sections)
+            content.Children.Add(section);
+
+        return new TabItem
+        {
+            Header = new TextBlock
+            {
+                Text = title,
+                Foreground = FgLabel,
+                FontWeight = FontWeight.SemiBold,
+                Padding = new Thickness(10, 4),
+            },
+            Content = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = content,
+            },
+        };
+    }
 
     private static TextBox BuildPathTextBox(string value, string watermark)
     {

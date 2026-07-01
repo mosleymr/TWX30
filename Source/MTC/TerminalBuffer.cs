@@ -93,6 +93,9 @@ public static class AnsiColor
 /// </summary>
 public class TerminalBuffer
 {
+    public const int DefaultScrollbackLines = 2000;
+    public const int MaximumScrollbackLines = 200000;
+
     public int Columns { get; private set; }
     public int Rows    { get; private set; }
 
@@ -107,7 +110,21 @@ public class TerminalBuffer
 
     // ── Scrollback buffer ──────────────────────────────────────────────────
     /// <summary>Maximum number of lines retained in the off-screen scrollback buffer.</summary>
-    public int ScrollbackLines { get; set; } = 2000;
+    private int _scrollbackLines = DefaultScrollbackLines;
+
+    public int ScrollbackLines
+    {
+        get => _scrollbackLines;
+        set
+        {
+            int normalized = NormalizeScrollbackLines(value);
+            if (_scrollbackLines == normalized)
+                return;
+
+            _scrollbackLines = normalized;
+            TrimScrollbackToLimit();
+        }
+    }
 
     // Lines ordered oldest → newest.  Capped at ScrollbackLines entries.
     private readonly List<TerminalCell[]> _scrollback = [];
@@ -130,6 +147,9 @@ public class TerminalBuffer
     /// was wider when the line was captured; callers must bounds-check.
     /// </summary>
     public TerminalCell[] GetScrollbackLine(int index) => _scrollback[index];
+
+    public static int NormalizeScrollbackLines(int value)
+        => Math.Clamp(value, 0, MaximumScrollbackLines);
 
     public string GetLineText(int row)
     {
@@ -222,6 +242,19 @@ public class TerminalBuffer
 
         Interlocked.Increment(ref _dirtyVersion);
         DirtyRaised?.Invoke();
+    }
+
+    private void TrimScrollbackToLimit()
+    {
+        int excess = _scrollbackLines <= 0
+            ? _scrollback.Count
+            : _scrollback.Count - _scrollbackLines;
+        if (excess <= 0)
+            return;
+
+        _scrollback.RemoveRange(0, excess);
+        _scrollbackSoftWrapped.RemoveRange(0, excess);
+        MarkDirty();
     }
 
     private sealed class DirtyBatch(TerminalBuffer owner) : IDisposable

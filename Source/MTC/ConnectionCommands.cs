@@ -293,6 +293,8 @@ public partial class MainWindow
             DatabasePathForMode(gameName, newProfile.EmbeddedProxy));
         await SaveEmbeddedGameConfigAsync(gameName, config);
         await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
+        if (dlg.AutoSetupRequested)
+            await ConfigureAndStartNativeMombotForAutoSetupAsync(newProfile);
     }
 
     /// <summary>File > Open: open or import a shared game JSON or a TWX database.</summary>

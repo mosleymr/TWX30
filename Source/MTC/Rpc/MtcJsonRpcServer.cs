@@ -343,6 +343,13 @@ internal sealed class MtcJsonRpcServer : IDisposable
                 return await _bridge.GetContextAsync(eventCount).ConfigureAwait(false);
             }
 
+            case "mtc.getCopilotRecommendation":
+            {
+                int eventCount = ReadInt(parameters, "recentEventCount", 80, 0, MaxRecentEventLimit);
+                GameAgentContextSnapshot context = await _bridge.GetContextAsync(eventCount).ConfigureAwait(false);
+                return context.CopilotRecommendation;
+            }
+
             case "mtc.getRecentEvents":
             {
                 int limit = ReadInt(parameters, "limit", DefaultRecentEventLimit, 1, MaxRecentEventLimit);
@@ -389,6 +396,13 @@ internal sealed class MtcJsonRpcServer : IDisposable
                 return await _bridge.SendCommandAsync(command, appendEnter).ConfigureAwait(false);
             }
 
+            case "mtc.runMombotCommand":
+            {
+                string command = ReadString(parameters, "command", required: true);
+                await EnsureActionAllowedAsync("Run mombot command", command).ConfigureAwait(false);
+                return await _bridge.RunMombotCommandAsync(command).ConfigureAwait(false);
+            }
+
             case "mtc.runScript":
             {
                 string script = ReadString(parameters, "script", required: true);
@@ -427,6 +441,7 @@ internal sealed class MtcJsonRpcServer : IDisposable
                 "rpc.discover",
                 "mtc.getCapabilities",
                 "mtc.getContext",
+                "mtc.getCopilotRecommendation",
                 "mtc.getRecentEvents",
                 "mtc.querySector",
                 "mtc.getSector",
@@ -435,6 +450,7 @@ internal sealed class MtcJsonRpcServer : IDisposable
                 "mtc.unsubscribe",
                 "mtc.proposeCommand",
                 "mtc.sendCommand",
+                "mtc.runMombotCommand",
                 "mtc.runScript",
                 "mtc.stopScript",
             },

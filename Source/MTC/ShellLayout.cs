@@ -2240,13 +2240,15 @@ public partial class MainWindow
         toolsFindItem.Click += (_, _) => OnToolsFind();
         var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
         toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
+        var toolsQCannonCalculatorItem = new MenuItem { Header = "_QCannon Calculator..." };
+        toolsQCannonCalculatorItem.Click += (_, _) => OnToolsQCannonCalculator();
         var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
         toolsConfigureStatusPanelItem.Click += async (_, _) => await OnConfigureStatusPanelAsync();
         var toolsConfigureStatusBarItem = new MenuItem { Header = "Configure _Status Bar..." };
         toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
-        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 
         var menu = new Menu
@@ -2345,8 +2347,7 @@ public partial class MainWindow
             _mapWindow = null;
             UpdateTerminalLiveSelector();
         };
-        _mapWindow.Show();
-        _mapWindow.Activate();
+        ShowOwnedChildWindow(_mapWindow);
         UpdateTerminalLiveSelector();
     }
 
@@ -2356,7 +2357,7 @@ public partial class MainWindow
             () => _sessionDb,
             () => _state.Sector,
             () => _state);
-        win.Show();
+        ShowOwnedChildWindow(win);
     }
 
     private void OnToolsFind()
@@ -2372,8 +2373,20 @@ public partial class MainWindow
             () => _state.Sector,
             () => _state);
         _dataMiningWindow.Closed += (_, _) => _dataMiningWindow = null;
-        _dataMiningWindow.Show(this);
-        _dataMiningWindow.Activate();
+        ShowOwnedChildWindow(_dataMiningWindow);
+    }
+
+    private void OnToolsQCannonCalculator()
+    {
+        if (_qCannonCalculatorWindow is { IsVisible: true })
+        {
+            _qCannonCalculatorWindow.Activate();
+            return;
+        }
+
+        _qCannonCalculatorWindow = new QCannonCalculatorWindow();
+        _qCannonCalculatorWindow.Closed += (_, _) => _qCannonCalculatorWindow = null;
+        ShowOwnedChildWindow(_qCannonCalculatorWindow);
     }
 
     private void OnViewBubbles()
@@ -2410,7 +2423,7 @@ public partial class MainWindow
                 _embeddedGameConfig.TunnelMaxSize = Math.Max(1, maxSize);
                 _ = SaveCurrentGameConfigAsync();
             });
-        win.Show();
+        ShowOwnedChildWindow(win);
     }
 
     private void OnViewCache()
@@ -2423,8 +2436,7 @@ public partial class MainWindow
 
         _cacheWindow = new CacheWindow(CaptureCacheWindowSnapshot);
         _cacheWindow.Closed += (_, _) => _cacheWindow = null;
-        _cacheWindow.Show(this);
-        _cacheWindow.Activate();
+        ShowOwnedChildWindow(_cacheWindow);
     }
 
     private void OnViewAliens()
@@ -2437,8 +2449,7 @@ public partial class MainWindow
 
         _aliensWindow = new AliensWindow(() => _sessionDb);
         _aliensWindow.Closed += (_, _) => _aliensWindow = null;
-        _aliensWindow.Show(this);
-        _aliensWindow.Activate();
+        ShowOwnedChildWindow(_aliensWindow);
     }
 
     private CacheWindowSnapshot CaptureCacheWindowSnapshot()
@@ -2575,13 +2586,13 @@ public partial class MainWindow
         var win = new SectorInfoWindow(
             () => _sessionDb,
             () => _state.Sector);
-        win.Show();
+        ShowOwnedChildWindow(win);
     }
 
     private void OnViewGameInfo()
     {
         var win = new GameInfoWindow(() => _sessionDb, () => _state, () => _embeddedGameConfig?.Variables);
-        win.Show();
+        ShowOwnedChildWindow(win);
     }
 
     private void OnViewScriptDebugger()
@@ -2598,7 +2609,7 @@ public partial class MainWindow
             scriptId => Core.ProxyGameOperations.PauseScriptById(CurrentInterpreter, scriptId),
             scriptId => Core.ProxyGameOperations.ResumeScriptById(CurrentInterpreter, scriptId));
         _scriptDebuggerWindow.Closed += (_, _) => _scriptDebuggerWindow = null;
-        _scriptDebuggerWindow.Show(this);
+        ShowOwnedChildWindow(_scriptDebuggerWindow, activate: false);
     }
 
     // ── Sidebar ────────────────────────────────────────────────────────────

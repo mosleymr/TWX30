@@ -737,6 +737,7 @@ public partial class MainWindow
         }
 
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+        _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
         await SaveCurrentDebugConfigAsync();
@@ -786,6 +787,7 @@ public partial class MainWindow
             SaveMacroBindings);
 
         _macroSettingsDialog = dialog;
+        RegisterOwnedChildWindow(dialog);
         UpdateTerminalLiveSelector();
 
         try

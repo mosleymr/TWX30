@@ -132,6 +132,7 @@ public partial class MainWindow
         // so we don't compose the visual tree twice on startup.
         _appPrefs = AppPreferences.Load();
         _terminalFontSize = GetNearestTerminalFontSize(_appPrefs.TerminalFontSize);
+        _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         RestoreMainWindowBoundsIfPossible();
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
@@ -218,6 +219,7 @@ public partial class MainWindow
         Activated += (_, _) => FocusActiveTerminal();
         Closed    += (_, _) =>
         {
+            _mainWindowClosing = true;
             SaveCurrentNotesNow();
             _notesSaveTimer?.Stop();
             CaptureMainWindowSize();
@@ -229,6 +231,8 @@ public partial class MainWindow
             _nativeDockMenuAttached = false;
             _mombotKeepaliveTimer.Stop();
             _onlineAutoRefreshTimer.Stop();
+            CloseOwnedChildWindows();
+            StopOwnedChildProcesses();
             _telnet.Disconnect();
             _proxyCts?.Cancel();
             _gameAgentWindow?.Close();

@@ -91,6 +91,13 @@ internal static class GameAgentProviders
            "You cannot send commands, run scripts, stop scripts, click UI, or play automatically. " +
            "If you suggest commands, label them as suggestions only and wait for the user to act. " +
            "Use the compact structured context. Do not invent unseen sector data. " +
+           "Port codes are product buy/sell patterns in Fuel Ore, Organics, Equipment order; for example SSB means the port sells Fuel Ore, sells Organics, and buys Equipment. " +
+           "Limpet mines are tracking mines: they can attach to another player's ship and report movement; they do not damage the ship they are attached to. " +
+           "Armid mines are explosive sector mines that can damage other ships when triggered; your own deployed armids or limpets do not damage your own ship merely because you leave a sector. " +
+           "A sector anomaly is a sensor/navigation signal, not random hull or cargo damage by itself. " +
+           "Alignment does not make normal warps cost more and does not make a trader get stuck on random warps. " +
+           "When asked to move or warp, a direct sector entry may offer TransWarp or autopilot confirmations; if the game asks 'Do you want to make this jump blind?' the answer is always no. " +
+           "Native Mombot movement commands are distinct from server movement: `t`/`twarp` performs bot TransWarp and `m`/`mow` performs bot mow, but these require native Mombot to be active. " +
            "Always return a concise final answer in assistant content; never return an empty answer.";
 
     internal static string BuildUserPrompt(GameAgentModelRequest request)
@@ -117,6 +124,17 @@ internal static class GameAgentProviders
             runningScripts = request.Context.RunningScripts.Take(24),
             recentPrompts = request.Context.RecentPrompts,
             hazards = request.Context.Hazards,
+            mechanicsNotes = new[]
+            {
+                "Port codes are Fuel Ore, Organics, Equipment buy/sell patterns. B means the port buys from the player; S means the port sells to the player.",
+                "Limpet mines are tracking mines, not damage mines. They do not explode on or damage the ship they are attached to.",
+                "Armid mines can damage ships that trigger hostile sector mines, but your own armids/limpets do not damage your ship just because you move.",
+                "Anomaly flags should not be described as causing random hull or cargo damage by themselves.",
+                "Alignment should not be described as increasing warp costs or causing random-warp movement lockups.",
+                "Blind TransWarp jumps are always declined with N.",
+                "Mombot t/twarp and m/mow are bot commands, not TradeWars server movement prompts; use them only when native Mombot is active.",
+            },
+            copilotRecommendation = request.Context.CopilotRecommendation,
             currentSector = request.Context.CurrentSectorDetails,
             adjacentSectors = request.Context.AdjacentSectors.Take(8),
             tools = GameAgentToolRegistry.DescribeTools(),
@@ -343,9 +361,10 @@ internal sealed class OpenAiCompatibleGameAgentModel : IGameAgentModel
                 Stream = false,
             };
 
+            string requestJson = JsonSerializer.Serialize(payload);
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _endpoint)
             {
-                Content = JsonContent.Create(payload),
+                Content = new StringContent(requestJson, Encoding.UTF8, "application/json"),
             };
             if (!string.IsNullOrWhiteSpace(_apiKey))
                 httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey.Trim());
@@ -366,11 +385,17 @@ internal sealed class OpenAiCompatibleGameAgentModel : IGameAgentModel
             GameAgentModelReply fallback = await _fallback.AskAsync(request, cancellationToken).ConfigureAwait(false);
             return new GameAgentModelReply
             {
-                Content = fallback.Content + $"\n\n[{_providerName} unavailable: {ex.Message}]",
+                Content = fallback.Content + $"\n\n[{_providerName} unavailable: {BuildTransportErrorMessage(ex)}]",
                 UsedExternalModel = false,
                 Status = "local-observer fallback",
             };
         }
+    }
+
+    private static string BuildTransportErrorMessage(Exception ex)
+    {
+        Exception root = ex.GetBaseException();
+        return ReferenceEquals(root, ex) ? ex.Message : $"{ex.Message} ({root.GetType().Name}: {root.Message})";
     }
 }
 

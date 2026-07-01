@@ -784,7 +784,7 @@ namespace TWXProxy.Core
             }
             else
             {
-                await _gameInstance.SendMessageAsync("\r\nConnecting to server...\r\n");
+                await _gameInstance.SendMessageAsync($"\r\n{_gameInstance.ConnectingStatusText}\r\n");
                 try
                 {
                     await _gameInstance.ConnectToServerAsync();

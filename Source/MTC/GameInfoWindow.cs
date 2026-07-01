@@ -52,7 +52,9 @@ public class GameInfoWindow : Window
         int Sector,
         string Name,
         string ShipType,
-        string Owner);
+        string PilotOrOwner,
+        int Fighters,
+        string Source);
     private sealed record AlienRow(
         int Sector,
         string Race,
@@ -701,22 +703,25 @@ public class GameInfoWindow : Window
 
     private void RenderPlanets(Core.ModDatabase db, int totalSectors)
     {
+        db.RepairPlanetSightings();
+
         var rows = new List<PlanetRow>();
         var sightingsBySector = new Dictionary<int, List<PlanetSighting>>();
 
         for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
         {
-            Core.SectorData? sector = db.GetSector(sectorNumber);
-            if (sector == null || sector.PlanetNames.Count == 0)
+            List<string> planetNames = db.GetPlanetNamesInSector(sectorNumber);
+            if (planetNames.Count == 0)
                 continue;
 
-            sightingsBySector[sectorNumber] = sector.PlanetNames
+            sightingsBySector[sectorNumber] = planetNames
                 .Select(ParsePlanetSighting)
                 .ToList();
         }
 
         var planetsBySector = db.GetAllPlanets()
             .Where(planet => planet.LastSector > 0)
+            .Where(planet => planet.Id > 0 || !IsAnonymousPlanetName(planet.Name))
             .GroupBy(planet => planet.LastSector)
             .ToDictionary(
                 group => group.Key,
@@ -737,19 +742,25 @@ public class GameInfoWindow : Window
             knownPlanets ??= new List<Core.Planet>();
             sightings ??= new List<PlanetSighting>();
 
-            int slotCount = sightings.Count > 0 ? sightings.Count : knownPlanets.Count;
-            for (int i = 0; i < slotCount; i++)
+            var remainingSightings = sightings.ToList();
+            foreach (Core.Planet planet in knownPlanets)
             {
-                Core.Planet? planet = i < knownPlanets.Count ? knownPlanets[i] : null;
-                PlanetSighting? sighting = i < sightings.Count ? sightings[i] : null;
+                PlanetSighting? sighting = null;
+                int sightingIndex = remainingSightings.FindIndex(candidate =>
+                    PlanetNamesMatch(candidate.Name, planet.Name));
+                if (sightingIndex >= 0)
+                {
+                    sighting = remainingSightings[sightingIndex];
+                    remainingSightings.RemoveAt(sightingIndex);
+                }
 
-                string name = planet == null || string.IsNullOrWhiteSpace(planet.Name) ? "." : planet.Name;
+                string name = string.IsNullOrWhiteSpace(planet.Name) ? "." : planet.Name;
                 if (string.IsNullOrWhiteSpace(name) || name == ".")
                     name = sighting?.Name ?? ".";
 
-                int? levelSort = planet != null && planet.Level > 0 ? planet.Level : null;
-                string levelDisplay = planet != null && planet.Level > 0 ? planet.Level.ToString() : "-";
-                if (!levelSort.HasValue && ((planet?.Shielded == true) || sighting?.Shielded == true))
+                int? levelSort = planet.Level > 0 ? planet.Level : null;
+                string levelDisplay = planet.Level > 0 ? planet.Level.ToString() : "-";
+                if (!levelSort.HasValue && (planet.Shielded == true || sighting?.Shielded == true))
                 {
                     levelSort = 5;
                     levelDisplay = "5+";
@@ -757,15 +768,33 @@ public class GameInfoWindow : Window
 
                 rows.Add(new PlanetRow(
                     sectorNumber,
-                    planet != null && planet.Id > 0 ? planet.Id : null,
+                    planet.Id > 0 ? planet.Id : null,
                     name,
-                    planet == null || string.IsNullOrWhiteSpace(planet.Owner) ? "-" : planet.Owner,
+                    string.IsNullOrWhiteSpace(planet.Owner) ? "-" : planet.Owner,
                     levelDisplay,
                     levelSort,
-                    planet != null && planet.Fighters >= 0 ? planet.Fighters : null,
-                    planet != null && planet.FuelOre >= 0 ? planet.FuelOre : null,
-                    planet != null && planet.Organics >= 0 ? planet.Organics : null,
-                    planet != null && planet.Equipment >= 0 ? planet.Equipment : null));
+                    planet.Fighters >= 0 ? planet.Fighters : null,
+                    planet.FuelOre >= 0 ? planet.FuelOre : null,
+                    planet.Organics >= 0 ? planet.Organics : null,
+                    planet.Equipment >= 0 ? planet.Equipment : null));
+            }
+
+            foreach (PlanetSighting sighting in remainingSightings)
+            {
+                if (IsAnonymousPlanetName(sighting.Name))
+                    continue;
+
+                rows.Add(new PlanetRow(
+                    sectorNumber,
+                    null,
+                    string.IsNullOrWhiteSpace(sighting.Name) ? "." : sighting.Name,
+                    "-",
+                    sighting.Shielded ? "5+" : "-",
+                    sighting.Shielded ? 5 : null,
+                    null,
+                    null,
+                    null,
+                    null));
             }
         }
 
@@ -879,7 +908,7 @@ public class GameInfoWindow : Window
         for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
         {
             Core.SectorData? sector = db.GetSector(sectorNumber);
-            if (sector == null || sector.Ships.Count == 0)
+            if (sector == null || (sector.Ships.Count == 0 && sector.Traders.Count == 0))
                 continue;
 
             foreach (Core.Ship ship in sector.Ships)
@@ -888,18 +917,36 @@ public class GameInfoWindow : Window
                     sectorNumber,
                     string.IsNullOrWhiteSpace(ship.Name) ? "-" : ship.Name.Trim(),
                     string.IsNullOrWhiteSpace(ship.ShipType) ? "-" : ship.ShipType.Trim(),
-                    string.IsNullOrWhiteSpace(ship.Owner) ? "-" : ship.Owner.Trim()));
+                    string.IsNullOrWhiteSpace(ship.Owner) ? "-" : ship.Owner.Trim(),
+                    ship.Fighters,
+                    "Ship"));
+            }
+
+            foreach (Core.Trader trader in sector.Traders)
+            {
+                if (IsAlienDisplayLabel(trader.DisplayLabel))
+                    continue;
+
+                rows.Add(new ShipRow(
+                    sectorNumber,
+                    string.IsNullOrWhiteSpace(trader.ShipName) ? "-" : trader.ShipName.Trim(),
+                    string.IsNullOrWhiteSpace(trader.ShipType) ? "-" : trader.ShipType.Trim(),
+                    string.IsNullOrWhiteSpace(trader.Name) ? "-" : trader.Name.Trim(),
+                    trader.Fighters,
+                    string.IsNullOrWhiteSpace(trader.DisplayLabel) ? "Trader" : trader.DisplayLabel.Trim()));
             }
         }
 
         rows = SortShips(rows).ToList();
 
         _shipsContent.Children.Add(BuildTableHeader(
-            "80,260,320,220",
+            "80,230,300,260,120,120",
             (HeaderLabel("Sector", _shipSortColumn == "sector", _shipSortDescending), true, () => ToggleSort("ship", "sector")),
             (HeaderLabel("Ship Name", _shipSortColumn == "name", _shipSortDescending), false, () => ToggleSort("ship", "name")),
             (HeaderLabel("Ship Type", _shipSortColumn == "type", _shipSortDescending), false, () => ToggleSort("ship", "type")),
-            (HeaderLabel("Owner", _shipSortColumn == "owner", _shipSortDescending), false, () => ToggleSort("ship", "owner"))));
+            (HeaderLabel("Pilot / Owner", _shipSortColumn == "owner", _shipSortDescending), false, () => ToggleSort("ship", "owner")),
+            (HeaderLabel("Fighters", _shipSortColumn == "fighters", _shipSortDescending), true, () => ToggleSort("ship", "fighters")),
+            (HeaderLabel("Source", _shipSortColumn == "source", _shipSortDescending), false, () => ToggleSort("ship", "source"))));
 
         if (rows.Count == 0)
         {
@@ -912,12 +959,14 @@ public class GameInfoWindow : Window
         {
             ShipRow row = rows[i];
             rowsPanel.Children.Add(BuildDataRow(
-                "80,260,320,220",
+                "80,230,300,260,120,120",
                 i,
                 (row.Sector.ToString(), true),
                 (row.Name, false),
                 (row.ShipType, false),
-                (row.Owner, false)));
+                (row.PilotOrOwner, false),
+                (row.Fighters > 0 ? row.Fighters.ToString("N0") : "-", true),
+                (row.Source, false)));
         }
 
         _shipsContent.Children.Add(rowsPanel);
@@ -1039,8 +1088,14 @@ public class GameInfoWindow : Window
             ? rows.OrderByDescending(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
             : rows.OrderBy(r => r.ShipType, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
         "owner" => _shipSortDescending
-            ? rows.OrderByDescending(r => r.Owner, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
-            : rows.OrderBy(r => r.Owner, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+            ? rows.OrderByDescending(r => r.PilotOrOwner, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.PilotOrOwner, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
+        "fighters" => _shipSortDescending
+            ? rows.OrderByDescending(r => r.Fighters).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Fighters).ThenBy(r => r.Sector),
+        "source" => _shipSortDescending
+            ? rows.OrderByDescending(r => r.Source, StringComparer.OrdinalIgnoreCase).ThenByDescending(r => r.Sector)
+            : rows.OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Sector),
         _ => _shipSortDescending
             ? rows.OrderByDescending(r => r.Sector).ThenByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase)
             : rows.OrderBy(r => r.Sector).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
@@ -1109,6 +1164,16 @@ public class GameInfoWindow : Window
         return new PlanetSighting(normalized, shielded);
     }
 
+    private static bool PlanetNamesMatch(string? left, string? right)
+    {
+        string normalizedLeft = NormalizePlanetName(left ?? string.Empty);
+        string normalizedRight = NormalizePlanetName(right ?? string.Empty);
+        return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAnonymousPlanetName(string? raw) =>
+        string.Equals(NormalizePlanetName(raw ?? string.Empty), ".", StringComparison.Ordinal);
+
     private static string NormalizePlanetName(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -1117,7 +1182,9 @@ public class GameInfoWindow : Window
         string normalized = raw.Trim();
         normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
         normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+        normalized = normalized.Trim();
         normalized = Regex.Replace(normalized, @"\s*\(Shielded\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+        normalized = normalized.Trim();
         normalized = Regex.Replace(normalized, @"^\([A-Z]\)\s*", string.Empty, RegexOptions.IgnoreCase);
         normalized = normalized.Trim();
         return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;

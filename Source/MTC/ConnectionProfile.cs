@@ -51,9 +51,9 @@ public class ConnectionProfile
     /// <summary>True once the profile has explicitly stored embedded login automation settings.</summary>
     public bool       LoginSettingsConfigured { get; set; } = false;
 
-    // ── Terminal settings ──────────────────────────────────────────────────
-    /// <summary>Maximum number of lines retained in the off-screen scrollback buffer.</summary>
-    public int        ScrollbackLines { get; set; } = 2000;
+    // ── Legacy terminal settings ───────────────────────────────────────────
+    /// <summary>Legacy profile value retained for older files; active scrollback is global MTC preference.</summary>
+    public int        ScrollbackLines { get; set; } = TerminalBuffer.DefaultScrollbackLines;
 
     // ── Trader info (last known) ───────────────────────────────────────────
     public string     TraderName   { get; set; } = string.Empty;

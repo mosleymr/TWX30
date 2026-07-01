@@ -69,6 +69,7 @@ namespace TWXProxy.Core
         private int  _landListSector; // Sector the land list belongs to (_lastSector at entry)
         private int  _lastLandListPlanetId;
         private int  _activePlanetDetailId;
+        private int  _landedPlanetId;
         private int  _landListPlanetIndex;
         private readonly List<bool> _pendingLandListShielded = new();
 
@@ -180,6 +181,7 @@ namespace TWXProxy.Core
             _landListSector = 0;
             _lastLandListPlanetId = 0;
             _activePlanetDetailId = 0;
+            _landedPlanetId = 0;
             _landListPlanetIndex = 0;
             _pendingLandListShielded.Clear();
             _dockArea = DockArea.None;
@@ -668,7 +670,6 @@ namespace TWXProxy.Core
                     foreach (string planetName in sector.PlanetNames)
                         _pendingLandListShielded.Add(planetName.Contains("(Shielded)", StringComparison.OrdinalIgnoreCase));
                     sector.PlanetNames.Clear();
-                    db.SaveSector(sector);
                 }
                 return;
             }
@@ -707,12 +708,6 @@ namespace TWXProxy.Core
 
                     db.SaveOrAttachPlanetByOrder(planet);
                     _lastLandListPlanetId = planetId;
-                    var sector = GetOrCreate(db, _landListSector);
-                    if (sector != null && !string.IsNullOrEmpty(pname))
-                    {
-                        sector.PlanetNames.Add(pname);
-                        db.SaveSector(sector);
-                    }
                     return;
                 }
                 // Owned-by continuation lines belong to the active land list.
@@ -732,6 +727,12 @@ namespace TWXProxy.Core
 
                 // Any other line ends the list; fall through so the new display/prompt
                 // can be parsed normally instead of being swallowed by stale list state.
+                if (_landListSector > 0)
+                {
+                    var sector = GetOrCreate(db, _landListSector);
+                    if (sector != null)
+                        SyncSectorPlanetSightings(db, sector);
+                }
                 _inLandList = false;
                 _landListSector = 0;
                 _lastLandListPlanetId = 0;
@@ -753,6 +754,7 @@ namespace TWXProxy.Core
                 {
                     string pname = pd.Groups[3].Value.Trim();
                     _activePlanetDetailId = pid;
+                    _landedPlanetId = pid;
                     db.SaveOrAttachPlanetByDetail(new Planet { Id = pid, Name = pname, LastSector = psector });
                     return;
                 }
@@ -919,6 +921,16 @@ namespace TWXProxy.Core
                     // having become CURRENTSECTOR before the prompt returns.
                     _currentSector = sn;
                     GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Current sector set to {sn} from sector display\n");
+
+                    // While sitting on a planet, planetary transwarp redraws the
+                    // destination sector before another detail page. Keep the
+                    // registry-keyed planet location current instead of allowing the
+                    // anonymous sector display row to become a new provisional planet.
+                    if (!_inHoloScan && _landedPlanetId > 0)
+                    {
+                        db.SavePlanet(new Planet { Id = _landedPlanetId, LastSector = sn });
+                        GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Planet {_landedPlanetId} moved to sector {sn} from live sector display\n");
+                    }
 
                     // Always capture constellation name when present (works for both
                     // normal sector display AND holo scan: "Sector  : 9363  in  The Crucible")
@@ -1235,7 +1247,12 @@ namespace TWXProxy.Core
                     }
                     return;
                 }
-                // Any non-planet-looking line ends the planets block
+                // Any non-planet-looking line ends the planets block. Reconcile now
+                // so UI/database readers do not see raw display-only rows while the
+                // rest of the sector display continues parsing.
+                var planetSector = GetOrCreate(db, _lastSector);
+                if (planetSector != null)
+                    SyncSectorPlanetSightings(db, planetSector);
                 _sectorPos = SectorPos.None;
             }
 
@@ -1310,6 +1327,7 @@ namespace TWXProxy.Core
             {
                 FinalizeActiveSectorDisplay(db);
                 ResetPromptDisplays(db, preservePortReport: _inPortReport || _pendingPortReportSectorOverride > 0);
+                _landedPlanetId = 0;
 
                 var mc = _rxCommandSector.Match(trimmedLine);
                 if (mc.Success && int.TryParse(mc.Groups[1].Value, out int csn))
@@ -2017,7 +2035,9 @@ namespace TWXProxy.Core
             string normalized = raw.Trim();
             normalized = normalized.Replace("<<<<", string.Empty, StringComparison.Ordinal);
             normalized = normalized.Replace(">>>>", string.Empty, StringComparison.Ordinal);
+            normalized = normalized.Trim();
             normalized = Regex.Replace(normalized, @"\s*\(Shielded\)\s*$", string.Empty, RegexOptions.IgnoreCase);
+            normalized = normalized.Trim();
             normalized = Regex.Replace(normalized, @"^\([A-Z]\)\s*", string.Empty, RegexOptions.IgnoreCase);
             normalized = normalized.Trim();
             return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;
@@ -2152,14 +2172,17 @@ namespace TWXProxy.Core
                     var sector = GetOrCreate(db, sectorNum);
                     if (sector == null) return;
 
-                    sector.Traders.Add(new Trader
+                    var trader = new Trader
                     {
                         DisplayLabel = _currentTrader.DisplayLabel,
                         Name = _currentTrader.Name,
                         Fighters = _currentTrader.Fighters,
                         ShipName = trimmed.Substring(3, open - 4).Trim(),
                         ShipType = trimmed.Substring(open + 1, close - open - 1).Trim()
-                    });
+                    };
+
+                    RemovePriorPlayerTraderSightings(db, sectorNum, trader);
+                    sector.Traders.Add(trader);
                     db.SaveSector(sector);
                     GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} trader={_currentTrader.Name} ship={sector.Traders[^1].ShipName} type={sector.Traders[^1].ShipType} figs={_currentTrader.Fighters}\n");
                 }
@@ -2169,6 +2192,49 @@ namespace TWXProxy.Core
             var m = _rxTraderLine.Match(trimmed);
             if (m.Success)
                 ParseTraderSummary(m);
+        }
+
+        private static bool IsPlayerTraderDisplayLabel(string? label)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+                return false;
+
+            return string.Equals(label.Trim(), "Traders", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void RemovePriorPlayerTraderSightings(ModDatabase db, int currentSector, Trader trader)
+        {
+            if (currentSector <= 0 ||
+                string.IsNullOrWhiteSpace(trader.Name) ||
+                !IsPlayerTraderDisplayLabel(trader.DisplayLabel))
+            {
+                return;
+            }
+
+            int sectorLimit = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
+            if (sectorLimit <= 0)
+                return;
+
+            string traderName = trader.Name.Trim();
+            for (int sectorNumber = 1; sectorNumber <= sectorLimit; sectorNumber++)
+            {
+                if (sectorNumber == currentSector)
+                    continue;
+
+                var sector = db.GetSector(sectorNumber);
+                if (sector == null || sector.Traders.Count == 0)
+                    continue;
+
+                int removed = sector.Traders.RemoveAll(existing =>
+                    IsPlayerTraderDisplayLabel(existing.DisplayLabel) &&
+                    string.Equals(existing.Name.Trim(), traderName, StringComparison.OrdinalIgnoreCase));
+
+                if (removed <= 0)
+                    continue;
+
+                db.SaveSector(sector);
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Removed stale trader={traderName} from sector {sectorNumber} after sighting in sector {currentSector}\n");
+            }
         }
 
         private static string NormalizeTraderDisplayLabel(string? label)

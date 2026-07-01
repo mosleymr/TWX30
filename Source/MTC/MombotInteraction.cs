@@ -1267,11 +1267,12 @@ public partial class MainWindow
             if (ReferenceEquals(_quickMacroPlayWindow, dialog))
                 _quickMacroPlayWindow = null;
 
-            FocusActiveTerminal();
+            if (!_mainWindowClosing)
+                FocusActiveTerminal();
         };
 
         _quickMacroPlayWindow = dialog;
-        dialog.Show(this);
+        ShowOwnedChildWindow(dialog, activate: false);
         return Task.CompletedTask;
 
         async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)

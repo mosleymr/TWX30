@@ -51,7 +51,7 @@ public partial class MainWindow
         Password        = _state.Password,
         GameLetter      = _state.GameLetter,
         LoginSettingsConfigured = _state.EmbeddedProxy,
-        ScrollbackLines = _buffer.ScrollbackLines,
+        ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
         // Trader
         TraderName      = _state.TraderName,
         Sector          = _state.Sector,
@@ -117,7 +117,7 @@ public partial class MainWindow
             Password = config.Password,
             GameLetter = config.GameLetter,
             LoginSettingsConfigured = mtc.EmbeddedProxy,
-            ScrollbackLines = mtc.ScrollbackLines <= 0 ? 2000 : mtc.ScrollbackLines,
+            ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
             TraderName = state.TraderName,
             Sector = state.Sector,
             Turns = state.Turns,
@@ -361,7 +361,7 @@ public partial class MainWindow
         config.Mtc.TwxProxyDbPath = _state.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = _state.EmbeddedProxy;
         config.Mtc.ListenForConnections = _state.ListenForConnections;
-        config.Mtc.ScrollbackLines = _buffer.ScrollbackLines;
+        config.Mtc.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         config.Mtc.State = BuildEmbeddedMtcState();
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
         return config;
@@ -391,9 +391,7 @@ public partial class MainWindow
             ? protocol
             : TwProtocol.Telnet;
 
-        int scrollbackLines = config.Mtc?.ScrollbackLines ?? 0;
-        if (scrollbackLines > 0)
-            _buffer.ScrollbackLines = scrollbackLines;
+        _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
     }
 
     private static EmbeddedMtcState BuildEmbeddedMtcState(ConnectionProfile profile)
@@ -464,7 +462,7 @@ public partial class MainWindow
         config.Mtc.TwxProxyDbPath = profile.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = profile.EmbeddedProxy;
         config.Mtc.ListenForConnections = profile.ListenForConnections;
-        config.Mtc.ScrollbackLines = profile.ScrollbackLines;
+        config.Mtc.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         config.Mtc.State = BuildEmbeddedMtcState(profile);
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
         return config;
@@ -537,7 +535,7 @@ public partial class MainWindow
         _state.GameLetter      = string.IsNullOrWhiteSpace(p.GameLetter)
             ? string.Empty
             : p.GameLetter.Trim().Substring(0, 1).ToUpperInvariant();
-        _buffer.ScrollbackLines = p.ScrollbackLines;
+        _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         // Trader
         _state.TraderName     = p.TraderName;
         _state.Sector         = p.Sector;
@@ -685,7 +683,7 @@ public partial class MainWindow
 
         try
         {
-            await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes("\r\nConnecting to server...\r\n"));
+            await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes($"\r\n{_gameInstance.ConnectingStatusText}\r\n"));
             await _gameInstance.ConnectToServerAsync();
             await _gameInstance.SendToLocalAsync(System.Text.Encoding.ASCII.GetBytes("Connected!\r\n"));
         }
@@ -733,7 +731,7 @@ public partial class MainWindow
                 LocalTwxProxy = _state.LocalTwxProxy,
                 TwxProxyDbPath = _state.TwxProxyDbPath,
                 EmbeddedProxy = _state.EmbeddedProxy,
-                ScrollbackLines = _buffer.ScrollbackLines,
+                ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
                 State = BuildEmbeddedMtcState(),
             },
         };
@@ -969,7 +967,7 @@ public partial class MainWindow
             LocalTwxProxy = true,
             TwxProxyDbPath = AppPaths.TwxproxyDatabasePathForGame(gameName),
             Sectors = 1000,
-            ScrollbackLines = _buffer.ScrollbackLines,
+            ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
             LoginScript = "0_Login.cts",
         };
 
@@ -1218,9 +1216,6 @@ public partial class MainWindow
         {
             string[] args = Environment.GetCommandLineArgs().Skip(1).ToArray();
 
-            if (UnixAutoDetach.TryLaunchAdditionalInstance(args, out string? unixLaunchError))
-                return;
-
             string? processPath = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(processPath))
                 processPath = Process.GetCurrentProcess().MainModule?.FileName;
@@ -1238,10 +1233,13 @@ public partial class MainWindow
                 UseShellExecute = false,
             };
 
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
+                startInfo.Environment["MTC_UNIX_DETACHED"] = "1";
+
             foreach (string arg in args)
                 startInfo.ArgumentList.Add(arg);
 
-            Process.Start(startInfo);
+            RegisterOwnedChildProcess(Process.Start(startInfo));
         }
         catch (Exception ex)
         {

@@ -138,6 +138,7 @@ public partial class MainWindow : Window
     private MapWindow? _mapWindow;
     private CacheWindow? _cacheWindow;
     private AliensWindow? _aliensWindow;
+    private QCannonCalculatorWindow? _qCannonCalculatorWindow;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
     private DataMiningWindow? _dataMiningWindow;
