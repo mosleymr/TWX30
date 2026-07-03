@@ -254,25 +254,56 @@ public partial class MainWindow
 
     private void RegisterNativeMombotEscapeEchoSuppression()
     {
+        long suppressUntilTicks = DateTime.UtcNow.AddSeconds(2).Ticks;
+        if (CurrentMtcTabContext() is { } owner)
+        {
+            lock (owner.TerminalDisplayArtifactSync)
+            {
+                owner.PendingNativeMombotEscapeEchoSuppressions++;
+                owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = suppressUntilTicks;
+            }
+
+            _pendingNativeMombotEscapeEchoSuppressions = owner.PendingNativeMombotEscapeEchoSuppressions;
+            _nativeMombotEscapeEchoSuppressUntilUtcTicks = owner.NativeMombotEscapeEchoSuppressUntilUtcTicks;
+            return;
+        }
+
         Interlocked.Increment(ref _pendingNativeMombotEscapeEchoSuppressions);
-        Interlocked.Exchange(
-            ref _nativeMombotEscapeEchoSuppressUntilUtcTicks,
-            DateTime.UtcNow.AddSeconds(2).Ticks);
+        Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, suppressUntilTicks);
     }
 
     private byte[] FilterTerminalDisplayArtifacts(byte[] chunk)
+        => FilterTerminalDisplayArtifacts(CurrentMtcTabContext(), chunk);
+
+    private byte[] FilterTerminalDisplayArtifacts(MtcTabPrototype? owner, byte[] chunk)
     {
         if (chunk.Length == 0)
             return chunk;
 
-        lock (_terminalDisplayArtifactSync)
+        object sync = owner?.TerminalDisplayArtifactSync ?? _terminalDisplayArtifactSync;
+        lock (sync)
         {
+            bool suppressingPendingNativeMombotEscapeSequence =
+                owner?.SuppressingPendingNativeMombotEscapeSequence ?? _suppressingPendingNativeMombotEscapeSequence;
+            bool suppressingPendingNativeMombotEscapeCsiBody =
+                owner?.SuppressingPendingNativeMombotEscapeCsiBody ?? _suppressingPendingNativeMombotEscapeCsiBody;
+            bool pendingTerminalSyncMarkerLeadByte =
+                owner?.PendingTerminalSyncMarkerLeadByte ?? _pendingTerminalSyncMarkerLeadByte;
+            bool pendingTerminalSyncMarkerUtf8LeadByte =
+                owner?.PendingTerminalSyncMarkerUtf8LeadByte ?? _pendingTerminalSyncMarkerUtf8LeadByte;
+            int pendingNativeMombotEscapeEchoSuppressions =
+                owner?.PendingNativeMombotEscapeEchoSuppressions ??
+                Interlocked.CompareExchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0, 0);
+            long nativeMombotEscapeEchoSuppressUntilUtcTicks =
+                owner?.NativeMombotEscapeEchoSuppressUntilUtcTicks ??
+                Interlocked.Read(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks);
+
             List<byte>? filtered = null;
             int index = 0;
 
-            if (_pendingTerminalSyncMarkerLeadByte)
+            if (pendingTerminalSyncMarkerLeadByte)
             {
-                _pendingTerminalSyncMarkerLeadByte = false;
+                pendingTerminalSyncMarkerLeadByte = false;
 
                 if (chunk[0] == 0x08)
                 {
@@ -285,9 +316,9 @@ public partial class MainWindow
                 }
             }
 
-            if (_pendingTerminalSyncMarkerUtf8LeadByte)
+            if (pendingTerminalSyncMarkerUtf8LeadByte)
             {
-                _pendingTerminalSyncMarkerUtf8LeadByte = false;
+                pendingTerminalSyncMarkerUtf8LeadByte = false;
 
                 if (index < chunk.Length && chunk[index] == 0x91)
                 {
@@ -299,7 +330,7 @@ public partial class MainWindow
                     }
                     else if (index >= chunk.Length)
                     {
-                        _pendingTerminalSyncMarkerLeadByte = true;
+                        pendingTerminalSyncMarkerLeadByte = true;
                     }
                 }
                 else
@@ -313,37 +344,40 @@ public partial class MainWindow
             {
                 byte value = chunk[index];
 
-                if (_suppressingPendingNativeMombotEscapeSequence)
+                if (suppressingPendingNativeMombotEscapeSequence)
                 {
                     filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
 
-                    if (!_suppressingPendingNativeMombotEscapeCsiBody)
+                    if (!suppressingPendingNativeMombotEscapeCsiBody)
                     {
                         if (value == (byte)'[')
                         {
-                            _suppressingPendingNativeMombotEscapeCsiBody = true;
+                            suppressingPendingNativeMombotEscapeCsiBody = true;
                             continue;
                         }
 
-                        _suppressingPendingNativeMombotEscapeSequence = false;
-                        _suppressingPendingNativeMombotEscapeCsiBody = false;
+                        suppressingPendingNativeMombotEscapeSequence = false;
+                        suppressingPendingNativeMombotEscapeCsiBody = false;
                         continue;
                     }
 
                     if (value >= 0x40 && value <= 0x7E)
                     {
-                        _suppressingPendingNativeMombotEscapeSequence = false;
-                        _suppressingPendingNativeMombotEscapeCsiBody = false;
+                        suppressingPendingNativeMombotEscapeSequence = false;
+                        suppressingPendingNativeMombotEscapeCsiBody = false;
                     }
 
                     continue;
                 }
 
-                if (ShouldSuppressPendingNativeMombotEscapeEcho(value))
+                if (ShouldSuppressPendingNativeMombotEscapeEcho(
+                        value,
+                        ref pendingNativeMombotEscapeEchoSuppressions,
+                        ref nativeMombotEscapeEchoSuppressUntilUtcTicks))
                 {
                     filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                    _suppressingPendingNativeMombotEscapeSequence = true;
-                    _suppressingPendingNativeMombotEscapeCsiBody = false;
+                    suppressingPendingNativeMombotEscapeSequence = true;
+                    suppressingPendingNativeMombotEscapeCsiBody = false;
                     continue;
                 }
 
@@ -358,14 +392,14 @@ public partial class MainWindow
                             if (index + 1 < chunk.Length && chunk[index + 1] == 0x08)
                                 index++;
                             else if (index + 1 >= chunk.Length)
-                                _pendingTerminalSyncMarkerLeadByte = true;
+                                pendingTerminalSyncMarkerLeadByte = true;
                             continue;
                         }
                     }
                     else
                     {
                         filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                        _pendingTerminalSyncMarkerUtf8LeadByte = true;
+                        pendingTerminalSyncMarkerUtf8LeadByte = true;
                         continue;
                     }
                 }
@@ -383,7 +417,7 @@ public partial class MainWindow
                     }
                     else
                     {
-                        _pendingTerminalSyncMarkerLeadByte = true;
+                        pendingTerminalSyncMarkerLeadByte = true;
                         continue;
                     }
 
@@ -419,6 +453,25 @@ public partial class MainWindow
                 filtered?.Add(value);
             }
 
+            if (owner is not null)
+            {
+                owner.SuppressingPendingNativeMombotEscapeSequence = suppressingPendingNativeMombotEscapeSequence;
+                owner.SuppressingPendingNativeMombotEscapeCsiBody = suppressingPendingNativeMombotEscapeCsiBody;
+                owner.PendingTerminalSyncMarkerLeadByte = pendingTerminalSyncMarkerLeadByte;
+                owner.PendingTerminalSyncMarkerUtf8LeadByte = pendingTerminalSyncMarkerUtf8LeadByte;
+                owner.PendingNativeMombotEscapeEchoSuppressions = pendingNativeMombotEscapeEchoSuppressions;
+                owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = nativeMombotEscapeEchoSuppressUntilUtcTicks;
+            }
+            else
+            {
+                _suppressingPendingNativeMombotEscapeSequence = suppressingPendingNativeMombotEscapeSequence;
+                _suppressingPendingNativeMombotEscapeCsiBody = suppressingPendingNativeMombotEscapeCsiBody;
+                _pendingTerminalSyncMarkerLeadByte = pendingTerminalSyncMarkerLeadByte;
+                _pendingTerminalSyncMarkerUtf8LeadByte = pendingTerminalSyncMarkerUtf8LeadByte;
+                Interlocked.Exchange(ref _pendingNativeMombotEscapeEchoSuppressions, pendingNativeMombotEscapeEchoSuppressions);
+                Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, nativeMombotEscapeEchoSuppressUntilUtcTicks);
+            }
+
             return filtered == null ? chunk : filtered.ToArray();
         }
     }
@@ -439,25 +492,27 @@ public partial class MainWindow
         return result;
     }
 
-    private bool ShouldSuppressPendingNativeMombotEscapeEcho(byte value)
+    private static bool ShouldSuppressPendingNativeMombotEscapeEcho(
+        byte value,
+        ref int pendingSuppressions,
+        ref long suppressUntilTicks)
     {
         if (value != 0x1B)
             return false;
 
-        int pending = Interlocked.CompareExchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0, 0);
-        if (pending <= 0)
+        if (pendingSuppressions <= 0)
             return false;
 
-        long suppressUntilTicks = Interlocked.Read(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks);
         if (suppressUntilTicks <= 0 || DateTime.UtcNow.Ticks > suppressUntilTicks)
         {
-            Interlocked.Exchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0);
-            Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
+            pendingSuppressions = 0;
+            suppressUntilTicks = 0;
             return false;
         }
 
-        if (Interlocked.Decrement(ref _pendingNativeMombotEscapeEchoSuppressions) <= 0)
-            Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
+        pendingSuppressions--;
+        if (pendingSuppressions <= 0)
+            suppressUntilTicks = 0;
 
         return true;
     }

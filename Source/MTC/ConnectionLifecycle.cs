@@ -30,7 +30,7 @@ public partial class MainWindow
     /// <summary>Connects using the current Host/Port already set in state.</summary>
     private void DoConnect()
     {
-        var tab = ActiveMtcTab;
+        var tab = CurrentMtcTabContext();
         if (_telnet.IsConnected) _telnet.Disconnect();
         _telnet.SetWindowSize(_buffer.Columns, _buffer.Rows);
         _ = _telnet.ConnectAsync(_state.Host, _state.Port)
@@ -63,7 +63,7 @@ public partial class MainWindow
     /// </summary>
     private async Task DoConnectEmbeddedAsync()
     {
-        var owningTab = ActiveMtcTab;
+        var owningTab = CurrentMtcTabContext();
         using var runtimeScope = Core.GlobalModules.UseRuntimeContext(owningTab?.RuntimeContext);
 
         // Wait for any in-flight stop to fully complete so its cleanup cannot
@@ -332,12 +332,12 @@ public partial class MainWindow
                     int n = await termReader.ReadAsync(buf, 0, buf.Length, cts.Token).ConfigureAwait(false);
                     if (n == 0) break;
                     var chunk = buf[..n].ToArray();
-                    bool terminalDeaf = IsEmbeddedTerminalClientDeaf();
+                    bool terminalDeaf = IsEmbeddedTerminalClientDeaf(owningTab);
 
-                    byte[] displayChunk = FilterTerminalDisplayArtifacts(chunk);
-                    EnqueueDisplayChunk(displayChunk, force: terminalDeaf);
+                    byte[] displayChunk = FilterTerminalDisplayArtifacts(owningTab, chunk);
+                    EnqueueDisplayChunk(owningTab, displayChunk, force: terminalDeaf);
                     if (!terminalDeaf)
-                        QueueSessionLogChunk(chunk);
+                        QueueSessionLogChunk(owningTab, chunk);
                 }
             }
             catch (OperationCanceledException) { }
@@ -505,7 +505,7 @@ public partial class MainWindow
                 ObserveGameAgentConnectionChanged(connected: true);
                 SetTerminalConnected(true);
                 OnGameConnected();
-                _ = TryAutoStartNativeBotAsync("server-connect");
+                _ = ExecuteInOptionalMtcTabSessionAsync(owningTab, () => TryAutoStartNativeBotAsync("server-connect"));
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
@@ -709,6 +709,8 @@ public partial class MainWindow
         }
         _mombot.DetachSession();
         _terminalLivePaused = false;
+        if (CurrentMtcTabContext() is { } tab)
+            tab.TerminalLivePaused = false;
         ClearPausedTerminalChunks();
         UpdateTerminalLiveSelector();
 

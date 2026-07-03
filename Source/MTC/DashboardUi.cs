@@ -1273,11 +1273,8 @@ public partial class MainWindow
         if (HasPendingTerminalDisplayBacklog())
             return false;
 
-        if (!_pendingSessionLogChunks.IsEmpty ||
-            Interlocked.CompareExchange(ref _sessionLogDrainScheduled, 0, 0) != 0)
-        {
+        if (HasPendingSessionLogBacklog())
             return false;
-        }
 
         if (_gameInstance?.HasPendingServerTraffic == true)
             return false;

@@ -39,7 +39,11 @@ namespace TWXProxy.Core
         /// ProxyService) writes the key/value into GameConfig.Variables and
         /// saves the game data file.
         /// </summary>
-        public static Action<string, string>? OnVariableSaved;
+        public static Action<string, string>? OnVariableSaved
+        {
+            get => GlobalModules.CurrentContext.OnVariableSaved;
+            set => GlobalModules.CurrentContext.OnVariableSaved = value;
+        }
         
         // Persistence file paths
         private static string _globalVarsPath = "globals.json";

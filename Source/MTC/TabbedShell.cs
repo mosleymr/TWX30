@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -31,6 +32,13 @@ public partial class MainWindow
         public Core.GameInstance? GameInstance { get; set; }
         public Core.ExpansionModuleHost? ModuleHost { get; set; }
         public Core.GameFileLock? GameFileLock { get; set; }
+        public ConcurrentQueue<PendingDisplayChunk> PendingDisplayChunks { get; } = new();
+        public ConcurrentQueue<byte[]> PendingSessionLogChunks { get; } = new();
+        public object TerminalDisplayArtifactSync { get; } = new();
+        public List<byte[]> PausedTerminalChunks { get; } = [];
+        public int DisplayDrainScheduled;
+        public int SessionLogDrainScheduled;
+        public bool TerminalLivePaused { get; set; }
         public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
         public MTC.mombot.mombotService Mombot { get; init; } = null!;
         public Action<byte[]>? TerminalInputHandler { get; set; }
@@ -129,6 +137,9 @@ public partial class MainWindow
     private int _activeMtcTabId;
     private int _nextMtcTabId = 1;
     private readonly object _mtcTabSessionBindLock = new();
+    private readonly SemaphoreSlim _mtcAsyncSessionGate = new(1, 1);
+    private static readonly AsyncLocal<int> _mtcAsyncSessionDepth = new();
+    private static readonly AsyncLocal<MtcTabPrototype?> _asyncMtcTabContext = new();
     private MtcTabPrototype? _boundMtcTab;
 
     private MtcTabPrototype? ActiveMtcTab
@@ -314,6 +325,7 @@ public partial class MainWindow
         tab.GameInstance = _gameInstance;
         tab.ModuleHost = _moduleHost;
         tab.GameFileLock = _gameFileLock;
+        tab.TerminalLivePaused = _terminalLivePaused;
         tab.TerminalInputHandler = _terminalInputHandler ?? tab.TerminalInputHandler;
         tab.ProxyCts = _proxyCts;
         tab.PendingEmbeddedStop = _pendingEmbeddedStop;
@@ -391,6 +403,7 @@ public partial class MainWindow
         _gameInstance = tab.GameInstance;
         _moduleHost = tab.ModuleHost;
         _gameFileLock = tab.GameFileLock;
+        _terminalLivePaused = tab.TerminalLivePaused;
         _standaloneNativeHaggle = tab.StandaloneNativeHaggle;
         _mombot = tab.Mombot;
         _terminalInputHandler = tab.TerminalInputHandler;
@@ -465,7 +478,11 @@ public partial class MainWindow
         _boundMtcTab = tab;
 
         ApplyMtcTabTerminalInputHandler(tab);
+        ApplyMtcTabTerminalSurface(tab);
     }
+
+    private MtcTabPrototype? CurrentMtcTabContext()
+        => _asyncMtcTabContext.Value ?? _boundMtcTab ?? ActiveMtcTab;
 
     private void ApplyMtcTabTerminalInputHandler(MtcTabPrototype tab)
     {
@@ -486,37 +503,72 @@ public partial class MainWindow
         }, DispatcherPriority.Background);
     }
 
+    private void ApplyMtcTabTerminalSurface(MtcTabPrototype tab)
+    {
+        if (tab.Id != _activeMtcTabId)
+            return;
+
+        void Apply()
+        {
+            if (tab.Id != _activeMtcTabId)
+                return;
+
+            _termCtrl?.SetBuffer(tab.Buffer);
+            _deckTermCtrl?.SetBuffer(tab.Buffer);
+            SetTerminalConnected(_state.Connected || _telnet.IsConnected || (_gameInstance?.IsRunning == true));
+            UpdateTerminalLiveSelector();
+            UpdateClassicTerminalSizeStatus();
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            Apply();
+            return;
+        }
+
+        Dispatcher.UIThread.Post(Apply, DispatcherPriority.Background);
+    }
+
     private void ExecuteInMtcTabSession(MtcTabPrototype tab, Action action)
     {
         MtcTabPrototype? restore = null;
         bool tabWasActive = tab.Id == _activeMtcTabId;
         bool refreshActiveUiAfterRestore = false;
+        var previousAsyncTab = _asyncMtcTabContext.Value;
+        _asyncMtcTabContext.Value = tab;
 
-        lock (_mtcTabSessionBindLock)
+        try
         {
-            var previous = _boundMtcTab;
-            if (previous is not null)
-                CaptureMtcTabSession(previous);
-
-            BindMtcTabSession(tab);
-            try
+            lock (_mtcTabSessionBindLock)
             {
-                using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                var previous = _boundMtcTab;
+                if (previous is not null)
+                    CaptureMtcTabSession(previous);
+
+                BindMtcTabSession(tab);
+                try
                 {
-                    action();
+                    using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                    {
+                        action();
+                    }
+                }
+                finally
+                {
+                    CaptureMtcTabSession(tab);
+
+                    restore = previous ?? ActiveMtcTab;
+                    if (restore is not null && !ReferenceEquals(restore, tab))
+                    {
+                        BindMtcTabSession(restore);
+                        refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                    }
                 }
             }
-            finally
-            {
-                CaptureMtcTabSession(tab);
-
-                restore = previous ?? ActiveMtcTab;
-                if (restore is not null && !ReferenceEquals(restore, tab))
-                {
-                    BindMtcTabSession(restore);
-                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
-                }
-            }
+        }
+        finally
+        {
+            _asyncMtcTabContext.Value = previousAsyncTab;
         }
 
         if (refreshActiveUiAfterRestore)
@@ -558,34 +610,52 @@ public partial class MainWindow
             return;
         }
 
+        bool ownsGate = _mtcAsyncSessionDepth.Value == 0;
+        if (ownsGate)
+            await _mtcAsyncSessionGate.WaitAsync();
+
+        _mtcAsyncSessionDepth.Value++;
+        var previousAsyncTab = _asyncMtcTabContext.Value;
+        _asyncMtcTabContext.Value = tab;
         bool tabWasActive = tab.Id == _activeMtcTabId;
         bool refreshActiveUiAfterRestore = false;
-        lock (_mtcTabSessionBindLock)
-        {
-            if (_boundMtcTab is not null)
-                CaptureMtcTabSession(_boundMtcTab);
-            BindMtcTabSession(tab);
-        }
 
         try
         {
-            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            lock (_mtcTabSessionBindLock)
             {
-                await action();
+                if (_boundMtcTab is not null)
+                    CaptureMtcTabSession(_boundMtcTab);
+                BindMtcTabSession(tab);
+            }
+
+            try
+            {
+                using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                {
+                    await action();
+                }
+            }
+            finally
+            {
+                lock (_mtcTabSessionBindLock)
+                {
+                    CaptureMtcTabSession(tab);
+                    var restore = ActiveMtcTab;
+                    if (restore is not null && !ReferenceEquals(restore, tab))
+                    {
+                        BindMtcTabSession(restore);
+                        refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                    }
+                }
             }
         }
         finally
         {
-            lock (_mtcTabSessionBindLock)
-            {
-                CaptureMtcTabSession(tab);
-                var restore = ActiveMtcTab;
-                if (restore is not null && !ReferenceEquals(restore, tab))
-                {
-                    BindMtcTabSession(restore);
-                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
-                }
-            }
+            _asyncMtcTabContext.Value = previousAsyncTab;
+            _mtcAsyncSessionDepth.Value--;
+            if (ownsGate)
+                _mtcAsyncSessionGate.Release();
         }
 
         if (refreshActiveUiAfterRestore)
@@ -597,34 +667,52 @@ public partial class MainWindow
         if (tab is null)
             return await action();
 
+        bool ownsGate = _mtcAsyncSessionDepth.Value == 0;
+        if (ownsGate)
+            await _mtcAsyncSessionGate.WaitAsync();
+
+        _mtcAsyncSessionDepth.Value++;
+        var previousAsyncTab = _asyncMtcTabContext.Value;
+        _asyncMtcTabContext.Value = tab;
         bool tabWasActive = tab.Id == _activeMtcTabId;
         bool refreshActiveUiAfterRestore = false;
-        lock (_mtcTabSessionBindLock)
-        {
-            if (_boundMtcTab is not null)
-                CaptureMtcTabSession(_boundMtcTab);
-            BindMtcTabSession(tab);
-        }
 
         try
         {
-            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            lock (_mtcTabSessionBindLock)
             {
-                return await action();
+                if (_boundMtcTab is not null)
+                    CaptureMtcTabSession(_boundMtcTab);
+                BindMtcTabSession(tab);
+            }
+
+            try
+            {
+                using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                {
+                    return await action();
+                }
+            }
+            finally
+            {
+                lock (_mtcTabSessionBindLock)
+                {
+                    CaptureMtcTabSession(tab);
+                    var restore = ActiveMtcTab;
+                    if (restore is not null && !ReferenceEquals(restore, tab))
+                    {
+                        BindMtcTabSession(restore);
+                        refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                    }
+                }
             }
         }
         finally
         {
-            lock (_mtcTabSessionBindLock)
-            {
-                CaptureMtcTabSession(tab);
-                var restore = ActiveMtcTab;
-                if (restore is not null && !ReferenceEquals(restore, tab))
-                {
-                    BindMtcTabSession(restore);
-                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
-                }
-            }
+            _asyncMtcTabContext.Value = previousAsyncTab;
+            _mtcAsyncSessionDepth.Value--;
+            if (ownsGate)
+                _mtcAsyncSessionGate.Release();
 
             if (refreshActiveUiAfterRestore)
                 RefreshActiveMtcTabUiState();
@@ -663,7 +751,10 @@ public partial class MainWindow
     {
         EnsureInitialMtcTab();
 
-        var liveTab = ActiveMtcTab is { IsLiveSession: true } active
+        var contextTab = CurrentMtcTabContext();
+        var liveTab = contextTab is { IsLiveSession: true }
+            ? contextTab
+            : ActiveMtcTab is { IsLiveSession: true } active
             ? active
             : _mtcTabs.FirstOrDefault(tab => tab.IsLiveSession);
         if (liveTab is not null)

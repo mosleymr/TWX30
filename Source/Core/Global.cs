@@ -134,6 +134,7 @@ namespace TWXProxy.Core
         public ModDatabase? ActiveDatabase { get; set; }
         public ModInterpreter? ActiveInterpreter { get; set; }
         public GameInstance? ActiveGameInstance { get; set; }
+        public Action<string, string>? OnVariableSaved { get; set; }
         public int CurrentSector { get; set; }
         public string CurrentLine { get; set; } = string.Empty;
         public string CurrentAnsiLine { get; set; } = string.Empty;

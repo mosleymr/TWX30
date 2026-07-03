@@ -10,6 +10,11 @@ BIN_ROOT="${REPO_ROOT}/bin"
 MOMBOT_RELEASE_SOURCE="${MOMBOT_RELEASE_SOURCE:-/Users/mosleym/tw2002/mombot/mombot5.0/Release/mombot}"
 MTC_ICON_SOURCE="${SCRIPT_DIR}/MTC/mtc2.png"
 TWXP_ICON_SOURCE="${SCRIPT_DIR}/TWXP/TWXProxy_Icon.ico"
+MACOS_SIGN="${MACOS_SIGN:-developer-id}"
+MACOS_NOTARIZE="${MACOS_NOTARIZE:-1}"
+MACOS_APP_SIGN_IDENTITY="${MACOS_APP_SIGN_IDENTITY:-${DEVELOPER_ID_APPLICATION:-}}"
+MACOS_INSTALLER_SIGN_IDENTITY="${MACOS_INSTALLER_SIGN_IDENTITY:-${DEVELOPER_ID_INSTALLER:-}}"
+MACOS_NOTARY_PROFILE="${MACOS_NOTARY_PROFILE:-${APPLE_NOTARY_PROFILE:-}}"
 
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
@@ -35,6 +40,20 @@ Set RID_LIST to narrow the target list, e.g.:
 
 Set MOMBOT_RELEASE_SOURCE to override the Mombot release tree used for the
 scripts payload.
+
+Distribution signing/notarization:
+  MACOS_SIGN=developer-id     # default, required for public packages
+  MACOS_SIGN=adhoc            # local testing only; Gatekeeper will warn
+  MACOS_SIGN=0                # no signing, local testing only
+  MACOS_APP_SIGN_IDENTITY="Developer ID Application: ..."
+  MACOS_INSTALLER_SIGN_IDENTITY="Developer ID Installer: ..."
+  MACOS_NOTARY_PROFILE="<xcrun notarytool keychain profile>"
+
+The default mode is intentionally strict: it auto-detects Developer ID
+Application/Installer identities from the login keychain, signs app bundles and
+the product package, submits to Apple notarization, staples the ticket, and
+verifies the result with spctl. If credentials are missing, the build fails
+instead of producing a package that Gatekeeper reports as unsafe.
 EOF
   exit 0
 elif [[ $# -gt 0 ]]; then
@@ -49,6 +68,137 @@ else
 fi
 
 VERSION="${VERSION:-$(date +%Y.%m.%d.%H%M)}"
+
+MACOS_SIGN_NORMALIZED="$(printf '%s' "$MACOS_SIGN" | tr '[:upper:]' '[:lower:]')"
+case "$MACOS_SIGN_NORMALIZED" in
+  0|false|no|none)
+    MACOS_SIGN_MODE="none"
+    ;;
+  adhoc|ad-hoc|local)
+    MACOS_SIGN_MODE="adhoc"
+    ;;
+  1|true|yes|developer-id|developerid)
+    MACOS_SIGN_MODE="developer-id"
+    ;;
+  *)
+    echo "Unknown MACOS_SIGN mode: ${MACOS_SIGN}" >&2
+    echo "Use developer-id, adhoc, or 0." >&2
+    exit 1
+    ;;
+esac
+
+find_signing_identity() {
+  local kind="$1"
+  security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n "s/.*\"\(${kind}: [^\"]*\)\".*/\1/p" \
+    | head -n 1
+}
+
+if [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+  if [[ -z "$MACOS_APP_SIGN_IDENTITY" ]]; then
+    MACOS_APP_SIGN_IDENTITY="$(find_signing_identity "Developer ID Application")"
+  fi
+  if [[ -z "$MACOS_INSTALLER_SIGN_IDENTITY" ]]; then
+    MACOS_INSTALLER_SIGN_IDENTITY="$(find_signing_identity "Developer ID Installer")"
+  fi
+fi
+
+if [[ "$MACOS_SIGN_MODE" == "developer-id" && -n "$MACOS_APP_SIGN_IDENTITY" ]]; then
+  echo "==> Using app signing identity: ${MACOS_APP_SIGN_IDENTITY}"
+elif [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+  echo "Developer ID Application identity not found." >&2
+  echo "Install/export the Developer ID Application certificate and private key, or set MACOS_APP_SIGN_IDENTITY." >&2
+  echo "For local-only unsigned testing, rerun with MACOS_SIGN=adhoc MACOS_NOTARIZE=0." >&2
+  exit 1
+elif [[ "$MACOS_SIGN_MODE" == "adhoc" ]]; then
+  echo "==> Using ad-hoc app signing for local testing only; Gatekeeper will warn." >&2
+fi
+
+if [[ "$MACOS_SIGN_MODE" == "developer-id" && -n "$MACOS_INSTALLER_SIGN_IDENTITY" ]]; then
+  echo "==> Using installer signing identity: ${MACOS_INSTALLER_SIGN_IDENTITY}"
+elif [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+  echo "Developer ID Installer identity not found." >&2
+  echo "Install/export the Developer ID Installer certificate and private key, or set MACOS_INSTALLER_SIGN_IDENTITY." >&2
+  echo "For local-only unsigned testing, rerun with MACOS_SIGN=adhoc MACOS_NOTARIZE=0." >&2
+  exit 1
+fi
+
+sign_path() {
+  local path="$1"
+
+  if [[ "$MACOS_SIGN_MODE" == "none" || ! -e "$path" ]]; then
+    return
+  fi
+
+  if [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+    codesign --force --timestamp --options runtime --sign "$MACOS_APP_SIGN_IDENTITY" "$path" >/dev/null
+  else
+    codesign --force --deep --sign - "$path" >/dev/null
+  fi
+}
+
+sign_app_bundle() {
+  local app_path="$1"
+
+  if [[ "$MACOS_SIGN_MODE" == "none" ]]; then
+    return
+  fi
+
+  if [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+    codesign --force --deep --timestamp --options runtime --sign "$MACOS_APP_SIGN_IDENTITY" "$app_path" >/dev/null
+    codesign --verify --deep --strict --verbose=2 "$app_path" >/dev/null
+  else
+    codesign --force --deep --sign - "$app_path" >/dev/null
+  fi
+}
+
+notary_args=()
+if [[ -n "$MACOS_NOTARY_PROFILE" ]]; then
+  notary_args=(--keychain-profile "$MACOS_NOTARY_PROFILE")
+elif [[ -n "${APPLE_API_KEY_ID:-}" && -n "${APPLE_API_ISSUER_ID:-}" && -n "${APPLE_API_KEY_PATH:-}" ]]; then
+  notary_args=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID")
+fi
+
+notarize_pkg_if_configured() {
+  local pkg_path="$1"
+
+  if [[ "$MACOS_NOTARIZE" == "0" || "$MACOS_NOTARIZE" == "false" ]]; then
+    return
+  fi
+
+  if [[ "$MACOS_SIGN_MODE" != "developer-id" ]]; then
+    if [[ "$MACOS_NOTARIZE" == "auto" ]]; then
+      return
+    fi
+    echo "Notarization requires MACOS_SIGN=developer-id." >&2
+    exit 1
+  fi
+
+  if [[ -z "$MACOS_INSTALLER_SIGN_IDENTITY" ]]; then
+    echo "Notarization requested but installer signing identity is missing." >&2
+    exit 1
+  fi
+
+  if [[ ${#notary_args[@]} -eq 0 ]]; then
+    if [[ "$MACOS_NOTARIZE" == "auto" ]]; then
+      echo "==> Notary credentials not configured; signed pkg was not notarized/stapled." >&2
+      echo "==> Gatekeeper may still warn. Set MACOS_NOTARIZE=1 to require notarization." >&2
+      return
+    fi
+    echo "Notarization requested but no notarytool credentials were provided." >&2
+    echo "Set MACOS_NOTARY_PROFILE or APPLE_API_KEY_ID/APPLE_API_ISSUER_ID/APPLE_API_KEY_PATH." >&2
+    exit 1
+  fi
+
+  if [[ "$MACOS_NOTARIZE" == "auto" && ${#notary_args[@]} -eq 0 ]]; then
+    return
+  fi
+
+  echo "==> Notarizing ${pkg_path}..."
+  xcrun notarytool submit "$pkg_path" "${notary_args[@]}" --wait
+  xcrun stapler staple "$pkg_path"
+  spctl -a -t install -vv "$pkg_path"
+}
 
 require_binary() {
   local path="$1"
@@ -162,10 +312,7 @@ create_app_bundle() {
   chmod 755 "${app_path}/Contents/MacOS/${executable}"
   create_icns "$icon_source" "${app_path}/Contents/Resources/${icon_file}"
   write_info_plist "${app_path}/Contents/Info.plist" "$bundle_id" "$bundle_name" "$executable" "$icon_file"
-
-  if command -v codesign >/dev/null 2>&1; then
-    codesign --force --deep --sign - "$app_path" >/dev/null
-  fi
+  sign_app_bundle "$app_path"
 }
 
 copy_tree_clean() {
@@ -416,6 +563,8 @@ for rid in "${RIDS[@]}"; do
   cp "${BIN_ROOT}/${rid}/twxc" "${tools_payload_dir}/twxc"
   cp "${BIN_ROOT}/${rid}/twxd" "${tools_payload_dir}/twxd"
   chmod 755 "${tools_payload_dir}/twxc" "${tools_payload_dir}/twxd"
+  sign_path "${tools_payload_dir}/twxc"
+  sign_path "${tools_payload_dir}/twxd"
   write_programdir_postinstall "${tools_scripts}/postinstall" "$rid" "tools"
   build_component_pkg "$tools_root" "$tools_scripts" "com.mayhem.twx30.tools.${rid}" "${components_dir}/tools.pkg"
 
@@ -432,10 +581,16 @@ for rid in "${RIDS[@]}"; do
 
   pkg_dest="${BIN_ROOT}/twx30-${rid}.pkg"
   rm -f "$pkg_dest"
-  productbuild \
-    --distribution "$distribution" \
-    --package-path "$components_dir" \
-    "$pkg_dest" >/dev/null
+  productbuild_args=(
+    --distribution "$distribution"
+    --package-path "$components_dir"
+  )
+  if [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
+    productbuild_args+=(--sign "$MACOS_INSTALLER_SIGN_IDENTITY" --timestamp)
+  fi
+  productbuild "${productbuild_args[@]}" "$pkg_dest" >/dev/null
+  pkgutil --check-signature "$pkg_dest" || true
+  notarize_pkg_if_configured "$pkg_dest"
 
   rm -rf "$work_dir"
   echo "==> Done package ${rid}: $(ls -lh "$pkg_dest" | awk '{print $5, $6, $7, $8, $9}')"

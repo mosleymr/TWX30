@@ -1852,7 +1852,7 @@ public partial class MainWindow
     {
         _terminalInputHandler = handler;
 
-        MtcTabPrototype? tab = _boundMtcTab ?? ActiveMtcTab;
+        MtcTabPrototype? tab = CurrentMtcTabContext();
         if (tab != null)
             tab.TerminalInputHandler = handler;
 
@@ -1871,8 +1871,10 @@ public partial class MainWindow
 
     private void SetTerminalConnected(bool connected)
     {
-        _termCtrl.IsConnected = connected;
-        _deckTermCtrl.IsConnected = connected;
+        if (_termCtrl is not null)
+            _termCtrl.IsConnected = connected;
+        if (_deckTermCtrl is not null)
+            _deckTermCtrl.IsConnected = connected;
         if (!connected)
             ResetTemporaryMacroSession();
         else

@@ -60,7 +60,7 @@ public class TerminalControl : Control
         ("F11", [0x1B, (byte)'[', (byte)'2', (byte)'3', (byte)'~']),
     ];
 
-    private readonly TerminalBuffer _buffer;
+    private TerminalBuffer _buffer;
     private readonly DispatcherTimer _cursorTimer;
     private readonly DispatcherTimer _windowMoveTimer;
     private bool _cursorOn = true;
@@ -183,6 +183,28 @@ public class TerminalControl : Control
         ctxMenu.ItemsSource = new[] { copyItem, pasteItem };
         ctxMenu.Opening += (_, _) => copyItem.IsEnabled = _hasSelection;
         ContextMenu = ctxMenu;
+    }
+
+    public void SetBuffer(TerminalBuffer buffer)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (ReferenceEquals(_buffer, buffer))
+            return;
+
+        RemoveDirtySubscription();
+        _buffer = buffer;
+        _scrollOffset = 0;
+        _scrollAccumulator = 0;
+        _scrollGenerationSeen = _buffer.ScrollbackGeneration;
+        _hasSelection = false;
+        _reportedColumns = -1;
+        _reportedRows = -1;
+        Interlocked.Exchange(ref _redrawQueued, 0);
+        InvalidateVisibleRowCache();
+        EnsureDirtySubscription();
+        ApplyViewportPixelSize();
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     private void EnsureDirtySubscription()
