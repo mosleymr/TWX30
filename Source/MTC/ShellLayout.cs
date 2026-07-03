@@ -1862,8 +1862,10 @@ public partial class MainWindow
 
     private void ApplyTerminalInputHandlerToControls(Action<byte[]> handler)
     {
-        _termCtrl.SendInput = handler;
-        _deckTermCtrl.SendInput = handler;
+        if (_termCtrl is not null)
+            _termCtrl.SendInput = handler;
+        if (_deckTermCtrl is not null)
+            _deckTermCtrl.SendInput = handler;
         UpdateTemporaryMacroControls();
     }
 
