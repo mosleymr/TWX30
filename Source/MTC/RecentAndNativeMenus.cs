@@ -54,7 +54,7 @@ public partial class MainWindow
                 name = Path.GetFileName(p);
             var item = new MenuItem { Header = EscapeMenuHeaderText(name) };
             ToolTip.SetTip(item, p);
-            item.Click += (_, _) => _ = OpenRecentAsync(p);
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OpenRecentAsync(p));
             items.Add(item);
         }
         if (items.Count == 0)

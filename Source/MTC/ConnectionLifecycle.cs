@@ -648,6 +648,7 @@ public partial class MainWindow
         _parser.Feed($"\x1b[1;32m[Embedded proxy ready — type \x1b[1;33m$c\x1b[1;32m to connect to {_state.Host}:{_state.Port}, or start a script]\x1b[0m\r\n");
         _buffer.Dirty = true;
         await TryAutoStartNativeBotAsync("open-game");
+        RefreshActiveMtcTabUiState();
     }
 
     /// <summary>Stops the embedded <see cref="Core.GameInstance"/> and restores normal state.

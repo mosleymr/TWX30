@@ -100,12 +100,12 @@ public partial class MainWindow
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = listenerActive,
         };
-        listenItem.Click += (_, _) => _ = ToggleProxyListenerAsync(!listenerActive);
+        listenItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ToggleProxyListenerAsync(!listenerActive));
         items.Add(listenItem);
         items.Add(new Separator());
 
         var advancedSettings = new MenuItem { Header = "_Advanced Settings…", IsEnabled = true };
-        advancedSettings.Click += (_, _) => _ = OnAdvancedProxySettingsAsync();
+        advancedSettings.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnAdvancedProxySettingsAsync);
         items.Add(advancedSettings);
 
         return items;
@@ -152,7 +152,7 @@ public partial class MainWindow
             if (CanUseRemoteProxyScripts())
             {
                 var killRemote = new MenuItem { Header = "_Kill Script by ID…" };
-                killRemote.Click += (_, _) => _ = OnRemoteProxyKillScriptByIdAsync();
+                killRemote.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnRemoteProxyKillScriptByIdAsync);
                 items.Add(killRemote);
             }
             else
@@ -163,11 +163,11 @@ public partial class MainWindow
         }
 
         var stopAll = new MenuItem { Header = "_All Scripts" };
-        stopAll.Click += (_, _) => _ = OnProxyForceStopAllScriptsAsync(includeSystemScripts: false);
+        stopAll.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OnProxyForceStopAllScriptsAsync(includeSystemScripts: false));
         items.Add(stopAll);
 
         var stopNonSystem = new MenuItem { Header = "All _Non-System Scripts" };
-        stopNonSystem.Click += (_, _) => _ = OnProxyStopAllScriptsAsync(includeSystemScripts: false);
+        stopNonSystem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OnProxyStopAllScriptsAsync(includeSystemScripts: false));
         items.Add(stopNonSystem);
 
         var scripts = Core.ProxyGameOperations.GetRunningScripts(interpreter);
@@ -187,7 +187,7 @@ public partial class MainWindow
             {
                 Header = EscapeMenuHeaderText(script.IsSystemScript ? $"{script.Name} (system)" : script.Name)
             };
-            item.Click += (_, _) => _ = OnProxyStopScriptAsync(scriptId);
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OnProxyStopScriptAsync(scriptId));
             items.Add(item);
         }
 
@@ -199,19 +199,19 @@ public partial class MainWindow
         var items = new List<object>();
 
         var exportWarps = new MenuItem { Header = "Export _Warps", IsEnabled = enabled };
-        exportWarps.Click += (_, _) => _ = ExportWarpsAsync();
+        exportWarps.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ExportWarpsAsync);
         items.Add(exportWarps);
 
         var exportBubbles = new MenuItem { Header = "Export _Bubbles", IsEnabled = enabled };
-        exportBubbles.Click += (_, _) => _ = ExportBubblesAsync();
+        exportBubbles.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ExportBubblesAsync);
         items.Add(exportBubbles);
 
         var exportDeadends = new MenuItem { Header = "Export _Deadends", IsEnabled = enabled };
-        exportDeadends.Click += (_, _) => _ = ExportDeadendsAsync();
+        exportDeadends.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ExportDeadendsAsync);
         items.Add(exportDeadends);
 
         var exportTwx = new MenuItem { Header = "Export _TWX", IsEnabled = enabled };
-        exportTwx.Click += (_, _) => _ = ExportTwxAsync();
+        exportTwx.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ExportTwxAsync);
         items.Add(exportTwx);
 
         return items;
@@ -222,11 +222,11 @@ public partial class MainWindow
         var items = new List<object>();
 
         var importWarps = new MenuItem { Header = "Import _Warps", IsEnabled = enabled };
-        importWarps.Click += (_, _) => _ = ImportWarpsAsync();
+        importWarps.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ImportWarpsAsync);
         items.Add(importWarps);
 
         var importTwx = new MenuItem { Header = "Import T_WX", IsEnabled = enabled };
-        importTwx.Click += (_, _) => _ = ImportTwxAsync();
+        importTwx.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ImportTwxAsync);
         items.Add(importTwx);
 
         return items;
@@ -237,11 +237,11 @@ public partial class MainWindow
         var items = new List<object>();
 
         var playCapture = new MenuItem { Header = "_Play Capture…", IsEnabled = canPlayCapture };
-        playCapture.Click += (_, _) => _ = PlayCaptureAsync();
+        playCapture.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(PlayCaptureAsync);
         items.Add(playCapture);
 
         var history = new MenuItem { Header = "_History…", IsEnabled = hasGame && _gameInstance != null };
-        history.Click += (_, _) => _ = ShowProxyHistoryAsync();
+        history.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ShowProxyHistoryAsync);
         items.Add(history);
 
         var ansiCompanion = new MenuItem
@@ -249,7 +249,7 @@ public partial class MainWindow
             Header = (_embeddedGameConfig?.LogAnsiCompanion ?? false) ? "Disable ANSI Game Log" : "Create ANSI Game Log",
             IsEnabled = hasGame,
         };
-        ansiCompanion.Click += (_, _) => _ = ToggleAnsiCompanionLoggingAsync();
+        ansiCompanion.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ToggleAnsiCompanionLoggingAsync);
         items.Add(ansiCompanion);
 
         items.Add(new Separator());
@@ -260,7 +260,7 @@ public partial class MainWindow
             Header = debugPrefs.DebugPortHaggleEnabled ? "Disable Port Haggle Debug" : "Debug Port Haggle",
             IsEnabled = hasGame,
         };
-        debugPortHaggle.Click += (_, _) => _ = TogglePortHaggleDebugLoggingAsync();
+        debugPortHaggle.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(TogglePortHaggleDebugLoggingAsync);
         items.Add(debugPortHaggle);
 
         var debugPlanetHaggle = new MenuItem
@@ -268,7 +268,7 @@ public partial class MainWindow
             Header = debugPrefs.DebugPlanetHaggleEnabled ? "Disable Planet Haggle Debug" : "Debug Planet Haggle",
             IsEnabled = hasGame,
         };
-        debugPlanetHaggle.Click += (_, _) => _ = TogglePlanetHaggleDebugLoggingAsync();
+        debugPlanetHaggle.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(TogglePlanetHaggleDebugLoggingAsync);
         items.Add(debugPlanetHaggle);
 
         return items;
@@ -354,7 +354,7 @@ public partial class MainWindow
             {
                 string relativePath = entry.RelativePath;
                 var item = new MenuItem { Header = EscapeMenuHeaderText(entry.DisplayName) };
-                item.Click += (_, _) => _ = LoadQuickScriptAsync(relativePath);
+                item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => LoadQuickScriptAsync(relativePath));
                 groupItems.Add(item);
             }
 
@@ -371,11 +371,11 @@ public partial class MainWindow
     private List<object> BuildAiMenuItems()
     {
         var gameAgentItem = new MenuItem { Header = "_Game Agent" };
-        gameAgentItem.Click += (_, _) => OpenGameAgentWindow();
+        gameAgentItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OpenGameAgentWindow);
         var configureItem = new MenuItem { Header = "_Configure Game Agent..." };
-        configureItem.Click += (_, _) => _ = ConfigureGameAgentAsync();
+        configureItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ConfigureGameAgentAsync);
         var replayItem = new MenuItem { Header = "Game Agent _Replay..." };
-        replayItem.Click += (_, _) => _ = OpenGameAgentReplayWindowAsync();
+        replayItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OpenGameAgentReplayWindowAsync);
 
         var items = new List<object>
         {
@@ -401,7 +401,7 @@ public partial class MainWindow
         items.Add(startMenu);
 
         var stopItem = new MenuItem { Header = "S_top", IsEnabled = runtime.IsRunning };
-        stopItem.Click += (_, _) => _ = StopActiveBotAsync();
+        stopItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(StopActiveBotAsync);
         items.Add(stopItem);
 
         var configureMenu = new MenuItem { Header = "_Configure" };
@@ -411,7 +411,7 @@ public partial class MainWindow
         items.Add(configureMenu);
 
         var addBot = new MenuItem { Header = "_Add Bot…" };
-        addBot.Click += (_, _) => _ = AddBotAsync();
+        addBot.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(AddBotAsync);
         items.Add(addBot);
 
         return items;
@@ -438,7 +438,7 @@ public partial class MainWindow
                     : $"{NativeMombotMenuLabel} (configure first)",
             IsEnabled = runtime.NativeRunning || nativeConfigured,
         };
-        nativeItem.Click += (_, _) => _ = StartConfiguredBotAsync(nativeBot);
+        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotAsync(nativeBot));
         items.Add(nativeItem);
 
         List<StoredBotSection> externalBots = bots
@@ -467,7 +467,7 @@ public partial class MainWindow
                 Header = EscapeMenuHeaderText(header),
                 IsEnabled = bot.ScriptAvailable,
             };
-            item.Click += (_, _) => _ = StartConfiguredBotAsync(bot);
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotAsync(bot));
             items.Add(item);
         }
 
@@ -480,7 +480,7 @@ public partial class MainWindow
 
         StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
         var nativeItem = new MenuItem { Header = NativeMombotMenuLabel };
-        nativeItem.Click += (_, _) => _ = ConfigureBotAsync(nativeBot);
+        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotAsync(nativeBot));
         items.Add(nativeItem);
 
         List<StoredBotSection> externalBots = bots
@@ -502,7 +502,7 @@ public partial class MainWindow
             {
                 Header = EscapeMenuHeaderText(bot.DisplayName),
             };
-            item.Click += (_, _) => _ = ConfigureBotAsync(bot);
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotAsync(bot));
             items.Add(item);
         }
 

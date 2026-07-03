@@ -2136,7 +2136,7 @@ public partial class MainWindow
     private Menu BuildMenuBar()
     {
         var fileNew    = new MenuItem { Header = "_New Connection…" };
-        fileNew.Click += (_, _) => _ = OnNewConnectionAsync();
+        fileNew.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnNewConnectionAsync);
 
         var fileNewTab = new MenuItem { Header = "New _Tab" };
         fileNewTab.Click += (_, _) => CreateStagedMtcTab();
@@ -2148,28 +2148,28 @@ public partial class MainWindow
         fileNewWin.Click += (_, _) => OpenNewWindowInNewProcess();
 
         var fileEdit = _fileEdit;
-        _fileEdit.Click += (_, _) => _ = OnEditConnectionAsync();
+        _fileEdit.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnEditConnectionAsync);
 
         var fileOpen    = new MenuItem { Header = "_Open…" };
-        fileOpen.Click += (_, _) => _ = OnOpenConnectionAsync();
+        fileOpen.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnOpenConnectionAsync);
 
         var fileOpenRecording = new MenuItem { Header = "Open _Recording..." };
         fileOpenRecording.Click += (_, _) => _ = OnOpenTerminalRecordingAsync();
 
         var fileSave    = new MenuItem { Header = "_Save" };
-        fileSave.Click += (_, _) => _ = OnSaveConnectionAsync(saveAs: false);
+        fileSave.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OnSaveConnectionAsync(saveAs: false));
 
         var fileSaveAs    = new MenuItem { Header = "Save _As…" };
-        fileSaveAs.Click += (_, _) => _ = OnSaveConnectionAsync(saveAs: true);
+        fileSaveAs.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OnSaveConnectionAsync(saveAs: true));
 
         var fileResetGame = new MenuItem { Header = "_Reset Game…" };
-        fileResetGame.Click += (_, _) => _ = OnResetGameAsync();
+        fileResetGame.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnResetGameAsync);
 
         var fileConnect    = _fileConnect;
-        _fileConnect.Click += (_, _) => OnConnect();
+        _fileConnect.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConnectAsync);
 
         var fileDisconnect    = _fileDisconnect;
-        _fileDisconnect.Click += (_, _) => OnDisconnect();
+        _fileDisconnect.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnDisconnectAsync);
 
         var fileQuit    = new MenuItem { Header = "_Quit" };
         fileQuit.Click += (_, _) => Close();
@@ -2178,7 +2178,7 @@ public partial class MainWindow
         filePrefs.Click += (_, _) => _ = OnPreferencesAsync();
 
         var fileMacros = new MenuItem { Header = "_Macros…" };
-        fileMacros.Click += (_, _) => _ = OnMacrosAsync();
+        fileMacros.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnMacrosAsync);
 
         var fileMenu = new MenuItem
         {
@@ -2232,17 +2232,17 @@ public partial class MainWindow
         RefreshTerminalFontSizeUi();
 
         var viewDbItem = new MenuItem { Header = "_Database..." };
-        viewDbItem.Click += (_, _) => OnViewDatabase();
+        viewDbItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewDatabase);
 
         var viewBubblesItem = new MenuItem { Header = "_Bubbles..." };
-        viewBubblesItem.Click += (_, _) => OnViewBubbles();
+        viewBubblesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewBubbles);
 
         var viewCacheItem = new MenuItem { Header = "_Cache..." };
-        viewCacheItem.Click += (_, _) => OnViewCache();
+        viewCacheItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewCache);
         var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
-        viewGameInfoItem.Click += (_, _) => OnViewGameInfo();
+        viewGameInfoItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewGameInfo);
         var viewAliensItem = new MenuItem { Header = "_Aliens..." };
-        viewAliensItem.Click += (_, _) => OnViewAliens();
+        viewAliensItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewAliens);
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
@@ -2273,7 +2273,7 @@ public partial class MainWindow
         };
 
         var mapViewItem = new MenuItem { Header = "_View Map" };
-        mapViewItem.Click += (_, _) => OnViewMap();
+        mapViewItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewMap);
 
         var mapMenu = new MenuItem
         {
@@ -2282,17 +2282,17 @@ public partial class MainWindow
         };
 
         var toolsFindItem = new MenuItem { Header = "_Find..." };
-        toolsFindItem.Click += (_, _) => OnToolsFind();
+        toolsFindItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFind);
         var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
-        toolsFindRouteItem.Click += (_, _) => OnToolsFindRoute();
+        toolsFindRouteItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFindRoute);
         var toolsQCannonCalculatorItem = new MenuItem { Header = "_QCannon Calculator..." };
-        toolsQCannonCalculatorItem.Click += (_, _) => OnToolsQCannonCalculator();
+        toolsQCannonCalculatorItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsQCannonCalculator);
         var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
-        toolsConfigureStatusPanelItem.Click += async (_, _) => await OnConfigureStatusPanelAsync();
+        toolsConfigureStatusPanelItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConfigureStatusPanelAsync);
         var toolsConfigureStatusBarItem = new MenuItem { Header = "Configure _Status Bar..." };
-        toolsConfigureStatusBarItem.Click += async (_, _) => await OnConfigureStatusBarAsync();
+        toolsConfigureStatusBarItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConfigureStatusBarAsync);
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
-        toolsScriptDebuggerItem.Click += (_, _) => OnViewScriptDebugger();
+        toolsScriptDebuggerItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewScriptDebugger);
         _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 

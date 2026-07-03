@@ -271,7 +271,7 @@ public partial class MainWindow : Window
     private RowDefinition? _deckCommSplitterRow;
     private RowDefinition? _deckCommPanelRow;
     private GridSplitter? _deckCommGridSplitter;
-    private readonly List<CommEntry> _commEntries = [];
+    private List<CommEntry> _commEntries = [];
     private Action<byte[]>? _terminalInputHandler;
     private string? _terminalFontFamilyName;
     private double _terminalFontSize = TerminalControl.DefaultFontSize;
@@ -298,7 +298,7 @@ public partial class MainWindow : Window
     private bool _mombotMacroPromptOpen;
     private MombotGridContext? _mombotMacroContext;
     private IReadOnlyList<MombotHotkeyScriptEntry> _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
-    private readonly List<string> _mombotCommandHistory = [];
+    private List<string> _mombotCommandHistory = [];
     private string _mombotPromptBuffer = string.Empty;
     private string _mombotPromptDraft = string.Empty;
     private Func<string, string>? _mombotPromptSubmitTransform;
@@ -330,8 +330,8 @@ public partial class MainWindow : Window
     private string _currentShipClass = string.Empty;
     private string _currentComputerShipType = string.Empty;
     private bool _awaitingComputerShipTypeLine;
-    private readonly List<string> _onlinePlayers = [];
-    private readonly List<string> _pendingOnlinePlayers = [];
+    private List<string> _onlinePlayers = [];
+    private List<string> _pendingOnlinePlayers = [];
     private volatile bool _capturingOnlinePlayers;
     private bool _onlinePlayersCaptureSawPlayer;
     private sealed record StoredBotSection(

@@ -34,6 +34,67 @@ public partial class MainWindow
         public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
         public MTC.mombot.mombotService Mombot { get; init; } = null!;
         public Action<byte[]>? TerminalInputHandler { get; set; }
+        public List<CommEntry> CommEntries { get; } = [];
+        public Core.CommMessageChannel CommSelectedChannel { get; set; } = Core.CommMessageChannel.FedComm;
+        public string CommPrivateTarget { get; set; } = string.Empty;
+        public bool MombotPromptOpen { get; set; }
+        public bool MombotHotkeyPromptOpen { get; set; }
+        public bool MombotScriptPromptOpen { get; set; }
+        public bool MombotPreferencesOpen { get; set; }
+        public bool MombotPreferencesMenuDeafActive { get; set; }
+        public bool MombotPreferencesMenuDeafRestore { get; set; }
+        public bool MombotPreferencesCaptureSingleKey { get; set; }
+        public string MombotPreferencesInputPrompt { get; set; } = string.Empty;
+        public string MombotPreferencesInputBuffer { get; set; } = string.Empty;
+        public Action<string>? MombotPreferencesInputHandler { get; set; }
+        public MombotPreferencesBlankSubmitBehavior MombotPreferencesBlankSubmitBehavior { get; set; } = MombotPreferencesBlankSubmitBehavior.Ignore;
+        public int MombotPreferencesHotkeySlot { get; set; }
+        public int MombotPreferencesShipPageStart { get; set; } = 1;
+        public int MombotPreferencesPlanetTypePageStart { get; set; } = 1;
+        public int MombotPreferencesPlanetListCursor { get; set; } = 2;
+        public int MombotPreferencesPlanetListNextCursor { get; set; } = 2;
+        public bool MombotPreferencesPlanetListHasMore { get; set; }
+        public int MombotPreferencesTraderListCursor { get; set; } = 2;
+        public int MombotPreferencesTraderListNextCursor { get; set; } = 2;
+        public bool MombotPreferencesTraderListHasMore { get; set; }
+        public bool MombotMacroPromptOpen { get; set; }
+        public MombotGridContext? MombotMacroContext { get; set; }
+        public IReadOnlyList<MombotHotkeyScriptEntry> MombotHotkeyScripts { get; set; } = Array.Empty<MombotHotkeyScriptEntry>();
+        public List<string> MombotCommandHistory { get; } = [];
+        public string MombotPromptBuffer { get; set; } = string.Empty;
+        public string MombotPromptDraft { get; set; } = string.Empty;
+        public Func<string, string>? MombotPromptSubmitTransform { get; set; }
+        public int MombotPromptHistoryIndex { get; set; }
+        public int MombotPromptCursorIndex { get; set; }
+        public MombotPreferencesPage MombotPreferencesPage { get; set; }
+        public string MombotLastKeepaliveLine { get; set; } = string.Empty;
+        public int MombotObservedGamePromptVersion { get; set; }
+        public int MombotMacroPromptRedrawTicket { get; set; }
+        public string MombotLastObservedGamePromptAnsi { get; set; } = string.Empty;
+        public string MombotLastObservedGamePromptPlain { get; set; } = string.Empty;
+        public int PendingNativeMombotEscapeEchoSuppressions { get; set; }
+        public long NativeMombotEscapeEchoSuppressUntilUtcTicks { get; set; }
+        public string PendingNativeMombotPostLoginMacro { get; set; } = string.Empty;
+        public bool SuppressingPendingNativeMombotEscapeSequence { get; set; }
+        public bool SuppressingPendingNativeMombotEscapeCsiBody { get; set; }
+        public bool PendingTerminalSyncMarkerLeadByte { get; set; }
+        public bool PendingTerminalSyncMarkerUtf8LeadByte { get; set; }
+        public bool MombotKeepaliveTickRunning { get; set; }
+        public bool MombotStartupDataGatherPending { get; set; }
+        public bool MombotStartupDataGatherRunning { get; set; }
+        public bool MombotStartupPostInitPending { get; set; }
+        public bool MombotStartupFinalizeRunning { get; set; }
+        public bool NativeBotAutoStartInFlight { get; set; }
+        public FinderPrewarmKey? LastFinderPrewarmKey { get; set; }
+        public int NativeMombotStartupWatchScheduled { get; set; }
+        public List<string> OnlinePlayers { get; } = [];
+        public List<string> PendingOnlinePlayers { get; } = [];
+        public bool CapturingOnlinePlayers { get; set; }
+        public bool OnlinePlayersCaptureSawPlayer { get; set; }
+        public string CurrentShipType { get; set; } = string.Empty;
+        public string CurrentShipClass { get; set; } = string.Empty;
+        public string CurrentComputerShipType { get; set; } = string.Empty;
+        public bool AwaitingComputerShipTypeLine { get; set; }
         public CancellationTokenSource? ProxyCts { get; set; }
         public Task PendingEmbeddedStop { get; set; } = Task.CompletedTask;
         public object EmbeddedStopSync { get; } = new();
@@ -241,11 +302,69 @@ public partial class MainWindow
         tab.GameInstance = _gameInstance;
         tab.ModuleHost = _moduleHost;
         tab.GameFileLock = _gameFileLock;
+        tab.TerminalInputHandler = _terminalInputHandler ?? tab.TerminalInputHandler;
         tab.ProxyCts = _proxyCts;
         tab.PendingEmbeddedStop = _pendingEmbeddedStop;
         tab.EmbeddedGameConfig = _embeddedGameConfig;
         tab.EmbeddedGameName = _embeddedGameName;
         tab.CurrentProfilePath = _currentProfilePath;
+        tab.CommSelectedChannel = _commSelectedChannel;
+        tab.CommPrivateTarget = _commPrivateTarget;
+        tab.MombotPromptOpen = _mombotPromptOpen;
+        tab.MombotHotkeyPromptOpen = _mombotHotkeyPromptOpen;
+        tab.MombotScriptPromptOpen = _mombotScriptPromptOpen;
+        tab.MombotPreferencesOpen = _mombotPreferencesOpen;
+        tab.MombotPreferencesMenuDeafActive = _mombotPreferencesMenuDeafActive;
+        tab.MombotPreferencesMenuDeafRestore = _mombotPreferencesMenuDeafRestore;
+        tab.MombotPreferencesCaptureSingleKey = _mombotPreferencesCaptureSingleKey;
+        tab.MombotPreferencesInputPrompt = _mombotPreferencesInputPrompt;
+        tab.MombotPreferencesInputBuffer = _mombotPreferencesInputBuffer;
+        tab.MombotPreferencesInputHandler = _mombotPreferencesInputHandler;
+        tab.MombotPreferencesBlankSubmitBehavior = _mombotPreferencesBlankSubmitBehavior;
+        tab.MombotPreferencesHotkeySlot = _mombotPreferencesHotkeySlot;
+        tab.MombotPreferencesShipPageStart = _mombotPreferencesShipPageStart;
+        tab.MombotPreferencesPlanetTypePageStart = _mombotPreferencesPlanetTypePageStart;
+        tab.MombotPreferencesPlanetListCursor = _mombotPreferencesPlanetListCursor;
+        tab.MombotPreferencesPlanetListNextCursor = _mombotPreferencesPlanetListNextCursor;
+        tab.MombotPreferencesPlanetListHasMore = _mombotPreferencesPlanetListHasMore;
+        tab.MombotPreferencesTraderListCursor = _mombotPreferencesTraderListCursor;
+        tab.MombotPreferencesTraderListNextCursor = _mombotPreferencesTraderListNextCursor;
+        tab.MombotPreferencesTraderListHasMore = _mombotPreferencesTraderListHasMore;
+        tab.MombotMacroPromptOpen = _mombotMacroPromptOpen;
+        tab.MombotMacroContext = _mombotMacroContext;
+        tab.MombotHotkeyScripts = _mombotHotkeyScripts;
+        tab.MombotPromptBuffer = _mombotPromptBuffer;
+        tab.MombotPromptDraft = _mombotPromptDraft;
+        tab.MombotPromptSubmitTransform = _mombotPromptSubmitTransform;
+        tab.MombotPromptHistoryIndex = _mombotPromptHistoryIndex;
+        tab.MombotPromptCursorIndex = _mombotPromptCursorIndex;
+        tab.MombotPreferencesPage = _mombotPreferencesPage;
+        tab.MombotLastKeepaliveLine = _mombotLastKeepaliveLine;
+        tab.MombotObservedGamePromptVersion = _mombotObservedGamePromptVersion;
+        tab.MombotMacroPromptRedrawTicket = _mombotMacroPromptRedrawTicket;
+        tab.MombotLastObservedGamePromptAnsi = _mombotLastObservedGamePromptAnsi;
+        tab.MombotLastObservedGamePromptPlain = _mombotLastObservedGamePromptPlain;
+        tab.PendingNativeMombotEscapeEchoSuppressions = _pendingNativeMombotEscapeEchoSuppressions;
+        tab.NativeMombotEscapeEchoSuppressUntilUtcTicks = _nativeMombotEscapeEchoSuppressUntilUtcTicks;
+        tab.PendingNativeMombotPostLoginMacro = _pendingNativeMombotPostLoginMacro;
+        tab.SuppressingPendingNativeMombotEscapeSequence = _suppressingPendingNativeMombotEscapeSequence;
+        tab.SuppressingPendingNativeMombotEscapeCsiBody = _suppressingPendingNativeMombotEscapeCsiBody;
+        tab.PendingTerminalSyncMarkerLeadByte = _pendingTerminalSyncMarkerLeadByte;
+        tab.PendingTerminalSyncMarkerUtf8LeadByte = _pendingTerminalSyncMarkerUtf8LeadByte;
+        tab.MombotKeepaliveTickRunning = _mombotKeepaliveTickRunning;
+        tab.MombotStartupDataGatherPending = _mombotStartupDataGatherPending;
+        tab.MombotStartupDataGatherRunning = _mombotStartupDataGatherRunning;
+        tab.MombotStartupPostInitPending = _mombotStartupPostInitPending;
+        tab.MombotStartupFinalizeRunning = _mombotStartupFinalizeRunning;
+        tab.NativeBotAutoStartInFlight = _nativeBotAutoStartInFlight;
+        tab.LastFinderPrewarmKey = _lastFinderPrewarmKey;
+        tab.NativeMombotStartupWatchScheduled = _nativeMombotStartupWatchScheduled;
+        tab.CapturingOnlinePlayers = _capturingOnlinePlayers;
+        tab.OnlinePlayersCaptureSawPlayer = _onlinePlayersCaptureSawPlayer;
+        tab.CurrentShipType = _currentShipType;
+        tab.CurrentShipClass = _currentShipClass;
+        tab.CurrentComputerShipType = _currentComputerShipType;
+        tab.AwaitingComputerShipTypeLine = _awaitingComputerShipTypeLine;
     }
 
     private void BindMtcTabSession(MtcTabPrototype tab)
@@ -270,6 +389,67 @@ public partial class MainWindow
         _embeddedGameConfig = tab.EmbeddedGameConfig;
         _embeddedGameName = tab.EmbeddedGameName;
         _currentProfilePath = tab.CurrentProfilePath;
+        _commEntries = tab.CommEntries;
+        _commSelectedChannel = tab.CommSelectedChannel;
+        _commPrivateTarget = tab.CommPrivateTarget;
+        _mombotPromptOpen = tab.MombotPromptOpen;
+        _mombotHotkeyPromptOpen = tab.MombotHotkeyPromptOpen;
+        _mombotScriptPromptOpen = tab.MombotScriptPromptOpen;
+        _mombotPreferencesOpen = tab.MombotPreferencesOpen;
+        _mombotPreferencesMenuDeafActive = tab.MombotPreferencesMenuDeafActive;
+        _mombotPreferencesMenuDeafRestore = tab.MombotPreferencesMenuDeafRestore;
+        _mombotPreferencesCaptureSingleKey = tab.MombotPreferencesCaptureSingleKey;
+        _mombotPreferencesInputPrompt = tab.MombotPreferencesInputPrompt;
+        _mombotPreferencesInputBuffer = tab.MombotPreferencesInputBuffer;
+        _mombotPreferencesInputHandler = tab.MombotPreferencesInputHandler;
+        _mombotPreferencesBlankSubmitBehavior = tab.MombotPreferencesBlankSubmitBehavior;
+        _mombotPreferencesHotkeySlot = tab.MombotPreferencesHotkeySlot;
+        _mombotPreferencesShipPageStart = tab.MombotPreferencesShipPageStart;
+        _mombotPreferencesPlanetTypePageStart = tab.MombotPreferencesPlanetTypePageStart;
+        _mombotPreferencesPlanetListCursor = tab.MombotPreferencesPlanetListCursor;
+        _mombotPreferencesPlanetListNextCursor = tab.MombotPreferencesPlanetListNextCursor;
+        _mombotPreferencesPlanetListHasMore = tab.MombotPreferencesPlanetListHasMore;
+        _mombotPreferencesTraderListCursor = tab.MombotPreferencesTraderListCursor;
+        _mombotPreferencesTraderListNextCursor = tab.MombotPreferencesTraderListNextCursor;
+        _mombotPreferencesTraderListHasMore = tab.MombotPreferencesTraderListHasMore;
+        _mombotMacroPromptOpen = tab.MombotMacroPromptOpen;
+        _mombotMacroContext = tab.MombotMacroContext;
+        _mombotHotkeyScripts = tab.MombotHotkeyScripts;
+        _mombotCommandHistory = tab.MombotCommandHistory;
+        _mombotPromptBuffer = tab.MombotPromptBuffer;
+        _mombotPromptDraft = tab.MombotPromptDraft;
+        _mombotPromptSubmitTransform = tab.MombotPromptSubmitTransform;
+        _mombotPromptHistoryIndex = tab.MombotPromptHistoryIndex;
+        _mombotPromptCursorIndex = tab.MombotPromptCursorIndex;
+        _mombotPreferencesPage = tab.MombotPreferencesPage;
+        _mombotLastKeepaliveLine = tab.MombotLastKeepaliveLine;
+        _mombotObservedGamePromptVersion = tab.MombotObservedGamePromptVersion;
+        _mombotMacroPromptRedrawTicket = tab.MombotMacroPromptRedrawTicket;
+        _mombotLastObservedGamePromptAnsi = tab.MombotLastObservedGamePromptAnsi;
+        _mombotLastObservedGamePromptPlain = tab.MombotLastObservedGamePromptPlain;
+        _pendingNativeMombotEscapeEchoSuppressions = tab.PendingNativeMombotEscapeEchoSuppressions;
+        _nativeMombotEscapeEchoSuppressUntilUtcTicks = tab.NativeMombotEscapeEchoSuppressUntilUtcTicks;
+        _pendingNativeMombotPostLoginMacro = tab.PendingNativeMombotPostLoginMacro;
+        _suppressingPendingNativeMombotEscapeSequence = tab.SuppressingPendingNativeMombotEscapeSequence;
+        _suppressingPendingNativeMombotEscapeCsiBody = tab.SuppressingPendingNativeMombotEscapeCsiBody;
+        _pendingTerminalSyncMarkerLeadByte = tab.PendingTerminalSyncMarkerLeadByte;
+        _pendingTerminalSyncMarkerUtf8LeadByte = tab.PendingTerminalSyncMarkerUtf8LeadByte;
+        _mombotKeepaliveTickRunning = tab.MombotKeepaliveTickRunning;
+        _mombotStartupDataGatherPending = tab.MombotStartupDataGatherPending;
+        _mombotStartupDataGatherRunning = tab.MombotStartupDataGatherRunning;
+        _mombotStartupPostInitPending = tab.MombotStartupPostInitPending;
+        _mombotStartupFinalizeRunning = tab.MombotStartupFinalizeRunning;
+        _nativeBotAutoStartInFlight = tab.NativeBotAutoStartInFlight;
+        _lastFinderPrewarmKey = tab.LastFinderPrewarmKey;
+        _nativeMombotStartupWatchScheduled = tab.NativeMombotStartupWatchScheduled;
+        _onlinePlayers = tab.OnlinePlayers;
+        _pendingOnlinePlayers = tab.PendingOnlinePlayers;
+        _capturingOnlinePlayers = tab.CapturingOnlinePlayers;
+        _onlinePlayersCaptureSawPlayer = tab.OnlinePlayersCaptureSawPlayer;
+        _currentShipType = tab.CurrentShipType;
+        _currentShipClass = tab.CurrentShipClass;
+        _currentComputerShipType = tab.CurrentComputerShipType;
+        _awaitingComputerShipTypeLine = tab.AwaitingComputerShipTypeLine;
         _boundMtcTab = tab;
 
         if (tab.Id == _activeMtcTabId && tab.TerminalInputHandler != null)
@@ -278,6 +458,10 @@ public partial class MainWindow
 
     private void ExecuteInMtcTabSession(MtcTabPrototype tab, Action action)
     {
+        MtcTabPrototype? restore = null;
+        bool tabWasActive = tab.Id == _activeMtcTabId;
+        bool refreshActiveUiAfterRestore = false;
+
         lock (_mtcTabSessionBindLock)
         {
             var previous = _boundMtcTab;
@@ -285,16 +469,28 @@ public partial class MainWindow
                 CaptureMtcTabSession(previous);
 
             BindMtcTabSession(tab);
-            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            try
             {
-                action();
+                using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                {
+                    action();
+                }
             }
-            CaptureMtcTabSession(tab);
+            finally
+            {
+                CaptureMtcTabSession(tab);
 
-            var restore = previous ?? ActiveMtcTab;
-            if (restore is not null && !ReferenceEquals(restore, tab))
-                BindMtcTabSession(restore);
+                restore = previous ?? ActiveMtcTab;
+                if (restore is not null && !ReferenceEquals(restore, tab))
+                {
+                    BindMtcTabSession(restore);
+                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                }
+            }
         }
+
+        if (refreshActiveUiAfterRestore)
+            RefreshActiveMtcTabUiState();
     }
 
     private void ExecuteInOptionalMtcTabSession(MtcTabPrototype? tab, Action action)
@@ -308,6 +504,12 @@ public partial class MainWindow
         ExecuteInMtcTabSession(tab, action);
     }
 
+    private void ExecuteInActiveMtcTabSession(Action action)
+        => ExecuteInOptionalMtcTabSession(ActiveMtcTab, action);
+
+    private Task ExecuteInActiveMtcTabSessionAsync(Func<Task> action)
+        => ExecuteInOptionalMtcTabSessionAsync(ActiveMtcTab, action);
+
     private async Task ExecuteInOptionalMtcTabSessionAsync(MtcTabPrototype? tab, Func<Task> action)
     {
         if (tab is null)
@@ -316,6 +518,8 @@ public partial class MainWindow
             return;
         }
 
+        bool tabWasActive = tab.Id == _activeMtcTabId;
+        bool refreshActiveUiAfterRestore = false;
         lock (_mtcTabSessionBindLock)
         {
             if (_boundMtcTab is not null)
@@ -323,18 +527,29 @@ public partial class MainWindow
             BindMtcTabSession(tab);
         }
 
-        using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+        try
         {
-            await action();
+            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            {
+                await action();
+            }
+        }
+        finally
+        {
+            lock (_mtcTabSessionBindLock)
+            {
+                CaptureMtcTabSession(tab);
+                var restore = ActiveMtcTab;
+                if (restore is not null && !ReferenceEquals(restore, tab))
+                {
+                    BindMtcTabSession(restore);
+                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                }
+            }
         }
 
-        lock (_mtcTabSessionBindLock)
-        {
-            CaptureMtcTabSession(tab);
-            var restore = ActiveMtcTab;
-            if (restore is not null && !ReferenceEquals(restore, tab))
-                BindMtcTabSession(restore);
-        }
+        if (refreshActiveUiAfterRestore)
+            RefreshActiveMtcTabUiState();
     }
 
     private void BindActiveMtcTabSession()
@@ -416,10 +631,13 @@ public partial class MainWindow
         if (active is null)
             return;
 
-        CloseMtcTab(active.Id);
+        _ = CloseMtcTabAsync(active.Id);
     }
 
     private void CloseMtcTab(int tabId)
+        => _ = CloseMtcTabAsync(tabId);
+
+    private async Task CloseMtcTabAsync(int tabId)
     {
         var tab = _mtcTabs.FirstOrDefault(item => item.Id == tabId);
         if (tab is null)
@@ -432,7 +650,7 @@ public partial class MainWindow
         }
 
         var index = _mtcTabs.IndexOf(tab);
-        StopMtcTabSession(tab);
+        await StopMtcTabSessionAsync(tab);
         _mtcTabs.Remove(tab);
 
         if (_activeMtcTabId == tabId)
@@ -512,11 +730,13 @@ public partial class MainWindow
         _fileDisconnect.IsEnabled = connected || proxyRunning;
 
         RefreshNotesMenuState();
+        UpdateNotesForActiveGame();
+        RefreshCommWindowUi();
         RefreshMombotUi();
         UpdateHaggleToggleState();
         RebuildProxyMenu();
         RebuildScriptsMenu();
-        RequestStatusBarRefresh();
+        RefreshStatusBar();
     }
 
     private void RefreshMtcTabStrip()
@@ -548,19 +768,26 @@ public partial class MainWindow
         _tabStripItems.Children.Add(addButton);
     }
 
-    private void StopMtcTabSession(MtcTabPrototype tab)
+    private async Task StopMtcTabSessionAsync(MtcTabPrototype tab)
     {
-        ExecuteInMtcTabSession(tab, () =>
+        await ExecuteInOptionalMtcTabSessionAsync(tab, async () =>
         {
             try { _telnet.Disconnect(); } catch { }
             _proxyCts?.Cancel();
             _proxyCts = null;
             if (_gameInstance != null)
-                _ = _gameInstance.StopAsync();
-            _gameFileLock?.Dispose();
-            _gameFileLock = null;
-            try { _sessionDb?.CloseDatabase(); } catch { }
-            _sessionDb = null;
+            {
+                await StopEmbeddedAsync();
+            }
+            else
+            {
+                _gameFileLock?.Dispose();
+                _gameFileLock = null;
+                try { _sessionDb?.CloseDatabase(); } catch { }
+                _sessionDb = null;
+                Core.ScriptRef.SetActiveDatabase(null);
+            }
+
             _sessionLog.Dispose();
         });
     }
@@ -568,7 +795,7 @@ public partial class MainWindow
     private void StopAllMtcTabSessions()
     {
         foreach (var tab in _mtcTabs.ToArray())
-            StopMtcTabSession(tab);
+            _ = StopMtcTabSessionAsync(tab);
     }
 
     private Control BuildMtcTabButton(MtcTabPrototype tab)

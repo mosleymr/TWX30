@@ -418,7 +418,7 @@ public partial class MainWindow
 
     // ── Menu actions ───────────────────────────────────────────────────────
 
-    private async void OnConnect()
+    private async Task OnConnectAsync()
     {
         if (_state.EmbeddedProxy)
         {
@@ -438,7 +438,7 @@ public partial class MainWindow
             DoConnect();
     }
 
-    private async void OnDisconnect()
+    private async Task OnDisconnectAsync()
     {
         if (_gameInstance != null)
         {

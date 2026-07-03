@@ -1197,7 +1197,7 @@ public partial class MainWindow
                 return tabInterpreter;
             if (ActiveMtcRuntimeContext?.TWXInterpreter is Core.ModInterpreter tabTwxInterpreter)
                 return tabTwxInterpreter;
-            return Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+            return null;
         }
     }
 
