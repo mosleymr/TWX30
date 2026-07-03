@@ -464,8 +464,26 @@ public partial class MainWindow
         _awaitingComputerShipTypeLine = tab.AwaitingComputerShipTypeLine;
         _boundMtcTab = tab;
 
-        if (tab.Id == _activeMtcTabId && tab.TerminalInputHandler != null)
-            ApplyTerminalInputHandlerToControls(tab.TerminalInputHandler);
+        ApplyMtcTabTerminalInputHandler(tab);
+    }
+
+    private void ApplyMtcTabTerminalInputHandler(MtcTabPrototype tab)
+    {
+        if (tab.Id != _activeMtcTabId || tab.TerminalInputHandler == null)
+            return;
+
+        var handler = tab.TerminalInputHandler;
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ApplyTerminalInputHandlerToControls(handler);
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (tab.Id == _activeMtcTabId)
+                ApplyTerminalInputHandlerToControls(handler);
+        }, DispatcherPriority.Background);
     }
 
     private void ExecuteInMtcTabSession(MtcTabPrototype tab, Action action)
