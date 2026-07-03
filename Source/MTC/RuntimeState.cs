@@ -251,21 +251,22 @@ public partial class MainWindow
         string configGameLetter = NormalizeMombotValue(_embeddedGameConfig?.GameLetter);
 
         string loginName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
-            configLogin);
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
         string serverName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
             loginName);
         string password = FirstMeaningfulMombotValue(
+            configPassword,
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
-            configPassword);
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
+            configGameLetter,
             Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
-            configGameLetter);
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
 
         return !string.IsNullOrWhiteSpace(serverName) &&
                !string.IsNullOrWhiteSpace(loginName) &&

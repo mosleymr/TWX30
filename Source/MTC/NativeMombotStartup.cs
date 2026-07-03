@@ -1360,7 +1360,7 @@ public partial class MainWindow
         bool interactiveOfflinePrompt,
         bool publishMissingGameMessage)
     {
-        bool connectAfterStart = _gameInstance is { IsConnected: false };
+        bool startedDisconnected = _gameInstance is { IsConnected: false };
 
         await StartInternalMombotAsync(
             nativeBotConfig,
@@ -1368,11 +1368,12 @@ public partial class MainWindow
             interactiveOfflinePrompt,
             publishMissingGameMessage);
 
-        if (connectAfterStart &&
+        if (startedDisconnected &&
             _mombot.Enabled &&
             _gameInstance is { IsConnected: false })
         {
-            await ConnectEmbeddedServerAsync();
+            Core.GlobalModules.DebugLog("[MTC.NativeBotStart] native bot started disconnected; relog script owns the connect sequence\n");
+            Core.GlobalModules.FlushDebugLog();
         }
     }
 
@@ -1401,9 +1402,11 @@ public partial class MainWindow
             {
                 string dorelog = ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog");
                 string loginName = FirstMeaningfulMombotValue(
+                    NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true),
                     Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
                     Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
                 string gameLetter = FirstMeaningfulMombotValue(
+                    NormalizeGameLetter(_embeddedGameConfig?.GameLetter),
                     Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
                     Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
                 Core.GlobalModules.DebugLog(
@@ -1782,21 +1785,22 @@ public partial class MainWindow
             _mombot.Settings.BotName,
             "mombot");
         string loginName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
-            configLogin);
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
         string serverName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
             loginName);
         string password = FirstMeaningfulMombotValue(
+            configPassword,
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
-            configPassword);
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
+            configGameLetter,
             Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
-            configGameLetter);
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
         string delayValue = FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~STARTGAMEDELAY", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$startGameDelay", string.Empty),
@@ -1989,21 +1993,22 @@ public partial class MainWindow
             _mombot.Settings.BotName,
             "mombot");
         string loginName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty),
-            configLogin);
+            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
         string serverName = FirstMeaningfulMombotValue(
+            configLogin,
             Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
             loginName);
         string password = FirstMeaningfulMombotValue(
+            configPassword,
             Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty),
-            configPassword);
+            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
+            configGameLetter,
             Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty),
-            configGameLetter);
+            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
         string doRelog = IsMombotTruthy(FirstMeaningfulMombotValue(
             Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
             Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
