@@ -39,6 +39,19 @@ public class AnsiParser
         SawSecondLeft,
     }
 
+    private enum LegacyInlineTokenState
+    {
+        None,
+        SemicolonT,
+        BraceToken,
+    }
+
+    private enum LegacyInlineControlResult
+    {
+        Reprocess,
+        Consumed,
+    }
+
     private readonly TerminalBuffer _buf;
     private State    _state      = State.Ground;
     private string   _csiParam   = "";
@@ -50,6 +63,13 @@ public class AnsiParser
     private int _promptScrubRow = -1;
     private int _promptScrubSpaces;
     private bool _clearPromptLineOnNextPrintable;
+    private LegacyInlineTokenState _legacyInlineTokenState;
+    private readonly StringBuilder _legacyInlineToken = new();
+    private int _legacySemicolonSeparators;
+    private int _legacySemicolonCurrentDigits;
+    private int _legacyInlineRecoveryBudget;
+    private bool _pendingLegacyTextMarker;
+    private bool _suppressNextLegacyTextMarker;
 
     // Saved cursor
     private int _savedRow, _savedCol;
@@ -183,6 +203,12 @@ public class AnsiParser
             // probe itself even when a server/client does not pair it with BS.
         }
 
+        if (_state == State.Ground &&
+            HandleLegacyInlineControlByte(b) == LegacyInlineControlResult.Consumed)
+        {
+            return;
+        }
+
         char c = (char)b;
 
         switch (_state)
@@ -286,12 +312,205 @@ public class AnsiParser
                 break;
             default:
                 if (b >= 0x20)
-                {
-                    ClearPromptLineBeforeOverwriteIfNeeded();
-                    _buf.WriteChar(Cp437Glyphs[b]);  // printable DOS/ANSI glyph
-                }
+                    WritePrintableByte(b);
                 break;
         }
+    }
+
+    private LegacyInlineControlResult HandleLegacyInlineControlByte(byte b)
+    {
+        if (_legacyInlineRecoveryBudget > 0)
+            _legacyInlineRecoveryBudget--;
+
+        if (_legacyInlineTokenState != LegacyInlineTokenState.None)
+            return ContinueLegacyInlineToken(b);
+
+        if (_pendingLegacyTextMarker)
+        {
+            _pendingLegacyTextMarker = false;
+            if (IsLegacyBoxDrawingBoundary(b))
+                return LegacyInlineControlResult.Reprocess;
+
+            WritePrintableByte((byte)'t');
+        }
+
+        if (_suppressNextLegacyTextMarker)
+        {
+            _suppressNextLegacyTextMarker = false;
+            if (b == (byte)'t')
+            {
+                RefreshLegacyInlineRecoveryBudget();
+                return LegacyInlineControlResult.Consumed;
+            }
+        }
+
+        if (b == (byte)';')
+        {
+            StartLegacySemicolonToken();
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        if (b == (byte)'0' && _buf.CursorCol <= 1)
+        {
+            StartLegacyBraceToken();
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        if (b == (byte)'t' &&
+            (_legacyInlineRecoveryBudget > 0 || _buf.CursorCol <= 2))
+        {
+            _pendingLegacyTextMarker = true;
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        return LegacyInlineControlResult.Reprocess;
+    }
+
+    private LegacyInlineControlResult ContinueLegacyInlineToken(byte b)
+    {
+        return _legacyInlineTokenState switch
+        {
+            LegacyInlineTokenState.SemicolonT => ContinueLegacySemicolonToken(b),
+            LegacyInlineTokenState.BraceToken => ContinueLegacyBraceToken(b),
+            _ => LegacyInlineControlResult.Reprocess,
+        };
+    }
+
+    private void StartLegacySemicolonToken()
+    {
+        _legacyInlineTokenState = LegacyInlineTokenState.SemicolonT;
+        _legacyInlineToken.Clear();
+        _legacyInlineToken.Append(';');
+        _legacySemicolonSeparators = 0;
+        _legacySemicolonCurrentDigits = 0;
+    }
+
+    private LegacyInlineControlResult ContinueLegacySemicolonToken(byte b)
+    {
+        if (b >= (byte)'0' && b <= (byte)'9')
+        {
+            if (_legacySemicolonCurrentDigits >= 3)
+            {
+                FlushPendingLegacyInlineToken();
+                return LegacyInlineControlResult.Reprocess;
+            }
+
+            _legacyInlineToken.Append((char)b);
+            _legacySemicolonCurrentDigits++;
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        if (b == (byte)';')
+        {
+            if (_legacySemicolonCurrentDigits == 0 || _legacySemicolonSeparators >= 1)
+            {
+                FlushPendingLegacyInlineToken();
+                return LegacyInlineControlResult.Reprocess;
+            }
+
+            _legacyInlineToken.Append(';');
+            _legacySemicolonSeparators++;
+            _legacySemicolonCurrentDigits = 0;
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        if (b == (byte)'t' && _legacySemicolonCurrentDigits > 0)
+        {
+            ResetLegacyInlineToken();
+            _suppressNextLegacyTextMarker = true;
+            RefreshLegacyInlineRecoveryBudget();
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        FlushPendingLegacyInlineToken();
+        return LegacyInlineControlResult.Reprocess;
+    }
+
+    private void StartLegacyBraceToken()
+    {
+        _legacyInlineTokenState = LegacyInlineTokenState.BraceToken;
+        _legacyInlineToken.Clear();
+        _legacyInlineToken.Append('0');
+    }
+
+    private LegacyInlineControlResult ContinueLegacyBraceToken(byte b)
+    {
+        string current = _legacyInlineToken.ToString();
+
+        if (b < 0x20 || b == 0x1B)
+        {
+            if (current == "01}")
+            {
+                ResetLegacyInlineToken();
+                RefreshLegacyInlineRecoveryBudget();
+            }
+            else
+            {
+                FlushPendingLegacyInlineToken();
+            }
+
+            return LegacyInlineControlResult.Reprocess;
+        }
+
+        if (current == "01}" && b != (byte)'{')
+        {
+            ResetLegacyInlineToken();
+            RefreshLegacyInlineRecoveryBudget();
+            return LegacyInlineControlResult.Reprocess;
+        }
+
+        _legacyInlineToken.Append((char)b);
+        string token = _legacyInlineToken.ToString();
+
+        if (token == "01}{NK}{")
+        {
+            ResetLegacyInlineToken();
+            RefreshLegacyInlineRecoveryBudget();
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        if ("01}{NK}{".StartsWith(token, StringComparison.Ordinal) ||
+            "01}".StartsWith(token, StringComparison.Ordinal))
+        {
+            return LegacyInlineControlResult.Consumed;
+        }
+
+        FlushPendingLegacyInlineToken();
+        return LegacyInlineControlResult.Consumed;
+    }
+
+    private void FlushPendingLegacyInlineToken()
+    {
+        if (_legacyInlineToken.Length == 0)
+        {
+            ResetLegacyInlineToken();
+            return;
+        }
+
+        string token = _legacyInlineToken.ToString();
+        ResetLegacyInlineToken();
+        foreach (char ch in token)
+            WritePrintableByte((byte)ch);
+    }
+
+    private void ResetLegacyInlineToken()
+    {
+        _legacyInlineTokenState = LegacyInlineTokenState.None;
+        _legacyInlineToken.Clear();
+        _legacySemicolonSeparators = 0;
+        _legacySemicolonCurrentDigits = 0;
+    }
+
+    private void RefreshLegacyInlineRecoveryBudget()
+        => _legacyInlineRecoveryBudget = Math.Max(_legacyInlineRecoveryBudget, 4096);
+
+    private static bool IsLegacyBoxDrawingBoundary(byte b)
+        => b is 0xB3 or 0xBA or 0xBB or 0xBC or 0xC8 or 0xC9 or 0xCC or 0xCD or 0xD9 or 0xDA;
+
+    private void WritePrintableByte(byte b)
+    {
+        ClearPromptLineBeforeOverwriteIfNeeded();
+        _buf.WriteChar(Cp437Glyphs[b]);  // printable DOS/ANSI glyph
     }
 
     private void ClearPromptLineBeforeOverwriteIfNeeded()
