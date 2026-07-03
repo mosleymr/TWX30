@@ -758,8 +758,8 @@ public partial class MainWindow
         ApplyStatusToggleFrameStyle(_statusRedAlertFrame, _appPrefs.EnableRedAlertMode);
         _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
 
-        ApplyStatusMacrosButtonStyle(_statusMacrosButton, _macroSettingsDialog != null);
-        ApplyStatusMapButtonStyle(_statusMapButton, _mapWindow != null);
+        ApplyStatusMacrosButtonStyle(_statusMacrosButton, ActiveMtcTab?.MacroSettingsDialog is { IsVisible: true });
+        ApplyStatusMapButtonStyle(_statusMapButton, ActiveMtcTab?.MapWindow is { IsVisible: true });
         ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
         ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, nativeBotAvailable);
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: haggleSelected, haggleAvailable);

@@ -785,12 +785,13 @@ public partial class MainWindow
 
     private async Task OnMacrosAsync()
     {
-        if (_macroSettingsDialog != null)
+        var owner = ActiveMtcTab;
+        if (owner?.MacroSettingsDialog is { } existing)
         {
-            if (_macroSettingsDialog.WindowState == WindowState.Minimized)
-                _macroSettingsDialog.WindowState = WindowState.Normal;
+            if (existing.WindowState == WindowState.Minimized)
+                existing.WindowState = WindowState.Normal;
 
-            _macroSettingsDialog.Activate();
+            existing.Activate();
             return;
         }
 
@@ -802,11 +803,12 @@ public partial class MainWindow
                     Macro = binding.Macro,
                 })
                 .ToArray(),
-            PlayConfiguredMacroBurstAsync,
+            (macro, count) => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayConfiguredMacroBurstAsync(macro, count)),
             SaveMacroBindings);
 
-        _macroSettingsDialog = dialog;
-        RegisterOwnedChildWindow(dialog);
+        if (owner != null)
+            owner.MacroSettingsDialog = dialog;
+        RegisterMtcTabOwnedWindow(owner, dialog);
         UpdateTerminalLiveSelector();
 
         try
@@ -815,8 +817,8 @@ public partial class MainWindow
         }
         finally
         {
-            if (ReferenceEquals(_macroSettingsDialog, dialog))
-                _macroSettingsDialog = null;
+            if (owner != null && ReferenceEquals(owner.MacroSettingsDialog, dialog))
+                owner.MacroSettingsDialog = null;
 
             UpdateTerminalLiveSelector();
         }

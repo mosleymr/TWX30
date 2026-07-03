@@ -1234,6 +1234,7 @@ public partial class MainWindow
 
     private Task PlayTemporaryMacroAsync()
     {
+        var owner = ActiveMtcTab;
         if (_temporaryMacroRecording)
             return Task.CompletedTask;
 
@@ -1250,9 +1251,9 @@ public partial class MainWindow
             return Task.CompletedTask;
         }
 
-        if (_quickMacroPlayWindow is { IsVisible: true })
+        if (owner?.QuickMacroPlayWindow is { IsVisible: true } existing)
         {
-            _quickMacroPlayWindow.Activate();
+            existing.Activate();
             return Task.CompletedTask;
         }
 
@@ -1261,19 +1262,20 @@ public partial class MainWindow
             ValidateTemporaryMacroText,
             allowHotkeyAssignment: true,
             existingBindings: _appPrefs.MacroBindings,
-            playAsync: PlayQuickMacroFromDialogAsync);
+            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)));
 
         dialog.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_quickMacroPlayWindow, dialog))
-                _quickMacroPlayWindow = null;
+            if (owner != null && ReferenceEquals(owner.QuickMacroPlayWindow, dialog))
+                owner.QuickMacroPlayWindow = null;
 
             if (!_mainWindowClosing)
                 FocusActiveTerminal();
         };
 
-        _quickMacroPlayWindow = dialog;
-        ShowOwnedChildWindow(dialog, activate: false);
+        if (owner != null)
+            owner.QuickMacroPlayWindow = dialog;
+        ShowMtcTabOwnedWindow(owner, dialog, activate: false);
         return Task.CompletedTask;
 
         async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
@@ -1298,7 +1300,7 @@ public partial class MainWindow
 
     private void UpdateOpenQuickMacroPlayWindow(string macroText, string statusMessage)
     {
-        if (_quickMacroPlayWindow is not { IsVisible: true } dialog)
+        if (ActiveMtcTab?.QuickMacroPlayWindow is not { IsVisible: true } dialog)
             return;
 
         dialog.SetMacroText(macroText, statusMessage);

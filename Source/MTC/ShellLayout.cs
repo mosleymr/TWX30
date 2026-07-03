@@ -2378,125 +2378,168 @@ public partial class MainWindow
 
     private void OnViewMap()
     {
-        if (_mapWindow != null)
+        var owner = ActiveMtcTab;
+        if (owner?.MapWindow is { IsVisible: true } existing)
         {
-            _mapWindow.Show();
-            _mapWindow.Activate();
+            existing.Show();
+            existing.Activate();
             return;
         }
 
-        _mapWindow = new MapWindow(
-            () => _state.Sector,
-            () => _sessionDb,
-            () => _state);
-        _mapWindow.Closed += (_, _) =>
+        var window = new MapWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state));
+        window.Closed += (_, _) =>
         {
-            _mapWindow = null;
+            if (owner != null && ReferenceEquals(owner.MapWindow, window))
+                owner.MapWindow = null;
             UpdateTerminalLiveSelector();
         };
-        ShowOwnedChildWindow(_mapWindow);
+        if (owner != null)
+            owner.MapWindow = window;
+        ShowMtcTabOwnedWindow(owner, window);
         UpdateTerminalLiveSelector();
     }
 
     private void OnToolsFindRoute()
     {
+        var owner = ActiveMtcTab;
         var win = new RouteWindow(
-            () => _sessionDb,
-            () => _state.Sector,
-            () => _state);
-        ShowOwnedChildWindow(win);
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state));
+        ShowMtcTabOwnedWindow(owner, win);
     }
 
     private void OnToolsFind()
     {
-        if (_dataMiningWindow is { IsVisible: true })
+        var owner = ActiveMtcTab;
+        if (owner?.DataMiningWindow is { IsVisible: true } existing)
         {
-            _dataMiningWindow.Activate();
+            existing.Activate();
             return;
         }
 
-        _dataMiningWindow = new DataMiningWindow(
-            () => _sessionDb,
-            () => _state.Sector,
-            () => _state);
-        _dataMiningWindow.Closed += (_, _) => _dataMiningWindow = null;
-        ShowOwnedChildWindow(_dataMiningWindow);
+        var window = new DataMiningWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state));
+        window.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.DataMiningWindow, window))
+                owner.DataMiningWindow = null;
+        };
+        if (owner != null)
+            owner.DataMiningWindow = window;
+        ShowMtcTabOwnedWindow(owner, window);
     }
 
     private void OnToolsQCannonCalculator()
     {
-        if (_qCannonCalculatorWindow is { IsVisible: true })
+        var owner = ActiveMtcTab;
+        if (owner?.QCannonCalculatorWindow is { IsVisible: true } existing)
         {
-            _qCannonCalculatorWindow.Activate();
+            existing.Activate();
             return;
         }
 
-        _qCannonCalculatorWindow = new QCannonCalculatorWindow();
-        _qCannonCalculatorWindow.Closed += (_, _) => _qCannonCalculatorWindow = null;
-        ShowOwnedChildWindow(_qCannonCalculatorWindow);
+        var window = new QCannonCalculatorWindow();
+        window.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.QCannonCalculatorWindow, window))
+                owner.QCannonCalculatorWindow = null;
+        };
+        if (owner != null)
+            owner.QCannonCalculatorWindow = window;
+        ShowMtcTabOwnedWindow(owner, window);
     }
 
     private void OnViewBubbles()
     {
+        var owner = ActiveMtcTab;
         var win = new BubblesWindow(
-            () => _sessionDb,
-            () => _state.Sector,
-            () => _state,
-            () => Math.Max(1, _embeddedGameConfig?.BubbleMinSize ?? 5),
-            () => Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.BubbleMinSize ?? 5)),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.BubbleSize ?? Core.ModBubble.DefaultMaxBubbleSize)),
             (minSize, maxSize) =>
             {
-                _embeddedGameConfig ??= new EmbeddedGameConfig();
-                _embeddedGameConfig.BubbleMinSize = Math.Max(1, minSize);
-                _embeddedGameConfig.BubbleSize = Math.Max(1, maxSize);
-                _embeddedGameConfig.BubbleSizeCustomized = true;
-                _ = SaveCurrentGameConfigAsync();
+                ExecuteInOptionalMtcTabSession(owner, () =>
+                {
+                    _embeddedGameConfig ??= new EmbeddedGameConfig();
+                    _embeddedGameConfig.BubbleMinSize = Math.Max(1, minSize);
+                    _embeddedGameConfig.BubbleSize = Math.Max(1, maxSize);
+                    _embeddedGameConfig.BubbleSizeCustomized = true;
+                    _ = SaveCurrentGameConfigAsync();
+                });
             },
-            () => Math.Max(1, _embeddedGameConfig?.DeadEndMinSize ?? 2),
-            () => Math.Max(1, _embeddedGameConfig?.DeadEndMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.DeadEndMinSize ?? 2)),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.DeadEndMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize)),
             (minSize, maxSize) =>
             {
-                _embeddedGameConfig ??= new EmbeddedGameConfig();
-                _embeddedGameConfig.DeadEndMinSize = Math.Max(1, minSize);
-                _embeddedGameConfig.DeadEndMaxSize = Math.Max(1, maxSize);
-                _ = SaveCurrentGameConfigAsync();
+                ExecuteInOptionalMtcTabSession(owner, () =>
+                {
+                    _embeddedGameConfig ??= new EmbeddedGameConfig();
+                    _embeddedGameConfig.DeadEndMinSize = Math.Max(1, minSize);
+                    _embeddedGameConfig.DeadEndMaxSize = Math.Max(1, maxSize);
+                    _ = SaveCurrentGameConfigAsync();
+                });
             },
-            () => Math.Max(1, _embeddedGameConfig?.TunnelMinSize ?? 2),
-            () => Math.Max(1, _embeddedGameConfig?.TunnelMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.TunnelMinSize ?? 2)),
+            () => ExecuteInOptionalMtcTabSession(owner, () => Math.Max(1, _embeddedGameConfig?.TunnelMaxSize ?? Core.ModBubble.DefaultMaxBubbleSize)),
             (minSize, maxSize) =>
             {
-                _embeddedGameConfig ??= new EmbeddedGameConfig();
-                _embeddedGameConfig.TunnelMinSize = Math.Max(1, minSize);
-                _embeddedGameConfig.TunnelMaxSize = Math.Max(1, maxSize);
-                _ = SaveCurrentGameConfigAsync();
+                ExecuteInOptionalMtcTabSession(owner, () =>
+                {
+                    _embeddedGameConfig ??= new EmbeddedGameConfig();
+                    _embeddedGameConfig.TunnelMinSize = Math.Max(1, minSize);
+                    _embeddedGameConfig.TunnelMaxSize = Math.Max(1, maxSize);
+                    _ = SaveCurrentGameConfigAsync();
+                });
             });
-        ShowOwnedChildWindow(win);
+        ShowMtcTabOwnedWindow(owner, win);
     }
 
     private void OnViewCache()
     {
-        if (_cacheWindow is { IsVisible: true })
+        var owner = ActiveMtcTab;
+        if (owner?.CacheWindow is { IsVisible: true } existing)
         {
-            _cacheWindow.Activate();
+            existing.Activate();
             return;
         }
 
-        _cacheWindow = new CacheWindow(CaptureCacheWindowSnapshot);
-        _cacheWindow.Closed += (_, _) => _cacheWindow = null;
-        ShowOwnedChildWindow(_cacheWindow);
+        var window = new CacheWindow(() => ExecuteInOptionalMtcTabSession(owner, CaptureCacheWindowSnapshot));
+        window.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.CacheWindow, window))
+                owner.CacheWindow = null;
+        };
+        if (owner != null)
+            owner.CacheWindow = window;
+        ShowMtcTabOwnedWindow(owner, window);
     }
 
     private void OnViewAliens()
     {
-        if (_aliensWindow is { IsVisible: true })
+        var owner = ActiveMtcTab;
+        if (owner?.AliensWindow is { IsVisible: true } existing)
         {
-            _aliensWindow.Activate();
+            existing.Activate();
             return;
         }
 
-        _aliensWindow = new AliensWindow(() => _sessionDb);
-        _aliensWindow.Closed += (_, _) => _aliensWindow = null;
-        ShowOwnedChildWindow(_aliensWindow);
+        var window = new AliensWindow(() => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb));
+        window.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.AliensWindow, window))
+                owner.AliensWindow = null;
+        };
+        if (owner != null)
+            owner.AliensWindow = window;
+        ShowMtcTabOwnedWindow(owner, window);
     }
 
     private CacheWindowSnapshot CaptureCacheWindowSnapshot()
@@ -2630,33 +2673,45 @@ public partial class MainWindow
 
     private void OnViewDatabase()
     {
+        var owner = ActiveMtcTab;
         var win = new SectorInfoWindow(
-            () => _sessionDb,
-            () => _state.Sector);
-        ShowOwnedChildWindow(win);
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector));
+        ShowMtcTabOwnedWindow(owner, win);
     }
 
     private void OnViewGameInfo()
     {
-        var win = new GameInfoWindow(() => _sessionDb, () => _state, () => _embeddedGameConfig?.Variables);
-        ShowOwnedChildWindow(win);
+        var owner = ActiveMtcTab;
+        var win = new GameInfoWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state),
+            () => ExecuteInOptionalMtcTabSession(owner, () => _embeddedGameConfig?.Variables));
+        ShowMtcTabOwnedWindow(owner, win);
     }
 
     private void OnViewScriptDebugger()
     {
-        if (_scriptDebuggerWindow is { IsVisible: true })
+        var owner = ActiveMtcTab;
+        if (owner?.ScriptDebuggerWindow is { IsVisible: true } existing)
         {
-            _scriptDebuggerWindow.Activate();
+            existing.Activate();
             return;
         }
 
-        _scriptDebuggerWindow = new ScriptDebuggerWindow(
-            () => CurrentInterpreter,
-            () => DeriveGameName(),
-            scriptId => Core.ProxyGameOperations.PauseScriptById(CurrentInterpreter, scriptId),
-            scriptId => Core.ProxyGameOperations.ResumeScriptById(CurrentInterpreter, scriptId));
-        _scriptDebuggerWindow.Closed += (_, _) => _scriptDebuggerWindow = null;
-        ShowOwnedChildWindow(_scriptDebuggerWindow, activate: false);
+        var window = new ScriptDebuggerWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => CurrentInterpreter),
+            () => ExecuteInOptionalMtcTabSession(owner, DeriveGameName),
+            scriptId => ExecuteInOptionalMtcTabSession(owner, () => Core.ProxyGameOperations.PauseScriptById(CurrentInterpreter, scriptId)),
+            scriptId => ExecuteInOptionalMtcTabSession(owner, () => Core.ProxyGameOperations.ResumeScriptById(CurrentInterpreter, scriptId)));
+        window.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.ScriptDebuggerWindow, window))
+                owner.ScriptDebuggerWindow = null;
+        };
+        if (owner != null)
+            owner.ScriptDebuggerWindow = window;
+        ShowMtcTabOwnedWindow(owner, window, activate: false);
     }
 
     // ── Sidebar ────────────────────────────────────────────────────────────

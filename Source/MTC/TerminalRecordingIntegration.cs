@@ -198,15 +198,22 @@ public partial class MainWindow
         try
         {
             TerminalRecording recording = await TerminalRecording.LoadAsync(path);
-            if (_recordingPlaybackWindow != null)
+            var owner = ActiveMtcTab;
+            if (owner?.RecordingPlaybackWindow != null)
             {
-                _recordingPlaybackWindow.Close();
-                _recordingPlaybackWindow = null;
+                owner.RecordingPlaybackWindow.Close();
+                owner.RecordingPlaybackWindow = null;
             }
 
-            _recordingPlaybackWindow = new TerminalRecordingPlaybackWindow(path, recording);
-            _recordingPlaybackWindow.Closed += (_, _) => _recordingPlaybackWindow = null;
-            ShowOwnedChildWindow(_recordingPlaybackWindow);
+            var window = new TerminalRecordingPlaybackWindow(path, recording);
+            window.Closed += (_, _) =>
+            {
+                if (owner != null && ReferenceEquals(owner.RecordingPlaybackWindow, window))
+                    owner.RecordingPlaybackWindow = null;
+            };
+            if (owner != null)
+                owner.RecordingPlaybackWindow = window;
+            ShowMtcTabOwnedWindow(owner, window);
         }
         catch (Exception ex)
         {

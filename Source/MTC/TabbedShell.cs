@@ -102,6 +102,18 @@ public partial class MainWindow
         public EmbeddedGameConfig? EmbeddedGameConfig { get; set; }
         public string? EmbeddedGameName { get; set; }
         public string? CurrentProfilePath { get; set; }
+        public MapWindow? MapWindow { get; set; }
+        public CacheWindow? CacheWindow { get; set; }
+        public AliensWindow? AliensWindow { get; set; }
+        public QCannonCalculatorWindow? QCannonCalculatorWindow { get; set; }
+        public DataMiningWindow? DataMiningWindow { get; set; }
+        public ScriptDebuggerWindow? ScriptDebuggerWindow { get; set; }
+        public MacroSettingsDialog? MacroSettingsDialog { get; set; }
+        public MacroPlayDialog? QuickMacroPlayWindow { get; set; }
+        public GameAgentWindow? GameAgentWindow { get; set; }
+        public GameAgentReplayWindow? GameAgentReplayWindow { get; set; }
+        public TerminalRecordingPlaybackWindow? RecordingPlaybackWindow { get; set; }
+        public List<Window> AuxiliaryWindows { get; } = [];
     }
 
     private readonly List<MtcTabPrototype> _mtcTabs = [];
@@ -504,6 +516,16 @@ public partial class MainWindow
         ExecuteInMtcTabSession(tab, action);
     }
 
+    private T ExecuteInOptionalMtcTabSession<T>(MtcTabPrototype? tab, Func<T> action)
+    {
+        if (tab is null)
+            return action();
+
+        T result = default!;
+        ExecuteInMtcTabSession(tab, () => result = action());
+        return result;
+    }
+
     private void ExecuteInActiveMtcTabSession(Action action)
         => ExecuteInOptionalMtcTabSession(ActiveMtcTab, action);
 
@@ -550,6 +572,45 @@ public partial class MainWindow
 
         if (refreshActiveUiAfterRestore)
             RefreshActiveMtcTabUiState();
+    }
+
+    private async Task<T> ExecuteInOptionalMtcTabSessionAsync<T>(MtcTabPrototype? tab, Func<Task<T>> action)
+    {
+        if (tab is null)
+            return await action();
+
+        bool tabWasActive = tab.Id == _activeMtcTabId;
+        bool refreshActiveUiAfterRestore = false;
+        lock (_mtcTabSessionBindLock)
+        {
+            if (_boundMtcTab is not null)
+                CaptureMtcTabSession(_boundMtcTab);
+            BindMtcTabSession(tab);
+        }
+
+        try
+        {
+            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            {
+                return await action();
+            }
+        }
+        finally
+        {
+            lock (_mtcTabSessionBindLock)
+            {
+                CaptureMtcTabSession(tab);
+                var restore = ActiveMtcTab;
+                if (restore is not null && !ReferenceEquals(restore, tab))
+                {
+                    BindMtcTabSession(restore);
+                    refreshActiveUiAfterRestore = !tabWasActive && Dispatcher.UIThread.CheckAccess();
+                }
+            }
+
+            if (refreshActiveUiAfterRestore)
+                RefreshActiveMtcTabUiState();
+        }
     }
 
     private void BindActiveMtcTabSession()
@@ -650,6 +711,7 @@ public partial class MainWindow
         }
 
         var index = _mtcTabs.IndexOf(tab);
+        CloseMtcTabOwnedWindows(tab);
         await StopMtcTabSessionAsync(tab);
         _mtcTabs.Remove(tab);
 
@@ -714,6 +776,61 @@ public partial class MainWindow
                 VerticalAlignment = VerticalAlignment.Center,
             },
         });
+    }
+
+    private void RegisterMtcTabOwnedWindow(MtcTabPrototype? owner, Window? window)
+    {
+        if (window == null)
+            return;
+
+        RegisterOwnedChildWindow(window);
+        if (owner == null)
+            return;
+
+        if (!owner.AuxiliaryWindows.Contains(window))
+            owner.AuxiliaryWindows.Add(window);
+
+        window.Closed += (_, _) => owner.AuxiliaryWindows.Remove(window);
+    }
+
+    private void ShowMtcTabOwnedWindow(MtcTabPrototype? owner, Window window, bool activate = true)
+    {
+        RegisterMtcTabOwnedWindow(owner, window);
+        window.Show(this);
+
+        if (activate)
+            window.Activate();
+    }
+
+    private void CloseMtcTabOwnedWindows(MtcTabPrototype tab)
+    {
+        Window[] windows = tab.AuxiliaryWindows.ToArray();
+        tab.AuxiliaryWindows.Clear();
+
+        tab.MapWindow = null;
+        tab.CacheWindow = null;
+        tab.AliensWindow = null;
+        tab.QCannonCalculatorWindow = null;
+        tab.DataMiningWindow = null;
+        tab.ScriptDebuggerWindow = null;
+        tab.MacroSettingsDialog = null;
+        tab.QuickMacroPlayWindow = null;
+        tab.GameAgentWindow = null;
+        tab.GameAgentReplayWindow = null;
+        tab.RecordingPlaybackWindow = null;
+
+        foreach (Window window in windows.Reverse())
+        {
+            try
+            {
+                if (!ReferenceEquals(window, this))
+                    window.Close();
+            }
+            catch (Exception ex)
+            {
+                Core.GlobalModules.DebugLog($"[MTC.TabbedShell] failed to close tab child window: {ex.Message}\n");
+            }
+        }
     }
 
     private void RefreshActiveMtcTabUiState()

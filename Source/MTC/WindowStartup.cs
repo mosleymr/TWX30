@@ -154,12 +154,6 @@ public partial class MainWindow
             StopOwnedChildProcesses();
             StopAllMtcTabSessions();
             _proxyCts?.Cancel();
-            _gameAgentWindow?.Close();
-            _gameAgentWindow = null;
-            _gameAgentReplayWindow?.Close();
-            _gameAgentReplayWindow = null;
-            _quickMacroPlayWindow?.Close();
-            _quickMacroPlayWindow = null;
             _jsonRpcServer?.Dispose();
             _jsonRpcServer = null;
             _gameAgent.Dispose();

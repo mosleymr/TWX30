@@ -87,9 +87,6 @@ public partial class MainWindow : Window
     private Core.ModLog                    _sessionLog = null!;
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
-    private GameAgentWindow?                _gameAgentWindow;
-    private GameAgentReplayWindow?          _gameAgentReplayWindow;
-    private ScriptDebuggerWindow?          _scriptDebuggerWindow;
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
@@ -135,13 +132,8 @@ public partial class MainWindow : Window
     private bool _deckPanelsInitialized;
     private bool _suppressDeckPanelStateSync;
     private TacticalMapControl? _tacticalMap;
-    private MapWindow? _mapWindow;
-    private CacheWindow? _cacheWindow;
-    private AliensWindow? _aliensWindow;
-    private QCannonCalculatorWindow? _qCannonCalculatorWindow;
     private bool _useCommandDeckSkin;
     private bool _nativeAppMenuReady;
-    private DataMiningWindow? _dataMiningWindow;
     private bool _nativeAppMenuAttached;
     private bool _nativeDockMenuAttached;
     private bool _commWindowVisible;
@@ -158,11 +150,8 @@ public partial class MainWindow : Window
     private readonly List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
-    private MacroSettingsDialog? _macroSettingsDialog;
-    private MacroPlayDialog? _quickMacroPlayWindow;
     private TerminalSessionRecorder? _terminalRecorder;
     private Button? _terminalRecordButton;
-    private TerminalRecordingPlaybackWindow? _recordingPlaybackWindow;
     private readonly Button _statusMacrosButton = new();
     private readonly Button _statusStopAllButton = new();
     private readonly Button _statusCommButton = new();

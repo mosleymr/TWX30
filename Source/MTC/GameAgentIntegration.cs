@@ -19,22 +19,34 @@ public partial class MainWindow
     {
         try
         {
-            if (_gameAgentWindow != null)
+            var owner = ActiveMtcTab;
+            if (owner?.GameAgentWindow is { IsVisible: true } existing)
             {
-                _gameAgentWindow.Activate();
-                _gameAgentWindow.Focus();
+                existing.Activate();
+                existing.Focus();
                 return;
             }
 
             _gameAgent.SetGameName(GetGameAgentGameName());
-            var window = new GameAgentWindow(BuildGameAgentContextSnapshot, SendMtcRpcCommandAsync, ExecuteGameAgentMombotCommandAsync, _appPrefs);
-            window.Closed += (_, _) => _gameAgentWindow = null;
-            _gameAgentWindow = window;
-            ShowOwnedChildWindow(window, activate: false);
+            var window = new GameAgentWindow(
+                () => ExecuteInOptionalMtcTabSession(owner, BuildGameAgentContextSnapshot),
+                (command, requireApproval) => ExecuteInOptionalMtcTabSessionAsync(owner, () => SendMtcRpcCommandAsync(command, requireApproval)),
+                command => ExecuteInOptionalMtcTabSessionAsync(owner, () => ExecuteGameAgentMombotCommandAsync(command)),
+                _appPrefs);
+            window.Closed += (_, _) =>
+            {
+                if (owner != null && ReferenceEquals(owner.GameAgentWindow, window))
+                    owner.GameAgentWindow = null;
+            };
+            if (owner != null)
+                owner.GameAgentWindow = window;
+            ShowMtcTabOwnedWindow(owner, window, activate: false);
         }
         catch (Exception ex)
         {
-            _gameAgentWindow = null;
+            var owner = ActiveMtcTab;
+            if (owner != null)
+                owner.GameAgentWindow = null;
             _ = ShowMessageAsync("Game Agent", $"Could not open Game Agent:\n{ex.Message}");
         }
     }
@@ -48,15 +60,17 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(path))
             return;
 
-        _gameAgentReplayWindow?.Close();
+        var owner = ActiveMtcTab;
+        owner?.GameAgentReplayWindow?.Close();
         var window = new GameAgentReplayWindow(path);
         window.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_gameAgentReplayWindow, window))
-                _gameAgentReplayWindow = null;
+            if (owner != null && ReferenceEquals(owner.GameAgentReplayWindow, window))
+                owner.GameAgentReplayWindow = null;
         };
-        _gameAgentReplayWindow = window;
-        ShowOwnedChildWindow(window, activate: false);
+        if (owner != null)
+            owner.GameAgentReplayWindow = window;
+        ShowMtcTabOwnedWindow(owner, window, activate: false);
     }
 
     private Task<MtcRpcActionResult> ExecuteGameAgentMombotCommandAsync(string command)
@@ -92,8 +106,11 @@ public partial class MainWindow
         bool saved = await window.ShowDialog<bool>(this);
         if (saved)
         {
-            _gameAgentWindow?.Close();
-            _gameAgentWindow = null;
+            foreach (var tab in _mtcTabs)
+            {
+                tab.GameAgentWindow?.Close();
+                tab.GameAgentWindow = null;
+            }
         }
     }
 
