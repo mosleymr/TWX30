@@ -5,7 +5,7 @@
                 Visits all ports in grid and sells organics          
                 and/or equipment.       
             
-      merch {sector param} {min port product} [o | e] {args}  
+      merch [min product] [o | e] {args}  
             
      Arguments:
          {neg/hold}   Determines planet negotiate or hold 

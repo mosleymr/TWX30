@@ -14,9 +14,12 @@
      {custom name} - Name the planet will be.  Otherwise its a random   
                      name from a database              
                                    
+           {strip} - Strip the made planets of products. Must start
+                     on the planet to fill.               
+                                   
            Examples:                   
                  >makeplanet create:earth,volcanic,oceanic 
-                 >makeplanet ewarp create:earth         
+                 >makeplanet ewarp strip create:earth         
                  >makeplanet "death" create:volcanic 
                                    
                     - Originally written by Xide

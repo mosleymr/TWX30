@@ -4,8 +4,9 @@
    
      Strips planets of resources and places them on starting planet.  
       
-     Options:
-     [planet# | all]   - Planet number or all to strip all planets in sector.
+     Usage: strip [planet# | all]  {options}
+       
+            Options:
                  {f}   - Strip fuel ore
                  {o}   - Strip organics
                  {e}   - Strip equipment
@@ -13,5 +14,9 @@
                 {oc}   - Strip organic colonists
                 {ec}   - Strip equipment colonists
                {fig}   - Strip fighters
+                {sh}   - Strip shields
+               {all}   - Strip everything
+            {silent}   - Silence comms
+              {deaf}   - Hide display while moving products
           
                Originally written by Mind Dagger

@@ -104,6 +104,7 @@ public partial class MainWindow
     private void RecreateDeckShellControls()
     {
         _deckTermCtrl = CreateTerminalControl();
+        _deckTermCtrl.ViewportSizeChanged += OnDeckTerminalViewportSizeChanged;
         _deckMacroRecordButton = null;
         _deckMacroStopButton = null;
         _deckMacroPlayButton = null;
@@ -184,14 +185,14 @@ public partial class MainWindow
         _statusText.Text              = "[ disconnected ]";
         _statusText.Foreground         = HudText;
         _statusText.VerticalAlignment  = VerticalAlignment.Center;
-        _statusText.Margin             = new Thickness(6, 0, 0, 0);
+        _statusText.Margin             = UiThickness(6, 0, 0, 0);
         _statusText.FontSize           = 13;
         _statusText.IsVisible          = false;
 
         _statusTerminalSizeText.Foreground = HudMuted;
         _statusTerminalSizeText.VerticalAlignment = VerticalAlignment.Center;
         _statusTerminalSizeText.HorizontalAlignment = HorizontalAlignment.Right;
-        _statusTerminalSizeText.Margin = new Thickness(10, 0, 10, 0);
+        _statusTerminalSizeText.Margin = UiThickness(10, 0, 10, 0);
         _statusTerminalSizeText.FontSize = 12;
         _statusTerminalSizeText.FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
         _statusTerminalSizeText.TextAlignment = TextAlignment.Right;
@@ -207,7 +208,7 @@ public partial class MainWindow
         _statusBarLayoutRoot.Children.Add(_statusTerminalSizeText);
 
         _statusBar.Background = BgStatus;
-        _statusBar.Height = 34;
+        _statusBar.Height = UiSize(34);
         InvalidateStatusBarLayout();
         _statusBar.Child = _statusBarLayoutRoot;
         _statusBar.IsVisible = _appPrefs.ShowBottomBar;
@@ -215,10 +216,11 @@ public partial class MainWindow
         dock.Children.Add(_statusBar);
 
         _shellHost.Background = Brushes.Transparent;
-        _shellHost.Padding = new Thickness(6, 4, 6, 4);
+        _shellHost.Padding = UiThickness(6, 4, 6, 4);
         dock.Children.Add(_shellHost);
 
         ApplySelectedSkinSafe();
+        ApplyUiScaleToMainWindow();
         return dock;
     }
 
@@ -231,11 +233,11 @@ public partial class MainWindow
 
         // Margin lets the gray BgChrome peek in on all four sides as a frame.
         var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(200) : new GridLength(0) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(6) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(ScaledClassicSidebarWidth) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = hasSidebarSections ? new GridLength(UiSize(6)) : new GridLength(0) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(10) : new GridLength(0) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(NotesPanelWidth) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(UiSize(10)) : new GridLength(0) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = showNotesPanel ? new GridLength(ScaledNotesPanelWidth) : new GridLength(0) });
 
         if (hasSidebarSections)
         {
@@ -260,8 +262,8 @@ public partial class MainWindow
             Background = HudShell,
             BorderBrush = HudEdge,
             BorderThickness = new Thickness(1.5),
-            CornerRadius = new CornerRadius(22),
-            Padding = new Thickness(14),
+            CornerRadius = UiCornerRadius(22),
+            Padding = UiThickness(14),
             Child = grid,
         };
     }
@@ -300,7 +302,7 @@ public partial class MainWindow
             () => _sessionDb,
             () => _state)
         {
-            MinHeight = 220,
+            MinHeight = UiSize(220),
         };
         _tacticalMap.SectorDoubleClicked += (_, sectorNumber) => _tacticalMap?.CenterOnSector(sectorNumber);
 
@@ -318,7 +320,7 @@ public partial class MainWindow
         };
         _deckSurface.SizeChanged += (_, _) => EnsureDeckPanelsInitialized();
 
-        var surfaceRoot = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+        var surfaceRoot = new Grid { Margin = UiThickness(0, 14, 0, 0) };
         surfaceRoot.Children.Add(new Border
         {
             Background = HudFrame,
@@ -345,8 +347,8 @@ public partial class MainWindow
             Background = HudShell,
             BorderBrush = HudEdge,
             BorderThickness = new Thickness(1.5),
-            CornerRadius = new CornerRadius(22),
-            Padding = new Thickness(16),
+            CornerRadius = UiCornerRadius(22),
+            Padding = UiThickness(16),
             Child = rootGrid,
         };
     }
@@ -472,9 +474,9 @@ public partial class MainWindow
             "notes" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = Math.Max(24, surfaceWidth - NotesPanelWidth - 42),
+                Left = Math.Max(UiSize(24), surfaceWidth - ScaledNotesPanelWidth - UiSize(42)),
                 Top = 18,
-                Width = NotesPanelWidth + 34,
+                Width = ScaledNotesPanelWidth + UiSize(34),
                 BodyHeight = fullBodyHeight,
                 ZIndex = 160,
             },
@@ -1452,8 +1454,9 @@ public partial class MainWindow
         EnsureStatusBarLayout();
     }
 
-    private void OnClassicTerminalViewportSizeChanged(TerminalControl _, int __, int ___)
+    private void OnClassicTerminalViewportSizeChanged(TerminalControl _, int columns, int rows)
     {
+        RecordTerminalResizeForRecording(columns, rows);
         if (!Dispatcher.UIThread.CheckAccess())
         {
             Dispatcher.UIThread.Post(UpdateClassicTerminalSizeStatus, DispatcherPriority.Background);
@@ -1461,6 +1464,11 @@ public partial class MainWindow
         }
 
         UpdateClassicTerminalSizeStatus();
+    }
+
+    private void OnDeckTerminalViewportSizeChanged(TerminalControl _, int columns, int rows)
+    {
+        RecordTerminalResizeForRecording(columns, rows);
     }
 
     private void UpdateClassicTerminalSizeStatus()
@@ -1865,9 +1873,10 @@ public partial class MainWindow
         _terminalFontSize = normalized;
         _appPrefs.TerminalFontSize = normalized;
         _appPrefs.Save();
-        _termCtrl.SetFontSize(normalized);
-        _deckTermCtrl.SetFontSize(normalized);
+        ApplySelectedSkinSafe();
+        ApplyUiScaleToMainWindow();
         RefreshTerminalFontSizeUi();
+        ApplyUiScaleToMainWindow();
         FocusActiveTerminal();
     }
 
@@ -1935,9 +1944,10 @@ public partial class MainWindow
     private Control BuildMenuFontSizeBox()
     {
         _menuFontSizeDecreaseButton.MinWidth = 0;
-        _menuFontSizeDecreaseButton.Width = 22;
-        _menuFontSizeDecreaseButton.Height = 22;
-        _menuFontSizeDecreaseButton.Padding = new Thickness(1);
+        _menuFontSizeDecreaseButton.Width = UiSize(22);
+        _menuFontSizeDecreaseButton.Height = UiSize(22);
+        _menuFontSizeDecreaseButton.Padding = UiThickness(1);
+        _menuFontSizeDecreaseButton.Focusable = false;
         _menuFontSizeDecreaseButton.VerticalAlignment = VerticalAlignment.Center;
         _menuFontSizeDecreaseButton.HorizontalAlignment = HorizontalAlignment.Center;
         _menuFontSizeDecreaseButton.Background = Brushes.Transparent;
@@ -1948,9 +1958,10 @@ public partial class MainWindow
         ToolTip.SetTip(_menuFontSizeDecreaseButton, "Decrease terminal font size");
 
         _menuFontSizeIncreaseButton.MinWidth = 0;
-        _menuFontSizeIncreaseButton.Width = 22;
-        _menuFontSizeIncreaseButton.Height = 22;
-        _menuFontSizeIncreaseButton.Padding = new Thickness(1);
+        _menuFontSizeIncreaseButton.Width = UiSize(22);
+        _menuFontSizeIncreaseButton.Height = UiSize(22);
+        _menuFontSizeIncreaseButton.Padding = UiThickness(1);
+        _menuFontSizeIncreaseButton.Focusable = false;
         _menuFontSizeIncreaseButton.VerticalAlignment = VerticalAlignment.Center;
         _menuFontSizeIncreaseButton.HorizontalAlignment = HorizontalAlignment.Center;
         _menuFontSizeIncreaseButton.Background = Brushes.Transparent;
@@ -1960,7 +1971,7 @@ public partial class MainWindow
         _menuFontSizeIncreaseButton.Click += (_, _) => StepTerminalFontSize(1);
         ToolTip.SetTip(_menuFontSizeIncreaseButton, "Increase terminal font size");
 
-        _menuFontSizeFrame.Padding = new Thickness(5, 2);
+        _menuFontSizeFrame.Padding = UiThickness(5, 2, 5, 2);
         _menuFontSizeFrame.Background = HudHeaderAlt;
         _menuFontSizeFrame.BorderBrush = HudInnerEdge;
         _menuFontSizeFrame.BorderThickness = new Thickness(1);
@@ -1968,7 +1979,7 @@ public partial class MainWindow
         _menuFontSizeFrame.Child = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            Spacing = UiSize(2),
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
@@ -2111,6 +2122,9 @@ public partial class MainWindow
         var fileOpen    = new MenuItem { Header = "_Open…" };
         fileOpen.Click += (_, _) => _ = OnOpenConnectionAsync();
 
+        var fileOpenRecording = new MenuItem { Header = "Open _Recording..." };
+        fileOpenRecording.Click += (_, _) => _ = OnOpenTerminalRecordingAsync();
+
         var fileSave    = new MenuItem { Header = "_Save" };
         fileSave.Click += (_, _) => _ = OnSaveConnectionAsync(saveAs: false);
 
@@ -2138,7 +2152,7 @@ public partial class MainWindow
         var fileMenu = new MenuItem
         {
             Header = "_File",
-            Items  = { fileNew, fileEdit, fileOpen, _recentMenu, fileSave, fileSaveAs,
+            Items  = { fileNew, fileEdit, fileOpen, _recentMenu, fileOpenRecording, fileSave, fileSaveAs,
                        new Separator(), fileResetGame,
                        new Separator(), fileNewWin,
                        new Separator(), fileConnect, fileDisconnect,
@@ -2304,6 +2318,7 @@ public partial class MainWindow
         _statusRedAlertFrame.Margin = new Thickness(0, 4, 8, 4);
         _statusRedAlertFrame.VerticalAlignment = VerticalAlignment.Center;
 
+        Control recordButton = BuildTerminalRecordButton();
         var rightTools = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -2312,6 +2327,7 @@ public partial class MainWindow
             VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
+                recordButton,
                 _statusMapFrame,
                 _statusBotFrame,
                 _statusHaggleFrame,

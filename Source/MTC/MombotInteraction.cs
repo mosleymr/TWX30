@@ -1083,6 +1083,7 @@ public partial class MainWindow
     private void RouteTerminalInput(byte[] bytes, Action<byte[]> forward)
     {
         RecordTemporaryMacroInput(bytes);
+        RecordTerminalInputForRecording(bytes);
 
         if (TryHandleConfiguredMacroHotkey(bytes))
             return;

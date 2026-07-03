@@ -44,6 +44,7 @@ public partial class MainWindow
         _state    = new GameState();
         _buffer   = new TerminalBuffer(80, 24);
         _parser   = new AnsiParser(_buffer);
+        _parser.RawBytesObserved = ObserveTerminalOutputBytesForRecording;
         RecreateClassicShellControls();
         RecreateDeckShellControls();
         _telnet   = new TelnetClient(_buffer, _parser);
@@ -248,6 +249,8 @@ public partial class MainWindow
             _gameFileLock?.Dispose();
             _gameFileLock = null;
             _sessionLog.Dispose();
+            _terminalRecorder?.Dispose();
+            _terminalRecorder = null;
             _redAlertTimer.Stop();
             _statusRefreshTimer.Stop();
         };

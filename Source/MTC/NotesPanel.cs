@@ -157,12 +157,12 @@ public partial class MainWindow
 
         var panel = new Border
         {
-            Width = NotesPanelWidth,
+            Width = ScaledNotesPanelWidth,
             Background = HudFrame,
             BorderBrush = HudEdge,
             BorderThickness = new Thickness(1.5),
-            CornerRadius = new CornerRadius(16),
-            Padding = new Thickness(10),
+            CornerRadius = UiCornerRadius(16),
+            Padding = UiThickness(10),
             Child = body,
         };
 

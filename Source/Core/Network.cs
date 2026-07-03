@@ -2415,6 +2415,11 @@ namespace TWXProxy.Core
 
             if (value == escape)
             {
+                // ANSI cursor/erase/SGR sequences can be the first part of a
+                // visual line even before printable text arrives.  Do not let
+                // deferred local/script output flush between that setup and the
+                // following server text, or it can inherit/corrupt color state.
+                _serverOutputLineOpen = true;
                 _serverOutputAnsiState = 1;
                 return;
             }

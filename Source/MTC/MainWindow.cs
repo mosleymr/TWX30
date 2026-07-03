@@ -160,6 +160,9 @@ public partial class MainWindow : Window
     private bool _suppressTemporaryMacroRecording;
     private MacroSettingsDialog? _macroSettingsDialog;
     private MacroPlayDialog? _quickMacroPlayWindow;
+    private TerminalSessionRecorder? _terminalRecorder;
+    private Button? _terminalRecordButton;
+    private TerminalRecordingPlaybackWindow? _recordingPlaybackWindow;
     private readonly Button _statusMacrosButton = new();
     private readonly Button _statusStopAllButton = new();
     private readonly Button _statusCommButton = new();

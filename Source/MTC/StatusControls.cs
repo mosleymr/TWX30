@@ -79,6 +79,7 @@ public partial class MainWindow
         _statusMacrosButton.Width = 28;
         _statusMacrosButton.Height = 20;
         _statusMacrosButton.Padding = new Thickness(2, 1);
+        _statusMacrosButton.Focusable = false;
         _statusMacrosButton.VerticalAlignment = VerticalAlignment.Center;
         _statusMacrosButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusMacrosButton.Content = BuildStatusMacrosIcon();
@@ -162,6 +163,7 @@ public partial class MainWindow
         _statusMapButton.Width = 28;
         _statusMapButton.Height = 20;
         _statusMapButton.Padding = new Thickness(2, 1);
+        _statusMapButton.Focusable = false;
         _statusMapButton.VerticalAlignment = VerticalAlignment.Center;
         _statusMapButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusMapButton.Content = BuildStatusMapIcon();
@@ -284,6 +286,7 @@ public partial class MainWindow
         _statusStopAllButton.Width = 28;
         _statusStopAllButton.Height = 20;
         _statusStopAllButton.Padding = new Thickness(2, 1);
+        _statusStopAllButton.Focusable = false;
         _statusStopAllButton.VerticalAlignment = VerticalAlignment.Center;
         _statusStopAllButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusStopAllButton.Content = BuildStatusStopAllIcon();
@@ -348,6 +351,7 @@ public partial class MainWindow
         _statusCommButton.Width = 28;
         _statusCommButton.Height = 20;
         _statusCommButton.Padding = new Thickness(2, 1);
+        _statusCommButton.Focusable = false;
         _statusCommButton.VerticalAlignment = VerticalAlignment.Center;
         _statusCommButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusCommButton.Content = BuildStatusCommIcon();
@@ -375,6 +379,7 @@ public partial class MainWindow
         _statusBotButton.Width = 28;
         _statusBotButton.Height = 20;
         _statusBotButton.Padding = new Thickness(2, 1);
+        _statusBotButton.Focusable = false;
         _statusBotButton.VerticalAlignment = VerticalAlignment.Center;
         _statusBotButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusBotButton.Content = BuildStatusBotIcon();
@@ -564,6 +569,7 @@ public partial class MainWindow
         _statusHaggleButton.Width = 28;
         _statusHaggleButton.Height = 20;
         _statusHaggleButton.Padding = new Thickness(2, 1);
+        _statusHaggleButton.Focusable = false;
         _statusHaggleButton.VerticalAlignment = VerticalAlignment.Center;
         _statusHaggleButton.HorizontalAlignment = HorizontalAlignment.Center;
         _statusHaggleButton.Content = BuildStatusHaggleIcon();
@@ -694,6 +700,7 @@ public partial class MainWindow
         _statusLivePausedButton.MinWidth = 56;
         _statusLivePausedButton.Height = 20;
         _statusLivePausedButton.Padding = new Thickness(4, 1);
+        _statusLivePausedButton.Focusable = false;
         _statusLivePausedButton.FontSize = 11;
         _statusLivePausedButton.FontWeight = FontWeight.SemiBold;
         _statusLivePausedButton.VerticalAlignment = VerticalAlignment.Center;
@@ -719,6 +726,7 @@ public partial class MainWindow
         _statusRedAlertButton.MinWidth = 84;
         _statusRedAlertButton.Height = 20;
         _statusRedAlertButton.Padding = new Thickness(6, 1);
+        _statusRedAlertButton.Focusable = false;
         _statusRedAlertButton.FontSize = 10.5;
         _statusRedAlertButton.FontWeight = FontWeight.Bold;
         _statusRedAlertButton.VerticalAlignment = VerticalAlignment.Center;

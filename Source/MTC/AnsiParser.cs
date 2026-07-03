@@ -69,10 +69,14 @@ public class AnsiParser
         ApplyAttributes();
     }
 
+    public Action<byte[], int, int>? RawBytesObserved { get; set; }
+
     // ── Public feed API ────────────────────────────────────────────────────
 
     public void Feed(byte[] data, int length)
     {
+        RawBytesObserved?.Invoke(data, 0, length);
+
         for (int i = 0; i < length; i++)
         {
             byte b = data[i];
@@ -111,6 +115,14 @@ public class AnsiParser
 
     public void Feed(string text)
     {
+        if (RawBytesObserved != null && text.Length > 0)
+        {
+            var data = new byte[text.Length];
+            for (int i = 0; i < text.Length; i++)
+                data[i] = (byte)text[i];
+            RawBytesObserved.Invoke(data, 0, data.Length);
+        }
+
         FlushPendingUtf8Latin1Lead();
         foreach (char c in text)
             ProcessByte((byte)c);

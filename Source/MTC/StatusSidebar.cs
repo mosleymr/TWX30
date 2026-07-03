@@ -8,6 +8,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Core = TWXProxy.Core;
 
 namespace MTC;
@@ -671,7 +672,7 @@ public partial class MainWindow
             },
         };
 
-        Control valueWell = BuildShipInfoValueWell(valTb, 60, new Thickness(5, 1, 5, 1));
+        Control valueWell = BuildShipInfoValueWell(valTb, UiSize(60), UiThickness(5, 1, 5, 1));
 
         Grid.SetColumn(keyTb, 0);
         Grid.SetColumn(valueWell, 1);
@@ -719,7 +720,7 @@ public partial class MainWindow
 
         return new Border
         {
-            Width = 30,
+            Width = UiSize(30),
             HorizontalAlignment = HorizontalAlignment.Right,
             Background = HudInset,
             BorderBrush = HudInsetEdge,
@@ -740,10 +741,10 @@ public partial class MainWindow
 
     private Control BuildScannerRow()
     {
-        static Border MakeScanInd(string label, double width) => new Border
+        Border MakeScanInd(string label, double width) => new Border
         {
-            Width = width, Height = 18, CornerRadius = new CornerRadius(2),
-            Background = HudHeaderAlt, Margin = new Thickness(2, 0),
+            Width = UiSize(width), Height = UiSize(18), CornerRadius = UiCornerRadius(2),
+            Background = HudHeaderAlt, Margin = UiThickness(2, 0, 2, 0),
             BorderBrush = HudInnerEdge,
             BorderThickness = new Thickness(1),
             Child = new TextBlock
@@ -752,7 +753,7 @@ public partial class MainWindow
                 Foreground = HudMuted,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(2, 1),
+                Margin = UiThickness(2, 1, 2, 1),
             },
         };
         _scanIndTW1 = MakeScanInd("TW1", 28);
@@ -783,8 +784,8 @@ public partial class MainWindow
         var button = new Button
         {
             Content = glyph,
-            Width = compact ? 22 : deckSkin ? 34 : 30,
-            Height = compact ? 18 : deckSkin ? 30 : 26,
+            Width = UiSize(compact ? 22 : deckSkin ? 34 : 30),
+            Height = UiSize(compact ? 18 : deckSkin ? 30 : 26),
             Padding = Thickness.Parse("0"),
             FontSize = glyph == "●"
                 ? (compact ? 14 : deckSkin ? 22 : 20)
@@ -793,6 +794,7 @@ public partial class MainWindow
             Background = Brushes.Transparent,
             BorderBrush = Brushes.Transparent,
             BorderThickness = new Thickness(0),
+            Focusable = false,
             Foreground = HudMuted,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -802,7 +804,11 @@ public partial class MainWindow
         };
 
         ToolTip.SetTip(button, toolTip);
-        button.Click += (_, _) => onClick();
+        button.Click += (_, _) =>
+        {
+            onClick();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        };
         return button;
     }
 
@@ -819,7 +825,7 @@ public partial class MainWindow
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            Spacing = UiSize(2),
             VerticalAlignment = VerticalAlignment.Center,
             Children = { recordButton, stopButton, playButton },
         };
@@ -831,8 +837,8 @@ public partial class MainWindow
             Background = HudHeaderAlt,
             BorderBrush = HudInnerEdge,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(6, 2),
+            CornerRadius = UiCornerRadius(8),
+            Padding = UiThickness(6, 2, 6, 2),
             VerticalAlignment = VerticalAlignment.Center,
             Child = buttons,
         };
@@ -860,9 +866,9 @@ public partial class MainWindow
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = deckSkin ? 6 : 5,
+            Spacing = UiSize(deckSkin ? 6 : 5),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = deckSkin ? new Thickness(0, 2, 0, 3) : new Thickness(6, 2, 6, 3),
+            Margin = deckSkin ? UiThickness(0, 2, 0, 3) : UiThickness(6, 2, 6, 3),
             Children = { recordButton, stopButton, playButton },
         };
 
@@ -872,15 +878,15 @@ public partial class MainWindow
 
     private Control BuildDeckScannerRow()
     {
-        static Border MakeScanInd(string label, double width) => new Border
+        Border MakeScanInd(string label, double width) => new Border
         {
-            Width = width,
-            Height = 20,
-            CornerRadius = new CornerRadius(6),
+            Width = UiSize(width),
+            Height = UiSize(20),
+            CornerRadius = UiCornerRadius(6),
             Background = HudHeaderAlt,
             BorderBrush = HudInnerEdge,
             BorderThickness = new Thickness(1),
-            Margin = new Thickness(2, 0),
+            Margin = UiThickness(2, 0, 2, 0),
             Child = new TextBlock
             {
                 Text = label,
