@@ -474,6 +474,15 @@ public partial class MainWindow
     private static string NormalizeGameName(string? value)
         => GameConfigService.NormalizeGameName(value);
 
+    private static bool IsGeneratedPlaceholderGameName(string? value)
+    {
+        string name = string.Concat((value ?? string.Empty).Split(Path.GetInvalidFileNameChars())).Trim();
+        return Regex.IsMatch(name, "^_[0-9]+$", RegexOptions.CultureInvariant);
+    }
+
+    private static bool IsGeneratedPlaceholderRecentPath(string? path)
+        => IsGeneratedPlaceholderGameName(Path.GetFileNameWithoutExtension(path ?? string.Empty));
+
     private static int NormalizeListenPort(int port)
         => port is >= 1 and <= ushort.MaxValue
             ? port
@@ -644,9 +653,14 @@ public partial class MainWindow
             gameName = Path.GetFileNameWithoutExtension(_currentProfilePath);
         }
 
-        Title = string.IsNullOrWhiteSpace(gameName)
-            ? BaseWindowTitle
-            : $"{BaseWindowTitle} [{gameName}]";
+        UpdateLiveMtcTabTitle(gameName);
+
+        if (IsLiveMtcTabActive())
+        {
+            Title = string.IsNullOrWhiteSpace(gameName)
+                ? BaseWindowTitle
+                : $"{BaseWindowTitle} [{gameName}]";
+        }
     }
 
     private static bool HasExplicitEmbeddedLoginSettings(ConnectionProfile profile)
@@ -660,10 +674,18 @@ public partial class MainWindow
             return NormalizeGameName(profile.Name);
         if (!string.IsNullOrWhiteSpace(_state.GameName))
             return NormalizeGameName(_state.GameName);
-        string gameName = !string.IsNullOrEmpty(_currentProfilePath)
-            ? System.IO.Path.GetFileNameWithoutExtension(_currentProfilePath)
-            : $"{(profile?.Server ?? _state.Host)}_{(profile?.Port ?? _state.Port)}";
-        return NormalizeGameName(gameName);
+        if (!string.IsNullOrEmpty(_currentProfilePath))
+        {
+            string pathGameName = Path.GetFileNameWithoutExtension(_currentProfilePath);
+            if (!IsGeneratedPlaceholderGameName(pathGameName))
+                return NormalizeGameName(pathGameName);
+        }
+
+        string? host = profile?.Server ?? _state.Host;
+        if (string.IsNullOrWhiteSpace(host))
+            return string.Empty;
+
+        return NormalizeGameName($"{host}_{profile?.Port ?? _state.Port}");
     }
 
     private static EmbeddedGameConfig? TryLoadEmbeddedGameConfigForGame(string gameName)
@@ -1163,7 +1185,21 @@ public partial class MainWindow
         }
     }
 
-    private Core.ModInterpreter? CurrentInterpreter => Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+    private Core.ModInterpreter? CurrentInterpreter
+    {
+        get
+        {
+            if (_gameInstance?.RuntimeContext.ActiveInterpreter is { } gameInterpreter)
+                return gameInterpreter;
+            if (_gameInstance?.RuntimeContext.TWXInterpreter is Core.ModInterpreter gameTwxInterpreter)
+                return gameTwxInterpreter;
+            if (ActiveMtcRuntimeContext?.ActiveInterpreter is { } tabInterpreter)
+                return tabInterpreter;
+            if (ActiveMtcRuntimeContext?.TWXInterpreter is Core.ModInterpreter tabTwxInterpreter)
+                return tabTwxInterpreter;
+            return Core.GlobalModules.TWXInterpreter as Core.ModInterpreter;
+        }
+    }
 
     private bool CanUseRemoteProxyScripts()
     {

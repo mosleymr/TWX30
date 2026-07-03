@@ -107,34 +107,167 @@ namespace TWXProxy.Core
         }
     }
 
+    /// <summary>
+    /// Per-game runtime state that historically lived in <see cref="GlobalModules"/>.
+    /// MTC tab support requires each game session to own one of these contexts so
+    /// server, interpreter, database, and AutoRecorder state cannot bleed between tabs.
+    /// </summary>
+    public sealed class TwxRuntimeContext
+    {
+        public TwxRuntimeContext(string name)
+        {
+            Name = string.IsNullOrWhiteSpace(name) ? "default" : name;
+        }
+
+        public string Name { get; }
+        public ITWXMenu? TWXMenu { get; set; }
+        public ITWXDatabase? TWXDatabase { get; set; }
+        public object? TWXLog { get; set; }
+        public object? TWXExtractor { get; set; }
+        public object? TWXInterpreter { get; set; }
+        public ITWXServer? TWXServer { get; set; }
+        public object? TWXClient { get; set; }
+        public object? TWXBubble { get; set; }
+        public object? TWXGUI { get; set; }
+        public object? PersistenceManager { get; set; }
+        public AutoRecorder AutoRecorder { get; } = new AutoRecorder();
+        public ModDatabase? ActiveDatabase { get; set; }
+        public ModInterpreter? ActiveInterpreter { get; set; }
+        public GameInstance? ActiveGameInstance { get; set; }
+        public int CurrentSector { get; set; }
+        public string CurrentLine { get; set; } = string.Empty;
+        public string CurrentAnsiLine { get; set; } = string.Empty;
+        public string RawPacket { get; set; } = string.Empty;
+        public Dictionary<string, string> CurrentGameVars { get; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public List<GlobalVarItem> TWXGlobalVars { get; set; } = new List<GlobalVarItem>();
+        public List<TimerItem> TWXTimers { get; set; } = new List<TimerItem>();
+    }
+
     // Global module instances - these will be initialized by the application
     public static class GlobalModules
     {
+        private sealed class RuntimeContextScope : IDisposable
+        {
+            private readonly TwxRuntimeContext? _previousContext;
+            private bool _disposed;
+
+            public RuntimeContextScope(TwxRuntimeContext context)
+            {
+                _previousContext = _currentContext.Value;
+                _currentContext.Value = context;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+
+                _currentContext.Value = _previousContext;
+                _disposed = true;
+            }
+        }
+
+        private static readonly TwxRuntimeContext _defaultContext = new("default");
+        private static readonly AsyncLocal<TwxRuntimeContext?> _currentContext = new();
+
+        public static TwxRuntimeContext DefaultContext => _defaultContext;
+        public static TwxRuntimeContext CurrentContext => _currentContext.Value ?? _defaultContext;
+
+        /// <summary>
+        /// Binds runtime-global lookups to a session context for the current async flow.
+        /// Use at GameInstance, script, and MTC tab boundaries before enabling multiple
+        /// live sessions in one process.
+        /// </summary>
+        public static IDisposable UseRuntimeContext(TwxRuntimeContext? context)
+            => new RuntimeContextScope(context ?? _defaultContext);
+
         // Module variables - forward declarations for modules
         // These would be properly typed once the module classes are converted
-        public static ITWXMenu? TWXMenu { get; set; }
-        public static ITWXDatabase? TWXDatabase { get; set; }
+        public static ITWXMenu? TWXMenu
+        {
+            get => CurrentContext.TWXMenu;
+            set => CurrentContext.TWXMenu = value;
+        }
+
+        public static ITWXDatabase? TWXDatabase
+        {
+            get => CurrentContext.TWXDatabase;
+            set => CurrentContext.TWXDatabase = value;
+        }
+
         public static ITWXDatabase? Database => TWXDatabase;
         public static IScriptWindowFactory ScriptWindowFactory { get; set; } = new ConsoleScriptWindowFactory();
         public static IPanelOverlayService? PanelOverlay { get; set; }
-        public static object? TWXLog { get; set; }
-        public static object? TWXExtractor { get; set; }
-        public static object? TWXInterpreter { get; set; }
-        public static ITWXServer? TWXServer { get; set; }
+
+        public static object? TWXLog
+        {
+            get => CurrentContext.TWXLog;
+            set => CurrentContext.TWXLog = value;
+        }
+
+        public static object? TWXExtractor
+        {
+            get => CurrentContext.TWXExtractor;
+            set => CurrentContext.TWXExtractor = value;
+        }
+
+        public static object? TWXInterpreter
+        {
+            get => CurrentContext.TWXInterpreter;
+            set => CurrentContext.TWXInterpreter = value;
+        }
+
+        public static ITWXServer? TWXServer
+        {
+            get => CurrentContext.TWXServer;
+            set => CurrentContext.TWXServer = value;
+        }
+
         public static ITWXServer? Server => TWXServer;
-        public static object? TWXClient { get; set; }
-        public static object? TWXBubble { get; set; }
-        public static object? TWXGUI { get; set; }
-        public static object? PersistenceManager { get; set; }
+
+        public static object? TWXClient
+        {
+            get => CurrentContext.TWXClient;
+            set => CurrentContext.TWXClient = value;
+        }
+
+        public static object? TWXBubble
+        {
+            get => CurrentContext.TWXBubble;
+            set => CurrentContext.TWXBubble = value;
+        }
+
+        public static object? TWXGUI
+        {
+            get => CurrentContext.TWXGUI;
+            set => CurrentContext.TWXGUI = value;
+        }
+
+        public static object? PersistenceManager
+        {
+            get => CurrentContext.PersistenceManager;
+            set => CurrentContext.PersistenceManager = value;
+        }
+
         public static string ProgramDir { get; set; } = OperatingSystem.IsWindows()
             ? WindowsInstallInfo.GetInstalledProgramDirOrDefault()
             : AppContext.BaseDirectory;
 
         /// <summary>Auto-recorder that parses game text and updates the sector database.</summary>
-        public static AutoRecorder GlobalAutoRecorder { get; } = new AutoRecorder();
+        public static AutoRecorder GlobalAutoRecorder => CurrentContext.AutoRecorder;
 
-        public static List<GlobalVarItem> TWXGlobalVars { get; set; } = new List<GlobalVarItem>();
-        public static List<TimerItem> TWXTimers { get; set; } = new List<TimerItem>();
+        public static List<GlobalVarItem> TWXGlobalVars
+        {
+            get => CurrentContext.TWXGlobalVars;
+            set => CurrentContext.TWXGlobalVars = value ?? new List<GlobalVarItem>();
+        }
+
+        public static List<TimerItem> TWXTimers
+        {
+            get => CurrentContext.TWXTimers;
+            set => CurrentContext.TWXTimers = value ?? new List<TimerItem>();
+        }
 
         // Debug configuration
         public static bool DebugMode { get; set; } = true;

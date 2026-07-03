@@ -16,9 +16,17 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
-        // Reference to the active game instance
-        // TODO: This should be injected or accessed through a service locator
-        private static GameInstance? _activeGameInstance;
+        private static GameInstance? ActiveGameInstance
+        {
+            get => GlobalModules.CurrentContext.ActiveGameInstance;
+            set => GlobalModules.CurrentContext.ActiveGameInstance = value;
+        }
+
+        private static GameInstance? _activeGameInstance
+        {
+            get => ActiveGameInstance;
+            set => ActiveGameInstance = value;
+        }
 
         #region Network Command Implementation
 
@@ -26,16 +34,17 @@ namespace TWXProxy.Core
         {
             // CMD: connect
             // Initiate connection to the game server
-            GlobalModules.DebugLog($"[CONNECT] called, gameInstance={((_activeGameInstance == null) ? "NULL" : "set")}, isConnected={_activeGameInstance?.IsConnected}\n");
-            
-            if (_activeGameInstance == null)
+            GameInstance? gameInstance = ActiveGameInstance;
+            GlobalModules.DebugLog($"[CONNECT] called, gameInstance={((gameInstance == null) ? "NULL" : "set")}, isConnected={gameInstance?.IsConnected}\n");
+
+            if (gameInstance == null)
             {
                 GlobalModules.DebugLog($"[CONNECT] ERROR: No active game instance\n");
                 Console.WriteLine("[Script] CONNECT: No active game instance");
                 return CmdAction.None;
             }
 
-            if (_activeGameInstance.IsConnected)
+            if (gameInstance.IsConnected)
             {
                 GlobalModules.DebugLog($"[CONNECT] Already connected, skipping\n");
                 Console.WriteLine($"[Script] CONNECT: Already connected to server");
@@ -47,12 +56,14 @@ namespace TWXProxy.Core
             try
             {
                 // Run connection asynchronously - scripts don't wait for completion
+                TwxRuntimeContext context = GlobalModules.CurrentContext;
                 Task.Run(async () =>
                 {
                     try
                     {
                         GlobalModules.DebugLog($"[CONNECT] ConnectToServerAsync starting\n");
-                        await _activeGameInstance.ConnectToServerAsync();
+                        using var _ = GlobalModules.UseRuntimeContext(context);
+                        await gameInstance.ConnectToServerAsync();
                         GlobalModules.DebugLog($"[CONNECT] ConnectToServerAsync completed successfully\n");
                         GlobalModules.FlushDebugLog();
                     }
@@ -79,13 +90,14 @@ namespace TWXProxy.Core
             // Close connection to the game server
             // Optional parameter to disable auto-reconnect
             
-            if (_activeGameInstance == null)
+            GameInstance? gameInstance = ActiveGameInstance;
+            if (gameInstance == null)
             {
                 Console.WriteLine("[Script] DISCONNECT: No active game instance");
                 return CmdAction.None;
             }
 
-            if (!_activeGameInstance.IsConnected)
+            if (!gameInstance.IsConnected)
             {
                 Console.WriteLine("[Script] DISCONNECT: Not connected to server");
                 return CmdAction.None;
@@ -95,17 +107,19 @@ namespace TWXProxy.Core
             {
                 // The optional "disable" parameter disables auto-reconnect (TWX 2.x behavior)
                 if (parameters.Length > 0 && parameters[0].Value.Equals("1", StringComparison.OrdinalIgnoreCase))
-                    _activeGameInstance.AutoReconnect = false;
+                    gameInstance.AutoReconnect = false;
 
                 // Disconnect from server only — do NOT call StopAsync() which would
                 // shut down the entire proxy (listener, all tasks, local connection).
                 GlobalModules.DebugLog($"[Script.DISCONNECT] DISCONNECT command executed!\n{System.Environment.StackTrace}\n");
                 GlobalModules.FlushDebugLog();
+                TwxRuntimeContext context = GlobalModules.CurrentContext;
                 Task.Run(async () =>
                 {
                     try
                     {
-                        await _activeGameInstance.DisconnectFromServerAsync();
+                        using var _ = GlobalModules.UseRuntimeContext(context);
+                        await gameInstance.DisconnectFromServerAsync();
                     }
                     catch (Exception ex)
                     {
@@ -195,13 +209,14 @@ namespace TWXProxy.Core
             // CMD: processout <text>
             // Inject data into the outgoing client data stream
             
-            if (_activeGameInstance == null)
+            GameInstance? gameInstance = ActiveGameInstance;
+            if (gameInstance == null)
             {
                 Console.WriteLine("[Script] PROCESSOUT: No active game instance");
                 return CmdAction.None;
             }
 
-            if (!_activeGameInstance.IsConnected)
+            if (!gameInstance.IsConnected)
             {
                 Console.WriteLine("[Script] PROCESSOUT: Not connected to server");
                 return CmdAction.None;
@@ -219,12 +234,14 @@ namespace TWXProxy.Core
 
                 // Send to server as if local client typed it
                 var data = Encoding.ASCII.GetBytes(text);
+                TwxRuntimeContext context = GlobalModules.CurrentContext;
                 
                 Task.Run(async () =>
                 {
                     try
                     {
-                        await _activeGameInstance.SendToServerAsync(data);
+                        using var _ = GlobalModules.UseRuntimeContext(context);
+                        await gameInstance.SendToServerAsync(data);
                     }
                     catch (Exception ex)
                     {
@@ -242,7 +259,8 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdAutoHaggle_Impl(object script, CmdParam[] parameters)
         {
-            if (_activeGameInstance == null)
+            GameInstance? gameInstance = ActiveGameInstance;
+            if (gameInstance == null)
             {
                 Console.WriteLine("[Script] AUTOHAGGLE: No active game instance");
                 return CmdAction.None;
@@ -274,20 +292,21 @@ namespace TWXProxy.Core
                 return CmdAction.None;
             }
 
-            _activeGameInstance.SetNativeHaggleEnabled(enabled.Value, NativeHaggleChangeSource.Script);
+            gameInstance.SetNativeHaggleEnabled(enabled.Value, NativeHaggleChangeSource.Script);
             GlobalModules.DebugLog($"[AUTOHAGGLE] Script set native haggle {(enabled.Value ? "ON" : "OFF")}\n");
             return CmdAction.None;
         }
 
         private static CmdAction CmdQuikStats_Impl(object script, CmdParam[] parameters)
         {
-            if (_activeGameInstance == null)
+            GameInstance? gameInstance = ActiveGameInstance;
+            if (gameInstance == null)
             {
                 Console.WriteLine("[Script] QUIKSTATS: No active game instance");
                 return CmdAction.None;
             }
 
-            if (!_activeGameInstance.IsConnected)
+            if (!gameInstance.IsConnected)
             {
                 Console.WriteLine("[Script] QUIKSTATS: Not connected to server");
                 return CmdAction.None;
@@ -315,7 +334,7 @@ namespace TWXProxy.Core
 
             serverHandler = (_, e) =>
             {
-                if (_activeGameInstance == null || updateReceived.IsSet)
+                if (ActiveGameInstance == null || updateReceived.IsSet)
                     return;
 
                 string ansiChunk = AnsiCodes.PrepareScriptAnsiText(e.Text);
@@ -352,7 +371,7 @@ namespace TWXProxy.Core
                             string strippedRemainder = AnsiCodes.NormalizeTerminalText(remainder.TrimEnd('\r'));
                             if (!string.IsNullOrWhiteSpace(strippedRemainder))
                             {
-                                _activeGameInstance.FeedShipStatusLine(strippedRemainder);
+                                gameInstance.FeedShipStatusLine(strippedRemainder);
                                 if (IsSlashTerminalLine(strippedRemainder))
                                     updateReceived.Set();
                             }
@@ -369,7 +388,7 @@ namespace TWXProxy.Core
                     string lineStripped = AnsiCodes.NormalizeTerminalText(lineForScript);
                     if (!string.IsNullOrWhiteSpace(lineStripped))
                     {
-                        _activeGameInstance.FeedShipStatusLine(lineStripped);
+                        gameInstance.FeedShipStatusLine(lineStripped);
                         if (IsSlashTerminalLine(lineStripped))
                             updateReceived.Set();
                     }
@@ -394,9 +413,9 @@ namespace TWXProxy.Core
 
             try
             {
-                _activeGameInstance.ShipStatusUpdated += statusHandler;
-                _activeGameInstance.ServerDataReceived += serverHandler;
-                _activeGameInstance.SendToServerAsync(Encoding.ASCII.GetBytes("/")).GetAwaiter().GetResult();
+                gameInstance.ShipStatusUpdated += statusHandler;
+                gameInstance.ServerDataReceived += serverHandler;
+                gameInstance.SendToServerAsync(Encoding.ASCII.GetBytes("/")).GetAwaiter().GetResult();
 
                 if (!updateReceived.Wait(3000))
                     GlobalModules.DebugLog("[QUIKSTATS] Timed out waiting for ship status refresh after '/'\n");
@@ -408,9 +427,9 @@ namespace TWXProxy.Core
             finally
             {
                 if (statusHandler != null)
-                    _activeGameInstance.ShipStatusUpdated -= statusHandler;
+                    gameInstance.ShipStatusUpdated -= statusHandler;
                 if (serverHandler != null)
-                    _activeGameInstance.ServerDataReceived -= serverHandler;
+                    gameInstance.ServerDataReceived -= serverHandler;
             }
 
             return CmdAction.None;
@@ -426,7 +445,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetActiveGameInstance(GameInstance? gameInstance)
         {
-            _activeGameInstance = gameInstance;
+            ActiveGameInstance = gameInstance;
         }
 
         #endregion

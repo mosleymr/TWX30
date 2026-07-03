@@ -46,7 +46,11 @@ public partial class MainWindow
             }
 
             StopActiveExternalBot();
-            await StartInternalMombotAsync(bot.Config, requestedBotName: string.Empty, interactiveOfflinePrompt: true, publishMissingGameMessage: true);
+            await StartNativeMombotAndConnectIfNeededAsync(
+                bot.Config,
+                requestedBotName: string.Empty,
+                interactiveOfflinePrompt: true,
+                publishMissingGameMessage: true);
         }
         else
         {
@@ -1343,11 +1347,33 @@ public partial class MainWindow
         }
 
         StopActiveExternalBot();
-        await StartInternalMombotAsync(
+        await StartNativeMombotAndConnectIfNeededAsync(
             nativeBot.Config,
             requestedBotName: string.Empty,
             interactiveOfflinePrompt: true,
             publishMissingGameMessage: true);
+    }
+
+    private async Task StartNativeMombotAndConnectIfNeededAsync(
+        Core.BotConfig? nativeBotConfig,
+        string requestedBotName,
+        bool interactiveOfflinePrompt,
+        bool publishMissingGameMessage)
+    {
+        bool connectAfterStart = _gameInstance is { IsConnected: false };
+
+        await StartInternalMombotAsync(
+            nativeBotConfig,
+            requestedBotName,
+            interactiveOfflinePrompt,
+            publishMissingGameMessage);
+
+        if (connectAfterStart &&
+            _mombot.Enabled &&
+            _gameInstance is { IsConnected: false })
+        {
+            await ConnectEmbeddedServerAsync();
+        }
     }
 
     private async Task StartInternalMombotAsync(
@@ -1650,7 +1676,7 @@ public partial class MainWindow
         }
 
         StopActiveExternalBot();
-        await StartInternalMombotAsync(
+        await StartNativeMombotAndConnectIfNeededAsync(
             nativeBot.Config,
             requestedBotName: string.Empty,
             interactiveOfflinePrompt: false,

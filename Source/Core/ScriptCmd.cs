@@ -282,10 +282,6 @@ namespace TWXProxy.Core
         private readonly List<ScriptCmd> _cmdList;
         private readonly List<ScriptSysConst> _sysConstList;
         
-        // Text processing tracking (updated as data is received from server)
-        private static string _currentLine = string.Empty;
-        private static string _currentAnsiLine = string.Empty;
-        private static string _rawPacket = string.Empty;
         private static readonly AsyncLocal<Script?> _executingScript = new();
 
         public ScriptRef()
@@ -938,7 +934,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetCurrentLine(string line)
         {
-            _currentLine = line;
+            GlobalModules.CurrentContext.CurrentLine = line;
         }
         
         /// <summary>
@@ -947,7 +943,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetCurrentAnsiLine(string line)
         {
-            _currentAnsiLine = line;
+            GlobalModules.CurrentContext.CurrentAnsiLine = line;
         }
         
         /// <summary>
@@ -956,7 +952,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetRawPacket(string data)
         {
-            _rawPacket = data;
+            GlobalModules.CurrentContext.RawPacket = data;
         }
         
         /// <summary>
@@ -968,12 +964,12 @@ namespace TWXProxy.Core
             if (script?.HasCurrentTextContext == true)
                 return script.CurrentTextLine;
 
-            return _currentLine;
+            return GlobalModules.CurrentContext.CurrentLine;
         }
 
         internal static string GetGlobalCurrentLine()
         {
-            return _currentLine;
+            return GlobalModules.CurrentContext.CurrentLine;
         }
         
         /// <summary>
@@ -985,12 +981,12 @@ namespace TWXProxy.Core
             if (script?.HasCurrentTextContext == true)
                 return script.CurrentAnsiTextLine;
 
-            return _currentAnsiLine;
+            return GlobalModules.CurrentContext.CurrentAnsiLine;
         }
 
         internal static string GetGlobalCurrentAnsiLine()
         {
-            return _currentAnsiLine;
+            return GlobalModules.CurrentContext.CurrentAnsiLine;
         }
 
         internal static Script? GetExecutingScript()
@@ -1008,7 +1004,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static string GetRawPacket()
         {
-            return _rawPacket;
+            return GlobalModules.CurrentContext.RawPacket;
         }
         
         #endregion
@@ -1036,7 +1032,7 @@ namespace TWXProxy.Core
 
         private static ShipStatus GetCurrentShipStatus()
         {
-            return _activeGameInstance?.CurrentShipStatus ?? new ShipStatus();
+            return ActiveGameInstance?.CurrentShipStatus ?? new ShipStatus();
         }
 
         private static string GetPortBuildTime(string[] indexes)
@@ -1157,8 +1153,8 @@ namespace TWXProxy.Core
         private static string GetCurrentQuickStats()
         {
             string qs = GetCurrentAnsiQuickStats();
-            if (_activeGameInstance != null)
-                qs = _activeGameInstance.ApplyQuickText(qs);
+            if (ActiveGameInstance != null)
+                qs = ActiveGameInstance.ApplyQuickText(qs);
             return AnsiCodes.StripANSI(qs);
         }
 
@@ -1223,7 +1219,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static string GetConnected()
         {
-            return (_activeGameInstance?.IsConnected ?? false) ? "1" : "0";
+            return (ActiveGameInstance?.IsConnected ?? false) ? "1" : "0";
         }
 
         /// <summary>
@@ -1231,7 +1227,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static string GetNativeHaggle()
         {
-            return (_activeGameInstance?.NativeHaggleEnabled ?? false) ? "1" : "0";
+            return (ActiveGameInstance?.NativeHaggleEnabled ?? false) ? "1" : "0";
         }
         
         /// <summary>

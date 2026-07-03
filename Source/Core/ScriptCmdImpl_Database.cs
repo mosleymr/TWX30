@@ -16,19 +16,18 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
-        // Reference to the active database instance
-        // TODO: This should be injected or accessed through a service locator
-        private static ModDatabase? _activeDatabase;
+        private static ModDatabase? _activeDatabase
+        {
+            get => GlobalModules.CurrentContext.ActiveDatabase;
+            set => GlobalModules.CurrentContext.ActiveDatabase = value;
+        }
 
         /// <summary>Exposes the active database for other components such as AutoRecorder.</summary>
-        internal static ModDatabase? ActiveDatabase => _activeDatabase;
+        internal static ModDatabase? ActiveDatabase => GlobalModules.CurrentContext.ActiveDatabase;
         
         // Sector avoid list
         private static readonly HashSet<int> _avoidedSectors = new();
         
-        // Current sector tracking (set by game state or scripts)
-        private static int _currentSector = 0;
-
         #region Database Command Implementation
 
         private static CmdAction CmdGetSector_Impl(object script, CmdParam[] parameters)
@@ -569,10 +568,11 @@ namespace TWXProxy.Core
 
         private static List<int> CalculateGetCoursePath(int fromSector, int toSector)
         {
-            if (_activeDatabase == null)
+            ModDatabase? activeDatabase = GlobalModules.CurrentContext.ActiveDatabase;
+            if (activeDatabase == null)
                 return new List<int>();
 
-            return _activeDatabase.CalculateBidirectionalShortestPath(fromSector, toSector, _avoidedSectors);
+            return activeDatabase.CalculateBidirectionalShortestPath(fromSector, toSector, _avoidedSectors);
         }
 
         #endregion
@@ -585,16 +585,17 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetActiveDatabase(ModDatabase? database)
         {
-            if (!ReferenceEquals(_activeDatabase, database))
+            TwxRuntimeContext context = GlobalModules.CurrentContext;
+            if (!ReferenceEquals(context.ActiveDatabase, database))
             {
                 string reason = database == null
                     ? "active-database-cleared"
                     : $"active-database-set:{database.DatabaseName}";
-                GlobalModules.GlobalAutoRecorder.ResetState(reason);
-                _currentSector = 0;
+                context.AutoRecorder.ResetState(reason);
+                context.CurrentSector = 0;
             }
 
-            _activeDatabase = database;
+            context.ActiveDatabase = database;
             GlobalModules.TWXDatabase = database;
 
             if (GlobalModules.TWXLog is ModLog log)
@@ -607,7 +608,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetCurrentSector(int sectorNumber)
         {
-            _currentSector = sectorNumber;
+            GlobalModules.CurrentContext.CurrentSector = sectorNumber;
         }
 
         /// <summary>
@@ -619,7 +620,7 @@ namespace TWXProxy.Core
             if (extractorSector > 0)
                 return extractorSector;
 
-            return _currentSector;
+            return GlobalModules.CurrentContext.CurrentSector;
         }
 
         /// <summary>
@@ -627,7 +628,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static ModDatabase? GetActiveDatabase()
         {
-            return _activeDatabase;
+            return GlobalModules.CurrentContext.ActiveDatabase;
         }
 
         #endregion

@@ -30,6 +30,9 @@ public partial class MainWindow
     /// <summary>Adds path to recent list, persists prefs, rebuilds the Recent submenu.</summary>
     private void AddToRecentAndSave(string path)
     {
+        if (IsGeneratedPlaceholderRecentPath(path))
+            return;
+
         _appPrefs.AddRecent(path);
         _appPrefs.Save();
         RebuildRecentMenu();
@@ -38,6 +41,10 @@ public partial class MainWindow
     /// <summary>Rebuilds the items inside the Recent submenu from <see cref="_appPrefs"/>.</summary>
     private void RebuildRecentMenu()
     {
+        int removed = _appPrefs.RecentFiles.RemoveAll(path => IsGeneratedPlaceholderRecentPath(path));
+        if (removed > 0)
+            _appPrefs.Save();
+
         var items = new List<object>();
         foreach (var path in _appPrefs.RecentFiles)
         {

@@ -16,13 +16,9 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
-        // Reference to the active script interpreter
-        // TODO: This should be injected or accessed through a service locator
-        private static ModInterpreter? _activeInterpreter;
-
         private static ModInterpreter? GetActiveInterpreter()
         {
-            return _activeInterpreter ?? (GlobalModules.TWXInterpreter as ModInterpreter);
+            return GlobalModules.CurrentContext.ActiveInterpreter ?? (GlobalModules.TWXInterpreter as ModInterpreter);
         }
 
         private static bool ScriptReferenceMatches(ModInterpreter interpreter, Script? scriptObj, string requestedName)
@@ -487,7 +483,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetActiveInterpreter(ModInterpreter? interpreter)
         {
-            _activeInterpreter = interpreter;
+            GlobalModules.CurrentContext.ActiveInterpreter = interpreter;
         }
 
         public static void SetVarOnActiveScripts(string varName, string value)

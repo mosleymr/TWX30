@@ -175,6 +175,11 @@ public partial class MainWindow
 
         ConfigureStatusModeSelector();
 
+        // ── Tabs ──────────────────────────────────────────────────────────
+        InitializeTabbedShell();
+        DockPanel.SetDock(_tabStripHost, Dock.Top);
+        dock.Children.Add(_tabStripHost);
+
         // ── Menu ──────────────────────────────────────────────────────────
         _menuBar = BuildMenuBar();
         _menuBarHost.Child = BuildMenuBarHost();
@@ -1409,6 +1414,12 @@ public partial class MainWindow
 
     private void EnsureStatusBarLayout()
     {
+        if (!IsLiveMtcTabActive() && ActiveMtcTab is { } activeTab)
+        {
+            ShowStagedMtcTabStatusBar(activeTab);
+            return;
+        }
+
         EnsureFixedStatusLocationChips();
 
         string signature = BuildStatusBarLayoutSignature();
@@ -1780,6 +1791,9 @@ public partial class MainWindow
         _shellHost.Child = _useCommandDeckSkin
             ? BuildCommandDeckShell()
             : BuildClassicShell();
+        _liveTabShell = _shellHost.Child;
+        if (!IsLiveMtcTabActive() && ActiveMtcTab is { } activeTab)
+            _shellHost.Child = BuildStagedMtcTabContent(activeTab);
 
         UpdateClassicTerminalSizeStatus();
 
@@ -1837,6 +1851,17 @@ public partial class MainWindow
     private void SetTerminalInputHandler(Action<byte[]> handler)
     {
         _terminalInputHandler = handler;
+
+        MtcTabPrototype? tab = _boundMtcTab ?? ActiveMtcTab;
+        if (tab != null)
+            tab.TerminalInputHandler = handler;
+
+        if (tab == null || tab.Id == _activeMtcTabId)
+            ApplyTerminalInputHandlerToControls(handler);
+    }
+
+    private void ApplyTerminalInputHandlerToControls(Action<byte[]> handler)
+    {
         _termCtrl.SendInput = handler;
         _deckTermCtrl.SendInput = handler;
         UpdateTemporaryMacroControls();
@@ -2113,6 +2138,12 @@ public partial class MainWindow
         var fileNew    = new MenuItem { Header = "_New Connection…" };
         fileNew.Click += (_, _) => _ = OnNewConnectionAsync();
 
+        var fileNewTab = new MenuItem { Header = "New _Tab" };
+        fileNewTab.Click += (_, _) => CreateStagedMtcTab();
+
+        var fileCloseTab = new MenuItem { Header = "Close Ta_b" };
+        fileCloseTab.Click += (_, _) => CloseActiveMtcTab();
+
         var fileNewWin    = new MenuItem { Header = "New _Window" };
         fileNewWin.Click += (_, _) => OpenNewWindowInNewProcess();
 
@@ -2154,7 +2185,7 @@ public partial class MainWindow
             Header = "_File",
             Items  = { fileNew, fileEdit, fileOpen, _recentMenu, fileOpenRecording, fileSave, fileSaveAs,
                        new Separator(), fileResetGame,
-                       new Separator(), fileNewWin,
+                       new Separator(), fileNewTab, fileCloseTab, fileNewWin,
                        new Separator(), fileConnect, fileDisconnect,
                        new Separator(), fileMacros,
                        new Separator(), filePrefs,

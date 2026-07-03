@@ -1890,6 +1890,14 @@ public partial class MainWindow
             return;
         }
 
+        if (ActiveMtcRuntimeContext is { } activeContext &&
+            !ReferenceEquals(Core.GlobalModules.CurrentContext, activeContext))
+        {
+            using var runtimeScope = Core.GlobalModules.UseRuntimeContext(activeContext);
+            RefreshStatusBar();
+            return;
+        }
+
         EnsureStatusBarLayout();
         RefreshHaggleDetailsMenuState();
 

@@ -41,90 +41,14 @@ public partial class MainWindow
         Background     = BgWindow;
         FontFamily     = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
-        _state    = new GameState();
-        _buffer   = new TerminalBuffer(80, 24);
-        _parser   = new AnsiParser(_buffer);
-        _parser.RawBytesObserved = ObserveTerminalOutputBytesForRecording;
+        EnsureInitialMtcTab();
         RecreateClassicShellControls();
         RecreateDeckShellControls();
-        _telnet   = new TelnetClient(_buffer, _parser);
-
-        _telnet.Connected    += OnTelnetConnected;
-        _telnet.Disconnected += OnTelnetDisconnected;
-        _telnet.Error        += OnTelnetError;
-
-        // Ship status: feed every server line through the parser
-        _telnet.TextLineReceived += _shipParser.FeedLine;
-        _shipParser.Updated      += OnShipStatusUpdated;
 
         UpdateWindowTitle();
 
-        // Database recording: feed server lines through the AutoRecorder
-        _telnet.TextLineAnsiReceived += (ansiLine, strippedLine) =>
-        {
-            Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
-            ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
-            ObserveOnlinePlayersLine(strippedLine);
-            HandlePotentialCommLine(ansiLine);
-            ProcessStandaloneNativeHaggleLine(strippedLine);
-        };
-
         // Session logging for direct telnet mode is handled through the shared Core logger.
         RefreshSessionLogTarget();
-        _telnet.AppDataDecoded += text =>
-        {
-            MarkGameTrafficActivity();
-            _sessionLog.RecordServerText(text);
-        };
-
-        // Update current sector from the command prompt — fires on every "Command [TL=...]:[N]"
-        Core.GlobalModules.GlobalAutoRecorder.CurrentSectorChanged += sn =>
-            Dispatcher.UIThread.Post(() =>
-            {
-                Core.ScriptRef.SetCurrentSector(sn);
-                SetMombotCurrentVars(sn.ToString(), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
-                var sectorDelta = new Core.ShipStatusDelta
-                {
-                    CurrentSector = sn
-                };
-                if (_gameInstance != null)
-                    _gameInstance.ApplyShipStatusDelta(sectorDelta);
-                else
-                    _shipParser.ApplyDelta(sectorDelta);
-                if (_state.Sector != sn)
-                {
-                    _state.Sector = sn;
-                    ObserveGameAgentCurrentSectorChanged(sn);
-                    _state.NotifyChanged();
-                }
-            });
-
-        Core.GlobalModules.GlobalAutoRecorder.LandmarkSectorsChanged += () =>
-            Dispatcher.UIThread.Post(() =>
-            {
-                SyncMombotSpecialSectorVarsFromDatabase(persist: true);
-                RefreshStatusBar();
-                _buffer.Dirty = true;
-            });
-
-        Core.GlobalModules.GlobalAutoRecorder.GenesisTorpsChanged += delta =>
-            Dispatcher.UIThread.Post(() => OnGenesisTorpsChanged(delta));
-
-        Core.GlobalModules.GlobalAutoRecorder.AtomicDetChanged += delta =>
-            Dispatcher.UIThread.Post(() => OnAtomicDetChanged(delta));
-
-        Core.GlobalModules.GlobalAutoRecorder.ShipStatusDeltaDetected += delta =>
-        {
-            if (_gameInstance != null)
-            {
-                _gameInstance.ApplyShipStatusDelta(delta);
-                return;
-            }
-
-            _shipParser.ApplyDelta(delta);
-        };
-
-        _state.Changed += () => RequestInfoPanelsRefresh();
 
         // Wire keyboard → telnet
         SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));
@@ -138,12 +62,6 @@ public partial class MainWindow
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
         _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
-        _standaloneNativeHaggle.EnabledChanged += _ => Dispatcher.UIThread.Post(() =>
-        {
-            UpdateHaggleToggleState();
-            RequestStatusBarRefresh();
-        });
-        _standaloneNativeHaggle.StatsChanged += () => Dispatcher.UIThread.Post(RequestStatusBarRefresh);
         bool resetCommandDeckLayout =
             _appPrefs.CommandDeckLayoutVersion < AppPreferences.CurrentCommandDeckLayoutVersion ||
             _appPrefs.CommandDeckPanels.Values.Any(layout => layout.Width <= 0 || layout.BodyHeight <= 0);
@@ -234,7 +152,7 @@ public partial class MainWindow
             _onlineAutoRefreshTimer.Stop();
             CloseOwnedChildWindows();
             StopOwnedChildProcesses();
-            _telnet.Disconnect();
+            StopAllMtcTabSessions();
             _proxyCts?.Cancel();
             _gameAgentWindow?.Close();
             _gameAgentWindow = null;
@@ -245,10 +163,6 @@ public partial class MainWindow
             _jsonRpcServer?.Dispose();
             _jsonRpcServer = null;
             _gameAgent.Dispose();
-            if (_gameInstance != null) _ = _gameInstance.StopAsync();
-            _gameFileLock?.Dispose();
-            _gameFileLock = null;
-            _sessionLog.Dispose();
             _terminalRecorder?.Dispose();
             _terminalRecorder = null;
             _redAlertTimer.Stop();

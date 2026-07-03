@@ -1,0 +1,758 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Threading;
+using Core = TWXProxy.Core;
+
+namespace MTC;
+
+public partial class MainWindow
+{
+    private sealed class MtcTabPrototype
+    {
+        public int Id { get; init; }
+        public bool IsLiveSession { get; init; }
+        public string Title { get; set; } = string.Empty;
+        public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
+        public Core.TwxRuntimeContext RuntimeContext { get; init; } = null!;
+        public GameState State { get; init; } = null!;
+        public TerminalBuffer Buffer { get; init; } = null!;
+        public AnsiParser Parser { get; init; } = null!;
+        public TelnetClient Telnet { get; init; } = null!;
+        public Core.ShipInfoParser ShipParser { get; init; } = null!;
+        public Core.ModLog SessionLog { get; init; } = null!;
+        public Core.ModDatabase? SessionDb { get; set; }
+        public Core.GameInstance? GameInstance { get; set; }
+        public Core.ExpansionModuleHost? ModuleHost { get; set; }
+        public Core.GameFileLock? GameFileLock { get; set; }
+        public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
+        public MTC.mombot.mombotService Mombot { get; init; } = null!;
+        public Action<byte[]>? TerminalInputHandler { get; set; }
+        public CancellationTokenSource? ProxyCts { get; set; }
+        public Task PendingEmbeddedStop { get; set; } = Task.CompletedTask;
+        public object EmbeddedStopSync { get; } = new();
+        public SemaphoreSlim RuntimeStopGate { get; } = new(1, 1);
+        public EmbeddedGameConfig? EmbeddedGameConfig { get; set; }
+        public string? EmbeddedGameName { get; set; }
+        public string? CurrentProfilePath { get; set; }
+    }
+
+    private readonly List<MtcTabPrototype> _mtcTabs = [];
+    private readonly Border _tabStripHost = new();
+    private readonly StackPanel _tabStripItems = new()
+    {
+        Orientation = Orientation.Horizontal,
+        Spacing = 7,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    private Control? _liveTabShell;
+    private int _activeMtcTabId;
+    private int _nextMtcTabId = 1;
+    private readonly object _mtcTabSessionBindLock = new();
+    private MtcTabPrototype? _boundMtcTab;
+
+    private MtcTabPrototype? ActiveMtcTab
+        => _mtcTabs.FirstOrDefault(tab => tab.Id == _activeMtcTabId);
+
+    private Core.TwxRuntimeContext? ActiveMtcRuntimeContext
+        => ActiveMtcTab?.RuntimeContext;
+
+    private bool IsLiveMtcTabActive()
+        => ActiveMtcTab is null || ActiveMtcTab.IsLiveSession;
+
+    private void InitializeTabbedShell()
+    {
+        EnsureInitialMtcTab();
+
+        _tabStripHost.Background = HudStatus;
+        _tabStripHost.BorderBrush = HudInnerEdge;
+        _tabStripHost.BorderThickness = new Thickness(0, 0, 0, 1);
+        _tabStripHost.Padding = UiThickness(10, 7, 10, 0);
+        _tabStripHost.Child = new ScrollViewer
+        {
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = _tabStripItems,
+        };
+
+        RefreshMtcTabStrip();
+    }
+
+    private MtcTabPrototype EnsureInitialMtcTab()
+    {
+        if (_mtcTabs.Count > 0)
+            return _mtcTabs[0];
+
+        var tab = CreateMtcTabSession(GetLiveMtcTabTitle(null), isLiveSession: true);
+
+        _mtcTabs.Add(tab);
+        _activeMtcTabId = tab.Id;
+        BindMtcTabSession(tab);
+        return tab;
+    }
+
+    private MtcTabPrototype CreateMtcTabSession(string title, bool isLiveSession)
+    {
+        int id = _nextMtcTabId++;
+        var buffer = new TerminalBuffer(80, 24)
+        {
+            ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
+        };
+        var parser = new AnsiParser(buffer);
+        var tab = new MtcTabPrototype
+        {
+            Id = id,
+            IsLiveSession = isLiveSession,
+            Title = string.IsNullOrWhiteSpace(title) ? $"Game {id}" : title.Trim(),
+            RuntimeContext = new Core.TwxRuntimeContext($"mtc-tab-{id}"),
+            State = new GameState(),
+            Buffer = buffer,
+            Parser = parser,
+            Telnet = new TelnetClient(buffer, parser),
+            ShipParser = new Core.ShipInfoParser(),
+            SessionLog = new Core.ModLog(),
+            StandaloneNativeHaggle = new Core.NativeHaggleEngine(),
+            Mombot = new MTC.mombot.mombotService(),
+        };
+
+        parser.RawBytesObserved = (bytes, offset, length) =>
+        {
+            if (tab.Id == _activeMtcTabId)
+                ObserveTerminalOutputBytesForRecording(bytes, offset, length);
+        };
+        tab.TerminalInputHandler = bytes =>
+            ExecuteInMtcTabSession(tab, () => RouteTerminalInput(bytes, SendToTelnet));
+
+        ConfigureMtcTabSessionEvents(tab);
+        tab.StandaloneNativeHaggle.SetEnabled(true);
+        tab.StandaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
+        tab.StandaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
+        return tab;
+    }
+
+    private void ConfigureMtcTabSessionEvents(MtcTabPrototype tab)
+    {
+        tab.State.Changed += () =>
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (tab.Id == _activeMtcTabId)
+                    RequestInfoPanelsRefresh();
+            }, DispatcherPriority.Background);
+
+        tab.StandaloneNativeHaggle.EnabledChanged += _ =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () =>
+            {
+                UpdateHaggleToggleState();
+                RequestStatusBarRefresh();
+            }), DispatcherPriority.Background);
+
+        tab.StandaloneNativeHaggle.StatsChanged += () =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, RequestStatusBarRefresh), DispatcherPriority.Background);
+
+        tab.Telnet.Connected += () =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, OnTelnetConnected), DispatcherPriority.Background);
+
+        tab.Telnet.Disconnected += () =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, OnTelnetDisconnected), DispatcherPriority.Background);
+
+        tab.Telnet.Error += message =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnTelnetError(message)), DispatcherPriority.Background);
+
+        tab.Telnet.TextLineReceived += tab.ShipParser.FeedLine;
+        tab.ShipParser.Updated += status =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnShipStatusUpdated(status)), DispatcherPriority.Background);
+
+        tab.Telnet.TextLineAnsiReceived += (ansiLine, strippedLine) =>
+            ExecuteInMtcTabSession(tab, () =>
+            {
+                Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
+                ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
+                ObserveOnlinePlayersLine(strippedLine);
+                HandlePotentialCommLine(ansiLine);
+                ProcessStandaloneNativeHaggleLine(strippedLine);
+            });
+
+        tab.Telnet.AppDataDecoded += text =>
+            ExecuteInMtcTabSession(tab, () =>
+            {
+                MarkGameTrafficActivity();
+                _sessionLog.RecordServerText(text);
+            });
+
+        var recorder = tab.RuntimeContext.AutoRecorder;
+        recorder.CurrentSectorChanged += sn =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () =>
+            {
+                Core.ScriptRef.SetCurrentSector(sn);
+                SetMombotCurrentVars(sn.ToString(), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
+                var sectorDelta = new Core.ShipStatusDelta
+                {
+                    CurrentSector = sn
+                };
+                if (_gameInstance != null)
+                    _gameInstance.ApplyShipStatusDelta(sectorDelta);
+                else
+                    _shipParser.ApplyDelta(sectorDelta);
+                if (_state.Sector != sn)
+                {
+                    _state.Sector = sn;
+                    ObserveGameAgentCurrentSectorChanged(sn);
+                    _state.NotifyChanged();
+                }
+            }), DispatcherPriority.Background);
+
+        recorder.LandmarkSectorsChanged += () =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () =>
+            {
+                SyncMombotSpecialSectorVarsFromDatabase(persist: true);
+                RefreshStatusBar();
+                _buffer.Dirty = true;
+            }), DispatcherPriority.Background);
+
+        recorder.GenesisTorpsChanged += delta =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnGenesisTorpsChanged(delta)), DispatcherPriority.Background);
+
+        recorder.AtomicDetChanged += delta =>
+            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnAtomicDetChanged(delta)), DispatcherPriority.Background);
+
+        recorder.ShipStatusDeltaDetected += delta =>
+            ExecuteInMtcTabSession(tab, () =>
+            {
+                if (_gameInstance != null)
+                {
+                    _gameInstance.ApplyShipStatusDelta(delta);
+                    return;
+                }
+
+                _shipParser.ApplyDelta(delta);
+            });
+    }
+
+    private void CaptureMtcTabSession(MtcTabPrototype tab)
+    {
+        tab.SessionDb = _sessionDb;
+        tab.GameInstance = _gameInstance;
+        tab.ModuleHost = _moduleHost;
+        tab.GameFileLock = _gameFileLock;
+        tab.ProxyCts = _proxyCts;
+        tab.PendingEmbeddedStop = _pendingEmbeddedStop;
+        tab.EmbeddedGameConfig = _embeddedGameConfig;
+        tab.EmbeddedGameName = _embeddedGameName;
+        tab.CurrentProfilePath = _currentProfilePath;
+    }
+
+    private void BindMtcTabSession(MtcTabPrototype tab)
+    {
+        _state = tab.State;
+        _buffer = tab.Buffer;
+        _parser = tab.Parser;
+        _telnet = tab.Telnet;
+        _shipParser = tab.ShipParser;
+        _sessionLog = tab.SessionLog;
+        _sessionDb = tab.SessionDb;
+        _gameInstance = tab.GameInstance;
+        _moduleHost = tab.ModuleHost;
+        _gameFileLock = tab.GameFileLock;
+        _standaloneNativeHaggle = tab.StandaloneNativeHaggle;
+        _mombot = tab.Mombot;
+        _terminalInputHandler = tab.TerminalInputHandler;
+        _proxyCts = tab.ProxyCts;
+        _pendingEmbeddedStop = tab.PendingEmbeddedStop;
+        _embeddedStopSync = tab.EmbeddedStopSync;
+        _runtimeStopGate = tab.RuntimeStopGate;
+        _embeddedGameConfig = tab.EmbeddedGameConfig;
+        _embeddedGameName = tab.EmbeddedGameName;
+        _currentProfilePath = tab.CurrentProfilePath;
+        _boundMtcTab = tab;
+
+        if (tab.Id == _activeMtcTabId && tab.TerminalInputHandler != null)
+            ApplyTerminalInputHandlerToControls(tab.TerminalInputHandler);
+    }
+
+    private void ExecuteInMtcTabSession(MtcTabPrototype tab, Action action)
+    {
+        lock (_mtcTabSessionBindLock)
+        {
+            var previous = _boundMtcTab;
+            if (previous is not null)
+                CaptureMtcTabSession(previous);
+
+            BindMtcTabSession(tab);
+            using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+            {
+                action();
+            }
+            CaptureMtcTabSession(tab);
+
+            var restore = previous ?? ActiveMtcTab;
+            if (restore is not null && !ReferenceEquals(restore, tab))
+                BindMtcTabSession(restore);
+        }
+    }
+
+    private void ExecuteInOptionalMtcTabSession(MtcTabPrototype? tab, Action action)
+    {
+        if (tab is null)
+        {
+            action();
+            return;
+        }
+
+        ExecuteInMtcTabSession(tab, action);
+    }
+
+    private async Task ExecuteInOptionalMtcTabSessionAsync(MtcTabPrototype? tab, Func<Task> action)
+    {
+        if (tab is null)
+        {
+            await action();
+            return;
+        }
+
+        lock (_mtcTabSessionBindLock)
+        {
+            if (_boundMtcTab is not null)
+                CaptureMtcTabSession(_boundMtcTab);
+            BindMtcTabSession(tab);
+        }
+
+        using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+        {
+            await action();
+        }
+
+        lock (_mtcTabSessionBindLock)
+        {
+            CaptureMtcTabSession(tab);
+            var restore = ActiveMtcTab;
+            if (restore is not null && !ReferenceEquals(restore, tab))
+                BindMtcTabSession(restore);
+        }
+    }
+
+    private void BindActiveMtcTabSession()
+    {
+        var active = ActiveMtcTab;
+        if (active is null)
+            return;
+
+        lock (_mtcTabSessionBindLock)
+        {
+            if (_boundMtcTab is not null)
+                CaptureMtcTabSession(_boundMtcTab);
+
+            BindMtcTabSession(active);
+        }
+    }
+
+    private string GetLiveMtcTabTitle(string? gameName)
+    {
+        if (!string.IsNullOrWhiteSpace(gameName))
+            return gameName.Trim();
+        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
+            return _embeddedGameName.Trim();
+        if (_state is not null && !string.IsNullOrWhiteSpace(_state.GameName))
+            return NormalizeGameName(_state.GameName);
+        if (!string.IsNullOrWhiteSpace(_currentProfilePath))
+            return System.IO.Path.GetFileNameWithoutExtension(_currentProfilePath);
+        return "Game";
+    }
+
+    private void UpdateLiveMtcTabTitle(string? gameName)
+    {
+        EnsureInitialMtcTab();
+
+        var liveTab = ActiveMtcTab is { IsLiveSession: true } active
+            ? active
+            : _mtcTabs.FirstOrDefault(tab => tab.IsLiveSession);
+        if (liveTab is not null)
+            liveTab.Title = GetLiveMtcTabTitle(gameName);
+
+        RefreshMtcTabStrip();
+    }
+
+    private void CaptureLiveMtcTabShell()
+    {
+        if (_boundMtcTab is not null)
+            CaptureMtcTabSession(_boundMtcTab);
+
+        if (IsLiveMtcTabActive() && _shellHost.Child is not null)
+            _liveTabShell = _shellHost.Child;
+    }
+
+    private void CreateStagedMtcTab()
+    {
+        EnsureInitialMtcTab();
+        CaptureLiveMtcTabShell();
+
+        var tab = CreateMtcTabSession($"Tab {_nextMtcTabId}", isLiveSession: true);
+
+        _mtcTabs.Add(tab);
+        ActivateMtcTab(tab.Id);
+    }
+
+    private void ActivateMtcTab(int tabId)
+    {
+        if (_activeMtcTabId == tabId)
+            return;
+
+        CaptureLiveMtcTabShell();
+        _activeMtcTabId = tabId;
+        BindActiveMtcTabSession();
+        RestoreActiveMtcTabContent();
+        RefreshMtcTabStrip();
+    }
+
+    private void CloseActiveMtcTab()
+    {
+        var active = ActiveMtcTab;
+        if (active is null)
+            return;
+
+        CloseMtcTab(active.Id);
+    }
+
+    private void CloseMtcTab(int tabId)
+    {
+        var tab = _mtcTabs.FirstOrDefault(item => item.Id == tabId);
+        if (tab is null)
+            return;
+
+        if (tab.IsLiveSession && _mtcTabs.Count <= 1)
+        {
+            Close();
+            return;
+        }
+
+        var index = _mtcTabs.IndexOf(tab);
+        StopMtcTabSession(tab);
+        _mtcTabs.Remove(tab);
+
+        if (_activeMtcTabId == tabId)
+        {
+            var next = _mtcTabs.ElementAtOrDefault(Math.Clamp(index - 1, 0, Math.Max(0, _mtcTabs.Count - 1)))
+                ?? _mtcTabs.FirstOrDefault();
+            _activeMtcTabId = next?.Id ?? 0;
+            RestoreActiveMtcTabContent();
+        }
+
+        RefreshMtcTabStrip();
+    }
+
+    private void RestoreActiveMtcTabContent()
+    {
+        var active = ActiveMtcTab;
+        if (active is null || active.IsLiveSession)
+        {
+            BindActiveMtcTabSession();
+            ApplySelectedSkinSafe();
+
+            RestoreLiveMtcTabStatusBar();
+            RefreshActiveMtcTabUiState();
+            UpdateWindowTitle();
+            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            return;
+        }
+
+        _shellHost.Child = BuildStagedMtcTabContent(active);
+        ShowStagedMtcTabStatusBar(active);
+        Title = $"{BaseWindowTitle} [{active.Title}]";
+    }
+
+    private void RestoreLiveMtcTabStatusBar()
+    {
+        _statusBar.IsVisible = _appPrefs.ShowBottomBar;
+        _statusBarLayoutSignature = string.Empty;
+        EnsureStatusBarLayout();
+        UpdateClassicTerminalSizeStatus();
+    }
+
+    private void ShowStagedMtcTabStatusBar(MtcTabPrototype tab)
+    {
+        _statusBar.IsVisible = _appPrefs.ShowBottomBar;
+        _statusTerminalSizeText.IsVisible = false;
+        _statusBarLayoutSignature = $"staged:{tab.Id}";
+        _statusBarContent.Children.Clear();
+        _statusBarContent.Children.Add(new Border
+        {
+            Background = HudHeaderAlt,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = UiCornerRadius(12),
+            Padding = UiThickness(10, 4, 10, 4),
+            Child = new TextBlock
+            {
+                Text = $"{tab.Title} is staged - no game session loaded",
+                Foreground = HudMuted,
+                FontSize = UiFontSize(12),
+                FontWeight = FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        });
+    }
+
+    private void RefreshActiveMtcTabUiState()
+    {
+        bool hasGame =
+            !string.IsNullOrWhiteSpace(_state.GameName) ||
+            !string.IsNullOrWhiteSpace(_currentProfilePath) ||
+            _embeddedGameConfig is not null;
+        bool proxyRunning = _gameInstance?.IsRunning == true;
+        bool connected = _state.Connected || _telnet.IsConnected || (_gameInstance?.IsConnected == true);
+
+        _fileEdit.IsEnabled = hasGame;
+        _fileConnect.IsEnabled = hasGame && !connected;
+        _fileDisconnect.IsEnabled = connected || proxyRunning;
+
+        RefreshNotesMenuState();
+        RefreshMombotUi();
+        UpdateHaggleToggleState();
+        RebuildProxyMenu();
+        RebuildScriptsMenu();
+        RequestStatusBarRefresh();
+    }
+
+    private void RefreshMtcTabStrip()
+    {
+        if (_tabStripItems is null)
+            return;
+
+        _tabStripItems.Children.Clear();
+
+        foreach (var tab in _mtcTabs)
+            _tabStripItems.Children.Add(BuildMtcTabButton(tab));
+
+        var addButton = new Button
+        {
+            Content = "+",
+            MinWidth = UiSize(36),
+            Height = UiSize(30),
+            Padding = UiThickness(10, 0, 10, 0),
+            Background = HudHeader,
+            Foreground = HudAccent,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = UiCornerRadius(15),
+            FontWeight = FontWeight.Bold,
+            FontSize = UiFontSize(16),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        addButton.Click += (_, _) => CreateStagedMtcTab();
+        _tabStripItems.Children.Add(addButton);
+    }
+
+    private void StopMtcTabSession(MtcTabPrototype tab)
+    {
+        ExecuteInMtcTabSession(tab, () =>
+        {
+            try { _telnet.Disconnect(); } catch { }
+            _proxyCts?.Cancel();
+            _proxyCts = null;
+            if (_gameInstance != null)
+                _ = _gameInstance.StopAsync();
+            _gameFileLock?.Dispose();
+            _gameFileLock = null;
+            try { _sessionDb?.CloseDatabase(); } catch { }
+            _sessionDb = null;
+            _sessionLog.Dispose();
+        });
+    }
+
+    private void StopAllMtcTabSessions()
+    {
+        foreach (var tab in _mtcTabs.ToArray())
+            StopMtcTabSession(tab);
+    }
+
+    private Control BuildMtcTabButton(MtcTabPrototype tab)
+    {
+        var active = tab.Id == _activeMtcTabId;
+        var frame = new Border
+        {
+            Background = active ? HudHeaderAlt : HudStatus,
+            BorderBrush = active ? HudAccent : HudInnerEdge,
+            BorderThickness = new Thickness(active ? 2 : 1),
+            CornerRadius = UiCornerRadius(16),
+            Padding = UiThickness(3, 2, 3, active ? 0 : 2),
+            Margin = active ? new Thickness(0, 0, 0, -1) : new Thickness(0, 0, 0, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        var chrome = new Grid();
+        chrome.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        chrome.RowDefinitions.Add(new RowDefinition { Height = new GridLength(active ? UiSize(3) : 0) });
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        row.Children.Add(new Border
+        {
+            Width = UiSize(8),
+            Height = UiSize(8),
+            CornerRadius = UiCornerRadius(4),
+            Background = tab.IsLiveSession
+                ? (active ? HudAccentOk : HudAccent)
+                : HudAccentHot,
+            Opacity = active ? 1.0 : 0.65,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = UiThickness(6, 0, 0, 0),
+        });
+
+        var selectButton = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = tab.IsLiveSession ? tab.Title : $"{tab.Title} (staged)",
+                Foreground = active ? HudText : HudMuted,
+                FontSize = UiFontSize(12.5),
+                FontWeight = active ? FontWeight.Bold : FontWeight.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            },
+            Background = Brushes.Transparent,
+            Foreground = active ? HudText : HudMuted,
+            BorderThickness = new Thickness(0),
+            Padding = UiThickness(8, 4, 8, 4),
+            MinWidth = UiSize(92),
+            MaxWidth = UiSize(230),
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+        };
+        selectButton.Click += (_, _) => ActivateMtcTab(tab.Id);
+        row.Children.Add(selectButton);
+
+        var closeButton = new Button
+        {
+            Content = "x",
+            Background = Brushes.Transparent,
+            Foreground = active ? HudText : HudMuted,
+            BorderThickness = new Thickness(0),
+            Padding = UiThickness(5, 2, 7, 2),
+            MinWidth = UiSize(22),
+            Height = UiSize(24),
+            FontSize = UiFontSize(11),
+            FontWeight = FontWeight.Bold,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        closeButton.Click += (_, _) => CloseMtcTab(tab.Id);
+        row.Children.Add(closeButton);
+
+        Grid.SetRow(row, 0);
+        chrome.Children.Add(row);
+
+        if (active)
+        {
+            var connector = new Border
+            {
+                Height = UiSize(3),
+                Background = HudAccent,
+                CornerRadius = UiCornerRadius(2),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = UiThickness(12, 0, 12, 0),
+            };
+            Grid.SetRow(connector, 1);
+            chrome.Children.Add(connector);
+        }
+
+        frame.Child = chrome;
+        return frame;
+    }
+
+    private Control BuildStagedMtcTabContent(MtcTabPrototype tab)
+    {
+        var outer = new Border
+        {
+            Background = HudHeader,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            Padding = UiThickness(24),
+            Margin = UiThickness(8),
+        };
+
+        var stack = new StackPanel
+        {
+            Spacing = 14,
+            MaxWidth = UiSize(760),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Tabbed Client Prototype",
+            Foreground = HudAccent,
+            FontSize = UiFontSize(26),
+            FontWeight = FontWeight.Bold,
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "This staged tab is intentionally not connected yet. It exists to validate the tab layout, close behavior, and child-window ownership boundary before live multi-game sessions are allowed in one process.",
+            Foreground = HudText,
+            FontSize = UiFontSize(15),
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = UiSize(22),
+        });
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Next implementation step: extract the current MainWindow game state into an MtcGameSessionHost so each tab owns its own terminal, proxy, database handle, timers, menus, and child windows.",
+            Foreground = HudMuted,
+            FontSize = UiFontSize(13),
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = UiSize(20),
+        });
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            Margin = UiThickness(0, 8, 0, 0),
+        };
+
+        var returnButton = new Button
+        {
+            Content = "Return to live game",
+            Background = HudAccent,
+            Foreground = Brushes.Black,
+            BorderBrush = HudAccent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = UiThickness(16, 8, 16, 8),
+            FontWeight = FontWeight.Bold,
+        };
+        returnButton.Click += (_, _) =>
+        {
+            var live = _mtcTabs.FirstOrDefault(item => item.IsLiveSession);
+            if (live is not null)
+                ActivateMtcTab(live.Id);
+        };
+        buttons.Children.Add(returnButton);
+
+        var newWindowButton = new Button
+        {
+            Content = "Open separate window",
+            Background = HudHeaderAlt,
+            Foreground = HudText,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = UiThickness(16, 8, 16, 8),
+        };
+        newWindowButton.Click += (_, _) => OpenNewWindowInNewProcess();
+        buttons.Children.Add(newWindowButton);
+
+        stack.Children.Add(buttons);
+        outer.Child = stack;
+        return outer;
+    }
+}

@@ -78,25 +78,13 @@ public partial class MainWindow
             _terminalRecordButton.MinWidth = UiSize(30);
         }
 
-        _statusMacrosButton.Width = UiSize(28);
-        _statusMacrosButton.Height = UiSize(20);
-        _statusMacrosButton.Padding = UiThickness(2, 1, 2, 1);
-        _statusMapButton.Width = UiSize(28);
-        _statusMapButton.Height = UiSize(20);
-        _statusMapButton.Padding = UiThickness(2, 1, 2, 1);
-        _statusCommButton.Width = UiSize(28);
-        _statusCommButton.Height = UiSize(20);
-        _statusCommButton.Padding = UiThickness(2, 1, 2, 1);
-        _statusBotButton.Width = UiSize(28);
-        _statusBotButton.Height = UiSize(20);
-        _statusBotButton.Padding = UiThickness(2, 1, 2, 1);
-        _statusStopAllButton.Width = UiSize(28);
-        _statusStopAllButton.Height = UiSize(20);
-        _statusStopAllButton.Padding = UiThickness(2, 1, 2, 1);
+        ApplyToolbarIconButtonDimensions(_statusMacrosButton);
+        ApplyToolbarIconButtonDimensions(_statusMapButton);
+        ApplyToolbarIconButtonDimensions(_statusCommButton);
+        ApplyToolbarIconButtonDimensions(_statusBotButton);
+        ApplyToolbarIconButtonDimensions(_statusStopAllButton);
+        ApplyToolbarIconButtonDimensions(_statusHaggleButton);
 
-        _statusHaggleButton.MinWidth = UiSize(72);
-        _statusHaggleButton.Height = UiSize(20);
-        _statusHaggleButton.Padding = UiThickness(6, 1, 6, 1);
         _statusLivePausedButton.MinWidth = UiSize(56);
         _statusLivePausedButton.Height = UiSize(20);
         _statusLivePausedButton.Padding = UiThickness(4, 1, 4, 1);
@@ -122,6 +110,16 @@ public partial class MainWindow
         _statusLivePausedFrame.CornerRadius = UiCornerRadius(8);
         _statusRedAlertFrame.Padding = UiThickness(4, 2, 4, 2);
         _statusRedAlertFrame.CornerRadius = UiCornerRadius(8);
+    }
+
+    private void ApplyToolbarIconButtonDimensions(Button button)
+    {
+        var width = UiSize(28);
+        button.Width = width;
+        button.MinWidth = 0;
+        button.MaxWidth = width;
+        button.Height = UiSize(20);
+        button.Padding = UiThickness(2, 1, 2, 1);
     }
 
     private void ApplyUiFontScale(Control root, double scale)

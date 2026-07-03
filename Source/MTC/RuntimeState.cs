@@ -34,7 +34,7 @@ public partial class MainWindow
         RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
         // Open (or create) the sector database for this game connection
         OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
-        Dispatcher.UIThread.Post(() =>
+        void ApplyUi()
         {
             SetTerminalConnected(true);
             OnGameConnected();
@@ -42,7 +42,12 @@ public partial class MainWindow
             _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
             RefreshStatusBar();
             _buffer.Dirty = true;
-        });
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+            ApplyUi();
+        else
+            Dispatcher.UIThread.Post(ApplyUi);
     }
 
     private void OnTelnetDisconnected()
@@ -56,7 +61,7 @@ public partial class MainWindow
         _gameFileLock?.Dispose();
         _gameFileLock = null;
         Core.ScriptRef.SetActiveDatabase(null);
-        Dispatcher.UIThread.Post(() =>
+        void ApplyUi()
         {
             SetTerminalConnected(false);
             OnGameDisconnected();
@@ -64,16 +69,26 @@ public partial class MainWindow
             _parser.Feed("\x1b[1;31m[Disconnected]\x1b[0m\r\n");
             RefreshStatusBar();
             _buffer.Dirty = true;
-        });
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+            ApplyUi();
+        else
+            Dispatcher.UIThread.Post(ApplyUi);
     }
 
     private void OnTelnetError(string msg)
     {
-        Dispatcher.UIThread.Post(() =>
+        void ApplyUi()
         {
             _parser.Feed($"\x1b[1;31m[Error: {msg}]\x1b[0m\r\n");
             _buffer.Dirty = true;
-        });
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+            ApplyUi();
+        else
+            Dispatcher.UIThread.Post(ApplyUi);
     }
 
     // ── Connection menu state helpers ──────────────────────────────────────
@@ -85,8 +100,12 @@ public partial class MainWindow
             ? _state.GameName
             : (!string.IsNullOrEmpty(_currentProfilePath)
                 ? Path.GetFileNameWithoutExtension(_currentProfilePath)
-                : $"{_state.Host}_{_state.Port}");
+                : (!string.IsNullOrWhiteSpace(_state.Host)
+                    ? $"{_state.Host}_{_state.Port}"
+                    : string.Empty));
         name = string.Concat(name.Split(Path.GetInvalidFileNameChars()));
+        if (IsGeneratedPlaceholderGameName(name))
+            return "game";
         return string.IsNullOrWhiteSpace(name) ? "game" : name;
     }
 

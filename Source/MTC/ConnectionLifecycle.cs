@@ -30,6 +30,7 @@ public partial class MainWindow
     /// <summary>Connects using the current Host/Port already set in state.</summary>
     private void DoConnect()
     {
+        var tab = ActiveMtcTab;
         if (_telnet.IsConnected) _telnet.Disconnect();
         _telnet.SetWindowSize(_buffer.Columns, _buffer.Rows);
         _ = _telnet.ConnectAsync(_state.Host, _state.Port)
@@ -37,7 +38,21 @@ public partial class MainWindow
                    {
                        if (t.IsFaulted)
                            Dispatcher.UIThread.Post(() =>
-                               _parser.Feed($"\x1b[1;31m[Connect failed: {t.Exception?.InnerException?.Message}]\x1b[0m\r\n"));
+                           {
+                               if (tab is not null)
+                               {
+                                   ExecuteInMtcTabSession(tab, () =>
+                                   {
+                                       _parser.Feed($"\x1b[1;31m[Connect failed: {t.Exception?.InnerException?.Message}]\x1b[0m\r\n");
+                                       _buffer.Dirty = true;
+                                   });
+                               }
+                               else
+                               {
+                                   _parser.Feed($"\x1b[1;31m[Connect failed: {t.Exception?.InnerException?.Message}]\x1b[0m\r\n");
+                                   _buffer.Dirty = true;
+                               }
+                           });
                    });
     }
 
@@ -48,6 +63,9 @@ public partial class MainWindow
     /// </summary>
     private async Task DoConnectEmbeddedAsync()
     {
+        var owningTab = ActiveMtcTab;
+        using var runtimeScope = Core.GlobalModules.UseRuntimeContext(owningTab?.RuntimeContext);
+
         // Wait for any in-flight stop to fully complete so its cleanup cannot
         // race with our setup (e.g. fast Disconnect→Connect or Reconnect).
         await _pendingEmbeddedStop;
@@ -59,6 +77,12 @@ public partial class MainWindow
 
         // Derive game name first (needed for the game config path and database path).
         string gameName = GetEmbeddedGameName();
+        if (string.IsNullOrWhiteSpace(gameName))
+        {
+            _parser.Feed("\x1b[1;31m[No game selected. Open or create a game before starting the embedded proxy.]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+            return;
+        }
 
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
@@ -134,7 +158,8 @@ public partial class MainWindow
             listenPort: gameConfig.ListenPort,
             commandChar: gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar,
             interpreter: interpreter,
-            scriptDirectory: effectiveScriptDir)
+            scriptDirectory: effectiveScriptDir,
+            runtimeContext: owningTab?.RuntimeContext ?? Core.GlobalModules.CurrentContext)
         {
             Verbose       = false,          // suppress diagnostic Console.WriteLine in embedded mode
             AutoReconnect = _state.AutoReconnect,
@@ -159,12 +184,15 @@ public partial class MainWindow
         Core.GlobalModules.DebugLog(
             $"[MTC] Embedded haggle startup prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
         gi.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
-        gi.NativeHaggleChanged += OnNativeHaggleChanged;
-        gi.NativeHaggleStatsChanged += OnNativeHaggleStatsChanged;
-        gi.ShipStatusUpdated += OnShipStatusUpdated;
+        gi.NativeHaggleChanged += (enabled, source) =>
+            ExecuteInOptionalMtcTabSession(owningTab, () => OnNativeHaggleChanged(enabled, source));
+        gi.NativeHaggleStatsChanged += () =>
+            ExecuteInOptionalMtcTabSession(owningTab, OnNativeHaggleStatsChanged);
+        gi.ShipStatusUpdated += status =>
+            ExecuteInOptionalMtcTabSession(owningTab, () => OnShipStatusUpdated(status));
         gi.NativeBotActivator = (botConfig, requestedBotName) =>
         {
-            Dispatcher.UIThread.Post(async () =>
+            Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
             {
                 if (_gameInstance != null &&
                     !string.IsNullOrWhiteSpace(_gameInstance.ActiveBotName) &&
@@ -181,12 +209,12 @@ public partial class MainWindow
                     requestedBotName,
                     interactiveOfflinePrompt: false,
                     publishMissingGameMessage: false);
-            });
+            }));
             return true;
         };
         gi.NativeBotStopper = _ =>
         {
-            Dispatcher.UIThread.Post(async () =>
+            Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
             {
                 await _runtimeStopGate.WaitAsync();
                 try
@@ -200,12 +228,12 @@ public partial class MainWindow
                 {
                     _runtimeStopGate.Release();
                 }
-            });
+            }));
             return true;
         };
         gi.NativeBotRebooter = _ =>
         {
-            Dispatcher.UIThread.Post(async () =>
+            Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
             {
                 Core.BotConfig rebootBotConfig = LoadConfiguredBotSections()
                     .First(bot => bot.IsNative)
@@ -254,7 +282,7 @@ public partial class MainWindow
                     Core.GlobalModules.FlushDebugLog();
                     PublishMombotLocalMessage($"Mombot reboot failed: {ex.Message}");
                 }
-            });
+            }));
             return true;
         };
         // Two in-process pipes for bidirectional communication.
@@ -283,11 +311,11 @@ public partial class MainWindow
         var termWriter = termToServer.Writer.AsStream();
         SetTerminalInputHandler(bytes =>
         {
-            RouteTerminalInput(bytes, data =>
+            ExecuteInOptionalMtcTabSession(owningTab, () => RouteTerminalInput(bytes, data =>
             {
                 try { termWriter.Write(data, 0, data.Length); termWriter.Flush(); }
                 catch { }
-            });
+            }));
         });
 
         // Background task: pipe-reader → AnsiParser.
@@ -324,7 +352,7 @@ public partial class MainWindow
         var serverAnsiLineBuf = new System.Text.StringBuilder();
         bool serverScriptInAnsi = false;
 
-        gi.ServerDataReceived += (_, e) =>
+        gi.ServerDataReceived += (_, e) => ExecuteInOptionalMtcTabSession(owningTab, () =>
         {
             MarkGameTrafficActivity();
             string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
@@ -464,14 +492,14 @@ public partial class MainWindow
                     if (ansiRemainder.Length > 0)
                         serverAnsiLineBuf.Append(ansiRemainder);
                 }
-        };
+        });
 
         // Wire Connected / Disconnected events.
         // Note: OnGameConnected() was already called when the proxy started; we only need to
         // update game-connection state (status bar, _state.Connected) here.
         gi.Connected += (_, _) =>
         {
-            Dispatcher.UIThread.Post(() =>
+            Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 _state.Connected = true;
                 ObserveGameAgentConnectionChanged(connected: true);
@@ -481,40 +509,43 @@ public partial class MainWindow
                 _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
                 RefreshStatusBar();
                 _buffer.Dirty = true;
-            });
+            }));
         };
 
         gi.Disconnected += (_, _) =>
         {
-            bool stopNativeMombot = _mombot.Enabled && ShouldStopNativeMombotAfterDisconnect();
-            if (stopNativeMombot)
+            ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
-                SuppressNativeMombotRelogState(
-                    preserveDoNotResuscitate: true,
-                    preserveShipDestroyed: HasNativeMombotShipDestroyedFlag());
-            }
+                bool stopNativeMombot = _mombot.Enabled && ShouldStopNativeMombotAfterDisconnect();
+                if (stopNativeMombot)
+                {
+                    SuppressNativeMombotRelogState(
+                        preserveDoNotResuscitate: true,
+                        preserveShipDestroyed: HasNativeMombotShipDestroyedFlag());
+                }
 
-            // Fire 'Connection Lost' so scripts can re-register triggers, etc.
-            interpreter.ProgramEvent("Connection Lost", "", false);
-            Dispatcher.UIThread.Post(() =>
-            {
-                _state.Connected = false;
-                ObserveGameAgentConnectionChanged(connected: false);
-                // In embedded mode the proxy is still alive after a server
-                // disconnect, so keep the terminal "connected" unless the
-                // GameInstance itself is being torn down.
-                bool proxyStillRunning = _gameInstance?.IsRunning == true;
-                SetTerminalConnected(proxyStillRunning);
-                OnGameDisconnected();
-                RefreshStatusBar();
-                _buffer.Dirty = true;
+                // Fire 'Connection Lost' so scripts can re-register triggers, etc.
+                interpreter.ProgramEvent("Connection Lost", "", false);
+                Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
+                {
+                    _state.Connected = false;
+                    ObserveGameAgentConnectionChanged(connected: false);
+                    // In embedded mode the proxy is still alive after a server
+                    // disconnect, so keep the terminal "connected" unless the
+                    // GameInstance itself is being torn down.
+                    bool proxyStillRunning = _gameInstance?.IsRunning == true;
+                    SetTerminalConnected(proxyStillRunning);
+                    OnGameDisconnected();
+                    RefreshStatusBar();
+                    _buffer.Dirty = true;
+                }));
+
+                if (_mombot.Enabled)
+                    Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, HandleNativeMombotDisconnectAsync));
+
+                if (stopNativeMombot)
+                    Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, StopNativeMombotAfterDisconnectAsync));
             });
-
-            if (_mombot.Enabled)
-                Dispatcher.UIThread.Post(() => _ = HandleNativeMombotDisconnectAsync());
-
-            if (stopNativeMombot)
-                Dispatcher.UIThread.Post(() => _ = StopNativeMombotAfterDisconnectAsync());
         };
 
         // Wire getinput / getconsoleinput input buffering — mirrors what ProxyService does.
@@ -567,23 +598,26 @@ public partial class MainWindow
 
         gi.ScriptStopped += (_, _) =>
         {
-            Dispatcher.UIThread.Post(() =>
+            Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 RefreshStatusBar();
                 RebuildProxyMenu();
-            });
+            }));
 
-            _mombot.HandleObservedScriptStop();
-            HandleNativeMombotPostLoginScriptStop();
+            ExecuteInOptionalMtcTabSession(owningTab, () =>
+            {
+                _mombot.HandleObservedScriptStop();
+                HandleNativeMombotPostLoginScriptStop();
+            });
         };
 
         gi.ScriptLoaded += (_, _) =>
         {
-            Dispatcher.UIThread.Post(() =>
+            Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 RefreshStatusBar();
                 RebuildProxyMenu();
-            });
+            }));
         };
 
         gi.ClientTypeChanged += (_, e) =>
@@ -591,7 +625,7 @@ public partial class MainWindow
             if (e.ClientIndex != EmbeddedLocalClientIndex)
                 return;
 
-            Dispatcher.UIThread.Post(() => SyncEmbeddedTerminalClientType(e.ClientType));
+            Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () => SyncEmbeddedTerminalClientType(e.ClientType)));
         };
 
         _gameInstance = gi;

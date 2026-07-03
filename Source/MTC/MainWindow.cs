@@ -60,15 +60,15 @@ public partial class MainWindow : Window
     private static readonly double[] TerminalFontSizeOptions = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32];
 
     // ── Core components ────────────────────────────────────────────────────
-    private readonly GameState       _state;
-    private readonly TerminalBuffer  _buffer;
-    private readonly AnsiParser      _parser;
-    private readonly TelnetClient    _telnet;
+    private GameState       _state = null!;
+    private TerminalBuffer  _buffer = null!;
+    private AnsiParser      _parser = null!;
+    private TelnetClient    _telnet = null!;
     private TerminalControl _termCtrl = null!;
     private TerminalControl _deckTermCtrl = null!;
     private readonly DispatcherTimer _statusRefreshTimer;
     private readonly DispatcherTimer _redAlertTimer;
-    private readonly Core.ShipInfoParser _shipParser = new();
+    private Core.ShipInfoParser _shipParser = null!;
     private readonly DispatcherTimer _mombotKeepaliveTimer;
     private readonly DispatcherTimer _onlineAutoRefreshTimer;
     // ── Current saved profile path (null = not yet saved) ──────────────────
@@ -78,13 +78,13 @@ public partial class MainWindow : Window
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private Core.ExpansionModuleHost?      _moduleHost;     // embedded proxy expansion modules
     private Core.GameFileLock?             _gameFileLock;
-    private readonly Core.NativeHaggleEngine _standaloneNativeHaggle = new();
+    private Core.NativeHaggleEngine _standaloneNativeHaggle = null!;
     private readonly GameAgentRuntime        _gameAgent = new();
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
-    private readonly object                _embeddedStopSync = new();
-    private readonly SemaphoreSlim         _runtimeStopGate = new(1, 1);
-    private readonly Core.ModLog           _sessionLog = new();
+    private object                         _embeddedStopSync = new();
+    private SemaphoreSlim                  _runtimeStopGate = new(1, 1);
+    private Core.ModLog                    _sessionLog = null!;
     private EmbeddedGameConfig?            _embeddedGameConfig;
     private string?                        _embeddedGameName;
     private GameAgentWindow?                _gameAgentWindow;
@@ -111,7 +111,7 @@ public partial class MainWindow : Window
     private readonly List<(MenuItem Item, double Size)> _viewFontSizeItems = [];
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
-    private readonly MTC.mombot.mombotService _mombot = new();
+    private MTC.mombot.mombotService _mombot = null!;
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
     private readonly Border _menuBarHost = new();

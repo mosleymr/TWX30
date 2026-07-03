@@ -281,6 +281,7 @@ namespace TWXProxy.Core
             get => _log.LogANSI;
             set => _log.LogANSI = value;
         }
+        public TwxRuntimeContext RuntimeContext { get; }
 
         public ShipStatus CurrentShipStatus
         {
@@ -291,8 +292,11 @@ namespace TWXProxy.Core
             }
         }
 
-        public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null)
+        public GameInstance(string gameName, string serverAddress, int serverPort, int listenPort, char commandChar = '$', ModInterpreter? interpreter = null, string? scriptDirectory = null, TwxRuntimeContext? runtimeContext = null)
         {
+            RuntimeContext = runtimeContext ?? GlobalModules.CurrentContext;
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+
             _gameName = gameName;
             _serverAddress = serverAddress;
             _serverPort = serverPort;
@@ -340,6 +344,16 @@ namespace TWXProxy.Core
                 : GlobalModules.ProgramDir;
             foreach (var bot in ProxyMenuCatalog.LoadBotConfigs(programDir, scriptDirectory))
                 RegisterBotConfig(bot);
+        }
+
+        private Task RunInRuntimeContextAsync(Func<Task> action, CancellationToken schedulingToken = default)
+        {
+            TwxRuntimeContext context = RuntimeContext;
+            return Task.Run(async () =>
+            {
+                using var runtimeScope = GlobalModules.UseRuntimeContext(context);
+                await action().ConfigureAwait(false);
+            }, schedulingToken);
         }
 
         public void SeedShipStatus(ShipStatus status)
@@ -754,7 +768,7 @@ namespace TWXProxy.Core
             Log($"[{_gameName}] Listening on 0.0.0.0:{_listenPort}");
             Log($"[{_gameName}] Type $c to connect to server");
 
-            _acceptTask = Task.Run(async () => await AcceptLocalConnectionsAsync(token), token);
+            _acceptTask = RunInRuntimeContextAsync(() => AcceptLocalConnectionsAsync(token), token);
         }
 
         private async Task StopLocalListenerAsync()
@@ -807,7 +821,7 @@ namespace TWXProxy.Core
             };
 
             AddClientSession(session);
-            session.ReadTask = Task.Run(() => ReadFromClientAsync(session, token), token);
+            session.ReadTask = RunInRuntimeContextAsync(() => ReadFromClientAsync(session, token), token);
         }
 
         /// <summary>
@@ -855,7 +869,7 @@ namespace TWXProxy.Core
                 Connected?.Invoke(this, EventArgs.Empty);
 
                 // Start reading from server
-                _serverReadTask = Task.Run(async () => await ReadFromServerAsync(token), token);
+                _serverReadTask = RunInRuntimeContextAsync(() => ReadFromServerAsync(token), token);
                 StartServerStaleWatchdog(token);
             }
             catch (Exception ex)
@@ -1023,7 +1037,7 @@ namespace TWXProxy.Core
                         await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nActive connection detected from: {remoteAddress}\r\n"), broadcastDeaf: true, token: token);
 
                     _interpreter?.ProgramEvent("Client connected", string.Empty, false);
-                    session.ReadTask = Task.Run(() => ReadFromClientAsync(session, token), token);
+                    session.ReadTask = RunInRuntimeContextAsync(() => ReadFromClientAsync(session, token), token);
                 }
             }
             catch (OperationCanceledException)
@@ -1087,7 +1101,7 @@ namespace TWXProxy.Core
                         Disconnected?.Invoke(this, new DisconnectEventArgs("Server closed connection"));
                         // Start auto-reconnect if allowed
                         if (_autoReconnect && !token.IsCancellationRequested)
-                            _ = Task.Run(() => ReconnectLoopAsync(token));
+                            _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
                         break;
                     }
 
@@ -1217,7 +1231,7 @@ namespace TWXProxy.Core
                 Disconnected?.Invoke(this, new DisconnectEventArgs(ex.Message));
                 // Start auto-reconnect if allowed
                 if (_autoReconnect && !token.IsCancellationRequested)
-                    _ = Task.Run(() => ReconnectLoopAsync(token));
+                    _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
             }
         }
 
@@ -1261,7 +1275,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.DebugLog($"[AutoReconnect] StartReconnectIfNeeded: launching reconnect loop\n");
                 GlobalModules.FlushDebugLog();
-                _ = Task.Run(() => ReconnectLoopAsync(_cancellationSource.Token));
+                _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(_cancellationSource.Token));
             }
         }
 
@@ -1270,7 +1284,7 @@ namespace TWXProxy.Core
             if (Interlocked.CompareExchange(ref _serverStaleWatchdogRunning, 1, 0) != 0)
                 return;
 
-            _serverStaleWatchdogTask = Task.Run(() => ServerStaleWatchdogLoopAsync(token), token);
+            _serverStaleWatchdogTask = RunInRuntimeContextAsync(() => ServerStaleWatchdogLoopAsync(token), token);
         }
 
         private async Task ServerStaleWatchdogLoopAsync(CancellationToken token)
@@ -1361,7 +1375,7 @@ namespace TWXProxy.Core
             Disconnected?.Invoke(this, new DisconnectEventArgs(reason));
 
             if (_autoReconnect && !token.IsCancellationRequested)
-                _ = Task.Run(() => ReconnectLoopAsync(token));
+                _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
         }
 
         private void MarkServerReceive()
@@ -1779,7 +1793,7 @@ namespace TWXProxy.Core
                 return;
 
             CancellationToken token = _cancellationSource?.Token ?? CancellationToken.None;
-            _ = Task.Run(() => ProcessServerSendQueueAsync(token), CancellationToken.None);
+            _ = RunInRuntimeContextAsync(() => ProcessServerSendQueueAsync(token));
         }
 
         private async Task ProcessServerSendQueueAsync(CancellationToken token)
@@ -2520,7 +2534,7 @@ namespace TWXProxy.Core
             if (Interlocked.CompareExchange(ref _deferredLocalOutputFlushScheduled, 1, 0) != 0)
                 return;
 
-            _ = Task.Run(() => DeferredLocalOutputQuietFlushLoopAsync(token), CancellationToken.None);
+            _ = RunInRuntimeContextAsync(() => DeferredLocalOutputQuietFlushLoopAsync(token));
         }
 
         private async Task DeferredLocalOutputQuietFlushLoopAsync(CancellationToken token)
@@ -2675,6 +2689,8 @@ namespace TWXProxy.Core
 
         public void Dispose()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+
             // Unregister from GlobalModules if we're the current TWXServer
             if (GlobalModules.TWXServer == this)
             {
