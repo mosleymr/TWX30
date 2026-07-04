@@ -1484,6 +1484,9 @@ public partial class MainWindow
 
     private void UpdateClassicTerminalSizeStatus()
     {
+        if (_termCtrl is null)
+            return;
+
         bool showClassicSize = !_useCommandDeckSkin;
         _statusTerminalSizeText.IsVisible = showClassicSize;
         if (!showClassicSize)
