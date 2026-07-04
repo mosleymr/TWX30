@@ -347,38 +347,48 @@ public partial class MainWindow
                 if (suppressingPendingNativeMombotEscapeSequence)
                 {
                     filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
+                    suppressingPendingNativeMombotEscapeSequence = false;
+                    suppressingPendingNativeMombotEscapeCsiBody = false;
 
-                    if (!suppressingPendingNativeMombotEscapeCsiBody)
+                    if (IsAnsiEscapeIntroducer(value))
                     {
-                        if (value == (byte)'[')
-                        {
-                            suppressingPendingNativeMombotEscapeCsiBody = true;
-                            continue;
-                        }
-
-                        suppressingPendingNativeMombotEscapeSequence = false;
-                        suppressingPendingNativeMombotEscapeCsiBody = false;
+                        // The previous chunk ended with a possible echoed ESC, but this
+                        // byte proves it was the start of a real ANSI sequence.
+                        filtered.Add(0x1B);
+                        filtered.Add(value);
                         continue;
                     }
 
-                    if (value >= 0x40 && value <= 0x7E)
-                    {
-                        suppressingPendingNativeMombotEscapeSequence = false;
-                        suppressingPendingNativeMombotEscapeCsiBody = false;
-                    }
-
-                    continue;
+                    // It was a standalone echoed ESC. Keep suppressing only that byte;
+                    // the current byte is real game data and must still be displayed.
+                    ConsumePendingNativeMombotEscapeEchoSuppression(
+                        ref pendingNativeMombotEscapeEchoSuppressions,
+                        ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
                 }
 
-                if (ShouldSuppressPendingNativeMombotEscapeEcho(
-                        value,
-                        ref pendingNativeMombotEscapeEchoSuppressions,
-                        ref nativeMombotEscapeEchoSuppressUntilUtcTicks))
+                if (value == 0x1B &&
+                    HasPendingNativeMombotEscapeEchoSuppression(
+                        pendingNativeMombotEscapeEchoSuppressions,
+                        nativeMombotEscapeEchoSuppressUntilUtcTicks))
                 {
-                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                    suppressingPendingNativeMombotEscapeSequence = true;
-                    suppressingPendingNativeMombotEscapeCsiBody = false;
-                    continue;
+                    if (index + 1 < chunk.Length)
+                    {
+                        if (!IsAnsiEscapeIntroducer(chunk[index + 1]))
+                        {
+                            filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
+                            ConsumePendingNativeMombotEscapeEchoSuppression(
+                                ref pendingNativeMombotEscapeEchoSuppressions,
+                                ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
+                        suppressingPendingNativeMombotEscapeSequence = true;
+                        suppressingPendingNativeMombotEscapeCsiBody = false;
+                        continue;
+                    }
                 }
 
                 if (value == 0xC2)
@@ -492,29 +502,33 @@ public partial class MainWindow
         return result;
     }
 
-    private static bool ShouldSuppressPendingNativeMombotEscapeEcho(
-        byte value,
-        ref int pendingSuppressions,
-        ref long suppressUntilTicks)
-    {
-        if (value != 0x1B)
-            return false;
+    private static bool IsAnsiEscapeIntroducer(byte value)
+        => value is (byte)'[' or (byte)']' or (byte)'P' or (byte)'X' or (byte)'^' or (byte)'_' or
+                    (byte)'7' or (byte)'8' or (byte)'c' or (byte)'M';
 
+    private static bool HasPendingNativeMombotEscapeEchoSuppression(
+        int pendingSuppressions,
+        long suppressUntilTicks)
+    {
         if (pendingSuppressions <= 0)
             return false;
 
         if (suppressUntilTicks <= 0 || DateTime.UtcNow.Ticks > suppressUntilTicks)
-        {
-            pendingSuppressions = 0;
-            suppressUntilTicks = 0;
             return false;
-        }
+
+        return true;
+    }
+
+    private static void ConsumePendingNativeMombotEscapeEchoSuppression(
+        ref int pendingSuppressions,
+        ref long suppressUntilTicks)
+    {
+        if (pendingSuppressions <= 0)
+            return;
 
         pendingSuppressions--;
         if (pendingSuppressions <= 0)
             suppressUntilTicks = 0;
-
-        return true;
     }
 
     private bool ShouldNativeMombotAutoRelog()
