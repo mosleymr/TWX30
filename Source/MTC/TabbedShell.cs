@@ -484,6 +484,22 @@ public partial class MainWindow
     private MtcTabPrototype? CurrentMtcTabContext()
         => _asyncMtcTabContext.Value ?? _boundMtcTab ?? ActiveMtcTab;
 
+    private bool PrepareMtcTabVisualRefresh()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+            return false;
+
+        var asyncContext = _asyncMtcTabContext.Value;
+        if (asyncContext is not null)
+            return asyncContext.Id == _activeMtcTabId;
+
+        var active = ActiveMtcTab;
+        if (active is not null && !ReferenceEquals(_boundMtcTab, active))
+            BindActiveMtcTabSession();
+
+        return true;
+    }
+
     private void ApplyMtcTabTerminalInputHandler(MtcTabPrototype tab)
     {
         if (tab.Id != _activeMtcTabId || tab.TerminalInputHandler == null)

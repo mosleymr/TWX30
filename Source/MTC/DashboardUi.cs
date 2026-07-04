@@ -928,8 +928,9 @@ public partial class MainWindow
     /// </summary>
     private void OnShipStatusUpdated(Core.ShipStatus s)
     {
-        // May arrive on the thread-pool read loop – always dispatch to UI thread
-        Dispatcher.UIThread.Post(() =>
+        var owner = CurrentMtcTabContext();
+
+        void Apply()
         {
             _state.Sector       = s.CurrentSector;
             _state.Turns        = s.Turns;
@@ -979,7 +980,16 @@ public partial class MainWindow
             // Ship status can update many times per macro burst; persist it after the burst quiets.
             if (_currentProfilePath != null)
                 RequestCurrentGameConfigSave();
-        });
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            Apply();
+            return;
+        }
+
+        // May arrive on the thread-pool read loop; preserve the owner tab when crossing to UI.
+        Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owner, Apply), DispatcherPriority.Background);
     }
 
     private void ObserveComputerShipTypeLine(string line)
@@ -1042,7 +1052,10 @@ public partial class MainWindow
                 return;
 
             string capturedLine = line;
-            Dispatcher.UIThread.Post(() => ObserveOnlinePlayersLine(capturedLine), DispatcherPriority.Background);
+            var owner = CurrentMtcTabContext();
+            Dispatcher.UIThread.Post(
+                () => ExecuteInOptionalMtcTabSession(owner, () => ObserveOnlinePlayersLine(capturedLine)),
+                DispatcherPriority.Background);
             return;
         }
 
@@ -1359,21 +1372,28 @@ public partial class MainWindow
         {
             if (force)
             {
-                Dispatcher.UIThread.Post(() => RequestInfoPanelsRefresh(force), DispatcherPriority.Input);
+                var owner = CurrentMtcTabContext();
+                Dispatcher.UIThread.Post(
+                    () => ExecuteInOptionalMtcTabSession(owner, () => RequestInfoPanelsRefresh(force)),
+                    DispatcherPriority.Input);
                 return;
             }
 
             if (Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 1) == 0)
             {
+                var owner = CurrentMtcTabContext();
                 Dispatcher.UIThread.Post(() =>
                 {
                     Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 0);
-                    RequestInfoPanelsRefresh();
+                    ExecuteInOptionalMtcTabSession(owner, () => RequestInfoPanelsRefresh());
                 }, DispatcherPriority.Background);
             }
 
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         if (!force && IsEmbeddedTerminalClientDeaf())
         {
@@ -1439,6 +1459,9 @@ public partial class MainWindow
 
     private void FlushInfoPanelsRefresh()
     {
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         if (IsEmbeddedTerminalClientDeaf())
             return;
 
@@ -1496,9 +1519,15 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(() => RequestOnlinePanelRefresh(force), DispatcherPriority.Background);
+            var owner = CurrentMtcTabContext();
+            Dispatcher.UIThread.Post(
+                () => ExecuteInOptionalMtcTabSession(owner, () => RequestOnlinePanelRefresh(force)),
+                DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         if (!force && IsEmbeddedTerminalClientDeaf())
         {
@@ -1517,6 +1546,9 @@ public partial class MainWindow
             Dispatcher.UIThread.Post(FlushDeferredPanelRefreshes, DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         if (IsEmbeddedTerminalClientDeaf())
             return;
@@ -1540,9 +1572,15 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(() => RequestOnlinePanelRefresh());
+            var owner = CurrentMtcTabContext();
+            Dispatcher.UIThread.Post(
+                () => ExecuteInOptionalMtcTabSession(owner, () => RequestOnlinePanelRefresh()),
+                DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         _onlinePlayersHost.Children.Clear();
         string currentTraderName = GetCurrentTraderOnlineName();
@@ -1643,6 +1681,9 @@ public partial class MainWindow
 
     private void RefreshInfoPanels()
     {
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
         string turnsDisplay = GetTurnsDisplayText();
         bool currentSectorBusted = IsCurrentSectorBusted();
@@ -1883,9 +1924,15 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(RefreshStatusBar, DispatcherPriority.Background);
+            var owner = CurrentMtcTabContext();
+            Dispatcher.UIThread.Post(
+                () => ExecuteInOptionalMtcTabSession(owner, RefreshStatusBar),
+                DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         if (ActiveMtcRuntimeContext is { } activeContext &&
             !ReferenceEquals(Core.GlobalModules.CurrentContext, activeContext))

@@ -884,9 +884,15 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(RequestStatusBarRefresh, DispatcherPriority.Background);
+            var owner = CurrentMtcTabContext();
+            Dispatcher.UIThread.Post(
+                () => ExecuteInOptionalMtcTabSession(owner, RequestStatusBarRefresh),
+                DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         DispatcherTimer? statusRefreshTimer = _statusRefreshTimer;
         if (statusRefreshTimer == null)
