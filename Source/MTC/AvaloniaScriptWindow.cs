@@ -89,6 +89,7 @@ internal sealed class AvaloniaScriptWindow : IScriptWindow
     private string _textContent = string.Empty;
     private bool   _isVisible;
     private bool   _disposed;
+    private readonly Action<Window>? _registerWindow;
 
     private readonly string _name;
     private readonly string _title;
@@ -96,13 +97,20 @@ internal sealed class AvaloniaScriptWindow : IScriptWindow
     private readonly int    _height;
     private readonly bool   _onTop;
 
-    public AvaloniaScriptWindow(string name, string title, int width, int height, bool onTop)
+    public AvaloniaScriptWindow(
+        string name,
+        string title,
+        int width,
+        int height,
+        bool onTop,
+        Action<Window>? registerWindow = null)
     {
         _name   = name;
         _title  = title;
         _width  = width;
         _height = height;
         _onTop  = onTop;
+        _registerWindow = registerWindow;
     }
 
     public string Name        => _name;
@@ -137,6 +145,7 @@ internal sealed class AvaloniaScriptWindow : IScriptWindow
                     _popup    = null;
                     _isVisible = false;
                 };
+                _registerWindow?.Invoke(_popup);
             }
             if (!string.IsNullOrEmpty(_textContent))
                 _popup.SetContent(_textContent);
@@ -167,6 +176,18 @@ internal sealed class AvaloniaScriptWindow : IScriptWindow
 /// </summary>
 public sealed class AvaloniaScriptWindowFactory : IScriptWindowFactory
 {
+    private readonly Func<TwxRuntimeContext, Action<Window>?>? _registrationResolver;
+
+    public AvaloniaScriptWindowFactory(
+        Func<TwxRuntimeContext, Action<Window>?>? registrationResolver = null)
+    {
+        _registrationResolver = registrationResolver;
+    }
+
     public IScriptWindow CreateWindow(string name, string title, int width, int height, bool onTop = false)
-        => new AvaloniaScriptWindow(name, title, width, height, onTop);
+    {
+        TwxRuntimeContext runtimeContext = GlobalModules.CurrentContext;
+        Action<Window>? registerWindow = _registrationResolver?.Invoke(runtimeContext);
+        return new AvaloniaScriptWindow(name, title, width, height, onTop, registerWindow);
+    }
 }

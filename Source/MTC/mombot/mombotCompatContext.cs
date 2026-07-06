@@ -21,6 +21,13 @@ internal sealed class mombotCompatContext
     private const string DefaultValidPrompts =
         "Command <Underground> Do How Corporate Citadel Planet Computer Terra <StarDock> <FedPolice> <Tavern> <Libram <Galactic <Hardware <Shipyards>";
 
+    private readonly Core.TwxRuntimeContext _runtimeContext;
+
+    public mombotCompatContext(Core.TwxRuntimeContext? runtimeContext = null)
+    {
+        _runtimeContext = runtimeContext ?? Core.GlobalModules.CurrentContext;
+    }
+
     public IReadOnlyDictionary<string, string> BuildVariableSnapshot(
         Core.ModDatabase? database,
         mombotConfig config,
@@ -64,7 +71,7 @@ internal sealed class mombotCompatContext
         string settingsOverride = CommandHasOverride(context) ? "1" : "0";
         string dropOffensive = ReadCurrentAny("0", "$PLAYER~DROPOFFENSIVE", "$PLAYER~dropOffensive");
         string dropToll = ReadCurrentAny("0", "$PLAYER~DROPTOLL", "$PLAYER~dropToll");
-        string currentSector = ReadCurrentAny(FormatSector((ushort)Core.ScriptRef.GetCurrentSector()), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
+        string currentSector = ReadCurrentAny(FormatSector((ushort)Core.ScriptRef.GetCurrentSector(_runtimeContext)), "$PLAYER~CURRENT_SECTOR", "$player~current_sector");
         string currentPrompt = ReadCurrentAny("Undefined", "$PLAYER~CURRENT_PROMPT");
         string startingLocation = ReadCurrentAny(currentPrompt, "$PLAYER~startingLocation", "$bot~startingLocation");
         string majorVersion = ReadCurrentAny("5", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
@@ -230,7 +237,7 @@ internal sealed class mombotCompatContext
         IReadOnlyDictionary<string, string> vars)
     {
         foreach ((string name, string value) in vars)
-            Core.ScriptRef.SetCurrentGameVar(name, value);
+            Core.ScriptRef.SetCurrentGameVar(_runtimeContext, name, value);
 
         if (interpreter == null)
             return;
@@ -274,11 +281,11 @@ internal sealed class mombotCompatContext
         return string.IsNullOrWhiteSpace(normalized) ? "mombot" : normalized;
     }
 
-    private static string ReadCurrentAny(string fallback, params string[] names)
+    private string ReadCurrentAny(string fallback, params string[] names)
     {
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = Core.ScriptRef.GetCurrentGameVar(_runtimeContext, name, string.Empty);
             if (!string.IsNullOrWhiteSpace(value))
                 return value;
         }
@@ -286,11 +293,11 @@ internal sealed class mombotCompatContext
         return fallback;
     }
 
-    private static string ReadCurrentNonZeroAny(string fallback, params string[] names)
+    private string ReadCurrentNonZeroAny(string fallback, params string[] names)
     {
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = Core.ScriptRef.GetCurrentGameVar(_runtimeContext, name, string.Empty);
             if (!string.IsNullOrWhiteSpace(value) &&
                 !string.Equals(value.Trim(), "0", StringComparison.OrdinalIgnoreCase))
             {
@@ -315,12 +322,12 @@ internal sealed class mombotCompatContext
         return false;
     }
 
-    private static string ReadCurrentSectorAny(string fallback, params string[] names)
+    private string ReadCurrentSectorAny(string fallback, params string[] names)
     {
         string? firstNonEmpty = null;
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = Core.ScriptRef.GetCurrentGameVar(_runtimeContext, name, string.Empty);
             if (string.IsNullOrWhiteSpace(value))
                 continue;
 

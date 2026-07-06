@@ -306,6 +306,7 @@ namespace TWXProxy.Core
             // Register this instance as the global TWXServer for script access
             if (_interpreter != null)
             {
+                _interpreter.RuntimeContext = RuntimeContext;
                 GlobalModules.TWXServer = this;
                 GlobalModules.TWXInterpreter = _interpreter;
                 ScriptRef.SetActiveInterpreter(_interpreter);
@@ -358,6 +359,7 @@ namespace TWXProxy.Core
 
         public void SeedShipStatus(ShipStatus status)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ShipStatus snapshot = CloneShipStatus(status);
             _shipInfoParser.SeedStatus(snapshot);
             lock (_shipStatusLock)
@@ -384,6 +386,7 @@ namespace TWXProxy.Core
 
         public void FeedShipStatusLine(string line)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
@@ -394,6 +397,7 @@ namespace TWXProxy.Core
 
         public void AdjustGenesisTorps(int delta)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (delta == 0)
                 return;
 
@@ -405,6 +409,7 @@ namespace TWXProxy.Core
 
         public void AdjustAtomicDet(int delta)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (delta == 0)
                 return;
 
@@ -416,6 +421,7 @@ namespace TWXProxy.Core
 
         public void ApplyShipStatusDelta(ShipStatusDelta delta)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (delta == null || !delta.HasChanges())
                 return;
 
@@ -655,6 +661,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task StartAsync()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             lock (_stateLock)
             {
                 if (_isRunning)
@@ -686,6 +693,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task StopAsync()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             GlobalModules.DebugLog($"[Network] StopAsync called for {_gameName}\n{System.Environment.StackTrace}\n");
             GlobalModules.FlushDebugLog();
             lock (_stateLock)
@@ -738,6 +746,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task ConfigureLocalListenerAsync(bool enabled, int listenPort)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (listenPort is < 1 or > ushort.MaxValue)
                 throw new ArgumentOutOfRangeException(nameof(listenPort), "Listen port must be between 1 and 65535.");
 
@@ -761,6 +770,7 @@ namespace TWXProxy.Core
 
         private void StartLocalListener(int listenPort, CancellationToken token)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             var listener = new TcpListener(IPAddress.Any, listenPort);
             listener.Start();
             _listenPort = listenPort;
@@ -773,6 +783,7 @@ namespace TWXProxy.Core
 
         private async Task StopLocalListenerAsync()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             Task? acceptTask;
             lock (_stateLock)
             {
@@ -806,6 +817,7 @@ namespace TWXProxy.Core
         /// </summary>
         public void ConnectDirectClient(Stream toTerminal, Stream fromTerminal)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _cancellationSource ??= new CancellationTokenSource();
             lock (_stateLock) { _isRunning = true; }
 
@@ -829,6 +841,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task ConnectToServerAsync()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (_serverClient?.Connected == true)
             {
                 Log($"[{_gameName}] Already connected to server");
@@ -897,6 +910,7 @@ namespace TWXProxy.Core
 
         private DataHeader? GetActiveHeader()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (ScriptRef.GetActiveDatabase() is ModDatabase activeDb)
                 return activeDb.DBHeader;
             return GlobalModules.TWXDatabase is ModDatabase globalDb ? globalDb.DBHeader : null;
@@ -904,6 +918,7 @@ namespace TWXProxy.Core
 
         private async Task SendInitialHandshakeAsync(CancellationToken token)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (_serverStream == null || _serverClient?.Connected != true)
                 return;
 
@@ -931,6 +946,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task DisconnectFromServerAsync()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             GlobalModules.DebugLog($"[Network] DisconnectFromServerAsync called for {_gameName}\n");
             GlobalModules.FlushDebugLog();
             if (_serverClient?.Connected != true)
@@ -1268,6 +1284,7 @@ namespace TWXProxy.Core
         /// </summary>
         public void StartReconnectIfNeeded()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (!_autoReconnect || _serverClient?.Connected == true) return;
             if (_cancellationSource == null) return;
             // Only start if no loop is currently running
@@ -1776,6 +1793,7 @@ namespace TWXProxy.Core
         /// </summary>
         public Task SendToServerAsync(byte[] data)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (data.Length == 0 || _serverStream == null || _serverClient?.Connected != true)
                 return Task.CompletedTask;
 
@@ -1867,6 +1885,7 @@ namespace TWXProxy.Core
 
         public async Task SendToLocalAsync(byte[] data, bool broadcastDeaf = false, CancellationToken token = default)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             await _localSendLock.WaitAsync(token);
             try
             {
@@ -1900,6 +1919,7 @@ namespace TWXProxy.Core
 
         public async Task SendToClientAsync(int clientIndex, byte[] data, CancellationToken token = default)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             await _localSendLock.WaitAsync(token);
             try
             {
@@ -1925,6 +1945,7 @@ namespace TWXProxy.Core
         /// </summary>
         public async Task SendMessageAsync(string message)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             message = ApplyQuickText(message);
             var data = Encoding.ASCII.GetBytes(message);
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
@@ -1938,6 +1959,7 @@ namespace TWXProxy.Core
 
         public string ApplyQuickText(string text)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrEmpty(text))
                 return string.Empty;
 
@@ -2033,6 +2055,7 @@ namespace TWXProxy.Core
 
         public void ReloadBotConfigs(string? programDir, string? scriptDirectory, bool includeNative = false)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _botConfigs.Clear();
             _botOrder.Clear();
 
@@ -2049,17 +2072,20 @@ namespace TWXProxy.Core
 
         public void RegisterOrUpdateBotConfig(BotConfig config)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             RegisterBotConfig(config);
         }
 
         public bool ToggleNativeHaggle(NativeHaggleChangeSource source = NativeHaggleChangeSource.User)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             SetNativeHaggleEnabled(!NativeHaggleEnabled, source);
             return _nativeHaggle.Enabled;
         }
 
         public void SetNativeHaggleEnabled(bool enabled, NativeHaggleChangeSource source = NativeHaggleChangeSource.Runtime)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (_nativeHaggle.Enabled == enabled)
             {
                 _pendingNativeHaggleChangeSource = NativeHaggleChangeSource.Runtime;
@@ -2072,21 +2098,25 @@ namespace TWXProxy.Core
 
         public void SetNativeHaggleMode(string? mode)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _nativeHaggle.SetFirstBidMode(mode);
         }
 
         public void SetNativePortHaggleMode(string? mode)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _nativeHaggle.SetPortHaggleMode(mode);
         }
 
         public void SetNativePlanetHaggleMode(string? mode)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _nativeHaggle.SetPlanetHaggleMode(mode);
         }
 
         public void SetNativeHaggleModes(string? portMode, string? planetMode)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _nativeHaggle.SetPortHaggleMode(portMode);
             _nativeHaggle.SetPlanetHaggleMode(planetMode);
         }
@@ -2103,12 +2133,14 @@ namespace TWXProxy.Core
 
         public void SetCommandChar(char commandChar)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (!char.IsControl(commandChar))
                 _commandChar = commandChar;
         }
 
         public bool ProcessNativeHaggleLine(string line)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(line))
                 return false;
 
@@ -2124,6 +2156,7 @@ namespace TWXProxy.Core
 
         public void ObserveScriptSend(string text)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _nativeHaggle.ObserveScriptSend(text);
 
             if (text == "|")
@@ -2255,6 +2288,7 @@ namespace TWXProxy.Core
 
         private void SendNativeHaggleResponse(string response)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             _serverSendLock.Wait();
             try
             {
@@ -2284,6 +2318,7 @@ namespace TWXProxy.Core
         /// </summary>
         public void ClearInputBuffer()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ClearInputBufferRequested?.Invoke(this, EventArgs.Empty);
         }
 
@@ -2320,6 +2355,7 @@ namespace TWXProxy.Core
 
         public void Broadcast(string message)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
@@ -2329,6 +2365,7 @@ namespace TWXProxy.Core
 
         public void Broadcast(string message, bool broadcastDeaf)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             // ECHO/ECHOEX and script prompts use broadcastDeaf so menu/status
             // messages remain visible while scripts mute server output.  Do not
@@ -2342,6 +2379,7 @@ namespace TWXProxy.Core
 
         public void BroadcastLiteral(string message)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(message ?? string.Empty);
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
@@ -2351,6 +2389,7 @@ namespace TWXProxy.Core
 
         public void BroadcastLiteral(string message, bool broadcastDeaf)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(message ?? string.Empty);
             if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
@@ -2360,6 +2399,7 @@ namespace TWXProxy.Core
 
         public void ClientMessage(string message)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             if (TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
                 return;
@@ -2579,6 +2619,7 @@ namespace TWXProxy.Core
 
         public void AddQuickText(string key, string value)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(key))
                 return;
 
@@ -2588,6 +2629,7 @@ namespace TWXProxy.Core
 
         public void ClearQuickText(string? key = null)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(key))
             {
                 _userQuickTexts.Clear();
@@ -2599,11 +2641,13 @@ namespace TWXProxy.Core
 
         public ClientType GetClientType(int index)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             return GetClientSession(index)?.Type ?? ClientType.Standard;
         }
 
         public void SetClientType(int index, ClientType type)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ClientType previousType;
 
             lock (_clientLock)
@@ -2624,6 +2668,7 @@ namespace TWXProxy.Core
 
         public void RegisterBot(string botName, string scriptFile, string description = "")
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(botName) || string.IsNullOrWhiteSpace(scriptFile))
                 return;
 
@@ -2638,6 +2683,7 @@ namespace TWXProxy.Core
 
         public void UnregisterBot(string botName)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(botName))
                 return;
 
@@ -2653,11 +2699,13 @@ namespace TWXProxy.Core
 
         public List<string> GetBotList()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             return _botOrder.Select(bot => bot.Name).ToList();
         }
 
         public BotConfig? GetBotConfig(string botName)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(botName))
                 return null;
 
@@ -2682,6 +2730,7 @@ namespace TWXProxy.Core
 
         public object? GetActiveBot()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             return _interpreter?.GetActiveBot();
         }
 

@@ -66,7 +66,6 @@ public partial class MainWindow : Window
     private TelnetClient    _telnet = null!;
     private TerminalControl _termCtrl = null!;
     private TerminalControl _deckTermCtrl = null!;
-    private readonly DispatcherTimer _statusRefreshTimer;
     private readonly DispatcherTimer _redAlertTimer;
     private Core.ShipInfoParser _shipParser = null!;
     private readonly DispatcherTimer _mombotKeepaliveTimer;
@@ -79,7 +78,7 @@ public partial class MainWindow : Window
     private Core.ExpansionModuleHost?      _moduleHost;     // embedded proxy expansion modules
     private Core.GameFileLock?             _gameFileLock;
     private Core.NativeHaggleEngine _standaloneNativeHaggle = null!;
-    private readonly GameAgentRuntime        _gameAgent = new();
+    private GameAgentRuntime                 _gameAgent = null!;
     private CancellationTokenSource?       _proxyCts;       // cancels the pipe-reader task
     private Task                           _pendingEmbeddedStop = Task.CompletedTask; // tracks in-flight StopEmbeddedAsync
     private object                         _embeddedStopSync = new();
@@ -89,6 +88,15 @@ public partial class MainWindow : Window
     private string?                        _embeddedGameName;
     private const string NativeMombotMenuLabel = "MomBot (native)";
     private MenuItem        _recentMenu    = new() { Header = "_Recent" };
+    private bool            _recentMenuOpen;
+    private bool            _recentMenuRebuildPending;
+    private readonly HashSet<MenuItem> _openSharedMenus = [];
+    private bool            _proxyMenuRebuildPending;
+    private bool            _scriptsMenuRebuildPending;
+    private bool            _aiMenuRebuildPending;
+    private bool            _nativeMenuRefreshPending;
+    private bool            _tabStripRefreshPending;
+    private bool            _focusTerminalAfterSharedMenuClose;
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _botMenu       = new() { Header = "_Bot" };
@@ -147,7 +155,7 @@ public partial class MainWindow : Window
     private Button? _deckMacroRecordButton;
     private Button? _deckMacroStopButton;
     private Button? _deckMacroPlayButton;
-    private readonly List<byte[]> _temporaryMacroChunks = [];
+    private List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
     private TerminalSessionRecorder? _terminalRecorder;

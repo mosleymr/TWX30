@@ -42,6 +42,7 @@ public partial class MainWindow
         FontFamily     = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
         EnsureInitialMtcTab();
+        Core.GlobalModules.ScriptWindowFactory = new AvaloniaScriptWindowFactory(ResolveScriptWindowRegistration);
         RecreateClassicShellControls();
         RecreateDeckShellControls();
 
@@ -74,13 +75,8 @@ public partial class MainWindow
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
         RestoreInWindowLayoutPreferences();
-
-        _statusRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
-        _statusRefreshTimer.Tick += (_, _) =>
-        {
-            _statusRefreshTimer.Stop();
-            RefreshStatusBar();
-        };
+        if (ActiveMtcTab is { } startupTab)
+            CaptureMtcTabSession(startupTab);
 
         _redAlertTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _redAlertTimer.Tick += (_, _) =>
@@ -108,11 +104,20 @@ public partial class MainWindow
         _mombotKeepaliveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         _mombotKeepaliveTimer.Tick += (_, _) =>
         {
-            if (_mombotKeepaliveTickRunning)
-                return;
+            foreach (var tab in _mtcTabs.ToArray())
+            {
+                if (!tab.IsLiveSession)
+                    continue;
 
-            _mombotKeepaliveTickRunning = true;
-            _ = RunNativeMombotKeepaliveTickAsync();
+                _ = ExecuteInOptionalMtcTabSessionAsync(tab, async () =>
+                {
+                    if (_mombotKeepaliveTickRunning)
+                        return;
+
+                    _mombotKeepaliveTickRunning = true;
+                    await RunNativeMombotKeepaliveTickAsync();
+                });
+            }
         };
         _mombotKeepaliveTimer.Start();
 
@@ -120,7 +125,14 @@ public partial class MainWindow
         {
             Interval = OnlineAutoRefreshPollInterval,
         };
-        _onlineAutoRefreshTimer.Tick += (_, _) => _ = TrySendOnlineAutoRefreshAsync();
+        _onlineAutoRefreshTimer.Tick += (_, _) =>
+        {
+            foreach (var tab in _mtcTabs.ToArray())
+            {
+                if (tab.IsLiveSession)
+                    _ = ExecuteInOptionalMtcTabSessionAsync(tab, TrySendOnlineAutoRefreshAsync);
+            }
+        };
         _onlineAutoRefreshTimer.Start();
 
         Opened += (_, _) =>
@@ -139,7 +151,7 @@ public partial class MainWindow
         Closed    += (_, _) =>
         {
             _mainWindowClosing = true;
-            SaveCurrentNotesNow();
+            SaveAllTabNotesNow();
             _notesSaveTimer?.Stop();
             CaptureMainWindowSize();
             CaptureCommWindowHeights();
@@ -156,11 +168,18 @@ public partial class MainWindow
             _proxyCts?.Cancel();
             _jsonRpcServer?.Dispose();
             _jsonRpcServer = null;
-            _gameAgent.Dispose();
-            _terminalRecorder?.Dispose();
+            foreach (var tab in _mtcTabs.ToArray())
+            {
+                try { tab.GameAgent.Dispose(); } catch { }
+                try { tab.TerminalRecorder?.Dispose(); } catch { }
+                tab.TerminalRecorder = null;
+            }
+            try { _gameAgent?.Dispose(); } catch { }
+            try { _terminalRecorder?.Dispose(); } catch { }
             _terminalRecorder = null;
             _redAlertTimer.Stop();
-            _statusRefreshTimer.Stop();
+            foreach (var tab in _mtcTabs.ToArray())
+                tab.StatusRefreshTimer?.Stop();
         };
     }
 

@@ -1703,8 +1703,10 @@ namespace TWXProxy.Core
                 }
                 else
                 {
+                    TwxRuntimeContext context = GlobalModules.CurrentContext;
                     Task.Run(() =>
                     {
+                        using var _ = GlobalModules.UseRuntimeContext(context);
                         string inputText;
                         if (singleKey)
                         {
@@ -3238,11 +3240,13 @@ namespace TWXProxy.Core
                 
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
+                    TwxRuntimeContext context = GlobalModules.CurrentContext;
                     if (instanceName.ToUpper() == "ALL")
                     {
                         // Stop all game instances
                         Task.Run(async () =>
                         {
+                            using var _ = GlobalModules.UseRuntimeContext(context);
                             try
                             {
                                 await db.StopAllGameInstancesAsync();
@@ -3259,6 +3263,7 @@ namespace TWXProxy.Core
                         // Stop specific game instance
                         Task.Run(async () =>
                         {
+                            using var _ = GlobalModules.UseRuntimeContext(context);
                             try
                             {
                                 await db.StopGameInstanceAsync(instanceName);

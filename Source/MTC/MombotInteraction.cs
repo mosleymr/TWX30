@@ -54,6 +54,15 @@ public partial class MainWindow
         }
     }
 
+    private static void SyncMombotPromptVarsFromLine(Core.TwxRuntimeContext? context, string line)
+    {
+        if (!TryGetMombotPromptNameFromLine(line, out string promptName))
+            return;
+
+        SetMombotCurrentVars(context, promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
+        SetMombotCurrentVars(context, "0", "$relogging", "$connectivity~relogging");
+    }
+
     private static string SanitizeObservedPromptForDisplay(string text)
     {
         if (string.IsNullOrEmpty(text))
@@ -97,6 +106,7 @@ public partial class MainWindow
 
     private void ScheduleMombotInteractivePromptRedraw(int promptVersion)
     {
+        var owner = ResolveCurrentMtcTabContext();
         int ticket;
         unchecked
         {
@@ -108,22 +118,25 @@ public partial class MainWindow
             await Task.Delay(120).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (ticket != _mombotMacroPromptRedrawTicket)
-                    return;
-
-                if (!HasMombotInteractiveState())
-                    return;
-
-                if (_mombotObservedGamePromptVersion != promptVersion)
-                    return;
-
-                if (HasPendingTerminalDisplayBacklog())
+                ExecuteInOptionalMtcTabSession(owner, () =>
                 {
-                    ScheduleMombotInteractivePromptRedraw(promptVersion);
-                    return;
-                }
+                    if (ticket != _mombotMacroPromptRedrawTicket)
+                        return;
 
-                RedrawMombotPrompt();
+                    if (!HasMombotInteractiveState())
+                        return;
+
+                    if (_mombotObservedGamePromptVersion != promptVersion)
+                        return;
+
+                    if (HasPendingTerminalDisplayBacklog())
+                    {
+                        ScheduleMombotInteractivePromptRedraw(promptVersion);
+                        return;
+                    }
+
+                    RedrawMombotPrompt();
+                });
             }, DispatcherPriority.Background);
         });
     }
@@ -155,12 +168,6 @@ public partial class MainWindow
                 return;
             }
 
-            if (IsNativeMombotRelogInProgress())
-            {
-                _mombotLastKeepaliveLine = string.Empty;
-                return;
-            }
-
             if (!_gameInstance.IsConnected)
             {
                 _mombotLastKeepaliveLine = string.Empty;
@@ -168,7 +175,8 @@ public partial class MainWindow
                 return;
             }
 
-            string currentLine = NormalizeMombotPromptComparisonValue(Core.ScriptRef.GetCurrentLine());
+            string currentLine = NormalizeMombotPromptComparisonValue(
+                Core.ScriptRef.GetCurrentLine(CurrentMombotRuntimeContext()));
             if (string.IsNullOrWhiteSpace(currentLine))
                 return;
 
@@ -182,6 +190,12 @@ public partial class MainWindow
                 return;
             }
 
+            if (IsNativeMombotRelogInProgress())
+            {
+                _mombotLastKeepaliveLine = string.Empty;
+                return;
+            }
+
             _mombotLastKeepaliveLine = currentLine;
         }
         finally
@@ -190,16 +204,22 @@ public partial class MainWindow
         }
     }
 
-    private void ObserveEmbeddedKeepaliveWatchLine(string line)
+    private void ObserveEmbeddedKeepaliveWatchLine(
+        string line,
+        Core.GameInstance? gameInstance = null,
+        MtcTabPrototype? owner = null)
     {
-        if (_gameInstance == null ||
-            !_gameInstance.IsConnected ||
+        gameInstance ??= _gameInstance;
+        if (gameInstance == null ||
+            !gameInstance.IsConnected ||
             !IsSessionTerminationWarningLine(line))
         {
             return;
         }
 
-        _ = SendKeepaliveEscapeAsync();
+        bool updateCurrentFields = owner is null;
+        owner ??= ResolveCurrentMtcTabContext();
+        _ = SendKeepaliveEscapeAsync(gameInstance, owner, updateCurrentFields);
     }
 
     private void ObserveNativeMombotWatchLine(string line)
@@ -219,15 +239,17 @@ public partial class MainWindow
         if (Interlocked.Exchange(ref _nativeMombotStartupWatchScheduled, 1) != 0)
             return;
 
-        _ = Task.Run(RunNativeMombotStartupWatchAsync);
+        var owner = ResolveCurrentMtcTabContext();
+        _ = Task.Run(async () =>
+            await ExecuteInOptionalMtcTabSessionAsync(owner, RunNativeMombotStartupWatchAsync).ConfigureAwait(false));
     }
 
     private async Task RunNativeMombotStartupWatchAsync()
     {
         try
         {
-            await TryRunNativeMombotInitialSettingsAsync().ConfigureAwait(false);
-            await FinalizeNativeMombotStartupAsync().ConfigureAwait(false);
+            await TryRunNativeMombotInitialSettingsAsync();
+            await FinalizeNativeMombotStartupAsync();
         }
         finally
         {
@@ -245,17 +267,31 @@ public partial class MainWindow
 
     private async Task SendKeepaliveEscapeAsync()
     {
-        if (_gameInstance == null || !_gameInstance.IsConnected)
+        await SendKeepaliveEscapeAsync(
+            _gameInstance,
+            ResolveCurrentMtcTabContext(),
+            updateCurrentFields: true);
+    }
+
+    private async Task SendKeepaliveEscapeAsync(
+        Core.GameInstance? gameInstance,
+        MtcTabPrototype? owner,
+        bool updateCurrentFields)
+    {
+        if (gameInstance == null || !gameInstance.IsConnected)
             return;
 
-        await _gameInstance.SendToServerAsync(new byte[] { 0x1B });
-        RegisterNativeMombotEscapeEchoSuppression();
+        await gameInstance.SendToServerAsync(new byte[] { 0x1B });
+        RegisterNativeMombotEscapeEchoSuppression(owner, updateCurrentFields);
     }
 
     private void RegisterNativeMombotEscapeEchoSuppression()
+        => RegisterNativeMombotEscapeEchoSuppression(ResolveCurrentMtcTabContext(), updateCurrentFields: true);
+
+    private void RegisterNativeMombotEscapeEchoSuppression(MtcTabPrototype? owner, bool updateCurrentFields)
     {
         long suppressUntilTicks = DateTime.UtcNow.AddSeconds(2).Ticks;
-        if (CurrentMtcTabContext() is { } owner)
+        if (owner is not null)
         {
             lock (owner.TerminalDisplayArtifactSync)
             {
@@ -263,8 +299,11 @@ public partial class MainWindow
                 owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = suppressUntilTicks;
             }
 
-            _pendingNativeMombotEscapeEchoSuppressions = owner.PendingNativeMombotEscapeEchoSuppressions;
-            _nativeMombotEscapeEchoSuppressUntilUtcTicks = owner.NativeMombotEscapeEchoSuppressUntilUtcTicks;
+            if (updateCurrentFields)
+            {
+                _pendingNativeMombotEscapeEchoSuppressions = owner.PendingNativeMombotEscapeEchoSuppressions;
+                _nativeMombotEscapeEchoSuppressUntilUtcTicks = owner.NativeMombotEscapeEchoSuppressUntilUtcTicks;
+            }
             return;
         }
 
@@ -273,7 +312,7 @@ public partial class MainWindow
     }
 
     private byte[] FilterTerminalDisplayArtifacts(byte[] chunk)
-        => FilterTerminalDisplayArtifacts(CurrentMtcTabContext(), chunk);
+        => FilterTerminalDisplayArtifacts(ResolveCurrentMtcTabContext(), chunk);
 
     private byte[] FilterTerminalDisplayArtifacts(MtcTabPrototype? owner, byte[] chunk)
     {
@@ -544,8 +583,13 @@ public partial class MainWindow
 
     private bool IsNativeMombotRelogInProgress()
     {
-        return IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging")) ||
+        return HasNativeMombotRelogFlag() ||
                IsNativeMombotRelogScriptLoaded();
+    }
+
+    private bool HasNativeMombotRelogFlag()
+    {
+        return IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging"));
     }
 
     private void HandleNativeMombotPostLoginScriptStop()
@@ -554,7 +598,8 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(macro))
             return;
 
-        Dispatcher.UIThread.Post(async () =>
+        var owner = ResolveCurrentMtcTabContext();
+        PostToMtcTabSessionAsync(owner, async () =>
         {
             for (int attempt = 0; attempt < 20; attempt++)
             {
@@ -584,7 +629,7 @@ public partial class MainWindow
         });
     }
 
-    private static bool IsNativeMombotPostLoginReady()
+    private bool IsNativeMombotPostLoginReady()
     {
         if (IsMombotTruthy(ReadCurrentMombotVar("0", "$relogging", "$connectivity~relogging")))
             return false;
@@ -619,8 +664,23 @@ public partial class MainWindow
         if (!_mombot.Enabled || _gameInstance == null || ShouldStopNativeMombotAfterDisconnect())
             return;
 
-        if (!ShouldNativeMombotAutoRelog() || IsNativeMombotRelogInProgress())
+        if (!ShouldNativeMombotAutoRelog())
             return;
+
+        if (IsNativeMombotRelogScriptLoaded())
+            return;
+
+        if (HasNativeMombotRelogFlag())
+        {
+            string currentLine = NormalizeMombotPromptComparisonValue(
+                Core.ScriptRef.GetCurrentLine(CurrentMombotRuntimeContext()));
+            if (_gameInstance.IsConnected && !IsNativeMombotReconnectPrompt(currentLine))
+                return;
+
+            Core.GlobalModules.DebugLog("[MTC.NativeBotRelog] clearing stale relogging flag before relog trigger\n");
+            Core.GlobalModules.FlushDebugLog();
+            SetMombotCurrentVars("0", "$relogging", "$connectivity~relogging");
+        }
 
         SetMombotCurrentVars("1", "$relogging", "$connectivity~relogging");
         if (!string.IsNullOrWhiteSpace(relogMessage))
@@ -708,22 +768,32 @@ public partial class MainWindow
         return false;
     }
 
-    private static void SetMombotCurrentVars(string value, params string[] names)
+    private Core.TwxRuntimeContext? CurrentMombotRuntimeContext()
+        => ResolveCurrentMtcTabContext()?.RuntimeContext ?? _gameInstance?.RuntimeContext ?? ActiveMtcRuntimeContext;
+
+    private void SetMombotCurrentVars(string value, params string[] names)
     {
-        foreach (string name in names)
-            Core.ScriptRef.SetCurrentGameVar(name, value);
+        Core.TwxRuntimeContext? context = CurrentMombotRuntimeContext();
+        SetMombotCurrentVars(context, value, names);
     }
 
-    private static void MirrorMombotCurrentVars(string fallback, params string[] names)
+    private static void SetMombotCurrentVars(Core.TwxRuntimeContext? context, string value, params string[] names)
+    {
+        foreach (string name in names)
+            Core.ScriptRef.SetCurrentGameVar(context, name, value);
+    }
+
+    private void MirrorMombotCurrentVars(string fallback, params string[] names)
     {
         SetMombotCurrentVars(ReadCurrentMombotVar(fallback, names), names);
     }
 
-    private static string ReadCurrentMombotVar(string fallback, params string[] names)
+    private string ReadCurrentMombotVar(string fallback, params string[] names)
     {
+        Core.TwxRuntimeContext? context = CurrentMombotRuntimeContext();
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = Core.ScriptRef.GetCurrentGameVar(context, name, string.Empty);
             if (!string.IsNullOrWhiteSpace(value))
                 return value;
         }
@@ -731,12 +801,19 @@ public partial class MainWindow
         return fallback;
     }
 
-    private static string ReadCurrentMombotSectorVar(string fallback, params string[] names)
+    private string ReadNamedMombotVar(string name, string fallback)
+        => Core.ScriptRef.GetCurrentGameVar(CurrentMombotRuntimeContext(), name, fallback);
+
+    private void SetNamedMombotVar(string name, string value)
+        => Core.ScriptRef.SetCurrentGameVar(CurrentMombotRuntimeContext(), name, value);
+
+    private string ReadCurrentMombotSectorVar(string fallback, params string[] names)
     {
+        Core.TwxRuntimeContext? context = CurrentMombotRuntimeContext();
         string? firstNonEmpty = null;
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = Core.ScriptRef.GetCurrentGameVar(context, name, string.Empty);
             if (string.IsNullOrWhiteSpace(value))
                 continue;
 
@@ -778,7 +855,7 @@ public partial class MainWindow
             "$alpha_centauri");
     }
 
-    private static void SyncMombotSpecialSectorVar(string sector, bool persist, params string[] names)
+    private void SyncMombotSpecialSectorVar(string sector, bool persist, params string[] names)
     {
         if (!IsDefinedMombotSectorValue(sector))
             return;
@@ -789,7 +866,7 @@ public partial class MainWindow
             SetMombotCurrentVars(sector, names);
     }
 
-    private static string GetMombotVersionDisplay()
+    private string GetMombotVersionDisplay()
     {
         string major = ReadCurrentMombotVar("5", "$BOT~MAJOR_VERSION", "$bot~major_version", "$major_version");
         string minor = ReadCurrentMombotVar("0beta", "$BOT~MINOR_VERSION", "$bot~minor_version", "$minor_version");
@@ -1598,6 +1675,7 @@ public partial class MainWindow
 
     private async Task PromptAndPlayConfiguredMacroAsync(AppPreferences.MacroBinding binding)
     {
+        var owner = ResolveCurrentMtcTabContext() ?? ActiveMtcTab;
         string macro = binding.Macro;
         if (string.IsNullOrWhiteSpace(macro))
             return;
@@ -1609,11 +1687,33 @@ public partial class MainWindow
             return;
         }
 
+        if (owner?.QuickMacroPlayWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         var dialog = new MacroPlayDialog(macro);
-        bool accepted = await dialog.ShowDialog<bool>(this);
+        if (owner != null)
+            owner.QuickMacroPlayWindow = dialog;
+        RegisterMtcTabOwnedWindow(owner, dialog);
+
+        bool accepted;
+        try
+        {
+            accepted = await dialog.ShowDialog<bool>(this);
+        }
+        finally
+        {
+            RebindMtcTabSessionAfterAwait(owner);
+            if (owner != null && ReferenceEquals(owner.QuickMacroPlayWindow, dialog))
+                owner.QuickMacroPlayWindow = null;
+        }
+
         if (!accepted)
         {
-            FocusActiveTerminal();
+            if (owner?.Id == _activeMtcTabId)
+                FocusActiveTerminal();
             return;
         }
 
@@ -1624,14 +1724,16 @@ public partial class MainWindow
             _appPrefs.Save();
         }
 
-        string? error = await PlayConfiguredMacroBurstAsync(updatedMacro, dialog.PlayCount);
+        string? error = await ExecuteInOptionalMtcTabSessionAsync(owner, () =>
+            PlayConfiguredMacroBurstAsync(updatedMacro, dialog.PlayCount));
         if (!string.IsNullOrWhiteSpace(error))
         {
             _parser.Feed($"\x1b[33m[{error}]\x1b[0m\r\n");
             _buffer.Dirty = true;
         }
 
-        FocusActiveTerminal();
+        if (owner?.Id == _activeMtcTabId)
+            FocusActiveTerminal();
     }
 
     private async Task<string?> PlayConfiguredMacroBurstAsync(string macro, int count)
@@ -4251,16 +4353,17 @@ public partial class MainWindow
             string.Equals(normalized, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static void PersistMombotVars(string value, params string[] names)
+    private void PersistMombotVars(string value, params string[] names)
     {
+        Core.TwxRuntimeContext? context = CurrentMombotRuntimeContext();
         foreach (string name in names.Where(static name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            Core.ScriptRef.SetCurrentGameVar(name, value);
-            Core.ScriptRef.OnVariableSaved?.Invoke(name, value);
+            Core.ScriptRef.SetCurrentGameVar(context, name, value);
+            Core.ScriptRef.InvokeOnVariableSaved(context, name, value);
         }
     }
 
-    private static void PersistMombotBoolean(bool enabled, params string[] names)
+    private void PersistMombotBoolean(bool enabled, params string[] names)
         => PersistMombotVars(enabled ? "1" : "0", names);
 
     private static bool CanBindMombotHotkeyCode(IReadOnlyList<string> hotkeys, int charCode, string slotValue)
@@ -4464,7 +4567,7 @@ public partial class MainWindow
 
     private MombotPromptSurface GetMombotPromptSurface()
     {
-        string promptVar = Core.ScriptRef.GetCurrentGameVar("$PLAYER~CURRENT_PROMPT", string.Empty);
+        string promptVar = ReadCurrentMombotVar(string.Empty, "$PLAYER~CURRENT_PROMPT");
         if (string.Equals(promptVar, "Command", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Command;
         if (string.Equals(promptVar, "Citadel", StringComparison.OrdinalIgnoreCase))
@@ -4474,8 +4577,9 @@ public partial class MainWindow
         if (string.Equals(promptVar, "Computer", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Computer;
 
-        string currentLine = Core.ScriptRef.GetCurrentLine().Trim();
-        string currentAnsi = Core.ScriptRef.GetCurrentAnsiLine();
+        Core.TwxRuntimeContext? context = CurrentMombotRuntimeContext();
+        string currentLine = Core.ScriptRef.GetCurrentLine(context).Trim();
+        string currentAnsi = Core.ScriptRef.GetCurrentAnsiLine(context);
         if (currentLine.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase))
             return MombotPromptSurface.Command;
         if (currentLine.StartsWith("Planet command (", StringComparison.OrdinalIgnoreCase))
@@ -4494,7 +4598,7 @@ public partial class MainWindow
 
     private MombotGridContext BuildMombotGridContext()
     {
-        int currentSector = Core.ScriptRef.GetCurrentSector();
+        int currentSector = Core.ScriptRef.GetCurrentSector(CurrentMombotRuntimeContext());
         IReadOnlyList<int> adjacentSectors = _sessionDb?.GetSector(currentSector)?.Warp
             .Where(warp => warp > 0)
             .Select(warp => (int)warp)
@@ -4506,7 +4610,7 @@ public partial class MainWindow
             GetMombotPromptSurface(),
             currentSector,
             adjacentSectors,
-            ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLANET~PLANET", "0")),
+            ParseGameVarInt(ReadCurrentMombotVar("0", "$PLANET~PLANET")),
             _gameInstance?.IsConnected == true,
             _state.Photon);
     }
@@ -4620,7 +4724,7 @@ public partial class MainWindow
 
     private string ResolveMombotPhotonHotkeyCommand()
     {
-        string mode = Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", string.Empty);
+        string mode = ReadCurrentMombotVar(string.Empty, "$BOT~MODE");
         return string.Equals(mode, "Foton", StringComparison.OrdinalIgnoreCase)
             ? "foton off"
             : "foton on p";
@@ -4829,22 +4933,22 @@ public partial class MainWindow
         if (sector <= 10 || sector == starDock)
             return macro;
 
-        int shipMaxAttack = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$SHIP~SHIP_MAX_ATTACK", "0"));
+        int shipMaxAttack = ParseGameVarInt(ReadCurrentMombotVar("0", "$SHIP~SHIP_MAX_ATTACK"));
         int attackCount = shipMaxAttack > 0
             ? Math.Min(_state.Fighters, shipMaxAttack)
             : 0;
         if (attackCount > 0)
             macro += $"za{attackCount}* * ";
 
-        int surroundFigs = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDFIGS", "0"));
+        int surroundFigs = ParseGameVarInt(ReadCurrentMombotVar("0", "$PLAYER~SURROUNDFIGS"));
         if (surroundFigs > 0)
             macro += $"f  z  {surroundFigs}* z  c  d  *  ";
 
-        int surroundLimp = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDLIMP", "0"));
+        int surroundLimp = ParseGameVarInt(ReadCurrentMombotVar("0", "$PLAYER~SURROUNDLIMP"));
         if (surroundLimp > 0)
             macro += $"  H  2  Z  {surroundLimp}*  Z C  *  ";
 
-        int surroundMine = ParseGameVarInt(Core.ScriptRef.GetCurrentGameVar("$PLAYER~SURROUNDMINE", "0"));
+        int surroundMine = ParseGameVarInt(ReadCurrentMombotVar("0", "$PLAYER~SURROUNDMINE"));
         if (surroundMine > 0)
             macro += $"  H  1  Z  {surroundMine}*  Z C  *  ";
 
@@ -4872,9 +4976,12 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(ApplyMombotExecutionRefresh, DispatcherPriority.Normal);
+            PostToCurrentMtcTabSession(ApplyMombotExecutionRefresh, DispatcherPriority.Normal);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         RefreshMombotUi();
         UpdateTemporaryMacroControls();

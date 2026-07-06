@@ -11,6 +11,12 @@ internal sealed class mombotWatcher
 
     private Core.GameInstance? _gameInstance;
     private Core.ModDatabase? _database;
+    private readonly Core.TwxRuntimeContext _runtimeContext;
+
+    public mombotWatcher(Core.TwxRuntimeContext? runtimeContext = null)
+    {
+        _runtimeContext = runtimeContext ?? Core.GlobalModules.CurrentContext;
+    }
 
     public bool IsAttached => _gameInstance != null;
 
@@ -60,7 +66,7 @@ internal sealed class mombotWatcher
         return false;
     }
 
-    private static void SetRedAlertVars(string value)
+    private void SetRedAlertVars(string value)
     {
         PersistCurrentGameVar("$BOT~REDALERT", value);
         PersistCurrentGameVar("$BOT~redalert", value);
@@ -68,9 +74,9 @@ internal sealed class mombotWatcher
         PersistCurrentGameVar("$redalert", value);
     }
 
-    private static void PersistCurrentGameVar(string name, string value)
+    private void PersistCurrentGameVar(string name, string value)
     {
-        Core.ScriptRef.SetCurrentGameVar(name, value);
-        Core.ScriptRef.OnVariableSaved?.Invoke(name, value);
+        Core.ScriptRef.SetCurrentGameVar(_runtimeContext, name, value);
+        Core.ScriptRef.InvokeOnVariableSaved(_runtimeContext, name, value);
     }
 }

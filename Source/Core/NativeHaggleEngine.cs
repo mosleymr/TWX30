@@ -14,7 +14,8 @@ public static class NativeHaggleModes
     public const string ClampHeuristic = "clamp-heuristic";
     public const string ServerDerived = "server-derived";
     public const string ExcellentTarget = "excellent-target";
-    public const string Default = ClampHeuristic;
+    public const string Aggressive = "aggressive";
+    public const string Default = ServerDerived;
     public const string DefaultPlanet = CherokeePlanet;
 
     public static string Normalize(string? mode)
@@ -32,12 +33,14 @@ public static class NativeHaggleModes
             BlendHeuristic => BlendHeuristic,
             "enhanced haggle" => ServerDerived,
             "server derived" => ServerDerived,
+            "aggressive haggle" => Aggressive,
             "cherokee" => CherokeePlanet,
             "cherokee planet" => CherokeePlanet,
             CherokeePlanet => CherokeePlanet,
             ClampHeuristic => ClampHeuristic,
             ServerDerived => ServerDerived,
             ExcellentTarget => ExcellentTarget,
+            Aggressive => Aggressive,
             _ => normalized,
         };
     }
@@ -49,6 +52,7 @@ public static class NativeHaggleModes
                normalized == BlendHeuristic ||
                normalized == ServerDerived ||
                normalized == Baseline ||
+               normalized == Aggressive ||
                normalized == CherokeePlanet;
     }
 
@@ -58,6 +62,7 @@ public static class NativeHaggleModes
         BlendHeuristic,
         ServerDerived,
         Baseline,
+        Aggressive,
         CherokeePlanet,
     };
 
@@ -427,6 +432,7 @@ public sealed class NativeHaggleEngine
     private string _portBidMode = NativeHaggleModes.Default;
     private string _planetBidMode = NativeHaggleModes.DefaultPlanet;
     private readonly Dictionary<string, NativeHaggleModeExtension> _extensionModes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly NativeHaggleAggressiveMode _aggressiveMode = new();
     private readonly PlanetTradeRunState _planetTradeRunState = new();
     private string? _lastMissingPortModeId;
     private string? _lastMissingPlanetModeId;
@@ -2123,6 +2129,9 @@ public sealed class NativeHaggleEngine
             return ComputeCherokeePlanetBaselineBid(session, offer);
 
         string mode = NativeHaggleModes.Normalize(firstBidMode);
+        if (mode == NativeHaggleModes.Aggressive)
+            return _aggressiveMode.ComputeBid(this, session, offer);
+
         if (_extensionModes.TryGetValue(mode, out NativeHaggleModeExtension? extension))
             return extension.ComputeBid(this, session, offer);
 
@@ -3200,6 +3209,9 @@ public sealed class NativeHaggleEngine
     private NativeHaggleModeExtension? GetActiveModeExtension(string? modeId)
     {
         string normalized = NativeHaggleModes.Normalize(modeId);
+        if (normalized == NativeHaggleModes.Aggressive)
+            return _aggressiveMode;
+
         return _extensionModes.TryGetValue(normalized, out NativeHaggleModeExtension? extension)
             ? extension
             : null;

@@ -22,6 +22,7 @@ public partial class MainWindow
             var owner = ActiveMtcTab;
             if (owner?.GameAgentWindow is { IsVisible: true } existing)
             {
+                owner.GameAgent.Activate(GetGameAgentGameName());
                 existing.Activate();
                 existing.Focus();
                 return;
@@ -36,31 +37,41 @@ public partial class MainWindow
             window.Closed += (_, _) =>
             {
                 if (owner != null && ReferenceEquals(owner.GameAgentWindow, window))
+                {
                     owner.GameAgentWindow = null;
+                    owner.GameAgent.Deactivate();
+                }
             };
             if (owner != null)
+            {
                 owner.GameAgentWindow = window;
+                owner.GameAgent.Activate(GetGameAgentGameName());
+            }
             ShowMtcTabOwnedWindow(owner, window, activate: false);
         }
         catch (Exception ex)
         {
             var owner = ActiveMtcTab;
             if (owner != null)
+            {
                 owner.GameAgentWindow = null;
+                owner.GameAgent.Deactivate();
+            }
             _ = ShowMessageAsync("Game Agent", $"Could not open Game Agent:\n{ex.Message}");
         }
     }
 
     private async Task OpenGameAgentReplayWindowAsync()
     {
+        var owner = ActiveMtcTab;
         string? path = await PickProxyOpenPathAsync(
             "Open Game Agent Event Log",
             "Game Agent Events",
             "*.jsonl");
+        RebindMtcTabSessionAfterAwait(owner);
         if (string.IsNullOrWhiteSpace(path))
             return;
 
-        var owner = ActiveMtcTab;
         owner?.GameAgentReplayWindow?.Close();
         var window = new GameAgentReplayWindow(path);
         window.Closed += (_, _) =>
@@ -110,6 +121,7 @@ public partial class MainWindow
             {
                 tab.GameAgentWindow?.Close();
                 tab.GameAgentWindow = null;
+                tab.GameAgent.Deactivate();
             }
         }
     }
@@ -184,6 +196,9 @@ public partial class MainWindow
 
     private void ObserveGameAgentServerLine(string plainText, string ansiText, bool isPrompt)
     {
+        if (!IsGameAgentServerObservationEnabled())
+            return;
+
         string normalized = NormalizeGameAgentText(plainText);
         if (string.IsNullOrWhiteSpace(normalized))
             return;
@@ -211,8 +226,23 @@ public partial class MainWindow
         });
     }
 
+    private bool IsGameAgentServerObservationEnabled()
+        => IsGameAgentActiveForCurrentTab();
+
+    private bool IsGameAgentActiveForCurrentTab()
+    {
+        var owner = ResolveCurrentMtcTabContext();
+        return IsGameAgentWindowActive(owner) && owner!.GameAgent.IsActive;
+    }
+
+    private static bool IsGameAgentWindowActive(MtcTabPrototype? owner)
+        => owner?.GameAgentWindow is { IsVisible: true };
+
     private void ObserveGameAgentClientInput(byte[] bytes)
     {
+        if (!IsGameAgentActiveForCurrentTab())
+            return;
+
         if (bytes.Length == 0)
             return;
 
@@ -241,6 +271,9 @@ public partial class MainWindow
 
     private void ObserveGameAgentConnectionChanged(bool connected)
     {
+        if (!IsGameAgentActiveForCurrentTab())
+            return;
+
         _gameAgent.SetGameName(GetGameAgentGameName());
         _gameAgent.Record(new GameAgentEvent
         {
@@ -259,6 +292,9 @@ public partial class MainWindow
 
     private void ObserveGameAgentCurrentSectorChanged(int sector)
     {
+        if (!IsGameAgentActiveForCurrentTab())
+            return;
+
         _gameAgent.SetGameName(GetGameAgentGameName());
         _gameAgent.Record(new GameAgentEvent
         {
@@ -271,6 +307,9 @@ public partial class MainWindow
 
     private void ObserveGameAgentShipStatus(Core.ShipStatus status)
     {
+        if (!IsGameAgentActiveForCurrentTab())
+            return;
+
         string signature = string.Join('|',
             status.CurrentSector,
             status.Credits,

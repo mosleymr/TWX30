@@ -29,13 +29,15 @@ public partial class MainWindow
 {
     private void OnTelnetConnected()
     {
-        _state.Connected = true;
-        ObserveGameAgentConnectionChanged(connected: true);
-        RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
-        // Open (or create) the sector database for this game connection
-        OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
-        void ApplyUi()
+        var owner = ResolveCurrentMtcTabContext();
+
+        void Apply()
         {
+            _state.Connected = true;
+            ObserveGameAgentConnectionChanged(connected: true);
+            RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
+            // Open (or create) the sector database for this game connection.
+            OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
             SetTerminalConnected(true);
             OnGameConnected();
             UpdateTemporaryMacroControls();
@@ -45,24 +47,26 @@ public partial class MainWindow
         }
 
         if (Dispatcher.UIThread.CheckAccess())
-            ApplyUi();
+            ExecuteInOptionalMtcTabSession(owner, Apply);
         else
-            Dispatcher.UIThread.Post(ApplyUi);
+            PostToMtcTabSession(owner, Apply);
     }
 
     private void OnTelnetDisconnected()
     {
-        _state.Connected = false;
-        ObserveGameAgentConnectionChanged(connected: false);
-        _sessionLog.CloseLog();
-        // Flush and close the database
-        try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
-        _sessionDb = null;
-        _gameFileLock?.Dispose();
-        _gameFileLock = null;
-        Core.ScriptRef.SetActiveDatabase(null);
-        void ApplyUi()
+        var owner = ResolveCurrentMtcTabContext();
+
+        void Apply()
         {
+            _state.Connected = false;
+            ObserveGameAgentConnectionChanged(connected: false);
+            _sessionLog.CloseLog();
+            // Flush and close the database.
+            try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
+            _sessionDb = null;
+            _gameFileLock?.Dispose();
+            _gameFileLock = null;
+            Core.ScriptRef.SetActiveDatabase(owner?.RuntimeContext ?? ActiveMtcRuntimeContext, null);
             SetTerminalConnected(false);
             OnGameDisconnected();
             UpdateTemporaryMacroControls();
@@ -72,23 +76,25 @@ public partial class MainWindow
         }
 
         if (Dispatcher.UIThread.CheckAccess())
-            ApplyUi();
+            ExecuteInOptionalMtcTabSession(owner, Apply);
         else
-            Dispatcher.UIThread.Post(ApplyUi);
+            PostToMtcTabSession(owner, Apply);
     }
 
     private void OnTelnetError(string msg)
     {
-        void ApplyUi()
+        var owner = ResolveCurrentMtcTabContext();
+
+        void Apply()
         {
             _parser.Feed($"\x1b[1;31m[Error: {msg}]\x1b[0m\r\n");
             _buffer.Dirty = true;
         }
 
         if (Dispatcher.UIThread.CheckAccess())
-            ApplyUi();
+            ExecuteInOptionalMtcTabSession(owner, Apply);
         else
-            Dispatcher.UIThread.Post(ApplyUi);
+            PostToMtcTabSession(owner, Apply);
     }
 
     // ── Connection menu state helpers ──────────────────────────────────────
@@ -112,7 +118,16 @@ public partial class MainWindow
     /// <summary>Call after a profile is applied (game selected) to enable Connect.</summary>
     private void OnGameSelected()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(OnGameSelected, DispatcherPriority.Background);
+            return;
+        }
+
         ClearOnlinePlayers();
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         UpdateNotesForActiveGame();
         _fileEdit.IsEnabled       = true;
         _fileConnect.IsEnabled    = true;
@@ -124,10 +139,19 @@ public partial class MainWindow
     /// <summary>Call when TCP connection is established.</summary>
     private void OnGameConnected()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(OnGameConnected, DispatcherPriority.Background);
+            return;
+        }
+
         long now = Stopwatch.GetTimestamp();
         Volatile.Write(ref _lastGameTrafficTicks, now);
         Volatile.Write(ref _lastOnlineRefreshTicks, now);
         ResetServerCommandTyping();
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _fileConnect.IsEnabled    = false;
         _fileDisconnect.IsEnabled = true;
         UpdateHaggleToggleState();
@@ -140,11 +164,20 @@ public partial class MainWindow
     /// <summary>Call when TCP connection is lost / disconnected.</summary>
     private void OnGameDisconnected()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(OnGameDisconnected, DispatcherPriority.Background);
+            return;
+        }
+
         Volatile.Write(ref _lastGameTrafficTicks, 0);
         Volatile.Write(ref _lastOnlineRefreshTicks, 0);
         ResetServerCommandTyping();
         ClearOnlinePlayers();
         ClearRedAlert();
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         SaveCurrentNotesNow();
         RefreshNotesMenuState();
         _fileConnect.IsEnabled    = true;
@@ -162,7 +195,7 @@ public partial class MainWindow
             if (CanUseRemoteProxyScripts())
             {
                 SendProxyMenuCommand("h");
-                Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+                PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
                 return;
             }
 
@@ -177,11 +210,20 @@ public partial class MainWindow
         }
 
         _termCtrl.SendInput?.Invoke(System.Text.Encoding.ASCII.GetBytes("$h"));
-        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private void UpdateHaggleToggleState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateHaggleToggleState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         bool haggleAvailable = _gameInstance != null || (!_state.EmbeddedProxy && _telnet.IsConnected);
         _statusHaggleButton.IsEnabled = haggleAvailable;
         UpdateTerminalLiveSelector();
@@ -252,21 +294,21 @@ public partial class MainWindow
 
         string loginName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+            ReadCurrentMombotVar(string.Empty, "$BOT~USERNAME"),
+            ReadCurrentMombotVar(string.Empty, "$username"));
         string serverName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            ReadCurrentMombotVar(string.Empty, "$BOT~SERVERNAME"),
+            ReadCurrentMombotVar(string.Empty, "$servername"),
             loginName);
         string password = FirstMeaningfulMombotValue(
             configPassword,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
+            ReadCurrentMombotVar(string.Empty, "$BOT~PASSWORD"),
+            ReadCurrentMombotVar(string.Empty, "$password"));
         string gameLetter = FirstMeaningfulMombotValue(
             configGameLetter,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+            ReadCurrentMombotVar(string.Empty, "$BOT~LETTER"),
+            ReadCurrentMombotVar(string.Empty, "$letter"));
 
         return !string.IsNullOrWhiteSpace(serverName) &&
                !string.IsNullOrWhiteSpace(loginName) &&
@@ -338,7 +380,8 @@ public partial class MainWindow
             _ = SaveEmbeddedGameConfigAsync(gameName, gameConfig);
         }
 
-        Dispatcher.UIThread.Post(() =>
+        var owner = ResolveCurrentMtcTabContext();
+        PostToMtcTabSession(owner, () =>
         {
             UpdateHaggleToggleState();
             RefreshMombotUi();
@@ -349,7 +392,8 @@ public partial class MainWindow
 
     private void OnNativeHaggleStatsChanged()
     {
-        Dispatcher.UIThread.Post(() =>
+        var owner = ResolveCurrentMtcTabContext();
+        PostToMtcTabSession(owner, () =>
         {
             RefreshMombotUi();
             if (ShouldShowStatusBarHaggleInfo())
@@ -499,9 +543,10 @@ public partial class MainWindow
             _sessionDb = null;
             _gameFileLock?.Dispose();
             _gameFileLock = null;
-            Core.ScriptRef.SetActiveDatabase(null);
-            Core.ScriptRef.OnVariableSaved = null;
-            Core.ScriptRef.ClearCurrentGameVars();
+            Core.TwxRuntimeContext? runtimeContext = ResolveCurrentMtcTabContext()?.RuntimeContext ?? _gameInstance?.RuntimeContext ?? ActiveMtcRuntimeContext;
+            Core.ScriptRef.SetActiveDatabase(runtimeContext, null);
+            Core.ScriptRef.SetOnVariableSaved(runtimeContext, null);
+            Core.ScriptRef.ClearCurrentGameVars(runtimeContext);
             ClearMombotRelogState();
             ResetMombotGameStorage(gameName);
 
@@ -752,7 +797,7 @@ public partial class MainWindow
         bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, gameConfig, gameName).ShowDialog<bool>(this);
         if (!saved)
         {
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
             return;
         }
 
@@ -766,7 +811,7 @@ public partial class MainWindow
         ApplySessionLogSettings(_embeddedGameConfig);
         ApplyRedAlertPreference();
         RebuildScriptsMenu();
-        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private async Task SaveCurrentDebugConfigAsync()
@@ -884,27 +929,53 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = CurrentMtcTabContext();
-            Dispatcher.UIThread.Post(
-                () => ExecuteInOptionalMtcTabSession(owner, RequestStatusBarRefresh),
-                DispatcherPriority.Background);
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(owner, RequestStatusBarRefresh, DispatcherPriority.Background);
             return;
         }
 
         if (!PrepareMtcTabVisualRefresh())
             return;
 
-        DispatcherTimer? statusRefreshTimer = _statusRefreshTimer;
-        if (statusRefreshTimer == null)
+        var activeOwner = ActiveMtcTab;
+        if (activeOwner is not null && activeOwner.Id != _activeMtcTabId)
         {
-            RefreshStatusBar();
+            CaptureMtcTabSession(activeOwner);
             return;
         }
 
-        if (statusRefreshTimer.IsEnabled)
+        if (activeOwner is not null)
+        {
+            DispatcherTimer statusRefreshTimer = EnsureMtcTabStatusRefreshTimer(activeOwner);
+            if (!statusRefreshTimer.IsEnabled)
+                statusRefreshTimer.Start();
             return;
+        }
 
-        statusRefreshTimer.Start();
+        RefreshStatusBar();
+    }
+
+    private DispatcherTimer EnsureMtcTabStatusRefreshTimer(MtcTabPrototype tab)
+    {
+        if (tab.StatusRefreshTimer is null)
+        {
+            tab.StatusRefreshTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(120)
+            };
+        }
+
+        if (!tab.StatusRefreshTimerWired)
+        {
+            tab.StatusRefreshTimer.Tick += (_, _) =>
+            {
+                tab.StatusRefreshTimer?.Stop();
+                ExecuteInOptionalMtcTabSession(tab, RefreshStatusBar);
+            };
+            tab.StatusRefreshTimerWired = true;
+        }
+
+        return tab.StatusRefreshTimer;
     }
 
     private static int CountTransportLines(byte[] bytes)

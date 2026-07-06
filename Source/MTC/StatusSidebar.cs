@@ -807,7 +807,7 @@ public partial class MainWindow
         button.Click += (_, _) =>
         {
             onClick();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         return button;
     }

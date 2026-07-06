@@ -61,8 +61,8 @@ namespace TWXProxy.Core
                 {
                     try
                     {
-                        GlobalModules.DebugLog($"[CONNECT] ConnectToServerAsync starting\n");
                         using var _ = GlobalModules.UseRuntimeContext(context);
+                        GlobalModules.DebugLog($"[CONNECT] ConnectToServerAsync starting\n");
                         await gameInstance.ConnectToServerAsync();
                         GlobalModules.DebugLog($"[CONNECT] ConnectToServerAsync completed successfully\n");
                         GlobalModules.FlushDebugLog();
@@ -119,6 +119,7 @@ namespace TWXProxy.Core
                     try
                     {
                         using var _ = GlobalModules.UseRuntimeContext(context);
+                        GlobalModules.DebugLog($"[Script.DISCONNECT] DisconnectFromServerAsync starting\n");
                         await gameInstance.DisconnectFromServerAsync();
                     }
                     catch (Exception ex)
@@ -446,6 +447,11 @@ namespace TWXProxy.Core
         public static void SetActiveGameInstance(GameInstance? gameInstance)
         {
             ActiveGameInstance = gameInstance;
+        }
+
+        public static void SetActiveGameInstance(TwxRuntimeContext? context, GameInstance? gameInstance)
+        {
+            (context ?? GlobalModules.CurrentContext).ActiveGameInstance = gameInstance;
         }
 
         #endregion

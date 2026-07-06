@@ -78,6 +78,7 @@ internal static class NativeHaggleModeCatalog
         new NativeHaggleModeInfo(NativeHaggleModes.ServerDerived, "Enhanced Haggle", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
         new NativeHaggleModeInfo(NativeHaggleModes.BlendHeuristic, "Blend Heuristic", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
         new NativeHaggleModeInfo(NativeHaggleModes.Baseline, "Baseline", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: false),
+        new NativeHaggleModeInfo(NativeHaggleModes.Aggressive, "Aggressive", isBuiltIn: true, supportsPortTrades: true, supportsPlanetTrades: true),
         new NativeHaggleModeInfo(NativeHaggleModes.CherokeePlanet, "Cherokee Planet", isBuiltIn: true, supportsPortTrades: false, supportsPlanetTrades: true),
     };
 

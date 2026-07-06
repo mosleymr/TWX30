@@ -32,7 +32,10 @@ namespace TWXProxy.Core
         // Per-game variable storage: loaded from GameConfig.Variables at game start;
         // updated on every savevar call and flushed to disk via OnVariableSaved.
         private static Dictionary<string, string> _currentGameVars =>
-            GlobalModules.CurrentContext.CurrentGameVars;
+            CurrentGameVarsFor(GlobalModules.CurrentContext);
+
+        private static Dictionary<string, string> CurrentGameVarsFor(TwxRuntimeContext? context)
+            => (context ?? GlobalModules.CurrentContext).CurrentGameVars;
 
         /// <summary>
         /// Called whenever savevar persists a value. The delegate (set by
@@ -43,6 +46,19 @@ namespace TWXProxy.Core
         {
             get => GlobalModules.CurrentContext.OnVariableSaved;
             set => GlobalModules.CurrentContext.OnVariableSaved = value;
+        }
+
+        public static Action<string, string>? GetOnVariableSaved(TwxRuntimeContext? context)
+            => (context ?? GlobalModules.CurrentContext).OnVariableSaved;
+
+        public static void SetOnVariableSaved(TwxRuntimeContext? context, Action<string, string>? handler)
+        {
+            (context ?? GlobalModules.CurrentContext).OnVariableSaved = handler;
+        }
+
+        public static void InvokeOnVariableSaved(TwxRuntimeContext? context, string name, string value)
+        {
+            (context ?? GlobalModules.CurrentContext).OnVariableSaved?.Invoke(name, value);
         }
         
         // Persistence file paths
@@ -270,6 +286,14 @@ namespace TWXProxy.Core
                 _currentGameVars[kvp.Key] = kvp.Value;
         }
 
+        public static void LoadVarsForGame(TwxRuntimeContext? context, Dictionary<string, string> variables)
+        {
+            var vars = CurrentGameVarsFor(context);
+            vars.Clear();
+            foreach (var kvp in variables)
+                vars[kvp.Key] = kvp.Value;
+        }
+
         /// <summary>
         /// Clear the current game's shared savevar/loadvar cache without
         /// touching persisted globals or program variables.
@@ -277,6 +301,11 @@ namespace TWXProxy.Core
         public static void ClearCurrentGameVars()
         {
             _currentGameVars.Clear();
+        }
+
+        public static void ClearCurrentGameVars(TwxRuntimeContext? context)
+        {
+            CurrentGameVarsFor(context).Clear();
         }
 
         /// <summary>
@@ -291,6 +320,14 @@ namespace TWXProxy.Core
             _currentGameVars[name] = value;
         }
 
+        public static void SetCurrentGameVar(TwxRuntimeContext? context, string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+
+            CurrentGameVarsFor(context)[name] = value;
+        }
+
         /// <summary>
         /// Read the current game's shared savevar/loadvar value without going through a script.
         /// </summary>
@@ -300,6 +337,17 @@ namespace TWXProxy.Core
                 return defaultValue;
 
             if (TryGetCompatibleVarValue(_currentGameVars, name, out string value, out _))
+                return value;
+
+            return defaultValue;
+        }
+
+        public static string GetCurrentGameVar(TwxRuntimeContext? context, string name, string defaultValue = "")
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return defaultValue;
+
+            if (TryGetCompatibleVarValue(CurrentGameVarsFor(context), name, out string value, out _))
                 return value;
 
             return defaultValue;

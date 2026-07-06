@@ -584,8 +584,11 @@ namespace TWXProxy.Core
         /// This should be called when a database is opened
         /// </summary>
         public static void SetActiveDatabase(ModDatabase? database)
+            => SetActiveDatabase(GlobalModules.CurrentContext, database);
+
+        public static void SetActiveDatabase(TwxRuntimeContext? runtimeContext, ModDatabase? database)
         {
-            TwxRuntimeContext context = GlobalModules.CurrentContext;
+            TwxRuntimeContext context = runtimeContext ?? GlobalModules.CurrentContext;
             if (!ReferenceEquals(context.ActiveDatabase, database))
             {
                 string reason = database == null
@@ -596,9 +599,11 @@ namespace TWXProxy.Core
             }
 
             context.ActiveDatabase = database;
-            GlobalModules.TWXDatabase = database;
+            if (ReferenceEquals(context, GlobalModules.CurrentContext))
+                GlobalModules.TWXDatabase = database;
 
-            if (GlobalModules.TWXLog is ModLog log)
+            if (ReferenceEquals(context, GlobalModules.CurrentContext) &&
+                GlobalModules.TWXLog is ModLog log)
                 log.SetLogIdentity(database?.DatabaseName);
         }
 
@@ -608,7 +613,12 @@ namespace TWXProxy.Core
         /// </summary>
         public static void SetCurrentSector(int sectorNumber)
         {
-            GlobalModules.CurrentContext.CurrentSector = sectorNumber;
+            SetCurrentSector(GlobalModules.CurrentContext, sectorNumber);
+        }
+
+        public static void SetCurrentSector(TwxRuntimeContext? context, int sectorNumber)
+        {
+            (context ?? GlobalModules.CurrentContext).CurrentSector = sectorNumber;
         }
 
         /// <summary>
@@ -616,11 +626,17 @@ namespace TWXProxy.Core
         /// </summary>
         public static int GetCurrentSector()
         {
-            int extractorSector = GlobalModules.GlobalAutoRecorder.CurrentSector;
+            return GetCurrentSector(GlobalModules.CurrentContext);
+        }
+
+        public static int GetCurrentSector(TwxRuntimeContext? context)
+        {
+            TwxRuntimeContext resolvedContext = context ?? GlobalModules.CurrentContext;
+            int extractorSector = resolvedContext.AutoRecorder.CurrentSector;
             if (extractorSector > 0)
                 return extractorSector;
 
-            return GlobalModules.CurrentContext.CurrentSector;
+            return resolvedContext.CurrentSector;
         }
 
         /// <summary>

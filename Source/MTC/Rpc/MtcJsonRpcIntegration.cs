@@ -13,7 +13,7 @@ public partial class MainWindow
         try
         {
             _appPrefs.EnsureJsonRpcAuthToken();
-            _jsonRpcServer ??= new MtcJsonRpcServer(_gameAgent, BuildMtcRpcBridge());
+            _jsonRpcServer ??= new MtcJsonRpcServer(BuildMtcRpcBridge());
             _jsonRpcServer.ApplyOptions(new MtcJsonRpcServerOptions
             {
                 Enabled = _appPrefs.JsonRpcEnabled,
@@ -198,15 +198,23 @@ public partial class MainWindow
 
     private Task<T> InvokeMtcRpcUiAsync<T>(Func<Task<T>> action)
     {
+        var owner = ResolveCurrentMtcTabContext();
+        var runtimeContext = Core.GlobalModules.CurrentContext;
         if (Dispatcher.UIThread.CheckAccess())
-            return action();
+        {
+            owner ??= FindMtcTabForRuntimeContext(runtimeContext) ?? ActiveMtcTab;
+            return ExecuteInOptionalMtcTabSessionAsync(owner, action);
+        }
 
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
         Dispatcher.UIThread.Post(async () =>
         {
             try
             {
-                tcs.SetResult(await action().ConfigureAwait(true));
+                var resolvedOwner = owner
+                    ?? FindMtcTabForRuntimeContext(runtimeContext)
+                    ?? ActiveMtcTab;
+                tcs.SetResult(await ExecuteInOptionalMtcTabSessionAsync(resolvedOwner, action).ConfigureAwait(true));
             }
             catch (Exception ex)
             {

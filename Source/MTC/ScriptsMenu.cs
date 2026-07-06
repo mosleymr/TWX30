@@ -41,12 +41,31 @@ public partial class MainWindow
     /// Disk scanning runs on a background thread; MenuItem objects are created
     /// on the UI thread in the continuation.
     /// </summary>
-    private void RebuildScriptsMenu()
+    private void RebuildScriptsMenu(bool force = false)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RebuildScriptsMenu(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen && !force)
+        {
+            _scriptsMenuRebuildPending = true;
+            _nativeMenuRefreshPending = true;
+            return;
+        }
+
+        _scriptsMenuRebuildPending = false;
+
+        var owner = CurrentMtcTabContext();
         bool canRunProxyScripts = CanRunProxyScripts();
         _scriptsMenu.IsEnabled = canRunProxyScripts;
         var reloadItem = new MenuItem { Header = "_Reload All Scripts" };
-        reloadItem.Click += (_, _) => RebuildScriptsMenu();
+        reloadItem.Click += (_, _) => RebuildScriptsMenu(force: true);
 
         if (!canRunProxyScripts)
         {
@@ -87,16 +106,30 @@ public partial class MainWindow
         _ = Task.Run(() => ScanScriptNodes(baseDir, baseDir, depth: 0))
                 .ContinueWith(t =>
                 {
-                    if (t.IsFaulted) return;
+                    ExecuteInOptionalMtcTabSession(owner, () =>
+                    {
+                        if (!PrepareMtcTabVisualRefresh())
+                            return;
 
-                    var items = new List<object> { reloadItem, new Separator() };
-                    if (t.Result.Count == 0)
-                        items.Add(new MenuItem { Header = "(no scripts found)", IsEnabled = false });
-                    else
-                        BuildMenuItems(items, t.Result);
+                        if (t.IsFaulted)
+                            return;
 
-                    _scriptsMenu.ItemsSource = items;
-                    RefreshNativeAppMenu();
+                        if (AreSharedMenusOpen && !force)
+                        {
+                            _scriptsMenuRebuildPending = true;
+                            _nativeMenuRefreshPending = true;
+                            return;
+                        }
+
+                        var items = new List<object> { reloadItem, new Separator() };
+                        if (t.Result.Count == 0)
+                            items.Add(new MenuItem { Header = "(no scripts found)", IsEnabled = false });
+                        else
+                            BuildMenuItems(items, t.Result);
+
+                        _scriptsMenu.ItemsSource = items;
+                        RefreshNativeAppMenu();
+                    });
                 }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
@@ -174,7 +207,7 @@ public partial class MainWindow
                 ToolTip.SetTip(item, relPath);
                 item.Click += (_, _) =>
                 {
-                    SendProxyMenuCommand($"ss {relPath}");
+                    ExecuteInActiveMtcTabSession(() => SendProxyMenuCommand($"ss {relPath}"));
                 };
                 target.Add(item);
             }

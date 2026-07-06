@@ -153,6 +153,8 @@ namespace TWXProxy.Core
         private string _programDir = string.Empty;
         private string _scriptDirectory = string.Empty;
 
+        public TwxRuntimeContext RuntimeContext { get; set; } = GlobalModules.CurrentContext;
+
         public ModInterpreter(IPersistenceController? persistenceController = null)
             : base(persistenceController)
         {
@@ -184,6 +186,7 @@ namespace TWXProxy.Core
 
         private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ProgramEvent("Time hit", ScriptTimeFormatter.Format(DateTime.Now), true);
         }
 
@@ -371,6 +374,7 @@ namespace TWXProxy.Core
 
         private void LoadInternal(string filename, bool silent, string? entryLabel, Action<Script>? beforeExecute)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             GlobalModules.DebugLog($"[ModInterpreter.Load] Starting load of '{filename}', silent={silent}\n");
             string eventScriptName = filename;
 
@@ -606,6 +610,7 @@ namespace TWXProxy.Core
 
         public void Stop(int index)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             var script = _scriptList[index];
             // Match Pascal: ProgramEvent('SCRIPT STOPPED', Script.Cmp.ScriptFile, TRUE)
             string scriptName = script.LoadEventName ?? script.Compiler?.ScriptFile ?? string.Empty;
@@ -654,6 +659,7 @@ namespace TWXProxy.Core
 
         public void StopAll(bool stopSysScripts)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Terminate all scripts
             int i = 0;
 
@@ -668,6 +674,7 @@ namespace TWXProxy.Core
 
         public void ForceStopAll(bool stopSysScripts)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             for (int i = _scriptList.Count - 1; i >= 0; i--)
             {
                 Script script = _scriptList[i];
@@ -683,6 +690,7 @@ namespace TWXProxy.Core
 
         public void ForceStopInterruptible()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             for (int i = _scriptList.Count - 1; i >= 0; i--)
             {
                 Script script = _scriptList[i];
@@ -698,6 +706,7 @@ namespace TWXProxy.Core
 
         public void SwitchBot(string scriptName, string botName, bool stopBotScripts)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ITWXServer? server = GlobalModules.TWXServer;
             if (server == null)
             {
@@ -778,6 +787,7 @@ namespace TWXProxy.Core
 
         public void ActivateBotContext(BotConfig botConfig, string requestedBotName = "", string? lastBotName = null)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             string previousBotName = lastBotName ?? GetActiveBotName();
 
             _activeBot = botConfig.Name;
@@ -808,6 +818,7 @@ namespace TWXProxy.Core
 
         public void ClearActiveBotContext(string? botName = null)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (!string.IsNullOrWhiteSpace(botName) &&
                 !string.Equals(_activeBot, botName, StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(GetActiveBotName(), botName, StringComparison.OrdinalIgnoreCase))
@@ -832,6 +843,7 @@ namespace TWXProxy.Core
 
         public void StartBot(string botName, string scriptFile)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             if (string.IsNullOrWhiteSpace(scriptFile))
             {
                 Console.WriteLine($"[StartBot] Error: No script file specified for bot '{botName}'");
@@ -870,6 +882,7 @@ namespace TWXProxy.Core
 
         public void StopBot(string botName)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ITWXServer? server = GlobalModules.TWXServer;
             BotConfig? botConfig = server?.GetBotConfig(botName);
             string resolvedBotName = botConfig?.Name ?? botName;
@@ -1083,6 +1096,7 @@ namespace TWXProxy.Core
 
         public void ProgramEvent(string eventName, string matchText, bool exclusive)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Trigger all matching program events in active scripts
             eventName = eventName.ToUpperInvariant();
             int i = 0;
@@ -1105,6 +1119,7 @@ namespace TWXProxy.Core
 
         public void HandleConnectionAccepted()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             ModDatabase? db = ScriptRef.GetActiveDatabase();
             DataHeader? header = db?.DBHeader;
             GlobalModules.DebugLog($"[ModInterpreter.HandleConnectionAccepted] useLogin={header?.UseLogin}, loginScript='{header?.LoginScript}', activeDb={(db != null ? db.DatabaseName : "<none>")}\n");
@@ -1146,6 +1161,7 @@ namespace TWXProxy.Core
 
         public bool LocalInputEvent(string inputText)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Handle input from local client - pass to all scripts waiting for input.
             // Returns true if any script was waiting for input and consumed the text.
             bool consumed = false;
@@ -1180,6 +1196,7 @@ namespace TWXProxy.Core
 
         public bool TextOutEvent(string text, Script? startScript)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             GlobalModules.TriggerDebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
             // Trigger matching text out triggers in active scripts
             int i = 0;
@@ -1227,6 +1244,7 @@ namespace TWXProxy.Core
 
         public void TextEvent(string text, bool forceTrigger)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Trigger matching text triggers in active scripts
             // [ModInterpreter.TextEvent] per-line logging removed — too high-frequency.
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
@@ -1246,6 +1264,7 @@ namespace TWXProxy.Core
 
         public void TextLineEvent(string text, bool forceTrigger)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Trigger matching textline triggers in active scripts
             GlobalModules.TriggerDebugLog($"[ModInterpreter.TextLineEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
@@ -1265,6 +1284,7 @@ namespace TWXProxy.Core
 
         public void AutoTextEvent(string text, bool forceTrigger)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Trigger matching auto text triggers in active scripts
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
             int i = 0;
@@ -1283,6 +1303,7 @@ namespace TWXProxy.Core
 
         public bool EventActive(string eventName)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Check if any scripts hold matching event triggers
             foreach (var script in _scriptList)
             {
@@ -1294,6 +1315,7 @@ namespace TWXProxy.Core
 
         public void ActivateTriggers()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // All text related triggers are deactivated for the rest of the line after they activate.
             // This is to prevent double triggering. Turn them back on.
             // Pascal TWX does not resume script execution here; it only re-enables triggers.
@@ -1319,6 +1341,7 @@ namespace TWXProxy.Core
 
         public void DumpVars(string searchName)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             var server = GlobalModules.Server;
             if (server == null)
                 return;
@@ -1339,6 +1362,7 @@ namespace TWXProxy.Core
 
         public void DumpTriggers()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             // Dump triggers in all scripts
             foreach (var script in _scriptList)
             {
@@ -2247,6 +2271,8 @@ namespace TWXProxy.Core
 
         private void DelayTimerEvent(object? sender, ElapsedEventArgs e)
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(_owner.RuntimeContext);
+
             if (sender is not DelayTimer timer)
                 return;
 
@@ -3916,6 +3942,7 @@ namespace TWXProxy.Core
 
         public bool Execute()
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(_owner.RuntimeContext);
             var server = GlobalModules.TWXServer;
             IExecutionObserver? observer = ExecutionObserver;
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;

@@ -1457,9 +1457,12 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(InvalidateStatusBarLayout, DispatcherPriority.Background);
+            PostToCurrentMtcTabSession(InvalidateStatusBarLayout, DispatcherPriority.Background);
             return;
         }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         _statusBarLayoutSignature = string.Empty;
         EnsureStatusBarLayout();
@@ -1470,7 +1473,7 @@ public partial class MainWindow
         RecordTerminalResizeForRecording(columns, rows);
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(UpdateClassicTerminalSizeStatus, DispatcherPriority.Background);
+            PostToCurrentMtcTabSession(UpdateClassicTerminalSizeStatus, DispatcherPriority.Background);
             return;
         }
 
@@ -1484,6 +1487,15 @@ public partial class MainWindow
 
     private void UpdateClassicTerminalSizeStatus()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateClassicTerminalSizeStatus, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         if (_termCtrl is null)
             return;
 
@@ -1778,6 +1790,15 @@ public partial class MainWindow
 
     private void ApplySelectedSkin()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(ApplySelectedSkin, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         Background = HudWindow;
         if (_rootDock != null)
             _rootDock.Background = HudWindow;
@@ -1802,7 +1823,7 @@ public partial class MainWindow
 
         RefreshSkinMenuState();
         RequestInfoPanelsRefresh(force: true);
-        Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+        PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
     }
 
     private void ApplySelectedSkinSafe()
@@ -1855,7 +1876,7 @@ public partial class MainWindow
     {
         _terminalInputHandler = handler;
 
-        MtcTabPrototype? tab = CurrentMtcTabContext();
+        MtcTabPrototype? tab = ResolveCurrentMtcTabContext();
         if (tab != null)
             tab.TerminalInputHandler = handler;
 
@@ -1874,6 +1895,15 @@ public partial class MainWindow
 
     private void SetTerminalConnected(bool connected)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => SetTerminalConnected(connected), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         if (_termCtrl is not null)
             _termCtrl.IsConnected = connected;
         if (_deckTermCtrl is not null)
@@ -2100,11 +2130,35 @@ public partial class MainWindow
 
     private void FocusActiveTerminal()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen)
+        {
+            _focusTerminalAfterSharedMenuClose = true;
+            return;
+        }
+
         (_useCommandDeckSkin ? _deckTermCtrl : _termCtrl).Focus();
     }
 
     private void RefreshSkinMenuState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshSkinMenuState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _viewClassicSkin.Icon = _useCommandDeckSkin
             ? null
             : new TextBlock { Text = "●", Foreground = HudAccentOk };
@@ -2119,6 +2173,15 @@ public partial class MainWindow
 
     private void RefreshCommWindowMenuState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshCommWindowMenuState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _viewCommWindow.Icon = _commWindowVisible
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
@@ -2126,6 +2189,15 @@ public partial class MainWindow
 
     private void RefreshHaggleDetailsMenuState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshHaggleDetailsMenuState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _viewShowHaggleDetails.Icon = ShouldShowStatusBarHaggleInfo()
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
@@ -2133,6 +2205,15 @@ public partial class MainWindow
 
     private void RefreshBottomBarMenuState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshBottomBarMenuState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _viewBottomBar.Icon = _appPrefs.ShowBottomBar
             ? new TextBlock { Text = "●", Foreground = HudAccentOk }
             : null;
@@ -2159,6 +2240,8 @@ public partial class MainWindow
 
         var fileOpen    = new MenuItem { Header = "_Open…" };
         fileOpen.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnOpenConnectionAsync);
+
+        TrackSharedMenuOpenState(_recentMenu, OnRecentMenuOpened, OnRecentMenuClosed);
 
         var fileOpenRecording = new MenuItem { Header = "Open _Recording..." };
         fileOpenRecording.Click += (_, _) => _ = OnOpenTerminalRecordingAsync();
@@ -2303,6 +2386,17 @@ public partial class MainWindow
         _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 
+        TrackSharedMenuOpenState(fileMenu);
+        TrackSharedMenuOpenState(_scriptsMenu);
+        TrackSharedMenuOpenState(_proxyMenu);
+        TrackSharedMenuOpenState(_botMenu);
+        TrackSharedMenuOpenState(_quickMenu);
+        TrackSharedMenuOpenState(_toolsMenu);
+        TrackSharedMenuOpenState(_aiMenu);
+        TrackSharedMenuOpenState(mapMenu);
+        TrackSharedMenuOpenState(viewMenu);
+        TrackSharedMenuOpenState(helpMenu);
+
         var menu = new Menu
         {
             Background = BgSidebar,
@@ -2412,10 +2506,23 @@ public partial class MainWindow
     private void OnToolsFindRoute()
     {
         var owner = ActiveMtcTab;
+        if (owner?.RouteWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         var win = new RouteWindow(
             () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state));
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.RouteWindow, win))
+                owner.RouteWindow = null;
+        };
+        if (owner != null)
+            owner.RouteWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 
@@ -2465,6 +2572,12 @@ public partial class MainWindow
     private void OnViewBubbles()
     {
         var owner = ActiveMtcTab;
+        if (owner?.BubblesWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         var win = new BubblesWindow(
             () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
@@ -2506,6 +2619,13 @@ public partial class MainWindow
                     _ = SaveCurrentGameConfigAsync();
                 });
             });
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.BubblesWindow, win))
+                owner.BubblesWindow = null;
+        };
+        if (owner != null)
+            owner.BubblesWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 
@@ -2655,8 +2775,11 @@ public partial class MainWindow
             _lastFinderPrewarmKey = prewarmKey;
         }
 
+        Core.TwxRuntimeContext runtimeContext = ResolveCurrentMtcTabContext()?.RuntimeContext ?? ActiveMtcRuntimeContext ?? Core.GlobalModules.CurrentContext;
+
         _ = Task.Run(() =>
         {
+            using var runtimeScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
             try
             {
                 string capMessage = configuredBubbleMaxSize != bubbleMaxSize ||
@@ -2681,19 +2804,56 @@ public partial class MainWindow
     private void OnViewDatabase()
     {
         var owner = ActiveMtcTab;
+        if (owner?.SectorInfoWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         var win = new SectorInfoWindow(
             () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector));
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.SectorInfoWindow, win))
+                owner.SectorInfoWindow = null;
+        };
+        if (owner != null)
+            owner.SectorInfoWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 
     private void OnViewGameInfo()
     {
         var owner = ActiveMtcTab;
+        if (owner?.GameInfoWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
         var win = new GameInfoWindow(
             () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state),
-            () => ExecuteInOptionalMtcTabSession(owner, () => _embeddedGameConfig?.Variables));
+            () => ExecuteInOptionalMtcTabSession(owner, () => _embeddedGameConfig?.Variables),
+            () => ExecuteInOptionalMtcTabSession(owner, () =>
+            {
+                if (_sessionDb is null)
+                    return 0;
+
+                var bubbleModule = Core.GlobalModules.TWXBubble as Core.ModBubble ?? new Core.ModBubble();
+                if (Core.GlobalModules.TWXBubble == null)
+                    Core.GlobalModules.TWXBubble = bubbleModule;
+                (int totalBubbles, _, _) = bubbleModule.GetBubbleCounts();
+                return totalBubbles;
+            }));
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.GameInfoWindow, win))
+                owner.GameInfoWindow = null;
+        };
+        if (owner != null)
+            owner.GameInfoWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 

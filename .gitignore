@@ -55,3 +55,6 @@ Source/mom.cts
 Source/mom.ts
 Source/wcc_i.xdb.twx
 Source/test/
+
+# Local AI/copilot experiments and generated training data
+tradewars-copilot/

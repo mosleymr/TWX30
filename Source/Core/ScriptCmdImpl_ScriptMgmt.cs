@@ -21,6 +21,11 @@ namespace TWXProxy.Core
             return GlobalModules.CurrentContext.ActiveInterpreter ?? (GlobalModules.TWXInterpreter as ModInterpreter);
         }
 
+        private static GameInstance? GetActiveGameInstance()
+        {
+            return ActiveGameInstance ?? (GlobalModules.CurrentContext.TWXServer as GameInstance);
+        }
+
         private static bool ScriptReferenceMatches(ModInterpreter interpreter, Script? scriptObj, string requestedName)
         {
             if (scriptObj == null)
@@ -59,7 +64,7 @@ namespace TWXProxy.Core
             out BotConfig? nativeConfig,
             out string nativeLeafName)
         {
-            gameInstance = GlobalModules.TWXServer as GameInstance;
+            gameInstance = GetActiveGameInstance();
             nativeConfig = null;
             nativeLeafName = string.Empty;
 
@@ -115,7 +120,7 @@ namespace TWXProxy.Core
         {
             // CMD: load <filename>
             // Load and execute a script file
-            var interpreter = GlobalModules.TWXInterpreter as ModInterpreter;
+            var interpreter = GetActiveInterpreter();
             if (interpreter == null)
             {
                 GlobalModules.DebugLog("[LOAD] No active interpreter\n");
@@ -142,7 +147,7 @@ namespace TWXProxy.Core
                     return CmdAction.None;
                 }
 
-                if (GlobalModules.TWXServer is GameInstance activeGameInstance &&
+                if (GetActiveGameInstance() is GameInstance activeGameInstance &&
                     activeGameInstance.NativeBotScriptRedirector != null)
                 {
                     string? redirectedReference = activeGameInstance.NativeBotScriptRedirector(filename);
@@ -168,7 +173,7 @@ namespace TWXProxy.Core
         {
             // CMD: stop <filename>
             // Stop a running script by filename
-            var interpreter = GlobalModules.TWXInterpreter as ModInterpreter;
+            var interpreter = GetActiveInterpreter();
             if (interpreter == null)
             {
                 GlobalModules.DebugLog("[STOP] No active interpreter\n");
@@ -215,7 +220,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdNativeBot(object script, CmdParam[] parameters)
         {
             string action = parameters[0].Value.Trim().ToUpperInvariant();
-            GameInstance? gameInstance = GlobalModules.TWXServer as GameInstance;
+            GameInstance? gameInstance = GetActiveGameInstance();
             BotConfig? nativeConfig = FindNativeBotConfig(gameInstance);
 
             if (gameInstance == null || nativeConfig == null)

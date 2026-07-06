@@ -200,6 +200,7 @@ namespace TWXProxy.Core
     /// </summary>
     public class MenuManager : ITWXMenu
     {
+        private readonly TwxRuntimeContext? _runtimeContext;
         private readonly Dictionary<string, MenuItem> _menus = new Dictionary<string, MenuItem>(StringComparer.OrdinalIgnoreCase);
         private readonly List<MenuItem> _menuItems = new();
         private Stack<MenuItem> _menuStack = new Stack<MenuItem>();
@@ -210,9 +211,20 @@ namespace TWXProxy.Core
         private CmdParam? _inputVarParam;
         private bool _inputSingleKey;
 
+        public MenuManager(TwxRuntimeContext? runtimeContext = null)
+        {
+            _runtimeContext = runtimeContext;
+        }
+
+        private IDisposable BindRuntimeContext()
+        {
+            return GlobalModules.UseRuntimeContext(_runtimeContext);
+        }
+
         public MenuItem? AddCustomMenu(string parent, string name, string description,
             string reference, string prompt, char hotkey, bool closeMenu, object script)
         {
+            using var runtimeScope = BindRuntimeContext();
             var menuItem = new MenuItem
             {
                 Parent = parent.ToUpper(),
@@ -233,6 +245,7 @@ namespace TWXProxy.Core
 
         public void OpenMenu(string menuName, int flags)
         {
+            using var runtimeScope = BindRuntimeContext();
             menuName = menuName.ToUpper();
 
             if (!_menus.TryGetValue(menuName, out var menu))
@@ -274,6 +287,7 @@ namespace TWXProxy.Core
 
         public void CloseMenu(bool force)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_menuStack.Count == 0 && _suspendedMenuStack is not { Count: > 0 })
                 return;
 
@@ -287,6 +301,7 @@ namespace TWXProxy.Core
 
         public void RemoveScriptMenus(object script)
         {
+            using var runtimeScope = BindRuntimeContext();
             bool stackChanged = false;
             bool suspendedChanged = false;
 
@@ -371,6 +386,7 @@ namespace TWXProxy.Core
 
         public MenuItem? GetMenuByName(string menuName)
         {
+            using var runtimeScope = BindRuntimeContext();
             menuName = menuName.ToUpper();
             if (_menus.TryGetValue(menuName, out var menu))
             {
@@ -381,6 +397,7 @@ namespace TWXProxy.Core
 
         public void BeginScriptInput(Script script, CmdParam varParam, bool singleKey)
         {
+            using var runtimeScope = BindRuntimeContext();
             _inputScript = script;
             _inputVarParam = varParam;
             _inputSingleKey = singleKey;
@@ -408,11 +425,13 @@ namespace TWXProxy.Core
         
         public bool IsMenuOpen()
         {
+            using var runtimeScope = BindRuntimeContext();
             return _menuStack.Count > 0;
         }
 
         public bool IsMenuOnStack(string menuName)
         {
+            using var runtimeScope = BindRuntimeContext();
             return _menuStack.Any(m => m.Name.Equals(menuName, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -420,6 +439,7 @@ namespace TWXProxy.Core
 
         public void SuspendMenuForInput(bool clearDisplay = true)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_menuStack.Count == 0)
                 return;
 
@@ -432,6 +452,7 @@ namespace TWXProxy.Core
 
         public void ClearSuspendedMenu()
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_suspendedMenuStack is not { Count: > 0 })
                 return;
 
@@ -440,13 +461,15 @@ namespace TWXProxy.Core
             RestoreScriptMenuDeafeningIfNeeded();
         }
 
-        private static void SendMenuMessage(string message)
+        private void SendMenuMessage(string message)
         {
+            using var runtimeScope = BindRuntimeContext();
             GlobalModules.TWXServer?.Broadcast(message, broadcastDeaf: true);
         }
 
-        private static void ClearMenuDisplay(bool restoreCurrentLine = true)
+        private void ClearMenuDisplay(bool restoreCurrentLine = true)
         {
+            using var runtimeScope = BindRuntimeContext();
             string exitText = "\r" + AnsiCodes.ANSI_CLEARLINE;
             if (restoreCurrentLine)
             {
@@ -460,6 +483,7 @@ namespace TWXProxy.Core
 
         private void CompleteInput(string inputText)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_inputScript != null && _inputVarParam != null)
             {
                 _inputScript.InputCompleted(inputText, _inputVarParam);
@@ -470,6 +494,7 @@ namespace TWXProxy.Core
         
         private void DisplayScriptMenu(MenuItem menu)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
             
@@ -528,9 +553,16 @@ namespace TWXProxy.Core
             string prompt = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
             SendMenuMessage($"\r\n{prompt}> ");
         }
+
+        private void EchoMenuKey(char key)
+        {
+            using var runtimeScope = BindRuntimeContext();
+            GlobalModules.TWXServer?.Broadcast(char.ToUpperInvariant(key).ToString(), broadcastDeaf: true);
+        }
         
         public bool HandleMenuInput(char keyChar)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_menuStack.Count == 0)
                 return false;
 
@@ -543,11 +575,6 @@ namespace TWXProxy.Core
                 
             var currentMenu = _menuStack.Peek();
 
-            static void EchoMenuKey(char key)
-            {
-                GlobalModules.TWXServer?.Broadcast(char.ToUpperInvariant(key).ToString(), broadcastDeaf: true);
-            }
-            
             // Handle standard options
             char upperKey = char.ToUpper(keyChar);
             if (upperKey == 'Q')
@@ -748,6 +775,7 @@ namespace TWXProxy.Core
 
         private void EnsureScriptMenuDeafening(MenuItem menu)
         {
+            using var runtimeScope = BindRuntimeContext();
             if (_scriptMenuAutoDeafActive || menu.Script is null || GlobalModules.TWXServer == null)
                 return;
 
@@ -767,6 +795,7 @@ namespace TWXProxy.Core
 
         private void RestoreScriptMenuDeafeningIfNeeded()
         {
+            using var runtimeScope = BindRuntimeContext();
             if (!_scriptMenuAutoDeafActive)
                 return;
 

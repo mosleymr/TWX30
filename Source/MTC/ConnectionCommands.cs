@@ -225,7 +225,7 @@ public partial class MainWindow
             _sessionDb.ReplaceHeader(header);
             if (headerDirty)
                 _sessionDb.SaveDatabase();
-            Core.ScriptRef.SetActiveDatabase(_sessionDb);
+            Core.ScriptRef.SetActiveDatabase(ResolveCurrentMtcTabContext()?.RuntimeContext ?? ActiveMtcRuntimeContext, _sessionDb);
         }
 
         if (_gameInstance == null)

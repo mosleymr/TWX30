@@ -27,8 +27,26 @@ namespace MTC;
 
 public partial class MainWindow
 {
-    private void RebuildProxyMenu()
+    private void RebuildProxyMenu(bool force = false)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RebuildProxyMenu(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen && !force)
+        {
+            _proxyMenuRebuildPending = true;
+            _nativeMenuRefreshPending = true;
+            return;
+        }
+
+        _proxyMenuRebuildPending = false;
+
         string gameName = _embeddedGameName ?? DeriveGameName();
         bool hasGame = !string.IsNullOrWhiteSpace(gameName);
         bool hasDatabase = _sessionDb != null;
@@ -44,13 +62,31 @@ public partial class MainWindow
         _quickMenu.ItemsSource = BuildQuickMenuItems(canRunProxyScripts);
         _quickMenu.IsEnabled = canRunProxyScripts;
         _scriptsMenu.IsEnabled = canRunProxyScripts;
-        RebuildAiMenu();
-        RefreshNativeAppMenu();
-        RefreshNativeDockMenu();
+        RebuildAiMenu(force);
+        RefreshNativeAppMenu(force);
+        RefreshNativeDockMenu(force);
     }
 
-    private void RebuildAiMenu()
+    private void RebuildAiMenu(bool force = false)
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RebuildAiMenu(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen && !force)
+        {
+            _aiMenuRebuildPending = true;
+            _nativeMenuRefreshPending = true;
+            return;
+        }
+
+        _aiMenuRebuildPending = false;
+
         List<object> items = BuildAiMenuItems();
         _aiMenu.ItemsSource = items;
         bool hasItems = items.OfType<MenuItem>().Any(item => item.IsEnabled);

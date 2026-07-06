@@ -64,16 +64,27 @@ public partial class MainWindow
     private async Task DoConnectEmbeddedAsync()
     {
         var owningTab = CurrentMtcTabContext();
-        using var runtimeScope = Core.GlobalModules.UseRuntimeContext(owningTab?.RuntimeContext);
+        if (owningTab is null)
+        {
+            Core.GlobalModules.DebugLog("[MTC.ConnectEmbedded] refused ownerless embedded proxy start.\n");
+            return;
+        }
+
+        Core.TwxRuntimeContext runtimeContext = owningTab.RuntimeContext;
+        using IDisposable runtimeScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
 
         // Wait for any in-flight stop to fully complete so its cleanup cannot
         // race with our setup (e.g. fast Disconnect→Connect or Reconnect).
         await _pendingEmbeddedStop;
+        RebindMtcTabSessionAfterAwait(owningTab);
         _pendingEmbeddedStop = Task.CompletedTask;
 
         // Stop an existing instance if somehow still attached.
         if (_gameInstance != null)
+        {
             await StopEmbeddedAsync();
+            RebindMtcTabSessionAfterAwait(owningTab);
+        }
 
         // Derive game name first (needed for the game config path and database path).
         string gameName = GetEmbeddedGameName();
@@ -87,6 +98,7 @@ public partial class MainWindow
         // Load (or create) the shared TWXP game config JSON.
         // This gives us the persisted variable state and the authoritative sector count.
         var gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
+        RebindMtcTabSessionAfterAwait(owningTab);
         ApplyEmbeddedConnectionState(gameName, gameConfig);
         bool configChanged =
             !string.Equals(gameConfig.Name, gameName, StringComparison.Ordinal) ||
@@ -100,11 +112,13 @@ public partial class MainWindow
         gameConfig = BuildEmbeddedGameConfigFromState(gameName, gameConfig);
         gameConfig.DatabasePath = AppPaths.TwxproxyDatabasePathForGame(gameName);
         if (configChanged)
+        {
             await SaveEmbeddedGameConfigAsync(gameName, gameConfig);
+            RebindMtcTabSessionAfterAwait(owningTab);
+        }
         _embeddedGameConfig = gameConfig;
         _embeddedGameName = gameName;
         _currentProfilePath = AppPaths.TwxproxyGameConfigFileFor(gameName);
-        AddToRecentAndSave(_currentProfilePath);
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         ApplySessionLogSettings(gameConfig);
 
@@ -125,7 +139,7 @@ public partial class MainWindow
 
         // Embedded mode needs a live menu manager so OPENMENU pauses and displays
         // configuration menus (same behavior as TWXP ProxyService startup).
-        Core.GlobalModules.TWXMenu = new Core.MenuManager();
+        Core.GlobalModules.TWXMenu = new Core.MenuManager(runtimeContext);
 
         // Load previously saved variables (excluding session-startup flags).
         gameConfig.Variables = NormalizeEmbeddedVariables(gameConfig.Variables);
@@ -134,17 +148,17 @@ public partial class MainWindow
         varsToLoad.Remove("$gfile_chk");
         varsToLoad.Remove("$doRelog");
         ApplySessionStartupVarDefaults(varsToLoad);
-        Core.ScriptRef.LoadVarsForGame(varsToLoad);
+        Core.ScriptRef.LoadVarsForGame(runtimeContext, varsToLoad);
 
         // When savevar is called, persist the value into the TWXP game config JSON.
-        Core.ScriptRef.OnVariableSaved = (varName, value) =>
+        Core.ScriptRef.SetOnVariableSaved(runtimeContext, (varName, value) =>
         {
             if (string.Equals(varName, "$gfile_chk", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(varName, "$doRelog",   StringComparison.OrdinalIgnoreCase))
                 return;
             gameConfig.Variables[varName] = value;
-            _ = SaveEmbeddedGameConfigAsync(gameName, gameConfig);
-        };
+            PostToMtcTabSessionAsync(owningTab, () => SaveEmbeddedGameConfigAsync(gameName, gameConfig));
+        });
 
         SyncMombotSpecialSectorVarsFromDatabase(persist: true);
         BackfillScriptMombotBootstrapState(gameConfig, gameName, programDir);
@@ -159,7 +173,7 @@ public partial class MainWindow
             commandChar: gameConfig.CommandChar == '\0' ? '$' : gameConfig.CommandChar,
             interpreter: interpreter,
             scriptDirectory: effectiveScriptDir,
-            runtimeContext: owningTab?.RuntimeContext ?? Core.GlobalModules.CurrentContext)
+            runtimeContext: runtimeContext)
         {
             Verbose       = false,          // suppress diagnostic Console.WriteLine in embedded mode
             AutoReconnect = _state.AutoReconnect,
@@ -184,12 +198,32 @@ public partial class MainWindow
         Core.GlobalModules.DebugLog(
             $"[MTC] Embedded haggle startup prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
         gi.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
-        gi.NativeHaggleChanged += (enabled, source) =>
-            ExecuteInOptionalMtcTabSession(owningTab, () => OnNativeHaggleChanged(enabled, source));
-        gi.NativeHaggleStatsChanged += () =>
-            ExecuteInOptionalMtcTabSession(owningTab, OnNativeHaggleStatsChanged);
-        gi.ShipStatusUpdated += status =>
-            ExecuteInOptionalMtcTabSession(owningTab, () => OnShipStatusUpdated(status));
+        Action<bool, Core.NativeHaggleChangeSource> nativeHaggleChangedHandler =
+            (enabled, source) => ExecuteInOptionalMtcTabSession(owningTab, () => OnNativeHaggleChanged(enabled, source));
+        Action nativeHaggleStatsChangedHandler =
+            () => ExecuteInOptionalMtcTabSession(owningTab, OnNativeHaggleStatsChanged);
+        Action<Core.ShipStatus> shipStatusUpdatedHandler =
+            status =>
+            {
+                if (owningTab is not null && owningTab.Id != _activeMtcTabId)
+                {
+                    ExecuteInMtcTabBackgroundContext(
+                        owningTab,
+                        () => ApplyShipStatusToTabState(owningTab, status, notifyChanged: false, observeAgent: false));
+                    return;
+                }
+
+                ExecuteInOptionalMtcTabSession(owningTab, () => OnShipStatusUpdated(status));
+            };
+        if (owningTab is not null)
+        {
+            owningTab.EmbeddedNativeHaggleChangedHandler = nativeHaggleChangedHandler;
+            owningTab.EmbeddedNativeHaggleStatsChangedHandler = nativeHaggleStatsChangedHandler;
+            owningTab.EmbeddedShipStatusUpdatedHandler = shipStatusUpdatedHandler;
+        }
+        gi.NativeHaggleChanged += nativeHaggleChangedHandler;
+        gi.NativeHaggleStatsChanged += nativeHaggleStatsChangedHandler;
+        gi.ShipStatusUpdated += shipStatusUpdatedHandler;
         gi.NativeBotActivator = (botConfig, requestedBotName) =>
         {
             Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
@@ -214,6 +248,12 @@ public partial class MainWindow
         };
         gi.NativeBotStopper = _ =>
         {
+            Core.BotConfig? activeBotConfig = !string.IsNullOrWhiteSpace(gi.ActiveBotName)
+                ? gi.GetBotConfig(gi.ActiveBotName)
+                : null;
+            if (Core.ProxyMenuCatalog.IsNativeBotConfig(activeBotConfig))
+                gi.ActiveBotName = string.Empty;
+
             Dispatcher.UIThread.Post(async () => await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
             {
                 await _runtimeStopGate.WaitAsync();
@@ -300,7 +340,10 @@ public partial class MainWindow
             useSynchronizationContext: false));
 
         if (gameConfig.Mtc?.ListenForConnections == true)
+        {
             await gi.StartAsync();
+            RebindMtcTabSessionAfterAwait(owningTab);
+        }
 
         // Wire the GameInstance to the pipe streams.
         gi.ConnectDirectClient(
@@ -324,6 +367,7 @@ public partial class MainWindow
         var termReader = serverToTerm.Reader.AsStream();
         _ = Task.Run(async () =>
         {
+            using var runtimeScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
             var buf = new byte[64 * 1024];
             try
             {
@@ -352,11 +396,106 @@ public partial class MainWindow
         var serverAnsiLineBuf = new System.Text.StringBuilder();
         bool serverScriptInAnsi = false;
 
-        gi.ServerDataReceived += (_, e) => ExecuteInOptionalMtcTabSession(owningTab, () =>
+        object serverDataSync = new();
+        const int MaxQueuedEmbeddedUiObserverLines = 64;
+
+        bool ShouldQueueEmbeddedUiObserverLine(string strippedLine, string ansiLine, bool isPrompt, ref bool queuedOnlineCapture)
         {
-            MarkGameTrafficActivity();
-            string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(e.Text);
-            string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
+            string trimmed = strippedLine.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return false;
+
+            if (IsGameAgentWindowActive(owningTab))
+                return true;
+
+            if (isPrompt ||
+                LooksLikeAgentPrompt(trimmed) ||
+                IsSessionTerminationWarningLine(trimmed) ||
+                TryGetMombotPromptNameFromLine(trimmed, out _))
+            {
+                return true;
+            }
+
+            if (IsOnlinePlayersHeaderLine(strippedLine))
+            {
+                queuedOnlineCapture = true;
+                return true;
+            }
+
+            if (queuedOnlineCapture || owningTab?.CapturingOnlinePlayers == true)
+                return true;
+
+            if (owningTab?.AwaitingComputerShipTypeLine == true ||
+                (trimmed.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase) && trimmed.EndsWith(';')))
+            {
+                return true;
+            }
+
+            if (trimmed.EndsWith(" enters the game.", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.EndsWith(" exits the game.", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrEmpty(ansiLine) && Core.AnsiCodes.TryParseCommMessageLine(ansiLine, out _))
+                return true;
+
+            return _appPrefs.EnableRedAlertMode &&
+                (trimmed.StartsWith("Shipboard Computers", StringComparison.Ordinal) ||
+                 trimmed.Contains("is powering up weapons systems!", StringComparison.Ordinal));
+        }
+
+        void ProcessEmbeddedQueuedUiObserverLine(string strippedLine, string ansiLine, bool isPrompt)
+        {
+            if (!string.IsNullOrWhiteSpace(strippedLine))
+            {
+                ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt);
+                ObserveComputerShipTypeLine(strippedLine);
+                ObserveOnlinePlayersLine(strippedLine);
+                HandlePotentialCommLine(ansiLine);
+                SyncMombotPromptStateFromLine(strippedLine, ansiLine);
+                ObserveEmbeddedKeepaliveWatchLine(strippedLine);
+                ObserveNativeMombotWatchLine(strippedLine);
+            }
+
+            if (_appPrefs.EnableRedAlertMode &&
+                !string.IsNullOrWhiteSpace(strippedLine) &&
+                _mombot.ObserveServerLine(strippedLine))
+            {
+                RefreshMombotUi();
+                RequestStatusBarRefresh();
+                RebuildProxyMenu();
+                _buffer.Dirty = true;
+            }
+        }
+
+        void ProcessEmbeddedServerData(string text, bool allowUiObservers, bool queueUiObservers = false)
+        {
+            List<(string Stripped, string Ansi, bool IsPrompt)>? queuedUiObserverLines =
+                queueUiObservers && owningTab is not null ? [] : null;
+            bool queuedOnlineCapture = owningTab?.CapturingOnlinePlayers == true;
+
+            void QueueEmbeddedUiObserverLine(string strippedLine, string ansiLine, bool isPrompt)
+            {
+                if (queuedUiObserverLines is null ||
+                    queuedUiObserverLines.Count >= MaxQueuedEmbeddedUiObserverLines ||
+                    !ShouldQueueEmbeddedUiObserverLine(strippedLine, ansiLine, isPrompt, ref queuedOnlineCapture))
+                {
+                    return;
+                }
+
+                queuedUiObserverLines.Add((strippedLine, ansiLine, isPrompt));
+            }
+
+            lock (serverDataSync)
+            {
+                if (allowUiObservers)
+                    MarkGameTrafficActivity();
+                else if (owningTab is not null)
+                    Volatile.Write(ref owningTab.LastGameTrafficTicks, Stopwatch.GetTimestamp());
+
+                string ansiChunk = Core.AnsiCodes.PrepareScriptAnsiText(text);
+                string plainChunk = Core.AnsiCodes.StripANSIStateful(ansiChunk, ref serverScriptInAnsi);
 
                 serverLineBuf.Append(plainChunk);
                 serverAnsiLineBuf.Append(ansiChunk);
@@ -387,9 +526,12 @@ public partial class MainWindow
                         string scriptRemainder = remainder;
                         string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
                         Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
-                        ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
+                        if (allowUiObservers)
+                            ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
+                        else
+                            QueueEmbeddedUiObserverLine(strippedRemainder, remainderAnsi, isPrompt: true);
                         if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                            Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                            Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
                         bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
                         Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
                         Core.ScriptRef.SetCurrentLine(scriptRemainder);
@@ -406,11 +548,19 @@ public partial class MainWindow
                         interpreter.TextEvent(scriptRemainder, false);
                         if (!string.IsNullOrWhiteSpace(strippedRemainder))
                         {
-                            ObserveComputerShipTypeLine(strippedRemainder);
-                            ObserveOnlinePlayersLine(strippedRemainder);
-                            SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                            ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
-                            ObserveNativeMombotWatchLine(strippedRemainder);
+                            if (allowUiObservers)
+                            {
+                                ObserveComputerShipTypeLine(strippedRemainder);
+                                ObserveOnlinePlayersLine(strippedRemainder);
+                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
+                                ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
+                                ObserveNativeMombotWatchLine(strippedRemainder);
+                            }
+                            else
+                            {
+                                SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
+                                ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                            }
                         }
                         if (nativeHaggleResponded)
                         {
@@ -433,16 +583,23 @@ public partial class MainWindow
                 {
                     gi.FeedShipStatusLine(lineStripped);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
-                    ObserveGameAgentServerLine(lineStripped, lineRaw, isPrompt: false);
+                    if (allowUiObservers)
+                        ObserveGameAgentServerLine(lineStripped, lineRaw, isPrompt: false);
+                    else
+                        QueueEmbeddedUiObserverLine(lineStripped, lineRaw, isPrompt: false);
                     if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                        Core.ScriptRef.SetCurrentSector(Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                    ObserveComputerShipTypeLine(lineStripped);
-                    ObserveOnlinePlayersLine(lineStripped);
+                        Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                    if (allowUiObservers)
+                    {
+                        ObserveComputerShipTypeLine(lineStripped);
+                        ObserveOnlinePlayersLine(lineStripped);
+                    }
                 }
 
                 gi.History.ProcessLine(lineStripped);
                 gi.ProcessNativeHaggleLine(lineStripped);
-                HandlePotentialCommLine(lineRaw);
+                if (allowUiObservers)
+                    HandlePotentialCommLine(lineRaw);
                 Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
                 Core.ScriptRef.SetCurrentLine(lineForScript);
 
@@ -458,16 +615,25 @@ public partial class MainWindow
 
                 if (!string.IsNullOrWhiteSpace(lineStripped))
                 {
-                    SyncMombotPromptStateFromLine(lineStripped, lineRaw);
-                    ObserveEmbeddedKeepaliveWatchLine(lineStripped);
-                    ObserveNativeMombotWatchLine(lineStripped);
+                    if (allowUiObservers)
+                    {
+                        SyncMombotPromptStateFromLine(lineStripped, lineRaw);
+                        ObserveEmbeddedKeepaliveWatchLine(lineStripped);
+                        ObserveNativeMombotWatchLine(lineStripped);
+                    }
+                    else
+                    {
+                        SyncMombotPromptVarsFromLine(runtimeContext, lineStripped);
+                        ObserveEmbeddedKeepaliveWatchLine(lineStripped, gi, owningTab);
+                    }
                 }
 
-                if (_appPrefs.EnableRedAlertMode &&
+                if (allowUiObservers &&
+                    _appPrefs.EnableRedAlertMode &&
                     !string.IsNullOrWhiteSpace(lineStripped) &&
                     _mombot.ObserveServerLine(lineStripped))
                 {
-                    Dispatcher.UIThread.Post(() =>
+                    PostToMtcTabSession(owningTab, () =>
                     {
                         RefreshMombotUi();
                         RequestStatusBarRefresh();
@@ -492,7 +658,40 @@ public partial class MainWindow
                     if (ansiRemainder.Length > 0)
                         serverAnsiLineBuf.Append(ansiRemainder);
                 }
-        });
+            }
+
+            if (queuedUiObserverLines is { Count: > 0 } && owningTab is not null)
+            {
+                var capturedUiObserverLines = queuedUiObserverLines.ToArray();
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (owningTab.Id != _activeMtcTabId)
+                        return;
+
+                    ExecuteInOptionalMtcTabSession(owningTab, () =>
+                    {
+                        foreach (var item in capturedUiObserverLines)
+                            ProcessEmbeddedQueuedUiObserverLine(item.Stripped, item.Ansi, item.IsPrompt);
+                    });
+                }, DispatcherPriority.Background);
+            }
+        }
+
+        gi.ServerDataReceived += (_, e) =>
+        {
+            bool activeAtReceive = owningTab is not null && owningTab.Id == _activeMtcTabId;
+            if (owningTab is not null)
+            {
+                ExecuteInMtcTabBackgroundContext(
+                    owningTab,
+                    () => ProcessEmbeddedServerData(e.Text, allowUiObservers: false, queueUiObservers: activeAtReceive));
+                return;
+            }
+
+            ExecuteInOptionalMtcTabSession(
+                owningTab,
+                () => ProcessEmbeddedServerData(e.Text, allowUiObservers: true));
+        };
 
         // Wire Connected / Disconnected events.
         // Note: OnGameConnected() was already called when the proxy started; we only need to
@@ -553,47 +752,51 @@ public partial class MainWindow
         // interpreter.LocalInputEvent(line) when Enter arrives.
         var getInputBuffer = new System.Text.StringBuilder();
 
-        gi.ClearInputBufferRequested += (_, _) => getInputBuffer.Clear();
+        gi.ClearInputBufferRequested += (_, _) =>
+            ExecuteInOptionalMtcTabSession(owningTab, () => getInputBuffer.Clear());
 
         gi.LocalDataReceived += (_, e) =>
         {
-            // Backspace / DEL
-            if (e.Data.Length == 1 && (e.Data[0] == 8 || e.Data[0] == 127))
+            ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
-                if (getInputBuffer.Length > 0)
-                    getInputBuffer.Length--;
-                return;
-            }
+                // Backspace / DEL
+                if (e.Data.Length == 1 && (e.Data[0] == 8 || e.Data[0] == 127))
+                {
+                    if (getInputBuffer.Length > 0)
+                        getInputBuffer.Length--;
+                    return;
+                }
 
-            string text = e.Text;
-            getInputBuffer.Append(text);
+                string text = e.Text;
+                getInputBuffer.Append(text);
 
-            // Keypress mode: fire immediately on any printable character.
-            if (interpreter.HasKeypressInputWaiting && getInputBuffer.Length > 0)
-            {
-                string key = getInputBuffer.ToString();
-                getInputBuffer.Clear();
-                interpreter.LocalInputEvent(key);
-                return;
-            }
+                // Keypress mode: fire immediately on any printable character.
+                if (interpreter.HasKeypressInputWaiting && getInputBuffer.Length > 0)
+                {
+                    string key = getInputBuffer.ToString();
+                    getInputBuffer.Clear();
+                    interpreter.LocalInputEvent(key);
+                    return;
+                }
 
-            // Not waiting for input and connected — discard the buffer so stale
-            // data doesn't trigger a line event next time getinput is active.
-            if (gi.IsConnected && !interpreter.IsAnyScriptWaitingForInput())
-            {
-                getInputBuffer.Clear();
-                return;
-            }
+                // Not waiting for input and connected — discard the buffer so stale
+                // data doesn't trigger a line event next time getinput is active.
+                if (gi.IsConnected && !interpreter.IsAnyScriptWaitingForInput())
+                {
+                    getInputBuffer.Clear();
+                    return;
+                }
 
-            // Full-line getinput: deliver when Enter (\r or \n) arrives.
-            if (getInputBuffer.ToString().Contains('\r') || getInputBuffer.ToString().Contains('\n'))
-            {
-                string line = getInputBuffer.ToString().TrimEnd('\r', '\n');
-                getInputBuffer.Clear();
-                // Blank Enter is a valid response for getinput/getconsoleinput and
-                // must be delivered to scripts to preserve TWX27 behavior.
-                interpreter.LocalInputEvent(line);
-            }
+                // Full-line getinput: deliver when Enter (\r or \n) arrives.
+                if (getInputBuffer.ToString().Contains('\r') || getInputBuffer.ToString().Contains('\n'))
+                {
+                    string line = getInputBuffer.ToString().TrimEnd('\r', '\n');
+                    getInputBuffer.Clear();
+                    // Blank Enter is a valid response for getinput/getconsoleinput and
+                    // must be delivered to scripts to preserve TWX27 behavior.
+                    interpreter.LocalInputEvent(line);
+                }
+            });
         };
 
         gi.ScriptStopped += (_, _) =>
@@ -635,8 +838,9 @@ public partial class MainWindow
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mombot.AttachSession(gi, _sessionDb, interpreter, GetOrCreateEmbeddedMombotConfig(gameConfig));
         RefreshStatusBar();
-        Core.ScriptRef.SetActiveGameInstance(gi);  // routes getinput through the pipe, not the system console
+        Core.ScriptRef.SetActiveGameInstance(runtimeContext, gi);  // routes getinput through the pipe, not the system console
         await LoadEmbeddedExpansionModulesAsync(gameName, programDir, effectiveScriptDir, gi, interpreter);
+        RebindMtcTabSessionAfterAwait(owningTab);
         OnNativeHaggleChanged(gi.NativeHaggleEnabled, Core.NativeHaggleChangeSource.Config);
         AppPaths.EnsureDirectories();
 
@@ -648,7 +852,9 @@ public partial class MainWindow
         _parser.Feed($"\x1b[1;32m[Embedded proxy ready — type \x1b[1;33m$c\x1b[1;32m to connect to {_state.Host}:{_state.Port}, or start a script]\x1b[0m\r\n");
         _buffer.Dirty = true;
         await TryAutoStartNativeBotAsync("open-game");
-        RefreshActiveMtcTabUiState();
+        RebindMtcTabSessionAfterAwait(owningTab);
+        if (owningTab is null || owningTab.Id == _activeMtcTabId)
+            RefreshActiveMtcTabUiStateScoped();
     }
 
     /// <summary>Stops the embedded <see cref="Core.GameInstance"/> and restores normal state.
@@ -666,10 +872,13 @@ public partial class MainWindow
 
     private async Task StopEmbeddedSerializedAsync()
     {
+        var owningTab = ResolveCurrentMtcTabContext();
         await _runtimeStopGate.WaitAsync();
+        RebindMtcTabSessionAfterAwait(owningTab);
         try
         {
             await StopEmbeddedCoreAsync();
+            RebindMtcTabSessionAfterAwait(owningTab);
         }
         finally
         {
@@ -679,6 +888,7 @@ public partial class MainWindow
 
     private async Task StopEmbeddedCoreAsync()
     {
+        var owningTab = ResolveCurrentMtcTabContext();
         TraceRuntimeStop($"[MTC.StopEmbedded] begin game={_embeddedGameName ?? "-"} hasGame={(_gameInstance != null)} nativeMombot={_mombot.Enabled} externalBot={_gameInstance?.ActiveBotName ?? string.Empty}");
         _proxyCts?.Cancel();
         _proxyCts = null;
@@ -692,30 +902,41 @@ public partial class MainWindow
                 publishNativeStopMessage: false,
                 publishExternalStopMessage: false,
                 suppressMissingGameMessage: true);
+            RebindMtcTabSessionAfterAwait(owningTab);
         }
 
         _gameInstance = null;
-        if (gi != null)
-            gi.NativeHaggleChanged -= OnNativeHaggleChanged;
-        if (gi != null)
-            gi.NativeHaggleStatsChanged -= OnNativeHaggleStatsChanged;
-        if (gi != null)
-            gi.ShipStatusUpdated -= OnShipStatusUpdated;
+        if (gi != null && owningTab is not null)
+        {
+            if (owningTab.EmbeddedNativeHaggleChangedHandler is not null)
+                gi.NativeHaggleChanged -= owningTab.EmbeddedNativeHaggleChangedHandler;
+            if (owningTab.EmbeddedNativeHaggleStatsChangedHandler is not null)
+                gi.NativeHaggleStatsChanged -= owningTab.EmbeddedNativeHaggleStatsChangedHandler;
+            if (owningTab.EmbeddedShipStatusUpdatedHandler is not null)
+                gi.ShipStatusUpdated -= owningTab.EmbeddedShipStatusUpdatedHandler;
+
+            owningTab.EmbeddedNativeHaggleChangedHandler = null;
+            owningTab.EmbeddedNativeHaggleStatsChangedHandler = null;
+            owningTab.EmbeddedShipStatusUpdatedHandler = null;
+        }
         await DisposeEmbeddedExpansionModulesAsync();
+        RebindMtcTabSessionAfterAwait(owningTab);
         if (gi != null)
         {
             TraceRuntimeStop($"[MTC.StopEmbedded] awaiting GameInstance.StopAsync");
             await gi.StopAsync();  // no ConfigureAwait(false) — continuation returns to UI thread
+            RebindMtcTabSessionAfterAwait(owningTab);
         }
         _mombot.DetachSession();
         _terminalLivePaused = false;
-        if (CurrentMtcTabContext() is { } tab)
+        if (owningTab is { } tab)
             tab.TerminalLivePaused = false;
-        ClearPausedTerminalChunks();
+        ClearPausedTerminalChunks(owningTab);
         UpdateTerminalLiveSelector();
 
-        Core.ScriptRef.SetActiveGameInstance(null);
-        Core.ScriptRef.OnVariableSaved = null;  // detach savevar persistence for this game
+        Core.TwxRuntimeContext? runtimeContext = owningTab?.RuntimeContext ?? gi?.RuntimeContext ?? ActiveMtcRuntimeContext;
+        Core.ScriptRef.SetActiveGameInstance(runtimeContext, null);
+        Core.ScriptRef.SetOnVariableSaved(runtimeContext, null);  // detach savevar persistence for this game
         _embeddedGameConfig = null;
         _embeddedGameName = null;
         ApplyDebugLoggingPreferences();
@@ -724,7 +945,7 @@ public partial class MainWindow
         _sessionDb = null;
         _gameFileLock?.Dispose();
         _gameFileLock = null;
-        Core.ScriptRef.SetActiveDatabase(null);
+        Core.ScriptRef.SetActiveDatabase(runtimeContext, null);
 
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
         SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));
@@ -746,7 +967,9 @@ public partial class MainWindow
         Core.GameInstance gameInstance,
         Core.ModInterpreter interpreter)
     {
+        var owningTab = ResolveCurrentMtcTabContext();
         await DisposeEmbeddedExpansionModulesAsync();
+        RebindMtcTabSessionAfterAwait(owningTab);
 
         try
         {
@@ -767,6 +990,7 @@ public partial class MainWindow
                 Interpreter = interpreter,
                 Database = _sessionDb,
             });
+            RebindMtcTabSessionAfterAwait(owningTab);
 
             Core.GlobalModules.DebugLog(
                 $"[MTC.ModuleHost] Loaded {_moduleHost.LoadedModules.Count} module(s) for game '{gameName}'.\n");
@@ -780,6 +1004,7 @@ public partial class MainWindow
 
     private async Task DisposeEmbeddedExpansionModulesAsync()
     {
+        var owningTab = ResolveCurrentMtcTabContext();
         Core.ExpansionModuleHost? moduleHost = _moduleHost;
         _moduleHost = null;
 
@@ -789,6 +1014,7 @@ public partial class MainWindow
         try
         {
             await moduleHost.DisposeAsync();
+            RebindMtcTabSessionAfterAwait(owningTab);
         }
         catch (Exception ex)
         {

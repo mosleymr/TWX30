@@ -122,13 +122,18 @@ public class AppPreferences
             "MTC",
             "prefs.xml");
 
-    public void AddRecent(string path)
+    public bool AddRecent(string path)
     {
+        if (RecentFiles.Count > 0 &&
+            string.Equals(RecentFiles[0], path, StringComparison.OrdinalIgnoreCase))
+            return false;
+
         RecentFiles.RemoveAll(existing =>
             string.Equals(existing, path, StringComparison.OrdinalIgnoreCase));
         RecentFiles.Insert(0, path);
         while (RecentFiles.Count > MaxRecentFiles)
             RecentFiles.RemoveAt(RecentFiles.Count - 1);
+        return true;
     }
 
     public bool TryGetDeckPanelLayout(string panelId, out DeckPanelLayout layout)

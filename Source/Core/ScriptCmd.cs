@@ -853,7 +853,7 @@ namespace TWXProxy.Core
             AddSysConstant("GAMEDATA", (indexes) => GetGameData());
             AddSysConstant("BOTLIST", (indexes) =>
             {
-                var server = GlobalModules.TWXServer;
+                var server = GetActiveGameInstance() ?? GlobalModules.CurrentContext.TWXServer;
                 if (server != null)
                 {
                     var bots = server.GetBotList();
@@ -861,12 +861,13 @@ namespace TWXProxy.Core
                 }
                 return string.Empty;
             });
-            AddSysConstant("ACTIVEBOT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBot ?? string.Empty);
+            AddSysConstant("ACTIVEBOT", (indexes) => GetActiveInterpreter()?.ActiveBot ?? string.Empty);
             AddSysConstant("ACTIVEBOTS", (indexes) =>
-                (GlobalModules.TWXServer?.GetBotList().Count ?? 0).ToString(CultureInfo.InvariantCulture));
-            AddSysConstant("ACTIVEBOTDIR", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotDir ?? string.Empty);
-            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotScript ?? string.Empty);
-            AddSysConstant("ACTIVEBOTNAME", (indexes) => (GlobalModules.TWXInterpreter as ModInterpreter)?.ActiveBotName ?? string.Empty);
+                ((GetActiveGameInstance() ?? GlobalModules.CurrentContext.TWXServer)?.GetBotList().Count ?? 0)
+                    .ToString(CultureInfo.InvariantCulture));
+            AddSysConstant("ACTIVEBOTDIR", (indexes) => GetActiveInterpreter()?.ActiveBotDir ?? string.Empty);
+            AddSysConstant("ACTIVEBOTSCRIPT", (indexes) => GetActiveInterpreter()?.ActiveBotScript ?? string.Empty);
+            AddSysConstant("ACTIVEBOTNAME", (indexes) => GetActiveInterpreter()?.ActiveBotName ?? string.Empty);
             AddSysConstant("VERSION", (indexes) => Constants.ProgramVersion);
             AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
             AddSysConstant("TWGSVER", (indexes) => string.Empty);
@@ -921,7 +922,7 @@ namespace TWXProxy.Core
             AddSysConstant("LIBMULTILINE", (indexes) => "0");
             AddSysConstant("LIBMSG", (indexes) => string.Empty);
             AddSysConstant("ISNATIVEBOT", (indexes) =>
-                IsAnyNativeBotRunning(GlobalModules.TWXServer as GameInstance) ? "1" : "0");
+                IsAnyNativeBotRunning(GetActiveGameInstance()) ? "1" : "0");
             AddSysConstant("CURRENTHOLDS", (indexes) => GetCurrentTotalHolds());
             AddSysConstant("HAGGLE", (indexes) => GetNativeHaggle());
         }
@@ -936,6 +937,11 @@ namespace TWXProxy.Core
         {
             GlobalModules.CurrentContext.CurrentLine = line;
         }
+
+        public static void SetCurrentLine(TwxRuntimeContext? context, string line)
+        {
+            (context ?? GlobalModules.CurrentContext).CurrentLine = line;
+        }
         
         /// <summary>
         /// Set the current ANSI line (with ANSI codes intact)
@@ -944,6 +950,11 @@ namespace TWXProxy.Core
         public static void SetCurrentAnsiLine(string line)
         {
             GlobalModules.CurrentContext.CurrentAnsiLine = line;
+        }
+
+        public static void SetCurrentAnsiLine(TwxRuntimeContext? context, string line)
+        {
+            (context ?? GlobalModules.CurrentContext).CurrentAnsiLine = line;
         }
         
         /// <summary>
@@ -967,6 +978,18 @@ namespace TWXProxy.Core
             return GlobalModules.CurrentContext.CurrentLine;
         }
 
+        public static string GetCurrentLine(TwxRuntimeContext? context)
+        {
+            Script? script = _executingScript.Value;
+            if (script?.HasCurrentTextContext == true &&
+                (context == null || ReferenceEquals(script.Controller.RuntimeContext, context)))
+            {
+                return script.CurrentTextLine;
+            }
+
+            return (context ?? GlobalModules.CurrentContext).CurrentLine;
+        }
+
         internal static string GetGlobalCurrentLine()
         {
             return GlobalModules.CurrentContext.CurrentLine;
@@ -982,6 +1005,18 @@ namespace TWXProxy.Core
                 return script.CurrentAnsiTextLine;
 
             return GlobalModules.CurrentContext.CurrentAnsiLine;
+        }
+
+        public static string GetCurrentAnsiLine(TwxRuntimeContext? context)
+        {
+            Script? script = _executingScript.Value;
+            if (script?.HasCurrentTextContext == true &&
+                (context == null || ReferenceEquals(script.Controller.RuntimeContext, context)))
+            {
+                return script.CurrentAnsiTextLine;
+            }
+
+            return (context ?? GlobalModules.CurrentContext).CurrentAnsiLine;
         }
 
         internal static string GetGlobalCurrentAnsiLine()

@@ -88,17 +88,25 @@ internal sealed class mombotService
     private readonly HashSet<string> _authorizedUsers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _commandAliases = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, mombotTransientModeRestore> _transientModeRestores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Core.TwxRuntimeContext _runtimeContext;
+
+    public mombotService(Core.TwxRuntimeContext? runtimeContext = null)
+    {
+        _runtimeContext = runtimeContext ?? Core.GlobalModules.CurrentContext;
+        Watcher = new mombotWatcher(_runtimeContext);
+        Compat = new mombotCompatContext(_runtimeContext);
+    }
 
     public mombotConfig Config => _config;
-    public mombotWatcher Watcher { get; } = new();
-    public mombotCompatContext Compat { get; } = new();
+    public mombotWatcher Watcher { get; }
+    public mombotCompatContext Compat { get; }
     public bool IsAttached => _gameInstance != null;
     public bool Enabled => _config.Enabled;
     public IReadOnlyList<mombotInternalCommandGroup> InternalCommandGroups => mombotCatalog.InternalCommandGroups;
     public IReadOnlyList<mombotHotkeyBinding> DefaultHotkeys => mombotCatalog.DefaultHotkeys;
     public IReadOnlyList<mombotMenuSurface> MenuSurfaces => mombotCatalog.MenuSurfaces;
     public IReadOnlyList<mombotCommandSpec> InitialCommands => mombotCatalog.InitialCommands;
-    public mombotSettings Settings => mombotSettings.Load();
+    public mombotSettings Settings => mombotSettings.Load(_runtimeContext);
 
     internal static IReadOnlyList<string> BuildDefaultAliasConfigFileLines()
     {
@@ -435,7 +443,7 @@ internal sealed class mombotService
         if (TryRestoreTransientMode())
             return;
 
-        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        string lastLoadedModule = GetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         if (string.IsNullOrWhiteSpace(lastLoadedModule))
             return;
 
@@ -496,8 +504,8 @@ internal sealed class mombotService
     public mombotStatusSnapshot GetStatusSnapshot()
     {
         mombotSettings settings = Settings;
-        string mode = Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General");
-        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        string mode = GetSessionVar("$BOT~MODE", "General");
+        string lastLoadedModule = GetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
         return new mombotStatusSnapshot(
             Enabled: _config.Enabled,
@@ -511,7 +519,7 @@ internal sealed class mombotService
             BotName: settings.BotName,
             TeamName: settings.TeamName,
             SubspaceChannel: settings.SubspaceChannel,
-            CurrentSector: Core.ScriptRef.GetCurrentSector(),
+            CurrentSector: GetCurrentSector(),
             Mode: string.IsNullOrWhiteSpace(mode) ? "General" : mode,
             ScriptRoot: _config.ScriptRoot,
             LastLoadedModule: lastLoadedModule,
@@ -695,7 +703,7 @@ internal sealed class mombotService
         if (!TryResolveCommandScriptReference(context.CommandName, out mombotResolvedModule? module) || module == null)
             return false;
 
-        string currentLastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        string currentLastLoadedModule = GetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         bool isMode = string.Equals(module.Category, "Modes", StringComparison.OrdinalIgnoreCase);
         bool helpRequested = HasHelpParameter(context.Parameters);
         // Bot scripts can send "'bot helper" and wait for the helper's switchboard reply.
@@ -744,7 +752,7 @@ internal sealed class mombotService
                 StopScriptByName(module.ScriptReference);
 
             transientRestore ??= new mombotTransientModeRestore(
-                Core.ScriptRef.GetCurrentGameVar("$BOT~MODE", "General"),
+                GetSessionVar("$BOT~MODE", "General"),
                 currentLastLoadedModule);
         }
 
@@ -814,8 +822,8 @@ internal sealed class mombotService
         {
             case "stopall":
                 StopAllNonSystemScripts();
-                Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-                Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+                SetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+                SetSessionVar("$BOT~MODE", "General");
                 return PublishNativeResult(canonical, "mombot stopped all non-system scripts.");
 
             case "stop":
@@ -843,10 +851,10 @@ internal sealed class mombotService
         string selector = context.Parameters.FirstOrDefault() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(selector))
         {
-            string lastLoaded = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+            string lastLoaded = GetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
             if (!string.IsNullOrWhiteSpace(lastLoaded) && StopScriptByName(lastLoaded))
             {
-                Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+                SetSessionVar("$BOT~LAST_LOADED_MODULE", string.Empty);
                 return PublishNativeResult(context.CommandName, $"mombot stopped {lastLoaded}.");
             }
 
@@ -936,9 +944,18 @@ internal sealed class mombotService
         _gameInstance?.ClientMessage("\r\n" + message + "\r\n");
     }
 
+    private string GetSessionVar(string name, string fallback = "")
+        => Core.ScriptRef.GetCurrentGameVar(_runtimeContext, name, fallback);
+
+    private void SetSessionVar(string name, string value)
+        => Core.ScriptRef.SetCurrentGameVar(_runtimeContext, name, value);
+
+    private int GetCurrentSector()
+        => Core.ScriptRef.GetCurrentSector(_runtimeContext);
+
     private void ApplySessionVar(string name, string value)
     {
-        Core.ScriptRef.SetCurrentGameVar(name, value);
+        SetSessionVar(name, value);
 
         if (_interpreter == null)
             return;
@@ -988,8 +1005,8 @@ internal sealed class mombotService
         if (!_config.Enabled)
             return;
 
-        Core.ScriptRef.SetCurrentGameVar("$doRelog", "1");
-        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "1");
+        SetSessionVar("$doRelog", "1");
+        SetSessionVar("$BOT~DORELOG", "1");
         Core.GlobalModules.DebugLog("[mombot] Armed relog flags in current-game var cache ($doRelog=1, $BOT~DORELOG=1)\n");
     }
 
@@ -2097,7 +2114,7 @@ internal sealed class mombotService
     {
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = GetSessionVar(name, string.Empty);
             if (!string.IsNullOrWhiteSpace(value))
                 return value;
         }
@@ -2110,7 +2127,7 @@ internal sealed class mombotService
         string? firstNonEmpty = null;
         foreach (string name in names)
         {
-            string value = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
+            string value = GetSessionVar(name, string.Empty);
             if (string.IsNullOrWhiteSpace(value))
                 continue;
 

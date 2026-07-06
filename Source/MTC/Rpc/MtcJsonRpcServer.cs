@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -19,7 +20,6 @@ internal sealed class MtcJsonRpcServer : IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly GameAgentRuntime _gameAgent;
     private readonly MtcRpcBridge _bridge;
     private readonly object _sync = new();
     private readonly Dictionary<Guid, MtcRpcWebSocketClient> _clients = [];
@@ -30,11 +30,9 @@ internal sealed class MtcJsonRpcServer : IDisposable
     private MtcJsonRpcServerOptions _options = new();
     private bool _disposed;
 
-    public MtcJsonRpcServer(GameAgentRuntime gameAgent, MtcRpcBridge bridge)
+    public MtcJsonRpcServer(MtcRpcBridge bridge)
     {
-        _gameAgent = gameAgent;
         _bridge = bridge;
-        _gameAgent.EventRecorded += OnGameAgentEventRecorded;
     }
 
     public bool IsRunning
@@ -52,6 +50,15 @@ internal sealed class MtcJsonRpcServer : IDisposable
         {
             lock (_sync)
                 return _options.Endpoint;
+        }
+    }
+
+    public bool HasSubscribedClients
+    {
+        get
+        {
+            lock (_sync)
+                return _clients.Values.Any(client => client.Subscribed);
         }
     }
 
@@ -481,6 +488,10 @@ internal sealed class MtcJsonRpcServer : IDisposable
             client.EnqueueEvent(evt);
     }
 
+    public void PublishGameAgentEvent(GameAgentEvent evt)
+        => OnGameAgentEventRecorded(evt);
+
+
     private static JsonRpcResponseObject ErrorResponse(object? id, int code, string message, object? data)
         => new()
         {
@@ -606,8 +617,6 @@ internal sealed class MtcJsonRpcServer : IDisposable
             _disposed = true;
             StopUnderLock();
         }
-
-        _gameAgent.EventRecorded -= OnGameAgentEventRecorded;
     }
 
     private sealed class MtcRpcWebSocketClient : IDisposable

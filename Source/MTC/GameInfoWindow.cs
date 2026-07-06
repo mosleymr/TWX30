@@ -67,6 +67,7 @@ public class GameInfoWindow : Window
     private readonly Func<Core.ModDatabase?> _getDb;
     private readonly Func<GameState?> _getState;
     private readonly Func<IReadOnlyDictionary<string, string>?> _getGameVars;
+    private readonly Func<int> _getBubbleCount;
     private readonly TextBlock _header;
     private readonly StackPanel _statsContent;
     private readonly StackPanel _settingsContent;
@@ -161,11 +162,13 @@ public class GameInfoWindow : Window
     public GameInfoWindow(
         Func<Core.ModDatabase?> getDb,
         Func<GameState?> getState,
-        Func<IReadOnlyDictionary<string, string>?>? getGameVars = null)
+        Func<IReadOnlyDictionary<string, string>?>? getGameVars = null,
+        Func<int>? getBubbleCount = null)
     {
         _getDb = getDb;
         _getState = getState;
         _getGameVars = getGameVars ?? (() => null);
+        _getBubbleCount = getBubbleCount ?? (() => 0);
 
         Title = "Game Info";
         Width = 1120;
@@ -407,13 +410,7 @@ public class GameInfoWindow : Window
         if (stardockSector > 0)
             stardockName = db.GetSector(stardockSector)?.SectorPort?.Name ?? "StarDock";
 
-        Core.ITWXDatabase? previousDb = Core.GlobalModules.TWXDatabase;
-        Core.GlobalModules.TWXDatabase = db;
-        var bubbleModule = Core.GlobalModules.TWXBubble as Core.ModBubble ?? new Core.ModBubble();
-        if (Core.GlobalModules.TWXBubble == null)
-            Core.GlobalModules.TWXBubble = bubbleModule;
-        (int totalBubbles, _, _) = bubbleModule.GetBubbleCounts();
-        Core.GlobalModules.TWXDatabase = previousDb;
+        int totalBubbles = _getBubbleCount();
 
         AddOverviewLine("StarDock location:", FormatLocation(stardockSector, stardockName), ColGreen);
         AddOverviewLine("Sol location:", FormatSector(solSector), ColCyan);
@@ -538,12 +535,6 @@ public class GameInfoWindow : Window
                 return true;
             }
 
-            string currentValue = Core.ScriptRef.GetCurrentGameVar(name, string.Empty);
-            if (!string.IsNullOrWhiteSpace(currentValue))
-            {
-                value = currentValue.Trim();
-                return true;
-            }
         }
 
         value = string.Empty;

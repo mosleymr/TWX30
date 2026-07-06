@@ -21,6 +21,15 @@ public partial class MainWindow
 {
     private void UpdateTemporaryMacroControls()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateTemporaryMacroControls, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         int encodedLength = GetTemporaryMacroText().Length;
 
         ConfigureMacroControlSet(_macroRecordButton, _macroStopButton, _macroPlayButton, deckSkin: false, encodedLength);
@@ -624,7 +633,8 @@ public partial class MainWindow
 
             await SaveCurrentGameConfigAsync();
 
-            Dispatcher.UIThread.Post(() =>
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(owner, () =>
             {
                 InvalidateStatusBarLayout();
                 RefreshHaggleDetailsMenuState();
@@ -649,11 +659,29 @@ public partial class MainWindow
 
     private void ApplyBottomBarVisibility()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(ApplyBottomBarVisibility, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         _statusBar.IsVisible = _appPrefs.ShowBottomBar;
     }
 
     private void RefreshCommWindowUi()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshCommWindowUi, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         if (_commPanelBorder != null)
             _commPanelBorder.IsVisible = _commWindowVisible;
         if (_commGridSplitter != null)
@@ -751,6 +779,15 @@ public partial class MainWindow
 
     private void RefreshCommComposerState()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshCommComposerState, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         RefreshCommComposerState(
             _commPrivateTargetLabel,
             _commPrivateTargetTextBox,
@@ -868,13 +905,16 @@ public partial class MainWindow
         if (!Core.AnsiCodes.TryParseCommMessageLine(ansiLine, out Core.CommMessageInfo info))
             return;
 
-        Dispatcher.UIThread.Post(() =>
+        var owner = ResolveCurrentMtcTabContext();
+        PostToMtcTabSession(owner, () =>
         {
             _commEntries.Add(new CommEntry(info.Channel, info.Sender, info.MessageText, IsLocal: false));
             if (_commEntries.Count > MaxCommEntries)
                 _commEntries.RemoveAt(0);
             if (info.Channel == Core.CommMessageChannel.Private && !string.IsNullOrWhiteSpace(info.Sender))
                 _commPrivateTarget = info.Sender;
+            if (!PrepareMtcTabVisualRefresh())
+                return;
             RefreshCommComposerState();
             RefreshCommWindowText();
         });
@@ -882,6 +922,15 @@ public partial class MainWindow
 
     private void RefreshCommWindowText()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RefreshCommWindowText, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         UpdateCommTextBlock(_commFedTextBlock, _commFedScrollViewer, Core.CommMessageChannel.FedComm);
         UpdateCommTextBlock(_commSubspaceTextBlock, _commSubspaceScrollViewer, Core.CommMessageChannel.Subspace);
         UpdateCommTextBlock(_commPrivateTextBlock, _commPrivateScrollViewer, Core.CommMessageChannel.Private);
@@ -928,54 +977,11 @@ public partial class MainWindow
     /// </summary>
     private void OnShipStatusUpdated(Core.ShipStatus s)
     {
-        var owner = CurrentMtcTabContext();
+        var owner = ResolveCurrentMtcTabContext();
 
         void Apply()
         {
-            _state.Sector       = s.CurrentSector;
-            _state.Turns        = s.Turns;
-            _state.Credits      = s.Credits;
-            _state.Experience   = (int)s.Experience;
-            _state.Alignment    = s.Alignment.ToString();
-            _state.TraderName   = string.IsNullOrEmpty(s.TraderName) ? _state.TraderName : s.TraderName;
-            _state.Corp         = s.Corp;
-            _state.ShipName     = string.IsNullOrEmpty(s.ShipName) ? _state.ShipName : s.ShipName;
-            _currentShipType    = s.ShipType;
-            _currentShipClass   = s.ShipClass;
-
-            _state.Fighters     = s.Fighters;
-            _state.Shields      = s.Shields;
-            _state.TurnsPerWarp = s.TurnsPerWarp;
-
-            _state.HoldsTotal   = s.TotalHolds;
-            _state.FuelOre      = s.FuelOre;
-            _state.Organics     = s.Organics;
-            _state.Equipment    = s.Equipment;
-            _state.Colonists    = s.Colonists;
-            _state.HoldsEmpty   = s.HoldsEmpty;
-
-            _state.Photon       = s.Photons;
-            _state.Limpet       = s.LimpetMines;
-            _state.Armor        = s.ArmidMines;
-            _state.Genesis      = s.GenesisTorps;
-            _state.Atomic       = s.AtomicDet;
-            _state.Corbomite    = s.Corbomite;
-            _state.Cloak        = s.Cloaks;
-            _state.Beacon       = s.Beacons;
-            _state.Etheral      = s.EtherProbes;
-            _state.Disruptor    = s.MineDisruptors;
-            _state.ScannerP     = s.PlanetScanner;
-            bool hasHoloScanner = s.LRSType.Contains("Holo", StringComparison.OrdinalIgnoreCase);
-            bool hasDensityScanner = !string.IsNullOrEmpty(s.LRSType) && !hasHoloScanner;
-            _state.ScannerH     = hasHoloScanner;
-            _state.ScannerD     = NormalizeDensityScanner(hasDensityScanner, hasHoloScanner);
-            _state.HasTranswarpDrive1 = s.HasTransWarp1 || s.TransWarp1 > 0;
-            _state.HasTranswarpDrive2 = s.HasTransWarp2 || s.TransWarp2 > 0;
-            _state.TranswarpDrive1 = s.TransWarp1;
-            _state.TranswarpDrive2 = s.TransWarp2;
-
-            ObserveGameAgentShipStatus(s);
-            _state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
+            ApplyShipStatusToTabState(owner, s, notifyChanged: true, observeAgent: true);
 
             // Ship status can update many times per macro burst; persist it after the burst quiets.
             if (_currentProfilePath != null)
@@ -984,12 +990,78 @@ public partial class MainWindow
 
         if (Dispatcher.UIThread.CheckAccess())
         {
-            Apply();
+            ExecuteInOptionalMtcTabSession(owner, Apply);
             return;
         }
 
         // May arrive on the thread-pool read loop; preserve the owner tab when crossing to UI.
-        Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owner, Apply), DispatcherPriority.Background);
+        PostToMtcTabSession(owner, Apply, DispatcherPriority.Background);
+    }
+
+    private void ApplyShipStatusToTabState(MtcTabPrototype? owner, Core.ShipStatus s, bool notifyChanged, bool observeAgent)
+    {
+        GameState state = owner?.State ?? _state;
+
+        state.Sector       = s.CurrentSector;
+        state.Turns        = s.Turns;
+        state.Credits      = s.Credits;
+        state.Experience   = (int)s.Experience;
+        state.Alignment    = s.Alignment.ToString();
+        state.TraderName   = string.IsNullOrEmpty(s.TraderName) ? state.TraderName : s.TraderName;
+        state.Corp         = s.Corp;
+        state.ShipName     = string.IsNullOrEmpty(s.ShipName) ? state.ShipName : s.ShipName;
+
+        if (owner is not null)
+        {
+            owner.CurrentShipType = s.ShipType;
+            owner.CurrentShipClass = s.ShipClass;
+            if (owner.Id == _activeMtcTabId)
+            {
+                _currentShipType = s.ShipType;
+                _currentShipClass = s.ShipClass;
+            }
+        }
+        else
+        {
+            _currentShipType = s.ShipType;
+            _currentShipClass = s.ShipClass;
+        }
+
+        state.Fighters     = s.Fighters;
+        state.Shields      = s.Shields;
+        state.TurnsPerWarp = s.TurnsPerWarp;
+
+        state.HoldsTotal   = s.TotalHolds;
+        state.FuelOre      = s.FuelOre;
+        state.Organics     = s.Organics;
+        state.Equipment    = s.Equipment;
+        state.Colonists    = s.Colonists;
+        state.HoldsEmpty   = s.HoldsEmpty;
+
+        state.Photon       = s.Photons;
+        state.Limpet       = s.LimpetMines;
+        state.Armor        = s.ArmidMines;
+        state.Genesis      = s.GenesisTorps;
+        state.Atomic       = s.AtomicDet;
+        state.Corbomite    = s.Corbomite;
+        state.Cloak        = s.Cloaks;
+        state.Beacon       = s.Beacons;
+        state.Etheral      = s.EtherProbes;
+        state.Disruptor    = s.MineDisruptors;
+        state.ScannerP     = s.PlanetScanner;
+        bool hasHoloScanner = s.LRSType.Contains("Holo", StringComparison.OrdinalIgnoreCase);
+        bool hasDensityScanner = !string.IsNullOrEmpty(s.LRSType) && !hasHoloScanner;
+        state.ScannerH     = hasHoloScanner;
+        state.ScannerD     = NormalizeDensityScanner(hasDensityScanner, hasHoloScanner);
+        state.HasTranswarpDrive1 = s.HasTransWarp1 || s.TransWarp1 > 0;
+        state.HasTranswarpDrive2 = s.HasTransWarp2 || s.TransWarp2 > 0;
+        state.TranswarpDrive1 = s.TransWarp1;
+        state.TranswarpDrive2 = s.TransWarp2;
+
+        if (observeAgent)
+            ObserveGameAgentShipStatus(s);
+        if (notifyChanged)
+            state.NotifyChanged(); // refreshes immediately unless the client is intentionally deaf
     }
 
     private void ObserveComputerShipTypeLine(string line)
@@ -1052,9 +1124,10 @@ public partial class MainWindow
                 return;
 
             string capturedLine = line;
-            var owner = CurrentMtcTabContext();
-            Dispatcher.UIThread.Post(
-                () => ExecuteInOptionalMtcTabSession(owner, () => ObserveOnlinePlayersLine(capturedLine)),
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(
+                owner,
+                () => ObserveOnlinePlayersLine(capturedLine),
                 DispatcherPriority.Background);
             return;
         }
@@ -1108,10 +1181,7 @@ public partial class MainWindow
     private bool ShouldDispatchOnlinePlayersLine(string line)
     {
         if (IsOnlinePlayersHeaderLine(line))
-        {
-            _capturingOnlinePlayers = true;
             return true;
-        }
 
         if (_capturingOnlinePlayers)
             return true;
@@ -1233,6 +1303,12 @@ public partial class MainWindow
         if (_capturingOnlinePlayers)
             return false;
 
+        if (IsNativeMombotRelogInProgress())
+            return false;
+
+        if (!IsOnlineAutoRefreshPromptSafe())
+            return false;
+
         if (HasPendingUserTypedCommand())
             return false;
 
@@ -1245,6 +1321,16 @@ public partial class MainWindow
         }
 
         return IsGameTrafficQuiet();
+    }
+
+    private bool IsOnlineAutoRefreshPromptSafe()
+    {
+        if (_gameInstance?.IsProxyMenuActive == true)
+            return false;
+
+        string currentLine = NormalizeMombotPromptComparisonValue(
+            Core.ScriptRef.GetCurrentLine(CurrentMombotRuntimeContext()));
+        return currentLine.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsOnlineStatusPanelActive()
@@ -1370,23 +1456,28 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            var owner = ResolveCurrentMtcTabContext();
+            if (owner is null)
+                return;
+
             if (force)
             {
-                var owner = CurrentMtcTabContext();
-                Dispatcher.UIThread.Post(
-                    () => ExecuteInOptionalMtcTabSession(owner, () => RequestInfoPanelsRefresh(force)),
+                PostToMtcTabSession(
+                    owner,
+                    () => RequestInfoPanelsRefresh(force),
                     DispatcherPriority.Input);
                 return;
             }
 
-            if (Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 1) == 0)
+            if (Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 1) == 0)
             {
-                var owner = CurrentMtcTabContext();
-                Dispatcher.UIThread.Post(() =>
-                {
-                    Interlocked.Exchange(ref _infoPanelsRefreshPostScheduled, 0);
-                    ExecuteInOptionalMtcTabSession(owner, () => RequestInfoPanelsRefresh());
-                }, DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(
+                    () => ExecuteInMtcTabSession(owner, () =>
+                    {
+                        Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 0);
+                        RequestInfoPanelsRefresh();
+                    }),
+                    DispatcherPriority.Background);
             }
 
             return;
@@ -1405,7 +1496,7 @@ public partial class MainWindow
 
         if (force)
         {
-            _infoPanelsRefreshTimer?.Stop();
+            (ResolveCurrentMtcTabContext()?.InfoPanelsRefreshTimer ?? _infoPanelsRefreshTimer)?.Stop();
             FlushInfoPanelsRefresh();
             return;
         }
@@ -1436,18 +1527,36 @@ public partial class MainWindow
 
     private void ScheduleInfoPanelsRefresh(TimeSpan delay)
     {
-        DispatcherTimer timer = _infoPanelsRefreshTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+        var owner = ResolveCurrentMtcTabContext();
+        DispatcherTimer timer;
+
+        if (owner is not null)
+        {
+            timer = owner.InfoPanelsRefreshTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+            if (!owner.InfoPanelsRefreshTimerWired)
+            {
+                timer.Tick += (_, _) => ExecuteInOptionalMtcTabSession(owner, () => OnInfoPanelsRefreshTimerTick(owner.InfoPanelsRefreshTimer));
+                owner.InfoPanelsRefreshTimerWired = true;
+            }
+        }
+        else
+        {
+            timer = _infoPanelsRefreshTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+            timer.Tick -= OnInfoPanelsRefreshTimerTick;
+            timer.Tick += OnInfoPanelsRefreshTimerTick;
+        }
 
         timer.Stop();
         timer.Interval = delay <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : delay;
-        timer.Tick -= OnInfoPanelsRefreshTimerTick;
-        timer.Tick += OnInfoPanelsRefreshTimerTick;
         timer.Start();
     }
 
     private void OnInfoPanelsRefreshTimerTick(object? sender, EventArgs e)
+        => OnInfoPanelsRefreshTimerTick(_infoPanelsRefreshTimer);
+
+    private void OnInfoPanelsRefreshTimerTick(DispatcherTimer? timer)
     {
-        _infoPanelsRefreshTimer?.Stop();
+        timer?.Stop();
         if (HasPendingTerminalDisplayBacklog())
         {
             ScheduleInfoPanelsRefresh(TimeSpan.FromMilliseconds(350));
@@ -1477,7 +1586,24 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(RequestCurrentGameConfigSave, DispatcherPriority.Background);
+            PostToCurrentMtcTabSession(RequestCurrentGameConfigSave, DispatcherPriority.Background);
+            return;
+        }
+
+        var owner = ResolveCurrentMtcTabContext();
+        if (owner is not null)
+        {
+            DispatcherTimer ownerTimer = owner.CurrentGameConfigSaveTimer ??= new DispatcherTimer(DispatcherPriority.Background);
+            if (!owner.CurrentGameConfigSaveTimerWired)
+            {
+                ownerTimer.Tick += async (_, _) =>
+                    await ExecuteInOptionalMtcTabSessionAsync(owner, () => OnCurrentGameConfigSaveTimerTickAsync(owner));
+                owner.CurrentGameConfigSaveTimerWired = true;
+            }
+
+            ownerTimer.Stop();
+            ownerTimer.Interval = TimeSpan.FromSeconds(2);
+            ownerTimer.Start();
             return;
         }
 
@@ -1491,27 +1617,50 @@ public partial class MainWindow
     }
 
     private async void OnCurrentGameConfigSaveTimerTick(object? sender, EventArgs e)
+        => await OnCurrentGameConfigSaveTimerTickAsync(null);
+
+    private async Task OnCurrentGameConfigSaveTimerTickAsync(MtcTabPrototype? owner)
     {
-        _currentGameConfigSaveTimer?.Stop();
-        if (_currentGameConfigSaveRunning)
+        DispatcherTimer? timer = owner?.CurrentGameConfigSaveTimer ?? _currentGameConfigSaveTimer;
+        timer?.Stop();
+
+        bool running = owner?.CurrentGameConfigSaveRunning ?? _currentGameConfigSaveRunning;
+        if (running)
         {
-            _currentGameConfigSaveAgain = true;
+            if (owner is not null)
+                owner.CurrentGameConfigSaveAgain = true;
+            else
+                _currentGameConfigSaveAgain = true;
             return;
         }
 
-        _currentGameConfigSaveRunning = true;
+        if (owner is not null)
+            owner.CurrentGameConfigSaveRunning = true;
+        else
+            _currentGameConfigSaveRunning = true;
+
         try
         {
             await SaveCurrentGameConfigAsync();
         }
         finally
         {
-            _currentGameConfigSaveRunning = false;
-            if (_currentGameConfigSaveAgain)
+            bool runAgain;
+            if (owner is not null)
             {
-                _currentGameConfigSaveAgain = false;
-                RequestCurrentGameConfigSave();
+                owner.CurrentGameConfigSaveRunning = false;
+                runAgain = owner.CurrentGameConfigSaveAgain;
+                owner.CurrentGameConfigSaveAgain = false;
             }
+            else
+            {
+                _currentGameConfigSaveRunning = false;
+                runAgain = _currentGameConfigSaveAgain;
+                _currentGameConfigSaveAgain = false;
+            }
+
+            if (runAgain)
+                RequestCurrentGameConfigSave();
         }
     }
 
@@ -1519,9 +1668,10 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = CurrentMtcTabContext();
-            Dispatcher.UIThread.Post(
-                () => ExecuteInOptionalMtcTabSession(owner, () => RequestOnlinePanelRefresh(force)),
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(
+                owner,
+                () => RequestOnlinePanelRefresh(force),
                 DispatcherPriority.Background);
             return;
         }
@@ -1543,7 +1693,7 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(FlushDeferredPanelRefreshes, DispatcherPriority.Background);
+            PostToCurrentMtcTabSession(FlushDeferredPanelRefreshes, DispatcherPriority.Background);
             return;
         }
 
@@ -1572,9 +1722,10 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = CurrentMtcTabContext();
-            Dispatcher.UIThread.Post(
-                () => ExecuteInOptionalMtcTabSession(owner, () => RequestOnlinePanelRefresh()),
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(
+                owner,
+                () => RequestOnlinePanelRefresh(),
                 DispatcherPriority.Background);
             return;
         }
@@ -1628,7 +1779,7 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(ClearOnlinePlayers);
+            PostToCurrentMtcTabSession(ClearOnlinePlayers);
             return;
         }
 
@@ -1636,6 +1787,10 @@ public partial class MainWindow
         _onlinePlayersCaptureSawPlayer = false;
         _pendingOnlinePlayers.Clear();
         _onlinePlayers.Clear();
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         RequestOnlinePanelRefresh();
     }
 
@@ -1924,20 +2079,22 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = CurrentMtcTabContext();
-            Dispatcher.UIThread.Post(
-                () => ExecuteInOptionalMtcTabSession(owner, RefreshStatusBar),
-                DispatcherPriority.Background);
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(owner, RefreshStatusBar, DispatcherPriority.Background);
             return;
         }
 
         if (!PrepareMtcTabVisualRefresh())
             return;
 
-        if (ActiveMtcRuntimeContext is { } activeContext &&
-            !ReferenceEquals(Core.GlobalModules.CurrentContext, activeContext))
+        var activeTab = ActiveMtcTab;
+        Core.TwxRuntimeContext? displayContext =
+            activeTab?.RuntimeContext ??
+            ActiveMtcRuntimeContext;
+        if (displayContext is { } context &&
+            !ReferenceEquals(Core.GlobalModules.CurrentContext, context))
         {
-            using var runtimeScope = Core.GlobalModules.UseRuntimeContext(activeContext);
+            using var runtimeScope = Core.GlobalModules.UseRuntimeContext(context);
             RefreshStatusBar();
             return;
         }

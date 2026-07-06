@@ -87,7 +87,7 @@ public partial class MainWindow
         _statusMacrosButton.Click += (_, _) =>
         {
             _ = OnMacrosAsync();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusMacrosButton.PointerEntered += (_, _) =>
         {
@@ -171,7 +171,7 @@ public partial class MainWindow
         _statusMapButton.Click += (_, _) =>
         {
             OnViewMap();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusMapButton.PointerEntered += (_, _) =>
         {
@@ -294,7 +294,7 @@ public partial class MainWindow
         _statusStopAllButton.Click += (_, _) =>
         {
             _ = OnProxyForceStopInterruptibleScriptsAsync();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusStopAllButton.PointerEntered += (_, _) =>
         {
@@ -359,7 +359,7 @@ public partial class MainWindow
         _statusCommButton.Click += (_, _) =>
         {
             ToggleCommWindow();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusCommButton.PointerEntered += (_, _) =>
         {
@@ -387,7 +387,7 @@ public partial class MainWindow
         _statusBotButton.Click += async (_, _) =>
         {
             await ToggleNativeMombotFromToolbarAsync();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusBotButton.PointerEntered += (_, _) =>
         {
@@ -577,7 +577,7 @@ public partial class MainWindow
         _statusHaggleButton.Click += (_, _) =>
         {
             OnHaggleToggleRequested();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusHaggleButton.PointerEntered += (_, _) =>
         {
@@ -707,7 +707,7 @@ public partial class MainWindow
         _statusLivePausedButton.Click += (_, _) =>
         {
             SetTerminalLivePaused(!_terminalLivePaused);
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
         _statusLivePausedButton.PointerEntered += (_, _) =>
         {
@@ -735,12 +735,21 @@ public partial class MainWindow
         {
             if (_redAlertEnabled)
                 ClearRedAlert();
-            Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
         };
     }
 
     private void UpdateTerminalLiveSelector()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateTerminalLiveSelector, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         bool enabled = _gameInstance != null;
         bool remoteProxyScripts = CanUseRemoteProxyScripts();
         bool haggleAvailable = enabled || remoteProxyScripts || (!_state.EmbeddedProxy && _telnet.IsConnected);
@@ -1066,7 +1075,7 @@ public partial class MainWindow
         button.Content = "RED ALERT";
     }
 
-    private static void SetRedAlertVars(string value)
+    private void SetRedAlertVars(string value)
         => PersistMombotVars(value, "$BOT~REDALERT", "$BOT~redalert", "$bot~redalert", "$redalert");
 
     private void ApplyRedAlertPreference()
@@ -1114,7 +1123,7 @@ public partial class MainWindow
 
     internal void ClearRedAlert()
     {
-        _redAlertTimer.Stop();
+        StopCurrentRedAlertTimer();
         SetRedAlertVars("FALSE");
         SetRedAlertEnabled(false);
     }
@@ -1125,8 +1134,8 @@ public partial class MainWindow
 
         if (_redAlertEnabled == effectiveEnabled)
         {
-            _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
-            ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _appPrefs.EnableRedAlertMode && _redAlertEnabled);
+            if (PrepareMtcTabVisualRefresh())
+                ApplyVisibleRedAlertUi();
             return;
         }
 
@@ -1134,10 +1143,12 @@ public partial class MainWindow
         if (_redAlertEnabled)
             RestartRedAlertTimer();
         else
-            _redAlertTimer.Stop();
-        ApplyRedAlertPalette(_redAlertEnabled);
-        Background = BgWindow;
-        UpdateTerminalLiveSelector();
+            StopCurrentRedAlertTimer();
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        ApplyVisibleRedAlertUi();
         RefreshStatusBar();
         RequestInfoPanelsRefresh(force: true);
         _buffer.Dirty = true;
@@ -1145,10 +1156,55 @@ public partial class MainWindow
         _deckTermCtrl?.InvalidateVisual();
     }
 
+    private void ApplyVisibleRedAlertUi()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(ApplyVisibleRedAlertUi, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        ApplyRedAlertPalette(_redAlertEnabled);
+        Background = BgWindow;
+        _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
+        ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _appPrefs.EnableRedAlertMode && _redAlertEnabled);
+        UpdateTerminalLiveSelector();
+    }
+
     private void RestartRedAlertTimer()
     {
+        var owner = ResolveCurrentMtcTabContext();
+        if (owner is not null)
+        {
+            DispatcherTimer timer = owner.RedAlertTimer ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            if (!owner.RedAlertTimerWired)
+            {
+                timer.Tick += (_, _) => ExecuteInOptionalMtcTabSession(owner, ClearRedAlert);
+                owner.RedAlertTimerWired = true;
+            }
+
+            timer.Stop();
+            timer.Start();
+            return;
+        }
+
+        // Red alert is per live tab. If there is no owning tab, do not fall
+        // back to the shared bootstrap timer and risk clearing the active tab.
+    }
+
+    private void StopCurrentRedAlertTimer()
+    {
+        var owner = ResolveCurrentMtcTabContext();
+        if (owner?.RedAlertTimer is not null)
+        {
+            owner.RedAlertTimer.Stop();
+            return;
+        }
+
         _redAlertTimer.Stop();
-        _redAlertTimer.Start();
     }
 
 }

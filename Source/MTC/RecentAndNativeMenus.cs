@@ -33,14 +33,24 @@ public partial class MainWindow
         if (IsGeneratedPlaceholderRecentPath(path))
             return;
 
-        _appPrefs.AddRecent(path);
+        if (!_appPrefs.AddRecent(path))
+            return;
+
         _appPrefs.Save();
         RebuildRecentMenu();
     }
 
     /// <summary>Rebuilds the items inside the Recent submenu from <see cref="_appPrefs"/>.</summary>
-    private void RebuildRecentMenu()
+    private void RebuildRecentMenu(bool force = false)
     {
+        if ((_recentMenuOpen || AreSharedMenusOpen) && !force)
+        {
+            _recentMenuRebuildPending = true;
+            _viewClearRecents.IsEnabled = _appPrefs.RecentFiles.Count > 0;
+            return;
+        }
+
+        _recentMenuRebuildPending = false;
         int removed = _appPrefs.RecentFiles.RemoveAll(path => IsGeneratedPlaceholderRecentPath(path));
         if (removed > 0)
             _appPrefs.Save();
@@ -54,7 +64,11 @@ public partial class MainWindow
                 name = Path.GetFileName(p);
             var item = new MenuItem { Header = EscapeMenuHeaderText(name) };
             ToolTip.SetTip(item, p);
-            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => OpenRecentAsync(p));
+            item.Click += (_, _) =>
+            {
+                var owner = ActiveMtcTab;
+                _ = ExecuteInOptionalMtcTabSessionAsync(owner, () => OpenRecentAsync(p));
+            };
             items.Add(item);
         }
         if (items.Count == 0)
@@ -65,10 +79,117 @@ public partial class MainWindow
         RefreshNativeAppMenu();
     }
 
-    private void RefreshNativeAppMenu()
+    private void OnRecentMenuOpened()
+    {
+        _recentMenuOpen = true;
+        RebuildRecentMenu(force: true);
+    }
+
+    private void OnRecentMenuClosed()
+    {
+        _recentMenuOpen = false;
+        QueueDeferredSharedMenuFlush();
+    }
+
+    private bool AreSharedMenusOpen => _openSharedMenus.Count > 0;
+
+    private void TrackSharedMenuOpenState(MenuItem menuItem, Action? opened = null, Action? closed = null)
+    {
+        menuItem.PropertyChanged += (_, e) =>
+        {
+            if (e.Property != MenuItem.IsSubMenuOpenProperty)
+                return;
+
+            if (menuItem.IsSubMenuOpen)
+            {
+                _openSharedMenus.Add(menuItem);
+                opened?.Invoke();
+            }
+            else
+            {
+                _openSharedMenus.Remove(menuItem);
+                closed?.Invoke();
+                QueueDeferredSharedMenuFlush();
+            }
+        };
+    }
+
+    private void QueueDeferredSharedMenuFlush()
+    {
+        Dispatcher.UIThread.Post(FlushDeferredSharedMenuRefreshes, DispatcherPriority.Background);
+    }
+
+    private void FlushDeferredSharedMenuRefreshes()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(FlushDeferredSharedMenuRefreshes, DispatcherPriority.Background);
+            return;
+        }
+
+        if (AreSharedMenusOpen)
+            return;
+
+        if (_recentMenuRebuildPending)
+            RebuildRecentMenu(force: true);
+
+        if (_proxyMenuRebuildPending)
+        {
+            _proxyMenuRebuildPending = false;
+            RebuildProxyMenu(force: true);
+        }
+
+        if (_scriptsMenuRebuildPending)
+        {
+            _scriptsMenuRebuildPending = false;
+            RebuildScriptsMenu(force: true);
+        }
+
+        if (_aiMenuRebuildPending)
+        {
+            _aiMenuRebuildPending = false;
+            RebuildAiMenu(force: true);
+        }
+
+        if (_nativeMenuRefreshPending)
+        {
+            _nativeMenuRefreshPending = false;
+            RefreshNativeAppMenu(force: true);
+            RefreshNativeDockMenu(force: true);
+        }
+
+        if (_tabStripRefreshPending)
+        {
+            _tabStripRefreshPending = false;
+            RefreshMtcTabStrip(force: true);
+        }
+
+        if (_focusTerminalAfterSharedMenuClose)
+        {
+            _focusTerminalAfterSharedMenuClose = false;
+            FocusActiveTerminal();
+        }
+    }
+
+    private void RefreshNativeAppMenu(bool force = false)
     {
         if (!OperatingSystem.IsMacOS())
             return;
+
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RefreshNativeAppMenu(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen && !force)
+        {
+            _nativeMenuRefreshPending = true;
+            return;
+        }
 
         if (!_nativeAppMenuReady)
             return;
@@ -91,10 +212,25 @@ public partial class MainWindow
         }
     }
 
-    private void RefreshNativeDockMenu()
+    private void RefreshNativeDockMenu(bool force = false)
     {
         if (!OperatingSystem.IsMacOS())
             return;
+
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RefreshNativeDockMenu(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen && !force)
+        {
+            _nativeMenuRefreshPending = true;
+            return;
+        }
 
         if (!_nativeAppMenuReady)
             return;

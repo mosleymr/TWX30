@@ -153,8 +153,6 @@ internal sealed class GameAgentRuntime : IDisposable
 
     private readonly object _sync = new();
     private readonly Queue<GameAgentEvent> _recentEvents = new();
-    private readonly BlockingCollection<GameAgentEvent> _writeQueue = new(MaxQueuedEvents);
-    private readonly Task _writerTask;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         WriteIndented = false,
@@ -167,13 +165,10 @@ internal sealed class GameAgentRuntime : IDisposable
 
     private string _gameName = "game";
     private string _eventLogPath = string.Empty;
+    private BlockingCollection<GameAgentEvent>? _writeQueue;
+    private Task? _writerTask;
     private StreamWriter? _writer;
     private bool _disposed;
-
-    public GameAgentRuntime()
-    {
-        _writerTask = Task.Run(WriterLoop);
-    }
 
     public string EventLogPath
     {
@@ -181,6 +176,15 @@ internal sealed class GameAgentRuntime : IDisposable
         {
             lock (_sync)
                 return _eventLogPath;
+        }
+    }
+
+    public bool IsActive
+    {
+        get
+        {
+            lock (_sync)
+                return !_disposed && _writeQueue != null;
         }
     }
 
@@ -200,20 +204,42 @@ internal sealed class GameAgentRuntime : IDisposable
         }
     }
 
-    public void Record(GameAgentEvent evt)
+    public void Activate(string gameName)
     {
-        if (_disposed)
-            return;
-
-        GameAgentEvent normalized = NormalizeEvent(evt);
+        SetGameName(gameName);
         lock (_sync)
         {
+            if (_disposed || _writeQueue != null)
+                return;
+
+            var queue = new BlockingCollection<GameAgentEvent>(MaxQueuedEvents);
+            _writeQueue = queue;
+            _writerTask = Task.Run(() => WriterLoop(queue));
+        }
+    }
+
+    public void Deactivate()
+    {
+        StopWriter();
+    }
+
+    public void Record(GameAgentEvent evt)
+    {
+        GameAgentEvent normalized = NormalizeEvent(evt);
+        bool queued;
+        lock (_sync)
+        {
+            if (_disposed || _writeQueue == null)
+                return;
+
             _recentEvents.Enqueue(normalized);
             while (_recentEvents.Count > MaxRecentEvents)
                 _recentEvents.Dequeue();
+
+            queued = _writeQueue.TryAdd(normalized);
         }
 
-        if (!_writeQueue.TryAdd(normalized))
+        if (!queued)
         {
             RecordInMemoryOnly(new GameAgentEvent
             {
@@ -448,11 +474,7 @@ internal sealed class GameAgentRuntime : IDisposable
             return;
 
         _disposed = true;
-        _writeQueue.CompleteAdding();
-        try { _writerTask.Wait(TimeSpan.FromSeconds(1)); } catch { }
-        lock (_sync)
-            CloseWriterUnderLock();
-        _writeQueue.Dispose();
+        StopWriter();
     }
 
     private GameAgentEvent NormalizeEvent(GameAgentEvent evt)
@@ -481,10 +503,10 @@ internal sealed class GameAgentRuntime : IDisposable
         }
     }
 
-    private void WriterLoop()
+    private void WriterLoop(BlockingCollection<GameAgentEvent> queue)
     {
         DateTime lastFlushUtc = DateTime.UtcNow;
-        foreach (GameAgentEvent evt in _writeQueue.GetConsumingEnumerable())
+        foreach (GameAgentEvent evt in queue.GetConsumingEnumerable())
         {
             try
             {
@@ -512,6 +534,27 @@ internal sealed class GameAgentRuntime : IDisposable
 
         lock (_sync)
             _writer?.Flush();
+    }
+
+    private void StopWriter()
+    {
+        BlockingCollection<GameAgentEvent>? queue;
+        Task? writerTask;
+
+        lock (_sync)
+        {
+            queue = _writeQueue;
+            writerTask = _writerTask;
+            _writeQueue = null;
+            _writerTask = null;
+        }
+
+        try { queue?.CompleteAdding(); } catch { }
+        try { writerTask?.Wait(TimeSpan.FromSeconds(1)); } catch { }
+        try { queue?.Dispose(); } catch { }
+
+        lock (_sync)
+            CloseWriterUnderLock();
     }
 
     private StreamWriter EnsureWriter(string gameName)

@@ -308,16 +308,21 @@ public partial class MainWindow
 
     private async Task ShowProxyHistoryAsync()
     {
-        if (_gameInstance == null)
+        var owner = ResolveCurrentMtcTabContext() ?? ActiveMtcTab;
+        Core.GameInstance? gameInstance = _gameInstance;
+        string title = DeriveGameName();
+
+        if (gameInstance == null)
         {
             await ShowMessageAsync("Proxy History", "Proxy history is only available while the embedded proxy is running.");
             return;
         }
 
         var window = new HistoryWindow(
-            $"History - {DeriveGameName()}",
-            () => _gameInstance.History.GetSnapshot(),
-            type => _gameInstance.History.Clear(type));
+            $"History - {title}",
+            () => gameInstance.History.GetSnapshot(),
+            type => gameInstance.History.Clear(type));
+        RegisterMtcTabOwnedWindow(owner, window);
         await window.ShowDialog(this);
     }
 

@@ -54,7 +54,7 @@ public partial class MainWindow
             }
             finally
             {
-                Dispatcher.UIThread.Post(FocusActiveTerminal, DispatcherPriority.Input);
+                PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
             }
         };
         UpdateTerminalRecordButton();
@@ -127,6 +127,15 @@ public partial class MainWindow
 
     private void UpdateTerminalRecordButton()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateTerminalRecordButton, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
         if (_terminalRecordButton == null)
             return;
 

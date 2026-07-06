@@ -521,7 +521,7 @@ public partial class MainWindow
             !_telnet.IsConnected &&
             _embeddedGameConfig != null)
         {
-            LoadOfflineCurrentGameVars(_embeddedGameConfig);
+            LoadOfflineCurrentGameVars(ResolveCurrentMtcTabContext()?.RuntimeContext ?? ActiveMtcRuntimeContext, _embeddedGameConfig);
         }
 
         // Connection
@@ -594,7 +594,7 @@ public partial class MainWindow
         _state.NotifyChanged();
     }
 
-    private static void LoadOfflineCurrentGameVars(EmbeddedGameConfig config)
+    private static void LoadOfflineCurrentGameVars(Core.TwxRuntimeContext? runtimeContext, EmbeddedGameConfig config)
     {
         config.Variables = NormalizeEmbeddedVariables(config.Variables);
         NormalizeEmbeddedMombotConfig(config);
@@ -604,8 +604,8 @@ public partial class MainWindow
         varsToLoad.Remove("$doRelog");
         ApplySessionStartupVarDefaults(varsToLoad);
 
-        Core.ScriptRef.ClearCurrentGameVars();
-        Core.ScriptRef.LoadVarsForGame(varsToLoad);
+        Core.ScriptRef.ClearCurrentGameVars(runtimeContext);
+        Core.ScriptRef.LoadVarsForGame(runtimeContext, varsToLoad);
     }
 
     private static void ApplySessionStartupVarDefaults(IDictionary<string, string> vars)
@@ -639,6 +639,13 @@ public partial class MainWindow
 
     private void UpdateWindowTitle()
     {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(UpdateWindowTitle, DispatcherPriority.Background);
+            return;
+        }
+
+        var owner = ResolveCurrentMtcTabContext();
         string? gameName = null;
         if (!string.IsNullOrWhiteSpace(_embeddedGameName))
         {
@@ -653,7 +660,10 @@ public partial class MainWindow
             gameName = Path.GetFileNameWithoutExtension(_currentProfilePath);
         }
 
-        UpdateLiveMtcTabTitle(gameName);
+        UpdateLiveMtcTabTitle(owner, gameName);
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
 
         if (IsLiveMtcTabActive())
         {
@@ -789,8 +799,6 @@ public partial class MainWindow
         _embeddedGameConfig = config;
         _embeddedGameName = gameName;
         _currentProfilePath ??= GameConfigPathForMode(gameName, _state.EmbeddedProxy);
-        if (!string.IsNullOrWhiteSpace(_currentProfilePath))
-            AddToRecentAndSave(_currentProfilePath);
     }
 
     private async Task OpenPathAsync(string path, bool addToRecent)
@@ -901,7 +909,7 @@ public partial class MainWindow
         }
 
         if (switchingProfile || switchingEmbeddedGame)
-            Core.ScriptRef.ClearCurrentGameVars();
+            Core.ScriptRef.ClearCurrentGameVars(ResolveCurrentMtcTabContext()?.RuntimeContext ?? _gameInstance?.RuntimeContext ?? ActiveMtcRuntimeContext);
 
         if (NormalizeEmbeddedRelogFlagsIfEstablished(config))
             await SaveEmbeddedGameConfigAsync(targetGameName, config);
@@ -1172,15 +1180,17 @@ public partial class MainWindow
             }
 
             _sessionDb = db;
-            Core.ScriptRef.SetActiveDatabase(db);
+            Core.ScriptRef.SetActiveDatabase(ResolveCurrentMtcTabContext()?.RuntimeContext ?? ActiveMtcRuntimeContext, db);
             QueueFinderPrewarm(db);
 
-            Dispatcher.UIThread.Post(() =>
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(owner, () =>
                 _parser.Feed($"\x1b[1;36m[Database: {dbPath}]\x1b[0m\r\n"));
         }
         catch (Exception ex)
         {
-            Dispatcher.UIThread.Post(() =>
+            var owner = ResolveCurrentMtcTabContext();
+            PostToMtcTabSession(owner, () =>
                 _parser.Feed($"\x1b[1;31m[DB open failed: {ex.Message}]\x1b[0m\r\n"));
         }
     }
@@ -1189,13 +1199,23 @@ public partial class MainWindow
     {
         get
         {
-            if (_gameInstance?.RuntimeContext.ActiveInterpreter is { } gameInterpreter)
-                return gameInterpreter;
-            if (_gameInstance?.RuntimeContext.TWXInterpreter is Core.ModInterpreter gameTwxInterpreter)
-                return gameTwxInterpreter;
-            if (ActiveMtcRuntimeContext?.ActiveInterpreter is { } tabInterpreter)
+            Core.TwxRuntimeContext? context =
+                ResolveCurrentMtcTabContext()?.RuntimeContext ??
+                _gameInstance?.RuntimeContext ??
+                ActiveMtcRuntimeContext;
+            if (context == null)
+                return null;
+            if (_gameInstance?.RuntimeContext is { } gameContext && ReferenceEquals(gameContext, context))
+            {
+                if (gameContext.ActiveInterpreter is { } gameInterpreter)
+                    return gameInterpreter;
+                if (gameContext.TWXInterpreter is Core.ModInterpreter gameTwxInterpreter)
+                    return gameTwxInterpreter;
+            }
+
+            if (context?.ActiveInterpreter is { } tabInterpreter)
                 return tabInterpreter;
-            if (ActiveMtcRuntimeContext?.TWXInterpreter is Core.ModInterpreter tabTwxInterpreter)
+            if (context?.TWXInterpreter is Core.ModInterpreter tabTwxInterpreter)
                 return tabTwxInterpreter;
             return null;
         }

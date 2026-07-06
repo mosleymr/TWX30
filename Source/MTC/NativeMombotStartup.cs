@@ -189,7 +189,7 @@ public partial class MainWindow
         Core.BotConfig? botConfig = _gameInstance?.GetBotConfig(activeBotName);
         string scriptDirectory = interpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
         string programDir = interpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
-        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        string lastLoadedModule = ReadNamedMombotVar("$BOT~LAST_LOADED_MODULE", string.Empty);
 
         bool preserveShipDestroyed = HasNativeMombotShipDestroyedFlag();
         bool preserveDoNotResuscitate = HasNativeMombotDoNotResuscitateFlag() || preserveShipDestroyed;
@@ -223,34 +223,34 @@ public partial class MainWindow
         if (preserveShipDestroyed)
             preserveDoNotResuscitate = true;
 
-        Core.ScriptRef.SetCurrentGameVar("$doRelog", "0");
-        Core.ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "0");
+        SetNamedMombotVar("$doRelog", "0");
+        SetNamedMombotVar("$BOT~DORELOG", "0");
         if (preserveDoNotResuscitate)
         {
-            Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "1");
-            Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "1");
-            Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "1");
+            SetNamedMombotVar("$BOT~DO_NOT_RESUSCITATE", "1");
+            SetNamedMombotVar("$bot~do_not_resuscitate", "1");
+            SetNamedMombotVar("$do_not_resuscitate", "1");
         }
         else
         {
-            Core.ScriptRef.SetCurrentGameVar("$BOT~DO_NOT_RESUSCITATE", "0");
-            Core.ScriptRef.SetCurrentGameVar("$bot~do_not_resuscitate", "0");
-            Core.ScriptRef.SetCurrentGameVar("$do_not_resuscitate", "0");
+            SetNamedMombotVar("$BOT~DO_NOT_RESUSCITATE", "0");
+            SetNamedMombotVar("$bot~do_not_resuscitate", "0");
+            SetNamedMombotVar("$do_not_resuscitate", "0");
         }
-        Core.ScriptRef.SetCurrentGameVar("$relogging", "0");
-        Core.ScriptRef.SetCurrentGameVar("$connectivity~relogging", "0");
-        Core.ScriptRef.SetCurrentGameVar("$relog_message", string.Empty);
-        Core.ScriptRef.SetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
-        Core.ScriptRef.SetCurrentGameVar("$BOT~MODE", "General");
+        SetNamedMombotVar("$relogging", "0");
+        SetNamedMombotVar("$connectivity~relogging", "0");
+        SetNamedMombotVar("$relog_message", string.Empty);
+        SetNamedMombotVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        SetNamedMombotVar("$BOT~MODE", "General");
         if (preserveShipDestroyed)
         {
-            Core.ScriptRef.SetCurrentGameVar("$BOT~ISSHIPDESTROYED", "1");
-            Core.ScriptRef.SetCurrentGameVar("$bot~isShipDestroyed", "1");
+            SetNamedMombotVar("$BOT~ISSHIPDESTROYED", "1");
+            SetNamedMombotVar("$bot~isShipDestroyed", "1");
         }
         else
         {
-            Core.ScriptRef.SetCurrentGameVar("$BOT~ISSHIPDESTROYED", "0");
-            Core.ScriptRef.SetCurrentGameVar("$bot~isShipDestroyed", "0");
+            SetNamedMombotVar("$BOT~ISSHIPDESTROYED", "0");
+            SetNamedMombotVar("$bot~isShipDestroyed", "0");
         }
         _mombotLastKeepaliveLine = string.Empty;
     }
@@ -285,7 +285,7 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(name))
             return;
 
-        Core.ScriptRef.SetCurrentGameVar(name, value);
+        SetNamedMombotVar(name, value);
 
         Core.ModInterpreter? interpreter = CurrentInterpreter;
         if (interpreter == null)
@@ -399,7 +399,8 @@ public partial class MainWindow
         if (IsNativeMombotRelogScriptLoaded())
             return;
 
-        string currentLine = NormalizeMombotPromptComparisonValue(Core.ScriptRef.GetCurrentLine());
+        string currentLine = NormalizeMombotPromptComparisonValue(
+            Core.ScriptRef.GetCurrentLine(CurrentMombotRuntimeContext()));
         if (!TryGetMombotPromptNameFromLine(currentLine, out string promptName))
             return;
 
@@ -510,11 +511,11 @@ public partial class MainWindow
         return AnyCurrentMombotVarTruthy("$BOT~ISSHIPDESTROYED", "$bot~isShipDestroyed");
     }
 
-    private static bool AnyCurrentMombotVarTruthy(params string[] names)
+    private bool AnyCurrentMombotVarTruthy(params string[] names)
     {
         foreach (string name in names)
         {
-            if (IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar(name, string.Empty)))
+            if (IsMombotTruthy(ReadNamedMombotVar(name, string.Empty)))
                 return true;
         }
 
@@ -1001,19 +1002,19 @@ public partial class MainWindow
             nativeConfig.Theme = string.IsNullOrWhiteSpace(result.Theme) ? nativeConfig.Theme : result.Theme.Trim();
 
             string currentBotName = FirstMeaningfulMombotValue(
-                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot~name", string.Empty),
+                ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+                ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+                ReadNamedMombotVar("$SWITCHBOARD~bot_name", string.Empty),
+                ReadNamedMombotVar("$bot~bot_name", string.Empty),
+                ReadNamedMombotVar("$bot_name", string.Empty),
+                ReadNamedMombotVar("$bot~name", string.Empty),
                 nativeConfig.Name,
                 "MomBot");
             string currentCommsName = FirstMeaningfulMombotValue(
-                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$BOT~bot_team_name", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot~bot_team_name", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+                ReadNamedMombotVar("$BOT~BOT_TEAM_NAME", string.Empty),
+                ReadNamedMombotVar("$BOT~bot_team_name", string.Empty),
+                ReadNamedMombotVar("$bot~bot_team_name", string.Empty),
+                ReadNamedMombotVar("$bot_team_name", string.Empty),
                 currentBotName);
             string botName = FirstMeaningfulMombotValue(result.NameVar, nativeConfig.Name, "MomBot");
             RememberNativeMombotBotName(botName);
@@ -1403,12 +1404,12 @@ public partial class MainWindow
                 string dorelog = ReadCurrentMombotVar("0", "$BOT~DORELOG", "$doRelog");
                 string loginName = FirstMeaningfulMombotValue(
                     NormalizeMombotValue(_embeddedGameConfig?.LoginName, treatSelfAsEmpty: true),
-                    Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-                    Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+                    ReadNamedMombotVar("$BOT~USERNAME", string.Empty),
+                    ReadNamedMombotVar("$username", string.Empty));
                 string gameLetter = FirstMeaningfulMombotValue(
                     NormalizeGameLetter(_embeddedGameConfig?.GameLetter),
-                    Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-                    Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+                    ReadNamedMombotVar("$BOT~LETTER", string.Empty),
+                    ReadNamedMombotVar("$letter", string.Empty));
                 Core.GlobalModules.DebugLog(
                     $"[MTC.NativeBotStart] skipping offline noninteractive start game='{_gameInstance.GameName}' reason='{offlineSkipReason}' dorelog='{dorelog}' login='{loginName}' letter='{gameLetter}'\n");
                 Core.GlobalModules.FlushDebugLog();
@@ -1519,12 +1520,12 @@ public partial class MainWindow
         string gameLetter = NormalizeGameLetter(relogSettings.GameLetter);
         string postLoginMacro = GetNativeMombotPostLoginMacro(relogSettings);
         string startShipName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTSHIPNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~startShipName", string.Empty),
+            ReadNamedMombotVar("$BOT~STARTSHIPNAME", string.Empty),
+            ReadNamedMombotVar("$bot~startShipName", string.Empty),
             "Mind ()ver Matter");
-        string isCeo = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISCEO", "0")) ? "TRUE" : "FALSE";
-        string corpName = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPNAME", string.Empty));
-        string corpPassword = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPPASSWORD", string.Empty));
+        string isCeo = IsMombotTruthy(ReadNamedMombotVar("$BOT~ISCEO", "0")) ? "TRUE" : "FALSE";
+        string corpName = NormalizeMombotValue(ReadNamedMombotVar("$BOT~CORPNAME", string.Empty));
+        string corpPassword = NormalizeMombotValue(ReadNamedMombotVar("$BOT~CORPPASSWORD", string.Empty));
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -1721,7 +1722,7 @@ public partial class MainWindow
         CloseMombotInteractiveState();
         string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(GetEffectiveProxyScriptDirectory());
         string scriptDirectory = CurrentInterpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
-        string lastLoadedModule = Core.ScriptRef.GetCurrentGameVar("$BOT~LAST_LOADED_MODULE", string.Empty);
+        string lastLoadedModule = ReadNamedMombotVar("$BOT~LAST_LOADED_MODULE", string.Empty);
         string scriptRoot = (_mombot.Config.ScriptRoot ?? string.Empty)
             .Replace('\\', '/')
             .Trim()
@@ -1777,46 +1778,46 @@ public partial class MainWindow
             _embeddedGameConfig?.Mtc?.mombot?.Name);
         string rememberedBotName = NormalizeMombotValue(_appPrefs.LastNativeMombotBotName);
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
             configuredNativeBotName,
             rememberedBotName,
             _mombot.Settings.BotName,
             "mombot");
         string loginName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+            ReadNamedMombotVar("$BOT~USERNAME", string.Empty),
+            ReadNamedMombotVar("$username", string.Empty));
         string serverName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            ReadNamedMombotVar("$BOT~SERVERNAME", string.Empty),
+            ReadNamedMombotVar("$servername", string.Empty),
             loginName);
         string password = FirstMeaningfulMombotValue(
             configPassword,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
+            ReadNamedMombotVar("$BOT~PASSWORD", string.Empty),
+            ReadNamedMombotVar("$password", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
             configGameLetter,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+            ReadNamedMombotVar("$BOT~LETTER", string.Empty),
+            ReadNamedMombotVar("$letter", string.Empty));
         string delayValue = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTGAMEDELAY", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$startGameDelay", string.Empty),
+            ReadNamedMombotVar("$BOT~STARTGAMEDELAY", string.Empty),
+            ReadNamedMombotVar("$startGameDelay", string.Empty),
             "0");
         int delayMinutes = int.TryParse(delayValue, out int parsedDelay) && parsedDelay >= 0 ? parsedDelay : 0;
-        string botCommand = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$command_to_issue", string.Empty));
+        string botCommand = NormalizeMombotValue(ReadNamedMombotVar("$command_to_issue", string.Empty));
         string startMacro = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~STARTMACRO", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~startMacro", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$startMacro", string.Empty));
+            ReadNamedMombotVar("$BOT~STARTMACRO", string.Empty),
+            ReadNamedMombotVar("$bot~startMacro", string.Empty),
+            ReadNamedMombotVar("$startMacro", string.Empty));
         string afterLoginAction = GetNativeMombotAfterLoginAction(botCommand, startMacro);
 
-        bool newGameDay1 = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "false"), "true", StringComparison.OrdinalIgnoreCase);
-        bool newGameOlder = string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "false"), "true", StringComparison.OrdinalIgnoreCase);
+        bool newGameDay1 = string.Equals(ReadNamedMombotVar("$BOT~NEWGAMEDAY1", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(ReadNamedMombotVar("$BOT~NEWGAMEDAY1", "false"), "true", StringComparison.OrdinalIgnoreCase);
+        bool newGameOlder = string.Equals(ReadNamedMombotVar("$BOT~NEWGAMEOLDER", "0"), "1", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(ReadNamedMombotVar("$BOT~NEWGAMEOLDER", "false"), "true", StringComparison.OrdinalIgnoreCase);
         bool wasShipDestroyed = HasNativeMombotShipDestroyedFlag();
         bool doNotResuscitate = HasNativeMombotDoNotResuscitateFlag();
 
@@ -1824,9 +1825,9 @@ public partial class MainWindow
             loginName,
             password,
             NormalizeGameLetter(gameLetter),
-            Core.ScriptRef.GetCurrentGameVar("$PLAYER~TRADER_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$GAME~GAMESTATS", "0"),
-            Core.ScriptRef.GetCurrentGameVar("$PLAYER~CURRENT_SECTOR", "0"));
+            ReadNamedMombotVar("$PLAYER~TRADER_NAME", string.Empty),
+            ReadNamedMombotVar("$GAME~GAMESTATS", "0"),
+            ReadNamedMombotVar("$PLAYER~CURRENT_SECTOR", "0"));
 
         if (establishedGameEvidence && (newGameDay1 || !newGameOlder))
         {
@@ -1929,8 +1930,8 @@ public partial class MainWindow
         PersistMombotVars(result.BotName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
         PersistMombotVars(
             FirstMeaningfulMombotValue(
-                Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
-                Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+                ReadNamedMombotVar("$BOT~BOT_TEAM_NAME", string.Empty),
+                ReadNamedMombotVar("$bot_team_name", string.Empty),
                 result.BotName),
             "$BOT~BOT_TEAM_NAME",
             "$bot_team_name");
@@ -1985,36 +1986,36 @@ public partial class MainWindow
             _embeddedGameConfig?.Mtc?.mombot?.Name);
         string rememberedBotName = NormalizeMombotValue(_appPrefs.LastNativeMombotBotName);
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
             configuredNativeBotName,
             rememberedBotName,
             _mombot.Settings.BotName,
             "mombot");
         string loginName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+            ReadNamedMombotVar("$BOT~USERNAME", string.Empty),
+            ReadNamedMombotVar("$username", string.Empty));
         string serverName = FirstMeaningfulMombotValue(
             configLogin,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~SERVERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$servername", string.Empty),
+            ReadNamedMombotVar("$BOT~SERVERNAME", string.Empty),
+            ReadNamedMombotVar("$servername", string.Empty),
             loginName);
         string password = FirstMeaningfulMombotValue(
             configPassword,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~PASSWORD", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$password", string.Empty));
+            ReadNamedMombotVar("$BOT~PASSWORD", string.Empty),
+            ReadNamedMombotVar("$password", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
             configGameLetter,
-            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+            ReadNamedMombotVar("$BOT~LETTER", string.Empty),
+            ReadNamedMombotVar("$letter", string.Empty));
         string doRelog = IsMombotTruthy(FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
+            ReadNamedMombotVar("$BOT~DORELOG", string.Empty),
+            ReadNamedMombotVar("$doRelog", string.Empty),
             "1")) ? "1" : "0";
-        string newGameOlder = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEOLDER", "0")) ? "1" : "0";
-        string newGameDay1 = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~NEWGAMEDAY1", "0")) ? "1" : "0";
+        string newGameOlder = IsMombotTruthy(ReadNamedMombotVar("$BOT~NEWGAMEOLDER", "0")) ? "1" : "0";
+        string newGameDay1 = IsMombotTruthy(ReadNamedMombotVar("$BOT~NEWGAMEDAY1", "0")) ? "1" : "0";
         string isShipDestroyed = HasNativeMombotShipDestroyedFlag() ? "1" : "0";
 
         SetMombotCurrentVars(botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$bot_name");
@@ -2036,12 +2037,12 @@ public partial class MainWindow
             gameConfig?.mombot?.Name ??
             gameConfig?.Mtc?.mombot?.Name);
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~bot_name", string.Empty),
+            ReadNamedMombotVar("$bot~bot_name", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$bot~name", string.Empty),
             configuredNativeBotName);
         if (string.IsNullOrWhiteSpace(botName))
             return;
@@ -2075,9 +2076,9 @@ public partial class MainWindow
 
     private void NormalizeOptionalMombotCorpVars()
     {
-        string corpName = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPNAME", string.Empty));
-        string corpPassword = NormalizeMombotValue(Core.ScriptRef.GetCurrentGameVar("$BOT~CORPPASSWORD", string.Empty));
-        string isCeo = IsMombotTruthy(Core.ScriptRef.GetCurrentGameVar("$BOT~ISCEO", "0")) ? "1" : "0";
+        string corpName = NormalizeMombotValue(ReadNamedMombotVar("$BOT~CORPNAME", string.Empty));
+        string corpPassword = NormalizeMombotValue(ReadNamedMombotVar("$BOT~CORPPASSWORD", string.Empty));
+        string isCeo = IsMombotTruthy(ReadNamedMombotVar("$BOT~ISCEO", "0")) ? "1" : "0";
 
         PersistMombotVars(corpName, "$BOT~CORPNAME");
         PersistMombotVars(corpPassword, "$BOT~CORPPASSWORD");
@@ -2124,9 +2125,9 @@ public partial class MainWindow
     private void ShowMombotStartupBanner(bool connected)
     {
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
             _mombot.Settings.BotName,
             "mombot");
         string version = GetMombotVersionDisplay();
@@ -2157,20 +2158,20 @@ public partial class MainWindow
         }
 
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
             _mombot.Settings.BotName,
             "mombot");
         string loginName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~USERNAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$username", string.Empty));
+            ReadNamedMombotVar("$BOT~USERNAME", string.Empty),
+            ReadNamedMombotVar("$username", string.Empty));
         string gameLetter = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~LETTER", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$letter", string.Empty));
+            ReadNamedMombotVar("$BOT~LETTER", string.Empty),
+            ReadNamedMombotVar("$letter", string.Empty));
         string dorelog = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~DORELOG", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$doRelog", string.Empty),
+            ReadNamedMombotVar("$BOT~DORELOG", string.Empty),
+            ReadNamedMombotVar("$doRelog", string.Empty),
             "0");
         string version = GetMombotVersionDisplay();
 
@@ -2300,19 +2301,19 @@ public partial class MainWindow
         }
 
         string botName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~BOT_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$SWITCHBOARD~bot_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~bot_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~BOT_NAME", string.Empty),
+            ReadNamedMombotVar("$SWITCHBOARD~bot_name", string.Empty),
+            ReadNamedMombotVar("$bot~bot_name", string.Empty),
+            ReadNamedMombotVar("$bot_name", string.Empty),
             fileBotName,
             _mombot.Settings.BotName,
             "mombot");
         string teamName = FirstMeaningfulMombotValue(
-            Core.ScriptRef.GetCurrentGameVar("$BOT~BOT_TEAM_NAME", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$BOT~bot_team_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot~bot_team_name", string.Empty),
-            Core.ScriptRef.GetCurrentGameVar("$bot_team_name", string.Empty),
+            ReadNamedMombotVar("$BOT~BOT_TEAM_NAME", string.Empty),
+            ReadNamedMombotVar("$BOT~bot_team_name", string.Empty),
+            ReadNamedMombotVar("$bot~bot_team_name", string.Empty),
+            ReadNamedMombotVar("$bot_team_name", string.Empty),
             _mombot.Settings.TeamName,
             botName);
         string subspace = ReadCurrentMombotVar("0", "$BOT~SUBSPACE", "$bot~subspace", "$subspace");
@@ -2336,7 +2337,7 @@ public partial class MainWindow
             "$BOT~LETTER",
             "$letter",
             "$LETTER");
-        string currentSector = Core.ScriptRef.GetCurrentSector() > 0 ? Core.ScriptRef.GetCurrentSector().ToString() : FormatMombotSector((ushort)_state.Sector);
+        string currentSector = Core.ScriptRef.GetCurrentSector(CurrentMombotRuntimeContext()) > 0 ? Core.ScriptRef.GetCurrentSector(CurrentMombotRuntimeContext()).ToString() : FormatMombotSector((ushort)_state.Sector);
         string currentPrompt = GetInitialMombotPromptName();
 
         SetMombotCurrentVars(majorVersion, "$bot~major_version", "$major_version", "$BOT~MAJOR_VERSION");

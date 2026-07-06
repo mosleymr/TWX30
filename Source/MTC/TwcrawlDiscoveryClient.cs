@@ -115,10 +115,35 @@ internal static partial class TwcrawlDiscoveryClient
         string serverPart = string.IsNullOrWhiteSpace(game.ServerSlug)
             ? game.ServerName
             : game.ServerSlug;
-        string raw = $"{serverPart}_{game.Letter}".ToLowerInvariant();
-        raw = GameNameChars().Replace(raw, "_").Trim('_');
-        raw = Underscores().Replace(raw, "_");
+        string serverSlug = BuildCompactGameNamePart(serverPart);
+        string letterSlug = NormalizeGameNamePart(game.Letter);
+        if (string.IsNullOrWhiteSpace(letterSlug))
+            letterSlug = "game";
+
+        string raw = string.IsNullOrWhiteSpace(serverSlug)
+            ? $"twx_{letterSlug}"
+            : $"{serverSlug}_{letterSlug}";
         return string.IsNullOrWhiteSpace(raw) ? $"twx_{game.Letter.ToLowerInvariant()}" : raw;
+    }
+
+    private static string BuildCompactGameNamePart(string value)
+    {
+        string normalized = NormalizeGameNamePart(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        string[] parts = normalized.Split('_', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length <= 2)
+            return normalized;
+
+        return $"{parts[0]}_{parts[1]}";
+    }
+
+    private static string NormalizeGameNamePart(string value)
+    {
+        string raw = (value ?? string.Empty).ToLowerInvariant();
+        raw = GameNameChars().Replace(raw, "_").Trim('_');
+        return Underscores().Replace(raw, "_");
     }
 
     public static bool TryParseTelnetEndpoint(string telnet, out string host, out int port)

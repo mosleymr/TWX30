@@ -1405,8 +1405,10 @@ namespace TWXProxy.Core
                    string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
         }
 
+        // "." is a valid planet name in TradeWars; do not classify any visible
+        // sector planet entry as anonymous or filter it from script-visible data.
         private static bool IsAnonymousPlanetSightingName(string? name) =>
-            string.Equals(NormalizePlanetNameForMatch(name), ".", StringComparison.Ordinal);
+            false;
 
         private static string BuildPlanetSectorDisplayName(Planet planet)
         {
@@ -1443,21 +1445,24 @@ namespace TWXProxy.Core
         /// <summary>
         /// Returns the TWX27-style planet list for a sector.
         /// TWX27 exposes the sector's current visible planet-item list here, so the
-        /// sector display cache is authoritative once the sector has been fully seen.
-        /// If we have not yet seen a full sector-visible list, fall back to the
-        /// ID-keyed planet records so scripts can still see known planets discovered
-        /// from other paths.
+        /// sector display cache is authoritative once it exists. Duplicate names
+        /// and "." names are valid TradeWars planet names and must be preserved.
+        /// If we have not yet seen a sector-visible list, fall back to the ID-keyed
+        /// planet records so scripts can still see known planets discovered from
+        /// other paths.
         /// </summary>
         public List<string> GetPlanetNamesInSector(int sectorNumber)
         {
             var sector = GetSector(sectorNumber);
-            var sectorPlanetNames = sector?.PlanetNames.ToList() ?? new List<string>();
+            var sectorPlanetNames = sector?.PlanetNames
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .ToList() ?? new List<string>();
 
-            if (sectorPlanetNames.Count > 0 || sector?.Explored == ExploreType.Yes)
-                return GetCanonicalPlanetDisplayNames(sectorNumber, sectorPlanetNames);
+            if (sectorPlanetNames.Count > 0)
+                return sectorPlanetNames;
 
             var planets = GetPlanetsInSector(sectorNumber);
-            return planets.Select(p => p.Name ?? string.Empty).ToList();
+            return planets.Select(BuildPlanetSectorDisplayName).ToList();
         }
 
         private List<string> GetCanonicalPlanetDisplayNames(int sectorNumber, IReadOnlyList<string> sectorPlanetNames)
