@@ -1,3 +1,4 @@
+using System;
 using System.Net;
 using System.Net.WebSockets;
 using System.Linq;
@@ -101,7 +102,25 @@ internal sealed class MtcJsonRpcServer : IDisposable
     {
         var listener = new HttpListener();
         listener.Prefixes.Add(options.Endpoint);
-        listener.Start();
+        try
+        {
+            listener.Start();
+        }
+        catch (HttpListenerException ex)
+            when (ex.ErrorCode == 48 ||
+                  ex.ErrorCode == 98 ||
+                  ex.Message.Contains("Address already in use", StringComparison.OrdinalIgnoreCase))
+        {
+            listener.Close();
+            throw new InvalidOperationException(
+                $"JSON-RPC endpoint {options.Endpoint} is already in use by another MTC instance or process.",
+                ex);
+        }
+        catch
+        {
+            listener.Close();
+            throw;
+        }
 
         _listener = listener;
         _cts = new CancellationTokenSource();

@@ -13,10 +13,14 @@ public partial class MainWindow
         try
         {
             _appPrefs.EnsureJsonRpcAuthToken();
+            bool shouldEnable = _appPrefs.JsonRpcEnabled && HasMtcJsonRpcGameContext();
+            if (!shouldEnable && _jsonRpcServer == null)
+                return;
+
             _jsonRpcServer ??= new MtcJsonRpcServer(BuildMtcRpcBridge());
             _jsonRpcServer.ApplyOptions(new MtcJsonRpcServerOptions
             {
-                Enabled = _appPrefs.JsonRpcEnabled,
+                Enabled = shouldEnable,
                 BindAddress = AppPreferences.NormalizeJsonRpcBindAddress(_appPrefs.JsonRpcBindAddress),
                 Port = AppPreferences.NormalizeJsonRpcPort(_appPrefs.JsonRpcPort),
                 AuthToken = AppPreferences.NormalizeJsonRpcAuthToken(_appPrefs.JsonRpcAuthToken),
@@ -29,6 +33,37 @@ public partial class MainWindow
             _parser.Feed($"\x1b[1;31m[JSON-RPC failed: {ex.Message}]\x1b[0m\r\n");
             _buffer.Dirty = true;
         }
+    }
+
+    private bool HasMtcJsonRpcGameContext()
+    {
+        if (HasMtcJsonRpcGameContext(_embeddedGameConfig, _embeddedGameName, _sessionDb, _gameInstance))
+            return true;
+
+        foreach (MtcTabPrototype tab in _mtcTabs)
+        {
+            if (!tab.IsLiveSession)
+                continue;
+
+            if (HasMtcJsonRpcGameContext(tab.EmbeddedGameConfig, tab.EmbeddedGameName, tab.SessionDb, tab.GameInstance))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasMtcJsonRpcGameContext(
+        EmbeddedGameConfig? config,
+        string? gameName,
+        Core.ModDatabase? sessionDb,
+        Core.GameInstance? gameInstance)
+    {
+        if (config != null || sessionDb != null || gameInstance != null)
+            return true;
+
+        string normalizedGameName = NormalizeGameName(gameName);
+        return !string.IsNullOrWhiteSpace(normalizedGameName) &&
+               !IsGeneratedPlaceholderGameName(normalizedGameName);
     }
 
     private MtcRpcBridge BuildMtcRpcBridge()

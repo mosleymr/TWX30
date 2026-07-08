@@ -50,6 +50,14 @@ public class ConnectionProfile
     public string     GameLetter      { get; set; } = string.Empty;
     /// <summary>True once the profile has explicitly stored embedded login automation settings.</summary>
     public bool       LoginSettingsConfigured { get; set; } = false;
+    /// <summary>Transient value used by Auto Setup to configure native MomBot during first login.</summary>
+    public string     AutoSetupBotName { get; set; } = string.Empty;
+    /// <summary>Transient Auto Setup post-login action: nothing, command, macro, or terra.</summary>
+    public string     AutoSetupAfterLoginAction { get; set; } = "nothing";
+    /// <summary>Transient native MomBot command to run after Auto Setup login when requested.</summary>
+    public string     AutoSetupBotCommand { get; set; } = string.Empty;
+    /// <summary>Transient macro to fire after Auto Setup login when requested.</summary>
+    public string     AutoSetupMacroAfterLogin { get; set; } = string.Empty;
 
     // ── Legacy terminal settings ───────────────────────────────────────────
     /// <summary>Legacy profile value retained for older files; active scrollback is global MTC preference.</summary>

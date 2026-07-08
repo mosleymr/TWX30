@@ -27,19 +27,16 @@ namespace MTC;
 
 public partial class MainWindow
 {
-    private static readonly TimeSpan TerminalDisplayDrainDelay = TimeSpan.FromMilliseconds(33);
-    private static readonly TimeSpan TerminalCatchUpDisplayDrainDelay = TimeSpan.FromMilliseconds(16);
-    private static readonly TimeSpan InactiveDisplayDrainYieldDelay = TimeSpan.FromMilliseconds(10);
-    private const int ActiveDisplayDrainChunkLimit = 16;
+    private static readonly TimeSpan TerminalDisplayDrainDelay = TimeSpan.FromMilliseconds(16);
+    private static readonly TimeSpan TerminalCatchUpDisplayDrainDelay = TimeSpan.FromMilliseconds(8);
+    private static readonly TimeSpan SessionLogDrainDelay = TimeSpan.FromMilliseconds(150);
+    private const int ActiveDisplayDrainChunkLimit = 256;
     private const int ActiveDisplayDrainByteLimit = 256 * 1024;
-    private const double ActiveDisplayDrainMilliseconds = 3.5;
-    private const int CatchUpDisplayDrainThreshold = 8;
-    private const int CatchUpDisplayDrainChunkLimit = 64;
+    private const double ActiveDisplayDrainMilliseconds = 8;
+    private const int CatchUpDisplayDrainThreshold = 512;
+    private const int CatchUpDisplayDrainChunkLimit = 1024;
     private const int CatchUpDisplayDrainByteLimit = 1024 * 1024;
-    private const double CatchUpDisplayDrainMilliseconds = 8;
-    private const int InactiveDisplayDrainChunkLimit = 256;
-    private const int InactiveDisplayDrainByteLimit = 512 * 1024;
-    private const double InactiveDisplayDrainMilliseconds = 8;
+    private const double CatchUpDisplayDrainMilliseconds = 12;
 
     private MtcTabPrototype? ResolveTerminalOwner(MtcTabPrototype? owner)
     {
@@ -139,6 +136,25 @@ public partial class MainWindow
         UpdateTerminalLiveSelector();
     }
 
+    private void SyncEmbeddedTerminalClientTypeStateOnly(MtcTabPrototype? owner, Core.ClientType clientType)
+    {
+        owner = ResolveTerminalOwner(owner);
+        if (owner is null)
+            return;
+
+        bool paused = clientType == Core.ClientType.Deaf;
+        owner.TerminalLivePaused = paused;
+        if (paused)
+        {
+            ClearPausedTerminalChunks(owner);
+            ClearPendingSessionLogChunks(owner);
+        }
+        else
+        {
+            ClearPausedTerminalChunks(owner);
+        }
+    }
+
     private void ClearPendingTerminalOutputBacklog()
         => ClearPendingTerminalOutputBacklog(ResolveCurrentMtcTabContext());
 
@@ -146,12 +162,17 @@ public partial class MainWindow
     {
         ClearPausedTerminalChunks(owner);
         var displayQueue = owner?.PendingDisplayChunks ?? _pendingDisplayChunks;
-        while (displayQueue.TryDequeue(out _))
+        while (displayQueue.TryDequeue(out PendingDisplayChunk pending))
         {
+            if (owner is not null)
+                DecrementPendingDisplayBacklog(owner, pending.Bytes.Length);
         }
 
         if (owner is not null)
+        {
             Interlocked.Exchange(ref owner.PendingDisplayChunkCount, 0);
+            Interlocked.Exchange(ref owner.PendingDisplayByteCount, 0);
+        }
 
         ResetTerminalDisplayArtifactFilterState(owner);
         ClearPendingSessionLogChunks(owner);
@@ -172,78 +193,41 @@ public partial class MainWindow
 
         if (chunk.Length == 0)
             return;
+
+        RecordMtcPerf(owner, "display.enqueue.chunks");
+        RecordMtcPerf(owner, "display.enqueue.bytes", chunk.Length);
+
+        if (MtcPerfSwitches.DisableTerminalRendering)
+        {
+            RecordMtcSubsystemSkipped(owner, "terminal-render");
+            return;
+        }
+
         bool terminalPaused = owner?.TerminalLivePaused ?? _terminalLivePaused;
         if (terminalPaused && !force)
+        {
+            RecordMtcPerf(owner, "display.enqueue.paused_skipped");
             return;
-
-        (owner?.PendingDisplayChunks ?? _pendingDisplayChunks).Enqueue(new PendingDisplayChunk(chunk));
-        if (owner is not null)
-            Interlocked.Increment(ref owner.PendingDisplayChunkCount);
+        }
 
         if (owner is not null && owner.Id != _activeMtcTabId)
         {
-            ScheduleInactiveDisplayDrain(owner);
+            RecordMtcPerf(owner, "display.enqueue.inactive.chunks");
+            RecordMtcPerf(owner, "display.enqueue.inactive.bytes", chunk.Length);
+            Interlocked.Increment(ref owner.PendingDisplayChunkCount);
+            Interlocked.Add(ref owner.PendingDisplayByteCount, chunk.Length);
+            owner.PendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk));
             return;
         }
 
-        ScheduleDisplayDrain(owner, TimeSpan.Zero);
-    }
-
-    private void ScheduleInactiveDisplayDrain(MtcTabPrototype owner)
-    {
-        if (owner.Id == Volatile.Read(ref _activeMtcTabId))
+        if (owner is not null)
         {
-            ScheduleDisplayDrain(owner, TimeSpan.Zero);
-            return;
+            Interlocked.Increment(ref owner.PendingDisplayChunkCount);
+            Interlocked.Add(ref owner.PendingDisplayByteCount, chunk.Length);
         }
+        (owner?.PendingDisplayChunks ?? _pendingDisplayChunks).Enqueue(new PendingDisplayChunk(chunk));
 
-        if (Interlocked.Exchange(ref owner.DisplayDrainScheduled, 1) != 0)
-            return;
-
-        _ = System.Threading.Tasks.Task.Run(() => DrainInactiveDisplayChunks(owner));
-    }
-
-    private void DrainInactiveDisplayChunks(MtcTabPrototype owner)
-    {
-        try
-        {
-            ExecuteInMtcTabBackgroundContext(owner, () =>
-            {
-                while (owner.Id != Volatile.Read(ref _activeMtcTabId) &&
-                       !owner.PendingDisplayChunks.IsEmpty)
-                {
-                    int processed = DrainDisplayQueueToBuffer(
-                        owner,
-                        InactiveDisplayDrainChunkLimit,
-                        InactiveDisplayDrainByteLimit,
-                        InactiveDisplayDrainMilliseconds,
-                        lockBuffer: true);
-                    if (processed == 0)
-                        break;
-                }
-            });
-        }
-        finally
-        {
-            Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
-
-            if (owner.PendingDisplayChunks.IsEmpty)
-            {
-                // Nothing left to hand off.
-            }
-            else if (owner.Id == Volatile.Read(ref _activeMtcTabId))
-            {
-                ScheduleDisplayDrain(owner, TimeSpan.Zero);
-            }
-            else
-            {
-                _ = System.Threading.Tasks.Task.Run(async () =>
-                {
-                    await System.Threading.Tasks.Task.Delay(InactiveDisplayDrainYieldDelay).ConfigureAwait(false);
-                    ScheduleInactiveDisplayDrain(owner);
-                });
-            }
-        }
+        ScheduleDisplayDrain(owner, TerminalDisplayDrainDelay);
     }
 
     private void ScheduleDisplayDrain(TimeSpan delay)
@@ -254,26 +238,27 @@ public partial class MainWindow
         owner = ResolveTerminalOwner(owner);
         if (owner is null)
             return;
+        MtcTabPrototype drainOwner = owner;
 
-        if (owner.Id != _activeMtcTabId)
+        if (drainOwner.Id != _activeMtcTabId)
         {
-            ScheduleInactiveDisplayDrain(owner);
+            RecordMtcPerf(drainOwner, "display.drain.schedule.inactive_skip");
+            // Do not schedule display parsing for inactive tabs. This keeps
+            // heavy ZTM/colo output from other tabs off the shared UI budget.
             return;
         }
 
-        if (owner is not null)
-        {
-            if (Interlocked.Exchange(ref owner.DisplayDrainScheduled, 1) != 0)
-                return;
-        }
-        else if (Interlocked.Exchange(ref _displayDrainScheduled, 1) != 0)
-        {
+        if (Interlocked.Exchange(ref drainOwner.DisplayDrainScheduled, 1) != 0)
             return;
-        }
 
         if (delay <= TimeSpan.Zero)
         {
-            Dispatcher.UIThread.Post(() => DrainPendingDisplayChunks(owner), DispatcherPriority.Background);
+            RecordMtcUiPost(drainOwner, "display.drain", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RecordMtcUiRun(drainOwner, "display.drain");
+                ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
+            }, DispatcherPriority.Background);
             return;
         }
 
@@ -282,14 +267,16 @@ public partial class MainWindow
             try
             {
                 await System.Threading.Tasks.Task.Delay(delay).ConfigureAwait(false);
-                Dispatcher.UIThread.Post(() => DrainPendingDisplayChunks(owner), DispatcherPriority.Background);
+                RecordMtcUiPost(drainOwner, "display.drain.delayed", DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RecordMtcUiRun(drainOwner, "display.drain.delayed");
+                    ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
+                }, DispatcherPriority.Background);
             }
             catch
             {
-                if (owner is not null)
-                    Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
-                else
-                    Interlocked.Exchange(ref _displayDrainScheduled, 0);
+                Interlocked.Exchange(ref drainOwner.DisplayDrainScheduled, 0);
             }
         });
     }
@@ -320,25 +307,33 @@ public partial class MainWindow
 
         if (ownerTab.Id != _activeMtcTabId)
         {
-            ScheduleInactiveDisplayDrain(ownerTab);
+            RecordMtcPerf(ownerTab, "display.drain.inactive_skip");
             return;
         }
 
         if (!IsMtcTabBackgroundContext(ownerTab))
         {
+            RecordMtcPerf(ownerTab, "display.drain.background_context_handoff");
             ExecuteInMtcTabBackgroundContext(ownerTab, () => DrainPendingDisplayChunks(ownerTab));
             return;
         }
 
+        long started = Stopwatch.GetTimestamp();
         int queuedAtStart = Volatile.Read(ref ownerTab.PendingDisplayChunkCount);
+        RecordMtcPerf(ownerTab, "display.drain.start");
+        RecordMtcPerf(ownerTab, "display.drain.queued_start", queuedAtStart);
         bool catchUp = queuedAtStart >= CatchUpDisplayDrainThreshold;
+        if (catchUp)
+            RecordMtcPerf(ownerTab, "display.drain.catchup");
 
-        _ = DrainDisplayQueueToBuffer(
+        int processed = DrainDisplayQueueToBuffer(
             ownerTab,
             catchUp ? CatchUpDisplayDrainChunkLimit : ActiveDisplayDrainChunkLimit,
             catchUp ? CatchUpDisplayDrainByteLimit : ActiveDisplayDrainByteLimit,
             catchUp ? CatchUpDisplayDrainMilliseconds : ActiveDisplayDrainMilliseconds,
             lockBuffer: false);
+        RecordMtcPerf(ownerTab, "display.drain.processed", processed);
+        RecordMtcPerfDuration(ownerTab, "display.drain", started);
 
         Interlocked.Exchange(ref ownerTab.DisplayDrainScheduled, 0);
 
@@ -348,7 +343,11 @@ public partial class MainWindow
                 ? TerminalCatchUpDisplayDrainDelay
                 : TerminalDisplayDrainDelay;
             ScheduleDisplayDrain(ownerTab, nextDelay);
+            return;
         }
+
+        FlushDeferredPanelRefreshes();
+        RedrawMombotPrompt();
     }
 
     private void FlushPendingDisplayChunksToBuffer(MtcTabPrototype owner)
@@ -371,6 +370,7 @@ public partial class MainWindow
                         int.MaxValue,
                         maxMillisecondsPerPass: 0,
                         lockBuffer: false);
+                    RecordMtcPerf(owner, "display.flush.processed", processed);
                     if (processed == 0)
                         break;
                 }
@@ -400,12 +400,13 @@ public partial class MainWindow
             {
                 while (displayQueue.TryDequeue(out PendingDisplayChunk chunk))
                 {
-                    DecrementPendingDisplayChunkCount(ownerTab);
+                    DecrementPendingDisplayBacklog(ownerTab, chunk.Bytes.Length);
 
                     if (chunk.Bytes.Length > 0)
                     {
                         targetParser.Feed(chunk.Bytes, chunk.Bytes.Length);
                         processedBytes += chunk.Bytes.Length;
+                        RecordMtcPerf(ownerTab, "display.feed.bytes", chunk.Bytes.Length);
                     }
 
                     processedChunks++;
@@ -432,7 +433,28 @@ public partial class MainWindow
             Drain();
         }
 
+        RecordMtcPerf(ownerTab, "display.feed.chunks", processedChunks);
+        RecordMtcPerf(ownerTab, "display.feed.total_bytes", processedBytes);
+        RecordMtcPerfDuration(ownerTab, "display.feed", startedAt);
         return processedChunks;
+    }
+
+    private static void DecrementPendingDisplayBacklog(MtcTabPrototype ownerTab, int byteCount)
+    {
+        DecrementPendingDisplayChunkCount(ownerTab);
+        if (byteCount <= 0)
+            return;
+
+        while (true)
+        {
+            long current = Volatile.Read(ref ownerTab.PendingDisplayByteCount);
+            if (current <= 0)
+                return;
+
+            long next = Math.Max(0, current - byteCount);
+            if (Interlocked.CompareExchange(ref ownerTab.PendingDisplayByteCount, next, current) == current)
+                return;
+        }
     }
 
     private static void DecrementPendingDisplayChunkCount(MtcTabPrototype ownerTab)
@@ -460,18 +482,24 @@ public partial class MainWindow
         if (chunk.Length == 0)
             return;
 
-        (owner?.PendingSessionLogChunks ?? _pendingSessionLogChunks).Enqueue(chunk);
+        RecordMtcPerf(owner, "sessionlog.enqueue.chunks");
+        RecordMtcPerf(owner, "sessionlog.enqueue.bytes", chunk.Length);
         if (owner is not null)
         {
+            Interlocked.Increment(ref owner.PendingSessionLogChunkCount);
+            Interlocked.Add(ref owner.PendingSessionLogByteCount, chunk.Length);
+            owner.PendingSessionLogChunks.Enqueue(chunk);
             if (Interlocked.Exchange(ref owner.SessionLogDrainScheduled, 1) != 0)
                 return;
         }
-        else if (Interlocked.Exchange(ref _sessionLogDrainScheduled, 1) != 0)
+        else
         {
-            return;
+            _pendingSessionLogChunks.Enqueue(chunk);
+            if (Interlocked.Exchange(ref _sessionLogDrainScheduled, 1) != 0)
+                return;
         }
 
-        _ = System.Threading.Tasks.Task.Run(() => DrainSessionLogChunks(owner));
+        ScheduleSessionLogDrain(owner);
     }
 
     private void DrainSessionLogChunks()
@@ -485,26 +513,39 @@ public partial class MainWindow
 
         if (!IsMtcTabBackgroundContext(owner))
         {
+            RecordMtcPerf(owner, "sessionlog.drain.background_context_handoff");
             ExecuteInMtcTabBackgroundContext(owner, () => DrainSessionLogChunks(owner));
             return;
         }
 
         var logQueue = owner?.PendingSessionLogChunks ?? _pendingSessionLogChunks;
         var targetLog = owner?.SessionLog ?? _sessionLog;
+        int processedChunks = 0;
+        int processedBytes = 0;
+        long started = Stopwatch.GetTimestamp();
         try
         {
             while (logQueue.TryDequeue(out byte[]? chunk))
+            {
+                if (owner is not null)
+                    DecrementPendingSessionLogBacklog(owner, chunk.Length);
                 targetLog.RecordServerData(chunk);
+                processedChunks++;
+                processedBytes += chunk.Length;
+            }
         }
         finally
         {
+            RecordMtcPerf(owner, "sessionlog.drain.chunks", processedChunks);
+            RecordMtcPerf(owner, "sessionlog.drain.bytes", processedBytes);
+            RecordMtcPerfDuration(owner, "sessionlog.drain", started);
             if (owner is not null)
             {
                 Interlocked.Exchange(ref owner.SessionLogDrainScheduled, 0);
                 if (!logQueue.IsEmpty &&
                     Interlocked.Exchange(ref owner.SessionLogDrainScheduled, 1) == 0)
                 {
-                    _ = System.Threading.Tasks.Task.Run(() => DrainSessionLogChunks(owner));
+                    ScheduleSessionLogDrain(owner);
                 }
             }
             else
@@ -513,10 +554,30 @@ public partial class MainWindow
                 if (!logQueue.IsEmpty &&
                     Interlocked.Exchange(ref _sessionLogDrainScheduled, 1) == 0)
                 {
-                    _ = System.Threading.Tasks.Task.Run(() => DrainSessionLogChunks(owner));
+                    ScheduleSessionLogDrain(owner);
                 }
             }
         }
+    }
+
+    private void ScheduleSessionLogDrain(MtcTabPrototype? owner)
+    {
+        RecordMtcPerf(owner, "sessionlog.drain.schedule");
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                await System.Threading.Tasks.Task.Delay(SessionLogDrainDelay).ConfigureAwait(false);
+                DrainSessionLogChunks(owner);
+            }
+            catch
+            {
+                if (owner is not null)
+                    Interlocked.Exchange(ref owner.SessionLogDrainScheduled, 0);
+                else
+                    Interlocked.Exchange(ref _sessionLogDrainScheduled, 0);
+            }
+        });
     }
 
     private void ClearPendingSessionLogChunks()
@@ -529,14 +590,53 @@ public partial class MainWindow
             return;
 
         var logQueue = owner?.PendingSessionLogChunks ?? _pendingSessionLogChunks;
-        while (logQueue.TryDequeue(out _))
+        while (logQueue.TryDequeue(out byte[]? chunk))
         {
+            if (owner is not null)
+                DecrementPendingSessionLogBacklog(owner, chunk.Length);
         }
 
         if (owner is not null)
+        {
+            Interlocked.Exchange(ref owner.PendingSessionLogChunkCount, 0);
+            Interlocked.Exchange(ref owner.PendingSessionLogByteCount, 0);
             Interlocked.Exchange(ref owner.SessionLogDrainScheduled, 0);
+        }
         else
+        {
             Interlocked.Exchange(ref _sessionLogDrainScheduled, 0);
+        }
+    }
+
+    private static void DecrementPendingSessionLogBacklog(MtcTabPrototype ownerTab, int byteCount)
+    {
+        DecrementPendingSessionLogChunkCount(ownerTab);
+        if (byteCount <= 0)
+            return;
+
+        while (true)
+        {
+            long current = Volatile.Read(ref ownerTab.PendingSessionLogByteCount);
+            if (current <= 0)
+                return;
+
+            long next = Math.Max(0, current - byteCount);
+            if (Interlocked.CompareExchange(ref ownerTab.PendingSessionLogByteCount, next, current) == current)
+                return;
+        }
+    }
+
+    private static void DecrementPendingSessionLogChunkCount(MtcTabPrototype ownerTab)
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref ownerTab.PendingSessionLogChunkCount);
+            if (current <= 0)
+                return;
+
+            if (Interlocked.CompareExchange(ref ownerTab.PendingSessionLogChunkCount, current - 1, current) == current)
+                return;
+        }
     }
 
     private void ResetTerminalDisplayArtifactFilterState()
@@ -590,7 +690,11 @@ public partial class MainWindow
         if (owner is not null)
         {
             lock (owner.TerminalDisplayArtifactSync)
+            {
                 owner.PausedTerminalChunks.Add(copy);
+                Interlocked.Increment(ref owner.PausedTerminalChunkCount);
+                Interlocked.Add(ref owner.PausedTerminalByteCount, copy.Length);
+            }
             return;
         }
 
@@ -610,7 +714,11 @@ public partial class MainWindow
         if (owner is not null)
         {
             lock (owner.TerminalDisplayArtifactSync)
+            {
                 owner.PausedTerminalChunks.Clear();
+                Interlocked.Exchange(ref owner.PausedTerminalChunkCount, 0);
+                Interlocked.Exchange(ref owner.PausedTerminalByteCount, 0);
+            }
             return;
         }
 
@@ -647,6 +755,8 @@ public partial class MainWindow
 
                     pending = new List<byte[]>(owner.PausedTerminalChunks);
                     owner.PausedTerminalChunks.Clear();
+                    Interlocked.Exchange(ref owner.PausedTerminalChunkCount, 0);
+                    Interlocked.Exchange(ref owner.PausedTerminalByteCount, 0);
                 }
             }
             else
@@ -676,9 +786,9 @@ public partial class MainWindow
         if (!replayed)
             return;
 
-        bool promptOpen = owner?.MombotPromptOpen ?? _mombotPromptOpen;
+        bool promptOpen = HasMombotInteractiveStateFor(owner);
         if ((owner is null || owner.Id == _activeMtcTabId) && promptOpen)
-            ExecuteInOptionalMtcTabSession(owner, RedrawMombotPrompt);
+            ExecuteInOptionalMtcTabSession(owner, () => RedrawMombotPrompt());
         (owner?.Buffer ?? _buffer).Dirty = true;
     }
 

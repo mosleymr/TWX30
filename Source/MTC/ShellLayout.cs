@@ -21,6 +21,7 @@ public partial class MainWindow
     private TerminalControl CreateTerminalControl()
     {
         var control = new TerminalControl(_buffer);
+        control.Diagnostics = name => RecordMtcPerf(ResolveMtcTabForTerminalBuffer(control.Buffer), name);
         if (_terminalInputHandler != null)
             control.SendInput = _terminalInputHandler;
         control.IsConnected = _state.Connected;
@@ -28,6 +29,13 @@ public partial class MainWindow
         if (!string.IsNullOrWhiteSpace(_terminalFontFamilyName))
             control.SetFont(_terminalFontFamilyName);
         return control;
+    }
+
+    private MtcTabPrototype? ResolveMtcTabForTerminalBuffer(TerminalBuffer buffer)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        return _mtcTabs.FirstOrDefault(tab => ReferenceEquals(tab.Buffer, buffer))
+               ?? (ReferenceEquals(_buffer, buffer) ? ActiveMtcTab : null);
     }
 
     private void NotifyTerminalWindowMove()

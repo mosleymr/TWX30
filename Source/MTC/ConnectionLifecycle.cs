@@ -199,9 +199,21 @@ public partial class MainWindow
             $"[MTC] Embedded haggle startup prefsPortMode={ResolveGlobalPortHaggleMode()} prefsPlanetMode={ResolveGlobalPlanetHaggleMode()} legacyGameMode={gameConfig.NativeHaggleMode ?? "-"}\n");
         gi.SetNativeHaggleModes(ResolveGlobalPortHaggleMode(), ResolveGlobalPlanetHaggleMode());
         Action<bool, Core.NativeHaggleChangeSource> nativeHaggleChangedHandler =
-            (enabled, source) => ExecuteInOptionalMtcTabSession(owningTab, () => OnNativeHaggleChanged(enabled, source));
+            (enabled, source) =>
+            {
+                if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+                    return;
+
+                ExecuteInOptionalMtcTabSession(owningTab, () => OnNativeHaggleChanged(enabled, source));
+            };
         Action nativeHaggleStatsChangedHandler =
-            () => ExecuteInOptionalMtcTabSession(owningTab, OnNativeHaggleStatsChanged);
+            () =>
+            {
+                if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+                    return;
+
+                ExecuteInOptionalMtcTabSession(owningTab, OnNativeHaggleStatsChanged);
+            };
         Action<Core.ShipStatus> shipStatusUpdatedHandler =
             status =>
             {
@@ -209,11 +221,21 @@ public partial class MainWindow
                 {
                     ExecuteInMtcTabBackgroundContext(
                         owningTab,
-                        () => ApplyShipStatusToTabState(owningTab, status, notifyChanged: false, observeAgent: false));
+                        () =>
+                        {
+                            ApplyShipStatusToTabState(owningTab, status, notifyChanged: false, observeAgent: false);
+                            MarkMtcTabVisualStateDirty(owningTab, infoPanels: true, statusBar: true);
+                        });
                     return;
                 }
 
-                ExecuteInOptionalMtcTabSession(owningTab, () => OnShipStatusUpdated(status));
+                if (owningTab is not null)
+                {
+                    RequestCoalescedMtcTabShipStatusRefresh(owningTab, status, "embedded.shipstatus");
+                    return;
+                }
+
+                ExecuteInOptionalMtcTabSession(null, () => OnShipStatusUpdated(status));
             };
         if (owningTab is not null)
         {
@@ -365,6 +387,155 @@ public partial class MainWindow
         _proxyCts = new CancellationTokenSource();
         var cts       = _proxyCts;
         var termReader = serverToTerm.Reader.AsStream();
+
+        void ClearScriptInputPromptDisplayState()
+        {
+            if (owningTab is not null)
+            {
+                owningTab.SuppressNextTradeWarsPromptAfterScriptInput = false;
+                owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = 0;
+                owningTab.ScriptInputPromptVisible = false;
+                return;
+            }
+
+            _suppressNextTradeWarsPromptAfterScriptInput = false;
+            _scriptInputPromptDisplaySuppressUntilUtcTicks = 0;
+            _scriptInputPromptVisible = false;
+        }
+
+        byte[] FilterEmbeddedPromptDuringScriptInput(byte[] chunk, bool terminalDeaf)
+        {
+            if (chunk.Length == 0)
+                return chunk;
+
+            bool scriptWaitingForInput = interpreter.IsAnyScriptWaitingForInput();
+            bool scriptMenuDisplayActive = Core.GlobalModules.TWXMenu is Core.MenuManager menuManager &&
+                                           (menuManager.IsMenuOpen() || menuManager.HasSuspendedMenu);
+            long nowTicks = DateTime.UtcNow.Ticks;
+            bool suppressNextPrompt = owningTab?.SuppressNextTradeWarsPromptAfterScriptInput ?? _suppressNextTradeWarsPromptAfterScriptInput;
+            long suppressUntilTicks = owningTab?.ScriptInputPromptDisplaySuppressUntilUtcTicks ?? _scriptInputPromptDisplaySuppressUntilUtcTicks;
+            bool scriptInputPromptVisible = owningTab?.ScriptInputPromptVisible ?? _scriptInputPromptVisible;
+            bool stateChanged = false;
+
+            if (suppressNextPrompt && suppressUntilTicks <= nowTicks)
+            {
+                suppressNextPrompt = false;
+                suppressUntilTicks = 0;
+                stateChanged = true;
+            }
+
+            if (!terminalDeaf && !scriptWaitingForInput && !scriptMenuDisplayActive && !suppressNextPrompt && !scriptInputPromptVisible && chunk.AsSpan().IndexOf((byte)'>') < 0)
+            {
+                StoreExpiredPromptSuppressionState();
+                return chunk;
+            }
+
+            void StorePromptSuppressionState()
+            {
+                if (!stateChanged)
+                    return;
+
+                if (owningTab is not null)
+                {
+                    owningTab.SuppressNextTradeWarsPromptAfterScriptInput = suppressNextPrompt;
+                    owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = suppressUntilTicks;
+                    owningTab.ScriptInputPromptVisible = scriptInputPromptVisible;
+                    return;
+                }
+
+                _suppressNextTradeWarsPromptAfterScriptInput = suppressNextPrompt;
+                _scriptInputPromptDisplaySuppressUntilUtcTicks = suppressUntilTicks;
+                _scriptInputPromptVisible = scriptInputPromptVisible;
+            }
+
+            void StoreExpiredPromptSuppressionState()
+            {
+                if (!stateChanged)
+                    return;
+
+                if (owningTab is not null)
+                {
+                    owningTab.SuppressNextTradeWarsPromptAfterScriptInput = false;
+                    owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = 0;
+                    return;
+                }
+
+                _suppressNextTradeWarsPromptAfterScriptInput = false;
+                _scriptInputPromptDisplaySuppressUntilUtcTicks = 0;
+            }
+
+            void ArmPromptSuppression()
+            {
+                suppressNextPrompt = true;
+                suppressUntilTicks = DateTime.UtcNow.AddSeconds(30).Ticks;
+                scriptInputPromptVisible = true;
+                stateChanged = true;
+            }
+
+            string text = Encoding.Latin1.GetString(chunk);
+            List<(int Start, int End)>? suppressRanges = null;
+            int index = 0;
+
+            while (index < text.Length)
+            {
+                int rangeStart = index;
+                while (index < text.Length && (text[index] == '\r' || text[index] == '\n'))
+                    index++;
+
+                int contentStart = index;
+                while (index < text.Length && text[index] != '\r' && text[index] != '\n')
+                    index++;
+
+                int contentEnd = index;
+                if (contentEnd > contentStart)
+                {
+                    string segment = text[contentStart..contentEnd];
+                    string normalized = Core.AnsiCodes.NormalizeTerminalText(segment).Trim();
+                    bool promptDisplaySuppressionActive = terminalDeaf ||
+                                                          scriptWaitingForInput ||
+                                                          scriptMenuDisplayActive ||
+                                                          suppressNextPrompt ||
+                                                          scriptInputPromptVisible;
+                    if (normalized == ">" && promptDisplaySuppressionActive)
+                    {
+                        suppressRanges ??= [];
+                        suppressRanges.Add((rangeStart, contentEnd));
+                        ArmPromptSuppression();
+                    }
+                    else if (TryGetMombotPromptNameFromLine(normalized, out _) &&
+                             promptDisplaySuppressionActive)
+                    {
+                        suppressRanges ??= [];
+                        suppressRanges.Add((rangeStart, contentEnd));
+                        suppressNextPrompt = false;
+                        suppressUntilTicks = 0;
+                        stateChanged = true;
+                    }
+                }
+            }
+
+            if (suppressRanges is null)
+            {
+                StorePromptSuppressionState();
+                return chunk;
+            }
+
+            var filtered = new StringBuilder(text.Length);
+            int copyStart = 0;
+            foreach ((int start, int end) in suppressRanges)
+            {
+                if (start > copyStart)
+                    filtered.Append(text, copyStart, start - copyStart);
+                copyStart = Math.Max(copyStart, end);
+            }
+
+            if (copyStart < text.Length)
+                filtered.Append(text, copyStart, text.Length - copyStart);
+
+            StorePromptSuppressionState();
+            return Encoding.Latin1.GetBytes(filtered.ToString());
+        }
+
         _ = Task.Run(async () =>
         {
             using var runtimeScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
@@ -379,7 +550,9 @@ public partial class MainWindow
                     bool terminalDeaf = IsEmbeddedTerminalClientDeaf(owningTab);
 
                     byte[] displayChunk = FilterTerminalDisplayArtifacts(owningTab, chunk);
-                    EnqueueDisplayChunk(owningTab, displayChunk, force: terminalDeaf);
+                    displayChunk = FilterEmbeddedPromptDuringScriptInput(displayChunk, terminalDeaf);
+                    if (displayChunk.Length > 0)
+                        EnqueueDisplayChunk(owningTab, displayChunk, force: terminalDeaf);
                     if (!terminalDeaf)
                         QueueSessionLogChunk(owningTab, chunk);
                 }
@@ -775,6 +948,7 @@ public partial class MainWindow
                 {
                     string key = getInputBuffer.ToString();
                     getInputBuffer.Clear();
+                    ClearScriptInputPromptDisplayState();
                     interpreter.LocalInputEvent(key);
                     return;
                 }
@@ -794,6 +968,7 @@ public partial class MainWindow
                     getInputBuffer.Clear();
                     // Blank Enter is a valid response for getinput/getconsoleinput and
                     // must be delivered to scripts to preserve TWX27 behavior.
+                    ClearScriptInputPromptDisplayState();
                     interpreter.LocalInputEvent(line);
                 }
             });
@@ -801,21 +976,32 @@ public partial class MainWindow
 
         gi.ScriptStopped += (_, _) =>
         {
-            Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
+            bool activeTab = owningTab is null || owningTab.Id == Volatile.Read(ref _activeMtcTabId);
+            if (activeTab)
             {
-                RefreshStatusBar();
-                RebuildProxyMenu();
-            }));
+                Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
+                {
+                    RefreshStatusBar();
+                    RebuildProxyMenu();
+                }));
+            }
 
             ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
+                ClearScriptInputPromptDisplayState();
                 _mombot.HandleObservedScriptStop();
+                ScheduleNativeMombotStartupWatch(owningTab);
                 HandleNativeMombotPostLoginScriptStop();
             });
         };
 
         gi.ScriptLoaded += (_, _) =>
         {
+            if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+                return;
+
+            ExecuteInOptionalMtcTabSession(owningTab, CancelPendingMombotInteractivePromptRedraw);
+
             Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 RefreshStatusBar();
@@ -827,6 +1013,14 @@ public partial class MainWindow
         {
             if (e.ClientIndex != EmbeddedLocalClientIndex)
                 return;
+
+            if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+            {
+                ExecuteInMtcTabBackgroundContext(
+                    owningTab,
+                    () => SyncEmbeddedTerminalClientTypeStateOnly(owningTab, e.ClientType));
+                return;
+            }
 
             Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () => SyncEmbeddedTerminalClientType(e.ClientType)));
         };
@@ -946,6 +1140,7 @@ public partial class MainWindow
         _gameFileLock?.Dispose();
         _gameFileLock = null;
         Core.ScriptRef.SetActiveDatabase(runtimeContext, null);
+        ApplyJsonRpcPreferences();
 
         // Restore default keyboard → telnet wiring (runs on UI thread, no Dispatcher.Post needed).
         SetTerminalInputHandler(bytes => RouteTerminalInput(bytes, SendToTelnet));

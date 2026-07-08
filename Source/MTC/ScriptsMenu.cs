@@ -43,8 +43,16 @@ public partial class MainWindow
     /// </summary>
     private void RebuildScriptsMenu(bool force = false)
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, force ? "menu.scripts.rebuild.force" : "menu.scripts.rebuild");
+        if (MtcPerfSwitches.DisableMenus)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menus");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            RecordMtcUiPost(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menu.scripts.rebuild", DispatcherPriority.Background);
             PostToCurrentMtcTabSession(() => RebuildScriptsMenu(force), DispatcherPriority.Background);
             return;
         }
@@ -74,7 +82,7 @@ public partial class MainWindow
                 reloadItem, new Separator(),
                 new MenuItem { Header = "Proxy scripts unavailable", IsEnabled = false },
             };
-            RefreshNativeAppMenu();
+            RequestNativeAppMenuRefresh();
             return;
         }
 
@@ -90,7 +98,7 @@ public partial class MainWindow
                 reloadItem, new Separator(),
                 new MenuItem { Header = msg, IsEnabled = false },
             };
-            RefreshNativeAppMenu();
+            RequestNativeAppMenuRefresh();
             return;
         }
 
@@ -128,7 +136,7 @@ public partial class MainWindow
                             BuildMenuItems(items, t.Result);
 
                         _scriptsMenu.ItemsSource = items;
-                        RefreshNativeAppMenu();
+                        RequestNativeAppMenuRefresh();
                     });
                 }, TaskScheduler.FromCurrentSynchronizationContext());
     }

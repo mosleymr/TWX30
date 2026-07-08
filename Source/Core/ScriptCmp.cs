@@ -508,6 +508,7 @@ namespace TWXProxy.Core
         private List<string> _description;
         private string _scriptFile = string.Empty;
         private string _scriptDirectory = string.Empty;
+        private string _rootScriptFile = string.Empty;
         private string _rootScriptDirectory = string.Empty;
         private byte[] _code = Array.Empty<byte>();
         private int _ifLabelCount;
@@ -903,6 +904,7 @@ namespace TWXProxy.Core
             string fullDescPath = string.IsNullOrWhiteSpace(descFile) ? string.Empty : Path.GetFullPath(descFile);
             _scriptFile = fullPath;
             _scriptDirectory = Path.GetDirectoryName(fullPath) ?? string.Empty;
+            _rootScriptFile = fullPath;
             _rootScriptDirectory = _scriptDirectory;
             _ifLabelCount = 0;
             _waitOnCount = 0;
@@ -2992,12 +2994,13 @@ namespace TWXProxy.Core
             {
                 PreparedScriptProgram prepared = PreparedScriptDecoder.Decode(this);
                 PreparedInstruction[] instructions = prepared.Instructions;
-                DynamicReachabilityHints? dynamicHints = PruneIncludeBranches
-                    ? BuildDynamicReachabilityHints()
-                    : null;
+                // Dynamic GOTO/GOSUB targets are valid TWX script behavior.  The
+                // bytecode pruner must preserve labels assigned to variables even
+                // when include-branch source pruning is not enabled.
+                DynamicReachabilityHints dynamicHints = BuildDynamicReachabilityHints();
                 HashSet<string> pinnedNamespaces;
                 bool pinRootLabels;
-                if (dynamicHints != null)
+                if (dynamicHints.HasAnyHints)
                 {
                     pinnedNamespaces = dynamicHints.PinnedNamespaces;
                     pinRootLabels = dynamicHints.PinRootLabels;
@@ -3371,7 +3374,7 @@ namespace TWXProxy.Core
             var literalLabelsByVariable = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var aliasSourcesByVariable = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var opaqueAssignedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string rootPath = Path.GetFullPath(_scriptFile);
+            string rootPath = Path.GetFullPath(string.IsNullOrWhiteSpace(_rootScriptFile) ? _scriptFile : _rootScriptFile);
 
             foreach (SourceDependencyStamp dependency in _sourceDependencies)
             {
@@ -3476,7 +3479,7 @@ namespace TWXProxy.Core
             pinRootLabels = false;
             var pinned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var dynamicTargetVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string rootPath = Path.GetFullPath(_scriptFile);
+            string rootPath = Path.GetFullPath(string.IsNullOrWhiteSpace(_rootScriptFile) ? _scriptFile : _rootScriptFile);
 
             foreach (SourceDependencyStamp dependency in _sourceDependencies)
             {

@@ -240,7 +240,7 @@ internal sealed class AliensWindow : Window
         if (string.IsNullOrWhiteSpace(value))
             return false;
 
-        string cleaned = value.Trim();
+        string cleaned = value.Trim().TrimEnd('.').Trim();
         cleaned = Regex.Replace(cleaned, @"\s+\(unexplored\)\s*$", string.Empty, RegexOptions.IgnoreCase);
         cleaned = cleaned.Trim().TrimEnd('.');
 

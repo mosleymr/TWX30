@@ -104,7 +104,9 @@ public partial class MainWindow
         }
     }
 
-    private void ScheduleMombotInteractivePromptRedraw(int promptVersion)
+    private const int MombotInteractivePromptRedrawMaxBacklogRetries = 25;
+
+    private void ScheduleMombotInteractivePromptRedraw(int promptVersion, int backlogRetry = 0)
     {
         var owner = ResolveCurrentMtcTabContext();
         int ticket;
@@ -131,7 +133,13 @@ public partial class MainWindow
 
                     if (HasPendingTerminalDisplayBacklog())
                     {
-                        ScheduleMombotInteractivePromptRedraw(promptVersion);
+                        if (backlogRetry < MombotInteractivePromptRedrawMaxBacklogRetries)
+                        {
+                            ScheduleMombotInteractivePromptRedraw(promptVersion, backlogRetry + 1);
+                            return;
+                        }
+
+                        RedrawMombotPrompt(waitForTerminalBacklog: false);
                         return;
                     }
 
@@ -236,10 +244,20 @@ public partial class MainWindow
             return;
         }
 
+        ScheduleNativeMombotStartupWatch(ResolveCurrentMtcTabContext());
+    }
+
+    private void ScheduleNativeMombotStartupWatch(MtcTabPrototype? owner)
+    {
+        if (!_mombot.Enabled ||
+            (!_mombotStartupDataGatherPending && !_mombotStartupPostInitPending))
+        {
+            return;
+        }
+
         if (Interlocked.Exchange(ref _nativeMombotStartupWatchScheduled, 1) != 0)
             return;
 
-        var owner = ResolveCurrentMtcTabContext();
         _ = Task.Run(async () =>
             await ExecuteInOptionalMtcTabSessionAsync(owner, RunNativeMombotStartupWatchAsync).ConfigureAwait(false));
     }
@@ -1602,8 +1620,33 @@ public partial class MainWindow
 
     private void ShowMacroNotice(string message)
     {
-        _parser.Feed($"\x1b[33m[{message}]\x1b[0m\r\n");
+        _parser.Feed($"\r\n\x1b[33m[{message}]\x1b[0m\r\n");
+
+        if (HasMombotInteractiveState())
+        {
+            RedrawMombotPrompt(waitForTerminalBacklog: false);
+        }
+        else
+        {
+            RedrawLastObservedGamePrompt();
+            FocusActiveTerminal();
+        }
+
         _buffer.Dirty = true;
+    }
+
+    private void RedrawLastObservedGamePrompt()
+    {
+        string prompt = !string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptAnsi)
+            ? _mombotLastObservedGamePromptAnsi
+            : _mombotLastObservedGamePromptPlain;
+
+        prompt = SanitizeObservedPromptForDisplay(prompt)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Replace("\n", string.Empty, StringComparison.Ordinal);
+
+        if (!string.IsNullOrWhiteSpace(prompt))
+            _parser.Feed(prompt);
     }
 
     private bool TryHandleConfiguredMacroHotkey(byte[] bytes)
@@ -1879,7 +1922,7 @@ public partial class MainWindow
             return false;
         }
 
-        if (!_mombotPromptOpen && !_mombotHotkeyPromptOpen && !_mombotScriptPromptOpen && !_mombotPreferencesOpen)
+        if (!HasMombotInteractiveState())
             return false;
 
         if (_mombotPreferencesOpen)
@@ -2172,6 +2215,7 @@ public partial class MainWindow
 
         _mombotHotkeyPromptOpen = true;
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
+        EnterMombotInteractivePromptTerminalDeaf();
         RedrawMombotPrompt();
     }
 
@@ -2181,10 +2225,12 @@ public partial class MainWindow
         _mombotScriptPromptOpen = false;
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
 
-        if (_mombotPromptOpen)
+        if (HasMombotInteractiveState())
             RedrawMombotPrompt();
         else
         {
+            if (_mombotInteractivePromptTerminalDeafActive)
+                ExitMombotInteractivePromptTerminalDeaf();
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
             FocusActiveTerminal();
@@ -2204,6 +2250,7 @@ public partial class MainWindow
         _mombotScriptPromptOpen = true;
         _mombotHotkeyScripts = scripts;
 
+        EnterMombotInteractivePromptTerminalDeaf();
         PublishMombotScriptPromptList(scripts);
         RedrawMombotPrompt();
     }
@@ -2213,10 +2260,12 @@ public partial class MainWindow
         _mombotScriptPromptOpen = false;
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
 
-        if (_mombotPromptOpen)
+        if (HasMombotInteractiveState())
             RedrawMombotPrompt();
         else
         {
+            if (_mombotInteractivePromptTerminalDeafActive)
+                ExitMombotInteractivePromptTerminalDeaf();
             _parser.Feed("\r\x1b[K");
             _buffer.Dirty = true;
             FocusActiveTerminal();
@@ -2253,6 +2302,7 @@ public partial class MainWindow
         _mombotMacroPromptOpen = false;
         _mombotMacroContext = null;
         _mombotHotkeyScripts = Array.Empty<MombotHotkeyScriptEntry>();
+        EnterMombotInteractivePromptTerminalDeaf();
         RedrawMombotPrompt();
     }
 
@@ -2422,6 +2472,8 @@ public partial class MainWindow
     {
         if (_mombotPreferencesOpen || _mombotPreferencesMenuDeafActive)
             ExitMombotPreferencesMenuDeaf();
+        if (_mombotInteractivePromptTerminalDeafActive)
+            ExitMombotInteractivePromptTerminalDeaf();
 
         _mombotPromptOpen = false;
         _mombotHotkeyPromptOpen = false;
@@ -2443,12 +2495,12 @@ public partial class MainWindow
         _mombotPromptCursorIndex = 0;
     }
 
-    private void RedrawMombotPrompt()
+    private void RedrawMombotPrompt(bool waitForTerminalBacklog = true)
     {
-        if (!_mombotPromptOpen && !_mombotHotkeyPromptOpen && !_mombotScriptPromptOpen && !_mombotPreferencesOpen)
+        if (!HasMombotInteractiveState())
             return;
 
-        if (HasPendingTerminalDisplayBacklog())
+        if (waitForTerminalBacklog && HasPendingTerminalDisplayBacklog())
         {
             ScheduleMombotInteractivePromptRedraw(_mombotObservedGamePromptVersion);
             return;
@@ -2579,6 +2631,67 @@ public partial class MainWindow
 
         SetMombotClientsDeaf(true);
         PersistMombotBoolean(true, "$BOT~BOTISDEAF", "$BOT~botIsDeaf", "$bot~botIsDeaf", "$botIsDeaf");
+    }
+
+    private void EnterMombotInteractivePromptTerminalDeaf()
+    {
+        if (_gameInstance == null)
+            return;
+
+        var owner = ResolveCurrentMtcTabContext();
+        if (!_mombotInteractivePromptTerminalDeafActive)
+        {
+            _mombotInteractivePromptTerminalDeafRestore =
+                _gameInstance.GetClientType(EmbeddedLocalClientIndex) == Core.ClientType.Deaf;
+            _mombotInteractivePromptTerminalDeafActive = true;
+        }
+
+        _terminalLivePaused = true;
+        if (owner is not null)
+            owner.TerminalLivePaused = true;
+
+        ClearPausedTerminalChunks(owner);
+        ClearPendingSessionLogChunks(owner);
+
+        if (_gameInstance.GetClientType(EmbeddedLocalClientIndex) == Core.ClientType.Standard)
+            _gameInstance.SetClientType(EmbeddedLocalClientIndex, Core.ClientType.Deaf);
+        else
+            UpdateTerminalLiveSelector();
+    }
+
+    private void ExitMombotInteractivePromptTerminalDeaf()
+    {
+        if (!_mombotInteractivePromptTerminalDeafActive)
+            return;
+
+        var owner = ResolveCurrentMtcTabContext();
+        bool keepDeaf = _mombotInteractivePromptTerminalDeafRestore;
+
+        _terminalLivePaused = keepDeaf;
+        if (owner is not null)
+            owner.TerminalLivePaused = keepDeaf;
+
+        if (_gameInstance != null)
+        {
+            Core.ClientType targetType = keepDeaf ? Core.ClientType.Deaf : Core.ClientType.Standard;
+            if (_gameInstance.GetClientType(EmbeddedLocalClientIndex) != targetType)
+                _gameInstance.SetClientType(EmbeddedLocalClientIndex, targetType);
+        }
+
+        if (keepDeaf)
+        {
+            ClearPausedTerminalChunks(owner);
+            ClearPendingSessionLogChunks(owner);
+        }
+        else
+        {
+            ClearPausedTerminalChunks(owner);
+            FlushDeferredPanelRefreshes();
+        }
+
+        UpdateTerminalLiveSelector();
+        _mombotInteractivePromptTerminalDeafActive = false;
+        _mombotInteractivePromptTerminalDeafRestore = false;
     }
 
     private void ExitMombotPreferencesMenuDeaf()
@@ -4500,7 +4613,7 @@ public partial class MainWindow
         else
             _parser.Feed("\r\n" + message + "\r\n");
 
-        if (_mombotPromptOpen || _mombotHotkeyPromptOpen || _mombotScriptPromptOpen || _mombotPreferencesOpen)
+        if (HasMombotInteractiveState())
             RedrawMombotPrompt();
         else
             FocusActiveTerminal();

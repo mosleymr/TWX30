@@ -1454,27 +1454,45 @@ public partial class MainWindow
 
     private void RequestInfoPanelsRefresh(bool force = false)
     {
+        var requestedOwner = PeekCurrentMtcTabContext();
+        RecordMtcPerf(requestedOwner ?? ActiveMtcTab, force ? "panels.request.force" : "panels.request");
+        if (MtcPerfSwitches.DisableSidePanels)
+        {
+            RecordMtcSubsystemSkipped(requestedOwner ?? ActiveMtcTab, "side-panels");
+            return;
+        }
+
+        if (requestedOwner is not null && !IsActiveMtcTab(requestedOwner))
+        {
+            MarkMtcTabVisualStateDirty(requestedOwner, infoPanels: true);
+            requestedOwner.InfoPanelsRefreshTimer?.Stop();
+            Interlocked.Exchange(ref requestedOwner.InfoPanelsRefreshPostScheduled, 0);
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = ResolveCurrentMtcTabContext();
-            if (owner is null)
+            if (requestedOwner is null)
                 return;
 
             if (force)
             {
+                RecordMtcUiPost(requestedOwner, "panels.request.force", DispatcherPriority.Input);
                 PostToMtcTabSession(
-                    owner,
+                    requestedOwner,
                     () => RequestInfoPanelsRefresh(force),
                     DispatcherPriority.Input);
                 return;
             }
 
-            if (Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 1) == 0)
+            if (Interlocked.Exchange(ref requestedOwner.InfoPanelsRefreshPostScheduled, 1) == 0)
             {
+                RecordMtcUiPost(requestedOwner, "panels.request.coalesced", DispatcherPriority.Background);
                 Dispatcher.UIThread.Post(
-                    () => ExecuteInMtcTabSession(owner, () =>
+                    () => ExecuteInMtcTabSession(requestedOwner, () =>
                     {
-                        Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 0);
+                        RecordMtcUiRun(requestedOwner, "panels.request.coalesced");
+                        Interlocked.Exchange(ref requestedOwner.InfoPanelsRefreshPostScheduled, 0);
                         RequestInfoPanelsRefresh();
                     }),
                     DispatcherPriority.Background);
@@ -1493,10 +1511,13 @@ public partial class MainWindow
         }
 
         _deferredInfoPanelsRefresh = true;
+        if (ActiveMtcTab is { } activeInfoTab)
+            activeInfoTab.DeferredInfoPanelsRefresh = true;
 
         if (force)
         {
             (ResolveCurrentMtcTabContext()?.InfoPanelsRefreshTimer ?? _infoPanelsRefreshTimer)?.Stop();
+            RecordMtcPerf(ActiveMtcTab, "panels.flush.force");
             FlushInfoPanelsRefresh();
             return;
         }
@@ -1528,14 +1549,37 @@ public partial class MainWindow
     private void ScheduleInfoPanelsRefresh(TimeSpan delay)
     {
         var owner = ResolveCurrentMtcTabContext();
+        RecordMtcPerf(owner ?? ActiveMtcTab, "panels.timer.schedule");
         DispatcherTimer timer;
 
         if (owner is not null)
         {
+            if (!IsActiveMtcTab(owner))
+            {
+                owner.InfoPanelsRefreshTimer?.Stop();
+                Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 0);
+                return;
+            }
+
+            if (!owner.DeferredInfoPanelsRefresh && !_deferredInfoPanelsRefresh && !HasPendingTerminalDisplayBacklog(owner))
+                return;
+
             timer = owner.InfoPanelsRefreshTimer ??= new DispatcherTimer(DispatcherPriority.Background);
             if (!owner.InfoPanelsRefreshTimerWired)
             {
-                timer.Tick += (_, _) => ExecuteInOptionalMtcTabSession(owner, () => OnInfoPanelsRefreshTimerTick(owner.InfoPanelsRefreshTimer));
+                timer.Tick += (_, _) =>
+                {
+                    if (owner.Id != Volatile.Read(ref _activeMtcTabId))
+                    {
+                        RecordMtcPerf(owner, "panels.timer.inactive_skip");
+                        owner.InfoPanelsRefreshTimer?.Stop();
+                        Interlocked.Exchange(ref owner.InfoPanelsRefreshPostScheduled, 0);
+                        return;
+                    }
+
+                    RecordMtcUiRun(owner, "panels.timer");
+                    ExecuteInOptionalMtcTabSession(owner, () => OnInfoPanelsRefreshTimerTick(owner.InfoPanelsRefreshTimer));
+                };
                 owner.InfoPanelsRefreshTimerWired = true;
             }
         }
@@ -1559,7 +1603,9 @@ public partial class MainWindow
         timer?.Stop();
         if (HasPendingTerminalDisplayBacklog())
         {
-            ScheduleInfoPanelsRefresh(TimeSpan.FromMilliseconds(350));
+            // Leave the deferred flag set. The terminal drain path flushes the
+            // panel once the active display backlog is empty, avoiding a timer
+            // loop that competes with heavy terminal output on the UI thread.
             return;
         }
 
@@ -1578,6 +1624,8 @@ public partial class MainWindow
             return;
 
         _deferredInfoPanelsRefresh = false;
+        if (ActiveMtcTab is { } activeInfoTab)
+            activeInfoTab.DeferredInfoPanelsRefresh = false;
         Volatile.Write(ref _lastInfoPanelsRefreshTicks, Stopwatch.GetTimestamp());
         RefreshInfoPanels();
     }
@@ -1668,7 +1716,13 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = ResolveCurrentMtcTabContext();
+            var owner = PeekCurrentMtcTabContext();
+            if (owner is not null && !IsActiveMtcTab(owner))
+            {
+                MarkMtcTabVisualStateDirty(owner, onlinePanel: true);
+                return;
+            }
+
             PostToMtcTabSession(
                 owner,
                 () => RequestOnlinePanelRefresh(force),
@@ -1686,14 +1740,32 @@ public partial class MainWindow
         }
 
         _deferredOnlinePanelRefresh = false;
+        var active = ActiveMtcTab;
+        if (active is not null)
+            active.DeferredOnlinePanelRefresh = false;
         RefreshOnlinePanel();
     }
 
     private void FlushDeferredPanelRefreshes()
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "panels.deferred.flush.request");
+        if (MtcPerfSwitches.DisableSidePanels)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "side-panels");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            PostToCurrentMtcTabSession(FlushDeferredPanelRefreshes, DispatcherPriority.Background);
+            var owner = PeekCurrentMtcTabContext();
+            if (owner is not null && !IsActiveMtcTab(owner))
+            {
+                MarkMtcTabVisualStateDirty(owner, infoPanels: true, onlinePanel: true);
+                return;
+            }
+
+            RecordMtcUiPost(owner, "panels.deferred.flush", DispatcherPriority.Background);
+            PostToMtcTabSession(owner, FlushDeferredPanelRefreshes, DispatcherPriority.Background);
             return;
         }
 
@@ -1710,19 +1782,51 @@ public partial class MainWindow
 
         if (refreshInfoPanels)
         {
-            RefreshInfoPanels();
-            return;
+            TimeSpan delay = GetInfoPanelsRefreshDelay();
+            if (delay > TimeSpan.Zero)
+            {
+                _deferredInfoPanelsRefresh = true;
+                ScheduleInfoPanelsRefresh(delay);
+            }
+            else
+            {
+                Volatile.Write(ref _lastInfoPanelsRefreshTicks, Stopwatch.GetTimestamp());
+                RefreshInfoPanels();
+            }
         }
 
         if (refreshOnlinePanel)
+        {
+            RecordMtcPerf(ActiveMtcTab, "panels.online.refresh");
             RefreshOnlinePanel();
+        }
+
+        if (ActiveMtcTab is { } active)
+        {
+            active.DeferredInfoPanelsRefresh = _deferredInfoPanelsRefresh;
+            active.DeferredOnlinePanelRefresh = _deferredOnlinePanelRefresh;
+        }
     }
 
     private void RefreshOnlinePanel()
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "panels.online.request");
+        if (MtcPerfSwitches.DisableSidePanels)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "side-panels");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = ResolveCurrentMtcTabContext();
+            var owner = PeekCurrentMtcTabContext();
+            if (owner is not null && !IsActiveMtcTab(owner))
+            {
+                MarkMtcTabVisualStateDirty(owner, onlinePanel: true);
+                return;
+            }
+
+            RecordMtcUiPost(owner, "panels.online", DispatcherPriority.Background);
             PostToMtcTabSession(
                 owner,
                 () => RequestOnlinePanelRefresh(),
@@ -1838,6 +1942,12 @@ public partial class MainWindow
     {
         if (!PrepareMtcTabVisualRefresh())
             return;
+
+        if (ActiveMtcTab is { } active)
+        {
+            active.DeferredInfoPanelsRefresh = false;
+            active.DeferredOnlinePanelRefresh = false;
+        }
 
         string traderName = string.IsNullOrEmpty(_state.TraderName) ? "-" : _state.TraderName;
         string turnsDisplay = GetTurnsDisplayText();
@@ -2077,15 +2187,47 @@ public partial class MainWindow
 
     private void RefreshStatusBar()
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "status.refresh");
+        if (MtcPerfSwitches.DisableStatusBar)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "status-bar");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
             var owner = ResolveCurrentMtcTabContext();
-            PostToMtcTabSession(owner, RefreshStatusBar, DispatcherPriority.Background);
+            if (owner is null)
+                return;
+
+            if (Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 1) == 0)
+            {
+                RecordMtcUiPost(owner, "status.refresh", DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RecordMtcUiRun(owner, "status.refresh");
+                    Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 0);
+                    ExecuteInMtcTabSession(owner, RefreshStatusBar);
+                }, DispatcherPriority.Background);
+            }
+            else
+            {
+                RecordMtcPerf(owner, "status.refresh.coalesced");
+            }
+
             return;
         }
 
         if (!PrepareMtcTabVisualRefresh())
             return;
+
+        if (ActiveMtcTab is { } activeStatusTab)
+        {
+            activeStatusTab.DeferredStatusBarRefresh = false;
+            Interlocked.Exchange(ref activeStatusTab.StatusRefreshPostScheduled, 0);
+            _deferredStatusBarRefresh = false;
+            _statusRefreshPostScheduled = 0;
+        }
 
         var activeTab = ActiveMtcTab;
         Core.TwxRuntimeContext? displayContext =
@@ -2101,6 +2243,9 @@ public partial class MainWindow
 
         EnsureStatusBarLayout();
         RefreshHaggleDetailsMenuState();
+        Volatile.Write(ref _lastStatusBarRefreshTicks, Stopwatch.GetTimestamp());
+        if (activeTab is not null)
+            activeTab.LastStatusBarRefreshTicks = _lastStatusBarRefreshTicks;
 
         EmbeddedMtcStatusBarConfig statusConfig = GetStatusBarConfigForDisplay();
         string? conn = statusConfig.ShowIpInfo

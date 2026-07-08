@@ -551,7 +551,11 @@ namespace TWXProxy.Core
                 };
 
                 _bubbleList.Add(bubble);
-                MarkBubbleCovered(bubble.Sectors);
+
+                // Gapped candidates are useful to report, but must not suppress
+                // smaller solid bubbles when a larger max-size search finds them first.
+                if (!bubble.Gapped)
+                    MarkBubbleCovered(bubble.Sectors);
             }
         }
 
@@ -563,8 +567,12 @@ namespace TWXProxy.Core
 
             var mergedSectorSet = new HashSet<ushort>();
             var mergedSectors = new List<ushort>();
+            var solidMergedSectorSet = new HashSet<ushort>();
+            var solidMergedSectors = new List<ushort>();
             ushort deepest = 0;
             ushort maxDepth = 0;
+            ushort solidDeepest = 0;
+            ushort solidMaxDepth = 0;
 
             foreach (ushort interior in gateSector.Warp.Where(warp => warp > 0).Distinct())
             {
@@ -572,7 +580,7 @@ namespace TWXProxy.Core
                     (ushort)gate,
                     interior,
                     out ushort branchDeepest,
-                    out _,
+                    out bool branchGapped,
                     out ushort branchDepth,
                     out IReadOnlyList<ushort> branchSectors);
 
@@ -585,10 +593,25 @@ namespace TWXProxy.Core
                         mergedSectors.Add(sectorNumber);
                 }
 
+                if (!branchGapped)
+                {
+                    foreach (ushort sectorNumber in branchSectors)
+                    {
+                        if (solidMergedSectorSet.Add(sectorNumber))
+                            solidMergedSectors.Add(sectorNumber);
+                    }
+                }
+
                 if (branchDepth > maxDepth)
                 {
                     maxDepth = branchDepth;
                     deepest = branchDeepest;
+                }
+
+                if (!branchGapped && branchDepth > solidMaxDepth)
+                {
+                    solidMaxDepth = branchDepth;
+                    solidDeepest = branchDeepest;
                 }
             }
 
@@ -609,7 +632,35 @@ namespace TWXProxy.Core
                 };
 
                 _bubbleList.Add(bubble);
-                MarkBubbleCovered(bubble.Sectors);
+
+                // See CheckBubble: only closed, solid bubbles should influence
+                // later coverage and final gate suppression.
+                if (!bubble.Gapped)
+                    MarkBubbleCovered(bubble.Sectors);
+
+                if (bubble.Gapped &&
+                    solidMergedSectors.Count > 1 &&
+                    solidMergedSectors.Count < mergedSectors.Count)
+                {
+                    ushort solidGateCountedDepth = solidMaxDepth > 0 ? (ushort)(solidMaxDepth + 1) : (ushort)0;
+                    bool solidGapped = IsMergedBubbleGapped(database, (ushort)gate, solidMergedSectors);
+
+                    var solidBubble = new Bubble
+                    {
+                        Gate = (ushort)gate,
+                        Deepest = solidDeepest,
+                        Size = (ushort)solidMergedSectors.Count,
+                        MaxDepth = solidGateCountedDepth,
+                        Gapped = solidGapped,
+                        Sectors = solidMergedSectors,
+                        Gates = new[] { (ushort)gate },
+                    };
+
+                    _bubbleList.Add(solidBubble);
+
+                    if (!solidBubble.Gapped)
+                        MarkBubbleCovered(solidBubble.Sectors);
+                }
             }
         }
 

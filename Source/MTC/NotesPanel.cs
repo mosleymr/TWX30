@@ -134,8 +134,16 @@ public partial class MainWindow
 
     private void RefreshNotesMenuState()
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes.menu.refresh");
+        if (MtcPerfSwitches.DisableNotes)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            RecordMtcUiPost(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes.menu.refresh", DispatcherPriority.Background);
             PostToCurrentMtcTabSession(RefreshNotesMenuState, DispatcherPriority.Background);
             return;
         }
@@ -152,8 +160,16 @@ public partial class MainWindow
 
     private void UpdateNotesForActiveGame()
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes.update");
+        if (MtcPerfSwitches.DisableNotes)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            RecordMtcUiPost(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "notes.update", DispatcherPriority.Background);
             PostToCurrentMtcTabSession(UpdateNotesForActiveGame, DispatcherPriority.Background);
             return;
         }

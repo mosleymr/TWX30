@@ -7,6 +7,8 @@ using System.Threading;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -22,6 +24,7 @@ public partial class MainWindow
         public bool IsLiveSession { get; init; }
         public string Title { get; set; } = string.Empty;
         public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
+        public MtcTabPerfCounters Perf { get; init; } = null!;
         public Core.TwxRuntimeContext RuntimeContext { get; init; } = null!;
         public GameState State { get; init; } = null!;
         public TerminalBuffer Buffer { get; init; } = null!;
@@ -38,23 +41,37 @@ public partial class MainWindow
         public Action<Core.ShipStatus>? EmbeddedShipStatusUpdatedHandler { get; set; }
         public ConcurrentQueue<PendingDisplayChunk> PendingDisplayChunks { get; } = new();
         public int PendingDisplayChunkCount;
+        public long PendingDisplayByteCount;
         public ConcurrentQueue<byte[]> PendingSessionLogChunks { get; } = new();
+        public int PendingSessionLogChunkCount;
+        public long PendingSessionLogByteCount;
         public object TerminalDisplayArtifactSync { get; } = new();
+        public bool SuppressNextTradeWarsPromptAfterScriptInput { get; set; }
+        public long ScriptInputPromptDisplaySuppressUntilUtcTicks { get; set; }
+        public bool ScriptInputPromptVisible { get; set; }
         public object TerminalBufferSync { get; } = new();
         public List<byte[]> PausedTerminalChunks { get; } = [];
+        public int PausedTerminalChunkCount;
+        public long PausedTerminalByteCount;
         public int DisplayDrainScheduled;
         public int SessionLogDrainScheduled;
+        public int ShipStatusRefreshPostScheduled;
+        public long LastShipStatusRefreshPostTicks;
+        public Core.ShipStatus? PendingShipStatus { get; set; }
         public bool TerminalLivePaused { get; set; }
         public bool DeferredInfoPanelsRefresh { get; set; }
         public bool DeferredOnlinePanelRefresh { get; set; }
         public int InfoPanelsRefreshPostScheduled;
+        public int StatusRefreshPostScheduled;
         public DispatcherTimer? InfoPanelsRefreshTimer { get; set; }
         public bool InfoPanelsRefreshTimerWired { get; set; }
         public DispatcherTimer? StatusRefreshTimer { get; set; }
         public bool StatusRefreshTimerWired { get; set; }
+        public bool DeferredStatusBarRefresh { get; set; }
         public int OnlineAutoRefreshRunning;
         public int ServerInputPendingCharacters;
         public long LastInfoPanelsRefreshTicks;
+        public long LastStatusBarRefreshTicks;
         public long LastGameTrafficTicks;
         public long LastOnlineRefreshTicks;
         public bool RedAlertEnabled { get; set; }
@@ -82,6 +99,8 @@ public partial class MainWindow
         public bool MombotPreferencesOpen { get; set; }
         public bool MombotPreferencesMenuDeafActive { get; set; }
         public bool MombotPreferencesMenuDeafRestore { get; set; }
+        public bool MombotInteractivePromptTerminalDeafActive { get; set; }
+        public bool MombotInteractivePromptTerminalDeafRestore { get; set; }
         public bool MombotPreferencesCaptureSingleKey { get; set; }
         public string MombotPreferencesInputPrompt { get; set; } = string.Empty;
         public string MombotPreferencesInputBuffer { get; set; } = string.Empty;
@@ -178,6 +197,13 @@ public partial class MainWindow
         Spacing = 7,
         VerticalAlignment = VerticalAlignment.Center,
     };
+    private readonly Dictionary<int, Control> _mtcTabButtonControls = [];
+    private Control? _mtcTabDropMarker;
+    private int _draggingMtcTabId;
+    private int _dragInsertMtcTabIndex = -1;
+    private int _suppressNextMtcTabClickId;
+    private bool _isDraggingMtcTab;
+    private Point _mtcTabDragStartPoint;
 
     private Control? _liveTabShell;
     private int _activeMtcTabId;
@@ -242,11 +268,17 @@ public partial class MainWindow
 
             if (_inner is not null)
             {
+                _window.RecordMtcUiPost(_tab, "syncctx.post.inner");
                 _inner.Post(Invoke, state);
                 return;
             }
 
-            Dispatcher.UIThread.Post(() => Invoke(state), DispatcherPriority.Background);
+            _window.RecordMtcUiPost(_tab, "syncctx.post", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                _window.RecordMtcUiRun(_tab, "syncctx.post");
+                Invoke(state);
+            }, DispatcherPriority.Background);
         }
 
         public override void Send(SendOrPostCallback d, object? state)
@@ -332,6 +364,7 @@ public partial class MainWindow
             Id = id,
             IsLiveSession = isLiveSession,
             Title = string.IsNullOrWhiteSpace(title) ? $"Game {id}" : title.Trim(),
+            Perf = CreateMtcTabPerfCounters(id, title),
             RuntimeContext = runtimeContext,
             State = new GameState(),
             Buffer = buffer,
@@ -352,7 +385,11 @@ public partial class MainWindow
             tab.TerminalRecorder?.RecordOutput(bytes, offset, length);
         };
         tab.TerminalInputHandler = bytes =>
+        {
+            RecordMtcPerf(tab, "terminal.input.chunks");
+            RecordMtcPerf(tab, "terminal.input.bytes", bytes.Length);
             ExecuteInMtcTabSession(tab, () => RouteTerminalInput(bytes, SendToTelnet));
+        };
 
         ConfigureMtcTabSessionEvents(tab);
         tab.StandaloneNativeHaggle.SetEnabled(true);
@@ -365,21 +402,16 @@ public partial class MainWindow
     {
         tab.State.Changed += () =>
         {
-            if (tab.Id != _activeMtcTabId)
-                return;
-
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (tab.Id != _activeMtcTabId)
-                    return;
-
-                ExecuteInMtcTabSession(tab, () => RequestInfoPanelsRefresh());
-            }, DispatcherPriority.Background);
+            RecordMtcPerf(tab, "state.changed");
+            RequestCoalescedMtcTabInfoPanelsRefresh(tab, "state.changed");
         };
 
         tab.StandaloneNativeHaggle.EnabledChanged += _ =>
+        {
+            RecordMtcUiPost(tab, "haggle.enabled", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
+                RecordMtcUiRun(tab, "haggle.enabled");
                 if (tab.Id != _activeMtcTabId)
                     return;
 
@@ -389,67 +421,111 @@ public partial class MainWindow
                     RequestStatusBarRefresh();
                 });
             }, DispatcherPriority.Background);
+        };
 
         tab.StandaloneNativeHaggle.StatsChanged += () =>
+        {
+            RecordMtcUiPost(tab, "haggle.stats", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
+                RecordMtcUiRun(tab, "haggle.stats");
                 if (tab.Id != _activeMtcTabId)
                     return;
 
                 ExecuteInMtcTabSession(tab, RequestStatusBarRefresh);
             }, DispatcherPriority.Background);
+        };
 
         tab.Telnet.Connected += () =>
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, OnTelnetConnected), DispatcherPriority.Background);
+        {
+            RecordMtcUiPost(tab, "telnet.connected", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RecordMtcUiRun(tab, "telnet.connected");
+                ExecuteInMtcTabSession(tab, OnTelnetConnected);
+            }, DispatcherPriority.Background);
+        };
 
         tab.Telnet.Disconnected += () =>
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, OnTelnetDisconnected), DispatcherPriority.Background);
+        {
+            RecordMtcUiPost(tab, "telnet.disconnected", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RecordMtcUiRun(tab, "telnet.disconnected");
+                ExecuteInMtcTabSession(tab, OnTelnetDisconnected);
+            }, DispatcherPriority.Background);
+        };
 
         tab.Telnet.Error += message =>
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnTelnetError(message)), DispatcherPriority.Background);
+        {
+            RecordMtcUiPost(tab, "telnet.error", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RecordMtcUiRun(tab, "telnet.error");
+                ExecuteInMtcTabSession(tab, () => OnTelnetError(message));
+            }, DispatcherPriority.Background);
+        };
 
         tab.Telnet.TextLineReceived += tab.ShipParser.FeedLine;
         tab.ShipParser.Updated += status =>
         {
+            RecordMtcPerf(tab, "shipparser.updated");
             if (tab.Id != _activeMtcTabId)
             {
-                ExecuteInMtcTabBackgroundContext(tab, () => ApplyShipStatusToTabState(tab, status, notifyChanged: false, observeAgent: false));
+                RecordMtcPerf(tab, "shipparser.updated.inactive");
+                ExecuteInMtcTabBackgroundContext(tab, () =>
+                {
+                    ApplyShipStatusToTabState(tab, status, notifyChanged: false, observeAgent: false);
+                    MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+                });
                 return;
             }
 
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () => OnShipStatusUpdated(status)), DispatcherPriority.Background);
+            RequestCoalescedMtcTabShipStatusRefresh(tab, status, "shipparser.updated");
         };
 
         tab.Telnet.TextLineAnsiReceived += (ansiLine, strippedLine) =>
         {
+            string safeAnsiLine = ansiLine ?? string.Empty;
+            string safeStrippedLine = strippedLine ?? string.Empty;
+            RecordMtcPerf(tab, "telnet.ansi.lines");
+            RecordMtcPerf(tab, "telnet.ansi.bytes", safeAnsiLine.Length);
             if (tab.Id != _activeMtcTabId)
             {
+                RecordMtcPerf(tab, "telnet.ansi.lines.inactive");
                 ExecuteInMtcTabBackgroundContext(tab, () =>
                 {
-                    Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
-                    ProcessStandaloneNativeHaggleLine(tab, strippedLine);
+                    Core.GlobalModules.GlobalAutoRecorder.RecordLine(safeStrippedLine, safeAnsiLine);
+                    ProcessStandaloneNativeHaggleLine(tab, safeStrippedLine);
                 });
                 return;
             }
 
             ExecuteInMtcTabSession(tab, () =>
             {
-                Core.GlobalModules.GlobalAutoRecorder.RecordLine(strippedLine, ansiLine);
-                ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt: LooksLikeAgentPrompt(strippedLine));
-                ObserveOnlinePlayersLine(strippedLine);
-                HandlePotentialCommLine(ansiLine);
-                ProcessStandaloneNativeHaggleLine(strippedLine);
+                Core.GlobalModules.GlobalAutoRecorder.RecordLine(safeStrippedLine, safeAnsiLine);
+                if (MtcPerfSwitches.DisableAgent)
+                    RecordMtcSubsystemSkipped(tab, "agent");
+                else
+                    ObserveGameAgentServerLine(safeStrippedLine, safeAnsiLine, isPrompt: LooksLikeAgentPrompt(safeStrippedLine));
+                ObserveOnlinePlayersLine(safeStrippedLine);
+                HandlePotentialCommLine(safeAnsiLine);
+                ProcessStandaloneNativeHaggleLine(safeStrippedLine);
             });
         };
 
         tab.Telnet.AppDataDecoded += text =>
         {
+            string safeText = text ?? string.Empty;
+            RecordMtcPerf(tab, "telnet.appdata.chunks");
+            RecordMtcPerf(tab, "telnet.appdata.chars", safeText.Length);
             if (tab.Id != _activeMtcTabId)
             {
+                RecordMtcPerf(tab, "telnet.appdata.chunks.inactive");
                 ExecuteInMtcTabBackgroundContext(tab, () =>
                 {
                     Volatile.Write(ref tab.LastGameTrafficTicks, Stopwatch.GetTimestamp());
-                    tab.SessionLog.RecordServerText(text);
+                    tab.SessionLog.RecordServerText(safeText);
                 });
                 return;
             }
@@ -457,32 +533,40 @@ public partial class MainWindow
             ExecuteInMtcTabSession(tab, () =>
             {
                 MarkGameTrafficActivity();
-                _sessionLog.RecordServerText(text);
+                _sessionLog.RecordServerText(safeText);
             });
         };
 
         var recorder = tab.RuntimeContext.AutoRecorder;
         recorder.CurrentSectorChanged += sn =>
         {
+            RecordMtcPerf(tab, "recorder.currentsector");
             if (tab.Id != _activeMtcTabId)
             {
-                ExecuteInMtcTabBackgroundContext(tab, () => ApplyCurrentSectorToTabState(tab, sn, notifyChanged: false, observeAgent: false));
+                RecordMtcPerf(tab, "recorder.currentsector.inactive");
+                ExecuteInMtcTabBackgroundContext(tab, () =>
+                {
+                    ApplyCurrentSectorToTabState(tab, sn, notifyChanged: false, observeAgent: false);
+                    MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+                });
                 return;
             }
 
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () =>
-            {
-                ApplyCurrentSectorToTabState(tab, sn, notifyChanged: true, observeAgent: true);
-            }), DispatcherPriority.Background);
+            ExecuteInMtcTabBackgroundContext(tab, () =>
+                ApplyCurrentSectorToTabState(tab, sn, notifyChanged: false, observeAgent: false));
+            RequestCoalescedMtcTabInfoPanelsRefresh(tab, "recorder.currentsector");
         };
 
         recorder.LandmarkSectorsChanged += () =>
         {
+            RecordMtcPerf(tab, "recorder.landmarks");
             if (tab.Id != _activeMtcTabId)
                 return;
 
+            RecordMtcUiPost(tab, "recorder.landmarks", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, () =>
             {
+                RecordMtcUiRun(tab, "recorder.landmarks");
                 if (tab.Id != _activeMtcTabId)
                     return;
 
@@ -494,11 +578,14 @@ public partial class MainWindow
 
         recorder.GenesisTorpsChanged += delta =>
         {
+            RecordMtcPerf(tab, "recorder.genesis");
             if (tab.Id != _activeMtcTabId)
                 return;
 
+            RecordMtcUiPost(tab, "recorder.genesis", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
+                RecordMtcUiRun(tab, "recorder.genesis");
                 if (tab.Id != _activeMtcTabId)
                     return;
 
@@ -508,11 +595,14 @@ public partial class MainWindow
 
         recorder.AtomicDetChanged += delta =>
         {
+            RecordMtcPerf(tab, "recorder.atomic");
             if (tab.Id != _activeMtcTabId)
                 return;
 
+            RecordMtcUiPost(tab, "recorder.atomic", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
+                RecordMtcUiRun(tab, "recorder.atomic");
                 if (tab.Id != _activeMtcTabId)
                     return;
 
@@ -522,8 +612,10 @@ public partial class MainWindow
 
         recorder.ShipStatusDeltaDetected += delta =>
         {
+            RecordMtcPerf(tab, "recorder.shipdelta");
             if (tab.Id != _activeMtcTabId)
             {
+                RecordMtcPerf(tab, "recorder.shipdelta.inactive");
                 ExecuteInMtcTabBackgroundContext(tab, () => ApplyShipStatusDeltaToTabParser(tab, delta));
                 return;
             }
@@ -533,6 +625,136 @@ public partial class MainWindow
                 ApplyShipStatusDeltaToTabParser(tab, delta);
             });
         };
+    }
+
+    private void RequestCoalescedMtcTabInfoPanelsRefresh(MtcTabPrototype tab, string source)
+    {
+        if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+        {
+            RecordMtcPerf(tab, $"{source}.inactive");
+            MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+            tab.InfoPanelsRefreshTimer?.Stop();
+            Interlocked.Exchange(ref tab.InfoPanelsRefreshPostScheduled, 0);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref tab.InfoPanelsRefreshPostScheduled, 1) != 0)
+        {
+            RecordMtcPerf(tab, $"{source}.coalesced");
+            return;
+        }
+
+        RecordMtcUiPost(tab, source, DispatcherPriority.Background);
+        Dispatcher.UIThread.Post(() =>
+        {
+            RecordMtcUiRun(tab, source);
+            Interlocked.Exchange(ref tab.InfoPanelsRefreshPostScheduled, 0);
+            if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+            {
+                MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+                return;
+            }
+
+            ExecuteInMtcTabSession(tab, () => RequestInfoPanelsRefresh());
+        }, DispatcherPriority.Background);
+    }
+
+    private static readonly TimeSpan ActiveShipStatusUiRefreshInterval = TimeSpan.FromMilliseconds(250);
+
+    private TimeSpan GetMtcTabShipStatusRefreshDelay(MtcTabPrototype tab)
+    {
+        long lastTicks = Volatile.Read(ref tab.LastShipStatusRefreshPostTicks);
+        if (lastTicks <= 0)
+            return TimeSpan.Zero;
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(lastTicks);
+        return elapsed >= ActiveShipStatusUiRefreshInterval
+            ? TimeSpan.Zero
+            : ActiveShipStatusUiRefreshInterval - elapsed;
+    }
+
+    private void PostMtcTabShipStatusRefresh(
+        MtcTabPrototype tab,
+        Core.ShipStatus fallbackStatus,
+        string source,
+        bool delayed)
+    {
+        string postSource = delayed ? $"{source}.delayed" : source;
+        RecordMtcUiPost(tab, postSource, DispatcherPriority.Background);
+        Dispatcher.UIThread.Post(() =>
+        {
+            RecordMtcUiRun(tab, postSource);
+            Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 0);
+            Core.ShipStatus latestStatus = tab.PendingShipStatus ?? fallbackStatus;
+            tab.PendingShipStatus = null;
+
+            if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+            {
+                ExecuteInMtcTabBackgroundContext(tab, () =>
+                {
+                    ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: false);
+                    MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+                });
+                return;
+            }
+
+            Volatile.Write(ref tab.LastShipStatusRefreshPostTicks, Stopwatch.GetTimestamp());
+            ExecuteInMtcTabSession(tab, () =>
+            {
+                ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: true);
+                RequestInfoPanelsRefresh();
+
+                // Ship status can update many times per macro burst; persist it after the burst quiets.
+                if (_currentProfilePath != null)
+                    RequestCurrentGameConfigSave();
+            });
+        }, DispatcherPriority.Background);
+    }
+
+    private void RequestCoalescedMtcTabShipStatusRefresh(MtcTabPrototype tab, Core.ShipStatus status, string source)
+    {
+        tab.PendingShipStatus = status;
+
+        if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+        {
+            RecordMtcPerf(tab, $"{source}.inactive");
+            ExecuteInMtcTabBackgroundContext(tab, () =>
+            {
+                if (tab.PendingShipStatus is { } latestStatus)
+                    ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: false);
+                tab.PendingShipStatus = null;
+                MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+            });
+            Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 0);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 1) != 0)
+        {
+            RecordMtcPerf(tab, $"{source}.coalesced");
+            return;
+        }
+
+        TimeSpan delay = GetMtcTabShipStatusRefreshDelay(tab);
+        if (delay <= TimeSpan.Zero)
+        {
+            PostMtcTabShipStatusRefresh(tab, status, source, delayed: false);
+            return;
+        }
+
+        RecordMtcPerf(tab, $"{source}.delayed_schedule");
+        _ = System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                await System.Threading.Tasks.Task.Delay(delay).ConfigureAwait(false);
+                PostMtcTabShipStatusRefresh(tab, status, source, delayed: true);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 0);
+            }
+        });
     }
 
     private void ApplyCurrentSectorToTabState(MtcTabPrototype tab, int sector, bool notifyChanged, bool observeAgent)
@@ -592,14 +814,15 @@ public partial class MainWindow
         tab.DeferredInfoPanelsRefresh = _deferredInfoPanelsRefresh;
         tab.DeferredOnlinePanelRefresh = _deferredOnlinePanelRefresh;
         tab.InfoPanelsRefreshPostScheduled = _infoPanelsRefreshPostScheduled;
-        tab.InfoPanelsRefreshTimer = _infoPanelsRefreshTimer;
+        tab.StatusRefreshPostScheduled = _statusRefreshPostScheduled;
+        tab.DeferredStatusBarRefresh = _deferredStatusBarRefresh;
         tab.OnlineAutoRefreshRunning = _onlineAutoRefreshRunning;
         tab.ServerInputPendingCharacters = _serverInputPendingCharacters;
         tab.LastInfoPanelsRefreshTicks = _lastInfoPanelsRefreshTicks;
+        tab.LastStatusBarRefreshTicks = _lastStatusBarRefreshTicks;
         tab.LastGameTrafficTicks = _lastGameTrafficTicks;
         tab.LastOnlineRefreshTicks = _lastOnlineRefreshTicks;
         tab.RedAlertEnabled = _redAlertEnabled;
-        tab.CurrentGameConfigSaveTimer = _currentGameConfigSaveTimer;
         tab.CurrentGameConfigSaveRunning = _currentGameConfigSaveRunning;
         tab.CurrentGameConfigSaveAgain = _currentGameConfigSaveAgain;
         tab.TerminalInputHandler = _terminalInputHandler ?? tab.TerminalInputHandler;
@@ -620,6 +843,8 @@ public partial class MainWindow
         tab.MombotPreferencesOpen = _mombotPreferencesOpen;
         tab.MombotPreferencesMenuDeafActive = _mombotPreferencesMenuDeafActive;
         tab.MombotPreferencesMenuDeafRestore = _mombotPreferencesMenuDeafRestore;
+        tab.MombotInteractivePromptTerminalDeafActive = _mombotInteractivePromptTerminalDeafActive;
+        tab.MombotInteractivePromptTerminalDeafRestore = _mombotInteractivePromptTerminalDeafRestore;
         tab.MombotPreferencesCaptureSingleKey = _mombotPreferencesCaptureSingleKey;
         tab.MombotPreferencesInputPrompt = _mombotPreferencesInputPrompt;
         tab.MombotPreferencesInputBuffer = _mombotPreferencesInputBuffer;
@@ -697,14 +922,17 @@ public partial class MainWindow
         _deferredInfoPanelsRefresh = tab.DeferredInfoPanelsRefresh;
         _deferredOnlinePanelRefresh = tab.DeferredOnlinePanelRefresh;
         _infoPanelsRefreshPostScheduled = tab.InfoPanelsRefreshPostScheduled;
-        _infoPanelsRefreshTimer = tab.InfoPanelsRefreshTimer;
+        _statusRefreshPostScheduled = tab.StatusRefreshPostScheduled;
+        _infoPanelsRefreshTimer = null;
+        _deferredStatusBarRefresh = tab.DeferredStatusBarRefresh;
         _onlineAutoRefreshRunning = tab.OnlineAutoRefreshRunning;
         _serverInputPendingCharacters = tab.ServerInputPendingCharacters;
         _lastInfoPanelsRefreshTicks = tab.LastInfoPanelsRefreshTicks;
+        _lastStatusBarRefreshTicks = tab.LastStatusBarRefreshTicks;
         _lastGameTrafficTicks = tab.LastGameTrafficTicks;
         _lastOnlineRefreshTicks = tab.LastOnlineRefreshTicks;
         _redAlertEnabled = tab.RedAlertEnabled;
-        _currentGameConfigSaveTimer = tab.CurrentGameConfigSaveTimer;
+        _currentGameConfigSaveTimer = null;
         _currentGameConfigSaveRunning = tab.CurrentGameConfigSaveRunning;
         _currentGameConfigSaveAgain = tab.CurrentGameConfigSaveAgain;
         _standaloneNativeHaggle = tab.StandaloneNativeHaggle;
@@ -732,6 +960,8 @@ public partial class MainWindow
         _mombotPreferencesOpen = tab.MombotPreferencesOpen;
         _mombotPreferencesMenuDeafActive = tab.MombotPreferencesMenuDeafActive;
         _mombotPreferencesMenuDeafRestore = tab.MombotPreferencesMenuDeafRestore;
+        _mombotInteractivePromptTerminalDeafActive = tab.MombotInteractivePromptTerminalDeafActive;
+        _mombotInteractivePromptTerminalDeafRestore = tab.MombotInteractivePromptTerminalDeafRestore;
         _mombotPreferencesCaptureSingleKey = tab.MombotPreferencesCaptureSingleKey;
         _mombotPreferencesInputPrompt = tab.MombotPreferencesInputPrompt;
         _mombotPreferencesInputBuffer = tab.MombotPreferencesInputBuffer;
@@ -855,6 +1085,55 @@ public partial class MainWindow
         return null;
     }
 
+    private MtcTabPrototype? PeekCurrentMtcTabContext()
+    {
+        if (_asyncMtcTabContext.Value is { } asyncTab)
+            return asyncTab;
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            if (_boundMtcTab is not null &&
+                ReferenceEquals(Core.GlobalModules.CurrentContext, _boundMtcTab.RuntimeContext))
+                return _boundMtcTab;
+
+            return ActiveMtcTab;
+        }
+
+        return FindMtcTabForRuntimeContext(Core.GlobalModules.CurrentContext);
+    }
+
+    private bool IsActiveMtcTab(MtcTabPrototype? tab)
+        => tab is not null && tab.Id == Volatile.Read(ref _activeMtcTabId);
+
+    private void MarkMtcTabVisualStateDirty(
+        MtcTabPrototype? tab,
+        bool infoPanels = false,
+        bool onlinePanel = false,
+        bool statusBar = false)
+    {
+        if (tab is null)
+            return;
+
+        if (infoPanels)
+        {
+            tab.DeferredInfoPanelsRefresh = true;
+            if (ReferenceEquals(_boundMtcTab, tab))
+                _deferredInfoPanelsRefresh = true;
+        }
+        if (onlinePanel)
+        {
+            tab.DeferredOnlinePanelRefresh = true;
+            if (ReferenceEquals(_boundMtcTab, tab))
+                _deferredOnlinePanelRefresh = true;
+        }
+        if (statusBar)
+        {
+            tab.DeferredStatusBarRefresh = true;
+            if (ReferenceEquals(_boundMtcTab, tab))
+                _deferredStatusBarRefresh = true;
+        }
+    }
+
     private MtcTabPrototype? BoundRuntimeMtcTabContext()
     {
         if (!Dispatcher.UIThread.CheckAccess())
@@ -878,6 +1157,9 @@ public partial class MainWindow
     private void EnsureMtcTabSessionBound(MtcTabPrototype tab)
     {
         if (!Dispatcher.UIThread.CheckAccess())
+            return;
+
+        if (ReferenceEquals(_boundMtcTab, tab))
             return;
 
         lock (_mtcTabSessionBindLock)
@@ -907,8 +1189,14 @@ public partial class MainWindow
         if (active is null)
             return;
 
+        if (ReferenceEquals(_boundMtcTab, active))
+            return;
+
         lock (_mtcTabSessionBindLock)
         {
+            if (ReferenceEquals(_boundMtcTab, active))
+                return;
+
             if (_boundMtcTab is not null)
                 CaptureMtcTabSession(_boundMtcTab);
 
@@ -1012,15 +1300,30 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(() => ExecuteInMtcTabSession(tab, action), DispatcherPriority.Background);
+            RecordMtcUiPost(tab, "execute.session.cross-thread", DispatcherPriority.Background);
+            Dispatcher.UIThread.Post(() =>
+            {
+                RecordMtcUiRun(tab, "execute.session.cross-thread");
+                ExecuteInMtcTabSession(tab, action);
+            }, DispatcherPriority.Background);
             return;
         }
 
+        long started = Stopwatch.GetTimestamp();
         var previousAsyncTab = _asyncMtcTabContext.Value;
         _asyncMtcTabContext.Value = tab;
 
         try
         {
+            if (ReferenceEquals(_boundMtcTab, tab))
+            {
+                using (Core.GlobalModules.UseRuntimeContext(tab.RuntimeContext))
+                {
+                    action();
+                }
+                return;
+            }
+
             lock (_mtcTabSessionBindLock)
             {
                 var previous = _boundMtcTab;
@@ -1051,6 +1354,7 @@ public partial class MainWindow
         }
         finally
         {
+            RecordMtcPerfDuration(tab, "execute.session", started);
             _asyncMtcTabContext.Value = previousAsyncTab;
         }
     }
@@ -1138,9 +1442,15 @@ public partial class MainWindow
             owner = ActiveMtcTab;
         }
 
+        var resolvedPriority = priority ?? DispatcherPriority.Background;
+        RecordMtcUiPost(owner, "post.tab", resolvedPriority);
         Dispatcher.UIThread.Post(
-            () => ExecuteInOptionalMtcTabSession(owner, action),
-            priority ?? DispatcherPriority.Background);
+            () =>
+            {
+                RecordMtcUiRun(owner, "post.tab");
+                ExecuteInOptionalMtcTabSession(owner, action);
+            },
+            resolvedPriority);
     }
 
     private void PostToCurrentMtcTabSession(Action action, DispatcherPriority? priority = null)
@@ -1159,9 +1469,15 @@ public partial class MainWindow
             owner = ActiveMtcTab;
         }
 
+        var resolvedPriority = priority ?? DispatcherPriority.Background;
+        RecordMtcUiPost(owner, "post.tab.async", resolvedPriority);
         Dispatcher.UIThread.Post(
-            async () => await ExecuteInOptionalMtcTabSessionAsync(owner, action),
-            priority ?? DispatcherPriority.Background);
+            async () =>
+            {
+                RecordMtcUiRun(owner, "post.tab.async");
+                await ExecuteInOptionalMtcTabSessionAsync(owner, action);
+            },
+            resolvedPriority);
     }
 
     private async Task ExecuteInOptionalMtcTabSessionAsync(MtcTabPrototype? tab, Func<Task> action)
@@ -1443,6 +1759,7 @@ public partial class MainWindow
         }
 
         RefreshMtcTabStrip();
+        ApplyJsonRpcPreferences();
     }
 
     private void RestoreActiveMtcTabContent()
@@ -1451,13 +1768,17 @@ public partial class MainWindow
         if (active is null || active.IsLiveSession)
         {
             if (active is not null)
+            {
                 FlushPendingDisplayChunksToBuffer(active);
+            }
 
             BindActiveMtcTabSession();
             ApplySelectedSkinSafe();
 
             RestoreLiveMtcTabStatusBar();
             RefreshActiveMtcTabUiStateScoped();
+            RequestInfoPanelsRefresh(force: true);
+            RequestStatusBarRefresh();
             UpdateWindowTitle();
             PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
             return;
@@ -1695,9 +2016,15 @@ public partial class MainWindow
 
         _tabStripRefreshPending = false;
         _tabStripItems.Children.Clear();
+        _mtcTabButtonControls.Clear();
+        _mtcTabDropMarker = null;
 
         foreach (var tab in _mtcTabs)
-            _tabStripItems.Children.Add(BuildMtcTabButton(tab));
+        {
+            var tabButton = BuildMtcTabButton(tab);
+            _mtcTabButtonControls[tab.Id] = tabButton;
+            _tabStripItems.Children.Add(tabButton);
+        }
 
         var addButton = new Button
         {
@@ -1819,7 +2146,16 @@ public partial class MainWindow
             MaxWidth = UiSize(230),
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
-        selectButton.Click += (_, _) => ActivateMtcTab(tab.Id);
+        selectButton.Click += (_, _) =>
+        {
+            if (_suppressNextMtcTabClickId == tab.Id)
+            {
+                _suppressNextMtcTabClickId = 0;
+                return;
+            }
+
+            ActivateMtcTab(tab.Id);
+        };
         row.Children.Add(selectButton);
 
         var closeButton = new Button
@@ -1837,6 +2173,19 @@ public partial class MainWindow
         };
         closeButton.Click += (_, _) => CloseMtcTab(tab.Id);
         row.Children.Add(closeButton);
+
+        frame.AddHandler(
+            InputElement.PointerPressedEvent,
+            (_, e) => BeginMtcTabDrag(tab, frame, closeButton, e),
+            RoutingStrategies.Tunnel);
+        frame.AddHandler(
+            InputElement.PointerMovedEvent,
+            (_, e) => UpdateMtcTabDrag(tab, frame, e),
+            RoutingStrategies.Tunnel);
+        frame.AddHandler(
+            InputElement.PointerReleasedEvent,
+            (_, e) => EndMtcTabDrag(tab, frame, e),
+            RoutingStrategies.Tunnel);
 
         Grid.SetRow(row, 0);
         chrome.Children.Add(row);
@@ -1858,6 +2207,191 @@ public partial class MainWindow
 
         frame.Child = chrome;
         return frame;
+    }
+
+    private void BeginMtcTabDrag(MtcTabPrototype tab, Control dragSurface, Control closeButton, PointerPressedEventArgs e)
+    {
+        if (_mtcTabs.Count < 2 || IsPointerEventWithin(closeButton, e.Source))
+            return;
+
+        var pointerPoint = e.GetCurrentPoint(dragSurface);
+        if (!pointerPoint.Properties.IsLeftButtonPressed)
+            return;
+
+        _draggingMtcTabId = tab.Id;
+        _isDraggingMtcTab = false;
+        _mtcTabDragStartPoint = e.GetPosition(_tabStripItems);
+        _dragInsertMtcTabIndex = _mtcTabs.FindIndex(candidate => candidate.Id == tab.Id);
+
+        e.Pointer.Capture(dragSurface);
+    }
+
+    private void UpdateMtcTabDrag(MtcTabPrototype tab, Control dragSurface, PointerEventArgs e)
+    {
+        if (_draggingMtcTabId != tab.Id)
+            return;
+
+        var pointerPoint = e.GetCurrentPoint(dragSurface);
+        if (!pointerPoint.Properties.IsLeftButtonPressed)
+        {
+            e.Pointer.Capture(null);
+            ClearMtcTabDrag(dragSurface);
+            return;
+        }
+
+        var panelPoint = e.GetPosition(_tabStripItems);
+        var movedFarEnough =
+            Math.Abs(panelPoint.X - _mtcTabDragStartPoint.X) >= UiSize(5) ||
+            Math.Abs(panelPoint.Y - _mtcTabDragStartPoint.Y) >= UiSize(5);
+        if (!_isDraggingMtcTab && !movedFarEnough)
+            return;
+
+        _isDraggingMtcTab = true;
+        dragSurface.Opacity = 0.72;
+
+        var insertIndex = ResolveMtcTabDropIndex(panelPoint);
+        if (insertIndex != _dragInsertMtcTabIndex)
+        {
+            _dragInsertMtcTabIndex = insertIndex;
+            ShowMtcTabDropMarker(insertIndex);
+        }
+
+        e.Handled = true;
+    }
+
+    private void EndMtcTabDrag(MtcTabPrototype tab, Control dragSurface, PointerReleasedEventArgs e)
+    {
+        if (_draggingMtcTabId != tab.Id)
+            return;
+
+        var didDrag = _isDraggingMtcTab;
+        var draggedTabId = _draggingMtcTabId;
+        var insertIndex = _dragInsertMtcTabIndex;
+
+        e.Pointer.Capture(null);
+        ClearMtcTabDrag(dragSurface);
+
+        if (!didDrag)
+        {
+            ActivateMtcTab(draggedTabId);
+            e.Handled = true;
+            return;
+        }
+
+        _suppressNextMtcTabClickId = draggedTabId;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_suppressNextMtcTabClickId == draggedTabId)
+                _suppressNextMtcTabClickId = 0;
+        }, DispatcherPriority.Background);
+        ReorderMtcTab(draggedTabId, insertIndex);
+        e.Handled = true;
+    }
+
+    private void ClearMtcTabDrag(Control? dragSurface)
+    {
+        if (dragSurface is not null)
+            dragSurface.Opacity = 1.0;
+
+        RemoveMtcTabDropMarker();
+        _draggingMtcTabId = 0;
+        _dragInsertMtcTabIndex = -1;
+        _isDraggingMtcTab = false;
+        _mtcTabDragStartPoint = default;
+    }
+
+    private int ResolveMtcTabDropIndex(Point panelPoint)
+    {
+        if (_mtcTabs.Count == 0)
+            return 0;
+
+        for (var i = 0; i < _mtcTabs.Count; i++)
+        {
+            var tab = _mtcTabs[i];
+            if (!_mtcTabButtonControls.TryGetValue(tab.Id, out var control))
+                continue;
+
+            var bounds = control.Bounds;
+            if (bounds.Width <= 0)
+                continue;
+
+            var midpoint = bounds.X + bounds.Width / 2;
+            if (panelPoint.X < midpoint)
+                return i;
+        }
+
+        return _mtcTabs.Count;
+    }
+
+    private void ShowMtcTabDropMarker(int insertIndex)
+    {
+        if (_tabStripItems is null || _mtcTabs.Count < 2)
+            return;
+
+        _mtcTabDropMarker ??= BuildMtcTabDropMarker();
+        _tabStripItems.Children.Remove(_mtcTabDropMarker);
+
+        var childIndex = Math.Clamp(insertIndex, 0, _mtcTabs.Count);
+        _tabStripItems.Children.Insert(childIndex, _mtcTabDropMarker);
+    }
+
+    private Control BuildMtcTabDropMarker()
+        => new Border
+        {
+            Width = UiSize(5),
+            Height = UiSize(31),
+            Background = HudAccentOk,
+            BorderBrush = HudAccent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = UiCornerRadius(3),
+            Margin = UiThickness(0, 5, 2, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+
+    private void RemoveMtcTabDropMarker()
+    {
+        if (_mtcTabDropMarker is null)
+            return;
+
+        _tabStripItems.Children.Remove(_mtcTabDropMarker);
+        _mtcTabDropMarker = null;
+    }
+
+    private void ReorderMtcTab(int tabId, int requestedInsertIndex)
+    {
+        var currentIndex = _mtcTabs.FindIndex(tab => tab.Id == tabId);
+        if (currentIndex < 0)
+            return;
+
+        var insertIndex = Math.Clamp(requestedInsertIndex, 0, _mtcTabs.Count);
+        if (insertIndex > currentIndex)
+            insertIndex--;
+
+        if (insertIndex == currentIndex)
+        {
+            RefreshMtcTabStrip(force: true);
+            return;
+        }
+
+        var tab = _mtcTabs[currentIndex];
+        _mtcTabs.RemoveAt(currentIndex);
+        _mtcTabs.Insert(insertIndex, tab);
+        RefreshMtcTabStrip(force: true);
+    }
+
+    private static bool IsPointerEventWithin(Control target, object? source)
+    {
+        var current = source as Control;
+        while (current is not null)
+        {
+            if (ReferenceEquals(current, target))
+                return true;
+
+            current = current.Parent as Control;
+        }
+
+        return false;
     }
 
     private Control BuildStagedMtcTabContent(MtcTabPrototype tab)

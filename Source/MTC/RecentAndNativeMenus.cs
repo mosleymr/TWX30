@@ -40,9 +40,39 @@ public partial class MainWindow
         RebuildRecentMenu();
     }
 
+    private void PersistOpenMtcTabsToRecents()
+    {
+        if (_boundMtcTab is not null)
+            CaptureMtcTabSession(_boundMtcTab);
+
+        var openTabPaths = _mtcTabs
+            .Where(tab => tab.IsLiveSession &&
+                          !string.IsNullOrWhiteSpace(tab.CurrentProfilePath) &&
+                          !IsGeneratedPlaceholderRecentPath(tab.CurrentProfilePath))
+            .OrderBy(tab => tab.Id == _activeMtcTabId ? 0 : 1)
+            .ThenBy(tab => _mtcTabs.IndexOf(tab))
+            .Select(tab => tab.CurrentProfilePath!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        bool changed = false;
+        for (int i = openTabPaths.Length - 1; i >= 0; i--)
+            changed |= _appPrefs.AddRecent(openTabPaths[i]);
+
+        if (changed)
+            _appPrefs.Save();
+    }
+
     /// <summary>Rebuilds the items inside the Recent submenu from <see cref="_appPrefs"/>.</summary>
     private void RebuildRecentMenu(bool force = false)
     {
+        RecordMtcPerf(ActiveMtcTab, force ? "menu.recent.rebuild.force" : "menu.recent.rebuild");
+        if (MtcPerfSwitches.DisableMenus)
+        {
+            RecordMtcSubsystemSkipped(ActiveMtcTab, "menus");
+            return;
+        }
+
         if ((_recentMenuOpen || AreSharedMenusOpen) && !force)
         {
             _recentMenuRebuildPending = true;
@@ -76,7 +106,7 @@ public partial class MainWindow
 
         _recentMenu.ItemsSource = items;
         _viewClearRecents.IsEnabled = _appPrefs.RecentFiles.Count > 0;
-        RefreshNativeAppMenu();
+        RequestNativeAppMenuRefresh();
     }
 
     private void OnRecentMenuOpened()
@@ -154,8 +184,8 @@ public partial class MainWindow
         if (_nativeMenuRefreshPending)
         {
             _nativeMenuRefreshPending = false;
-            RefreshNativeAppMenu(force: true);
-            RefreshNativeDockMenu(force: true);
+            RequestNativeAppMenuRefresh(force: true);
+            RequestNativeDockMenuRefresh(force: true);
         }
 
         if (_tabStripRefreshPending)
@@ -169,6 +199,60 @@ public partial class MainWindow
             _focusTerminalAfterSharedMenuClose = false;
             FocusActiveTerminal();
         }
+    }
+
+    private void RequestNativeAppMenuRefresh(bool force = false)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RequestNativeAppMenuRefresh(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (force)
+        {
+            RefreshNativeAppMenu(force: true);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _nativeAppMenuRefreshScheduled, 1) == 1)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref _nativeAppMenuRefreshScheduled, 0);
+            RefreshNativeAppMenu();
+        }, DispatcherPriority.Background);
+    }
+
+    private void RequestNativeDockMenuRefresh(bool force = false)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(() => RequestNativeDockMenuRefresh(force), DispatcherPriority.Background);
+            return;
+        }
+
+        if (force)
+        {
+            RefreshNativeDockMenu(force: true);
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _nativeDockMenuRefreshScheduled, 1) == 1)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref _nativeDockMenuRefreshScheduled, 0);
+            RefreshNativeDockMenu();
+        }, DispatcherPriority.Background);
     }
 
     private void RefreshNativeAppMenu(bool force = false)
@@ -193,6 +277,13 @@ public partial class MainWindow
 
         if (!_nativeAppMenuReady)
             return;
+
+        int signature = BuildNativeAppMenuSignature();
+        if (!force && _nativeAppMenuAttached && _nativeAppMenuSignatureValid && signature == _nativeAppMenuSignature)
+            return;
+
+        _nativeAppMenuSignature = signature;
+        _nativeAppMenuSignatureValid = true;
 
         _nativeAppMenu.Items.Clear();
         foreach (object? item in _menuBar.Items)
@@ -235,6 +326,13 @@ public partial class MainWindow
         if (!_nativeAppMenuReady)
             return;
 
+        int signature = BuildNativeDockMenuSignature();
+        if (!force && _nativeDockMenuAttached && _nativeDockMenuSignatureValid && signature == _nativeDockMenuSignature)
+            return;
+
+        _nativeDockMenuSignature = signature;
+        _nativeDockMenuSignatureValid = true;
+
         _nativeDockMenu.Items.Clear();
         AddDockRoot(_scriptsMenu, "_Scripts");
         AddDockRoot(_proxyMenu, "_Proxy");
@@ -248,6 +346,86 @@ public partial class MainWindow
             NativeDock.SetMenu(this, _nativeDockMenu);
             _nativeDockMenuAttached = true;
         }
+    }
+
+    private int BuildNativeAppMenuSignature()
+    {
+        var hash = new HashCode();
+        hash.Add("app");
+        AppendNativeMenuItemsSignature(ref hash, _menuBar.Items, 0);
+        return hash.ToHashCode();
+    }
+
+    private int BuildNativeDockMenuSignature()
+    {
+        var hash = new HashCode();
+        hash.Add("dock");
+        AppendNativeMenuItemSignature(ref hash, _scriptsMenu, 0);
+        AppendNativeMenuItemSignature(ref hash, _proxyMenu, 0);
+        AppendNativeMenuItemSignature(ref hash, _botMenu, 0);
+        AppendNativeMenuItemSignature(ref hash, _quickMenu, 0);
+        AppendNativeMenuItemSignature(ref hash, _toolsMenu, 0);
+        AppendNativeMenuItemSignature(ref hash, _aiMenu, 0);
+        return hash.ToHashCode();
+    }
+
+    private static void AppendNativeMenuItemsSignature(ref HashCode hash, IEnumerable? items, int depth)
+    {
+        if (depth > 12)
+        {
+            hash.Add("max-depth");
+            return;
+        }
+
+        if (items == null)
+        {
+            hash.Add("null-items");
+            return;
+        }
+
+        int count = 0;
+        foreach (object? item in items)
+        {
+            count++;
+            switch (item)
+            {
+                case null:
+                    hash.Add("null");
+                    break;
+                case Separator:
+                    hash.Add("separator");
+                    break;
+                case MenuItem menuItem:
+                    AppendNativeMenuItemSignature(ref hash, menuItem, depth);
+                    break;
+                default:
+                    hash.Add("object");
+                    hash.Add(item.GetType().FullName);
+                    hash.Add(item.ToString());
+                    break;
+            }
+        }
+
+        hash.Add(count);
+    }
+
+    private static void AppendNativeMenuItemSignature(ref HashCode hash, MenuItem menuItem, int depth)
+    {
+        hash.Add("menu-item");
+        hash.Add(menuItem.Header?.ToString() ?? string.Empty);
+        hash.Add(menuItem.IsVisible);
+        hash.Add(menuItem.IsEnabled);
+        hash.Add(menuItem.ToggleType);
+        hash.Add(menuItem.IsChecked);
+        AppendNativeMenuItemsSignature(ref hash, GetNativeMenuItemChildren(menuItem), depth + 1);
+    }
+
+    private static IEnumerable? GetNativeMenuItemChildren(MenuItem menuItem)
+    {
+        if (menuItem.ItemsSource is IEnumerable source && source is not string)
+            return source;
+
+        return menuItem.Items;
     }
 
     private void AddDockRoot(MenuItem sourceMenu, string header)

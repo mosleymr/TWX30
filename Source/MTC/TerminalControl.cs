@@ -86,7 +86,6 @@ public class TerminalControl : Control
                 ? "Menlo, Cascadia Code, Consolas, Courier New, monospace"
                 : "Consolas, Cascadia Code, Courier New, monospace";
     private static readonly bool RenderGlyphsPerCell = OperatingSystem.IsLinux();
-
     private FontFamily _fontFamily = new(DefaultTerminalFontFamilyName);
 
     public const double DefaultFontSize = 14.0;
@@ -129,9 +128,11 @@ public class TerminalControl : Control
     /// Set to true when a connection is established, false when disconnected.
     /// </summary>
     public bool IsConnected { get; set; }
+    public TerminalBuffer Buffer => _buffer;
     public int Columns => _buffer.Columns;
     public int Rows => _buffer.Rows;
     public double MinimumPixelWidth => MinimumTerminalColumns * _charWidth;
+    public Action<string>? Diagnostics { get; set; }
 
     public TerminalControl(TerminalBuffer buffer)
     {
@@ -150,14 +151,12 @@ public class TerminalControl : Control
         _cursorTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(530) };
         _cursorTimer.Tick += (_, _) =>
         {
-            if (_hostWindowMoving)
+            if (_hostWindowMoving || VisualRoot is null)
                 return;
 
             _cursorOn = !_cursorOn;
             InvalidateVisual();
         };
-        _cursorTimer.Start();
-
         _windowMoveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(160) };
         _windowMoveTimer.Tick += (_, _) =>
         {
@@ -169,8 +168,17 @@ public class TerminalControl : Control
             InvalidateVisual();
         };
 
-        AttachedToVisualTree += (_, _) => EnsureDirtySubscription();
-        DetachedFromVisualTree += (_, _) => RemoveDirtySubscription();
+        AttachedToVisualTree += (_, _) =>
+        {
+            EnsureDirtySubscription();
+            _cursorTimer.Start();
+        };
+        DetachedFromVisualTree += (_, _) =>
+        {
+            _cursorTimer.Stop();
+            _windowMoveTimer.Stop();
+            RemoveDirtySubscription();
+        };
 
         // ── Right-click context menu ─────────────────────────────────────
         var copyItem  = new MenuItem { Header = "Copy" };
@@ -191,6 +199,7 @@ public class TerminalControl : Control
         if (ReferenceEquals(_buffer, buffer))
             return;
 
+        Diagnostics?.Invoke("terminal.setbuffer");
         RemoveDirtySubscription();
         _buffer = buffer;
         _scrollOffset = 0;
@@ -357,6 +366,7 @@ public class TerminalControl : Control
 
     public override void Render(DrawingContext ctx)
     {
+        Diagnostics?.Invoke("terminal.render");
         SyncScrollAnchorToLatest();
         long renderedDirtyVersion = _buffer.DirtyVersion;
         bool cacheUpToDate = EnsureVisibleRowCache(_scrollOffset, renderedDirtyVersion);
@@ -450,14 +460,27 @@ public class TerminalControl : Control
     /// <summary>Call from any thread to schedule a repaint.</summary>
     public void RequestRedraw()
     {
+        Diagnostics?.Invoke("terminal.redraw.request");
         if (!_buffer.Dirty || Interlocked.Exchange(ref _redrawQueued, 1) != 0)
+        {
+            Diagnostics?.Invoke("terminal.redraw.coalesced");
             return;
+        }
 
+        Diagnostics?.Invoke("terminal.redraw.post");
         Dispatcher.UIThread.Post(() =>
         {
+            Diagnostics?.Invoke("terminal.redraw.run");
+            if (_hostWindowMoving || VisualRoot is null)
+            {
+                Interlocked.Exchange(ref _redrawQueued, 0);
+                return;
+            }
+
             bool scrollAdjusted = SyncScrollAnchorToLatest();
             if (_buffer.Dirty || scrollAdjusted)
             {
+                Diagnostics?.Invoke("terminal.redraw.invalidate");
                 InvalidateVisual();
                 return;
             }

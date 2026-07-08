@@ -126,14 +126,21 @@ public class TerminalBuffer
         }
     }
 
-    // Lines ordered oldest → newest.  Capped at ScrollbackLines entries.
-    private readonly List<TerminalCell[]> _scrollback = [];
-    private readonly List<bool> _scrollbackSoftWrapped = [];
+    // Lines ordered oldest → newest. Capped at ScrollbackLines entries.
+    // Stored as a ring so high-output sessions do not pay List.RemoveAt(0)
+    // copy costs each time the scrollback rolls over.
+    private TerminalCell[]?[] _scrollback = [];
+    private bool[] _scrollbackSoftWrapped = [];
+    private int _scrollbackStart;
+    private int _scrollbackCount;
     private long _scrollbackGeneration;
     private bool[] _softWrappedRows;
 
     /// <summary>Number of lines currently held in the scrollback buffer.</summary>
-    public int ScrollbackCount => _scrollback.Count;
+    public int ScrollbackCount => _scrollbackCount;
+
+    /// <summary>Approximate retained scrollback cell count for diagnostics.</summary>
+    public long EstimatedScrollbackCellCount => (long)_scrollbackCount * Math.Max(0, Columns);
 
     /// <summary>
     /// Monotonic count of lines appended to scrollback over the life of the buffer.
@@ -146,7 +153,13 @@ public class TerminalBuffer
     /// The returned array may be shorter than <see cref="Columns"/> if the terminal
     /// was wider when the line was captured; callers must bounds-check.
     /// </summary>
-    public TerminalCell[] GetScrollbackLine(int index) => _scrollback[index];
+    public TerminalCell[] GetScrollbackLine(int index)
+    {
+        if ((uint)index >= (uint)_scrollbackCount || _scrollback.Length == 0)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        return _scrollback[PhysicalScrollbackIndex(index)] ?? [];
+    }
 
     public static int NormalizeScrollbackLines(int value)
         => Math.Clamp(value, 0, MaximumScrollbackLines);
@@ -246,15 +259,62 @@ public class TerminalBuffer
 
     private void TrimScrollbackToLimit()
     {
-        int excess = _scrollbackLines <= 0
-            ? _scrollback.Count
-            : _scrollback.Count - _scrollbackLines;
-        if (excess <= 0)
+        int previousCount = _scrollbackCount;
+        EnsureScrollbackCapacity(_scrollbackLines);
+        if (_scrollbackCount != previousCount)
+            MarkDirty();
+    }
+
+    private int PhysicalScrollbackIndex(int logicalIndex)
+        => (_scrollbackStart + logicalIndex) % _scrollback.Length;
+
+    private void EnsureScrollbackCapacity(int capacity)
+    {
+        capacity = NormalizeScrollbackLines(capacity);
+        if (_scrollback.Length == capacity)
             return;
 
-        _scrollback.RemoveRange(0, excess);
-        _scrollbackSoftWrapped.RemoveRange(0, excess);
-        MarkDirty();
+        var newScrollback = new TerminalCell[]?[capacity];
+        var newSoftWrapped = new bool[capacity];
+        int copyCount = Math.Min(_scrollbackCount, capacity);
+        int skip = _scrollbackCount - copyCount;
+        for (int i = 0; i < copyCount; i++)
+        {
+            int oldIndex = PhysicalScrollbackIndex(skip + i);
+            newScrollback[i] = _scrollback[oldIndex];
+            newSoftWrapped[i] = _scrollbackSoftWrapped[oldIndex];
+        }
+
+        _scrollback = newScrollback;
+        _scrollbackSoftWrapped = newSoftWrapped;
+        _scrollbackStart = 0;
+        _scrollbackCount = copyCount;
+    }
+
+    private void AddScrollbackLine(TerminalCell[] line, bool softWrapped)
+    {
+        if (_scrollbackLines <= 0)
+            return;
+
+        EnsureScrollbackCapacity(_scrollbackLines);
+        if (_scrollback.Length == 0)
+            return;
+
+        int writeIndex;
+        if (_scrollbackCount < _scrollback.Length)
+        {
+            writeIndex = (_scrollbackStart + _scrollbackCount) % _scrollback.Length;
+            _scrollbackCount++;
+        }
+        else
+        {
+            writeIndex = _scrollbackStart;
+            _scrollbackStart = (_scrollbackStart + 1) % _scrollback.Length;
+        }
+
+        _scrollback[writeIndex] = line;
+        _scrollbackSoftWrapped[writeIndex] = softWrapped;
+        _scrollbackGeneration++;
     }
 
     private sealed class DirtyBatch(TerminalBuffer owner) : IDisposable
@@ -361,14 +421,7 @@ public class TerminalBuffer
                 var saved = new TerminalCell[Columns];
                 for (int c = 0; c < Columns; c++)
                     saved[c] = _cells[ScrollTop, c];
-                _scrollback.Add(saved);
-                _scrollbackSoftWrapped.Add(_softWrappedRows[ScrollTop]);
-                _scrollbackGeneration++;
-                if (_scrollback.Count > ScrollbackLines)
-                {
-                    _scrollback.RemoveAt(0);
-                    _scrollbackSoftWrapped.RemoveAt(0);
-                }
+                AddScrollbackLine(saved, _softWrappedRows[ScrollTop]);
             }
 
             for (int r = ScrollTop; r < ScrollBottom; r++)

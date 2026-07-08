@@ -396,7 +396,7 @@ public partial class MainWindow
             return;
         }
 
-        if (IsNativeMombotRelogScriptLoaded())
+        if (IsNativeMombotStartupOwnerScriptLoaded())
             return;
 
         string currentLine = NormalizeMombotPromptComparisonValue(
@@ -430,6 +430,12 @@ public partial class MainWindow
                string.Equals(promptName, "Citadel", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsNativeMombotStartupOwnerScriptLoaded()
+    {
+        return IsNativeMombotRelogScriptLoaded() ||
+               IsNativeMombotScriptLoaded("mombot.cts");
+    }
+
     private async Task FinalizeNativeMombotStartupAsync()
     {
         if (_mombotStartupFinalizeRunning)
@@ -446,7 +452,7 @@ public partial class MainWindow
                 _gameInstance == null ||
                 !_gameInstance.IsConnected ||
                 _gameInstance.IsProxyMenuActive ||
-                IsNativeMombotRelogScriptLoaded())
+                IsNativeMombotStartupOwnerScriptLoaded())
             {
                 return;
             }
@@ -1616,6 +1622,12 @@ public partial class MainWindow
                 : string.Empty;
     }
 
+    private static string NormalizeAutoSetupAfterLoginAction(string? value)
+    {
+        string normalized = NormalizeMombotValue(value).ToLowerInvariant();
+        return normalized is "command" or "macro" or "terra" ? normalized : "nothing";
+    }
+
     private async Task ConfigureAndStartNativeMombotForAutoSetupAsync(ConnectionProfile profile)
     {
         if (_gameInstance == null || CurrentInterpreter == null)
@@ -1639,10 +1651,24 @@ public partial class MainWindow
             _embeddedGameConfig?.mombot?.Name ??
             _embeddedGameConfig?.Mtc?.mombot?.Name);
         string botName = FirstMeaningfulMombotValue(
+            NormalizeMombotValue(profile.AutoSetupBotName),
             _appPrefs.LastNativeMombotBotName,
             configuredNativeBotName,
             _mombot.Settings.BotName,
             "mombot");
+        string afterLoginAction = NormalizeAutoSetupAfterLoginAction(profile.AutoSetupAfterLoginAction);
+        string botCommand = string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase)
+            ? NormalizeMombotValue(profile.AutoSetupBotCommand)
+            : string.Empty;
+        string macroAfterLogin = string.Equals(afterLoginAction, "terra", StringComparison.OrdinalIgnoreCase)
+            ? "pt"
+            : string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
+                ? NormalizeMombotValue(profile.AutoSetupMacroAfterLogin)
+                : string.Empty;
+        if (string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(botCommand))
+            afterLoginAction = "nothing";
+        if (string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(macroAfterLogin))
+            afterLoginAction = "nothing";
 
         _embeddedGameConfig ??= new EmbeddedGameConfig
         {
@@ -1662,9 +1688,9 @@ public partial class MainWindow
             password,
             gameLetter,
             DelayMinutes: 0,
-            AfterLoginAction: "nothing",
-            BotCommand: string.Empty,
-            MacroAfterLogin: string.Empty);
+            AfterLoginAction: afterLoginAction,
+            BotCommand: botCommand,
+            MacroAfterLogin: macroAfterLogin);
 
         ApplyMombotRelogDialogResult(relogSettings);
         await SaveCurrentGameConfigAsync();

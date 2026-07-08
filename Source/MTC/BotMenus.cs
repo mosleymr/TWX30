@@ -29,8 +29,16 @@ public partial class MainWindow
 {
     private void RebuildProxyMenu(bool force = false)
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, force ? "menu.proxy.rebuild.force" : "menu.proxy.rebuild");
+        if (MtcPerfSwitches.DisableMenus)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menus");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            RecordMtcUiPost(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menu.proxy.rebuild", DispatcherPriority.Background);
             PostToCurrentMtcTabSession(() => RebuildProxyMenu(force), DispatcherPriority.Background);
             return;
         }
@@ -63,14 +71,22 @@ public partial class MainWindow
         _quickMenu.IsEnabled = canRunProxyScripts;
         _scriptsMenu.IsEnabled = canRunProxyScripts;
         RebuildAiMenu(force);
-        RefreshNativeAppMenu(force);
-        RefreshNativeDockMenu(force);
+        RequestNativeAppMenuRefresh(force);
+        RequestNativeDockMenuRefresh(force);
     }
 
     private void RebuildAiMenu(bool force = false)
     {
+        RecordMtcPerf(PeekCurrentMtcTabContext() ?? ActiveMtcTab, force ? "menu.ai.rebuild.force" : "menu.ai.rebuild");
+        if (MtcPerfSwitches.DisableMenus)
+        {
+            RecordMtcSubsystemSkipped(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menus");
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
+            RecordMtcUiPost(PeekCurrentMtcTabContext() ?? ActiveMtcTab, "menu.ai.rebuild", DispatcherPriority.Background);
             PostToCurrentMtcTabSession(() => RebuildAiMenu(force), DispatcherPriority.Background);
             return;
         }
@@ -340,7 +356,7 @@ public partial class MainWindow
         _parser.Feed($"\x1b[1;36m[ANSI game log {status}{pathText}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();
-        RefreshNativeAppMenu();
+        RequestNativeAppMenuRefresh();
     }
 
     private async Task TogglePortHaggleDebugLoggingAsync()
@@ -353,7 +369,7 @@ public partial class MainWindow
         _parser.Feed($"\x1b[1;36m[Port haggle debug {status}: {AppPaths.GetPortHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();
-        RefreshNativeAppMenu();
+        RequestNativeAppMenuRefresh();
     }
 
     private async Task TogglePlanetHaggleDebugLoggingAsync()
@@ -366,7 +382,7 @@ public partial class MainWindow
         _parser.Feed($"\x1b[1;36m[Planet haggle debug {status}: {AppPaths.GetPlanetHaggleDebugLogPath(CurrentInterpreter?.ScriptDirectory ?? _appPrefs.ScriptsDirectory)}]\x1b[0m\r\n");
         _buffer.Dirty = true;
         RebuildScriptsMenu();
-        RefreshNativeAppMenu();
+        RequestNativeAppMenuRefresh();
     }
 
     private List<object> BuildQuickMenuItems(bool enabled)

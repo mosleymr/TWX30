@@ -922,6 +922,7 @@ public partial class MainWindow
         if (addToRecent)
             AddToRecentAndSave(configPath);
         OnGameSelected();
+        ApplyJsonRpcPreferences();
 
         if (_state.EmbeddedProxy && _gameInstance == null)
         {

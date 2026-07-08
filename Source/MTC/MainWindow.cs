@@ -43,7 +43,7 @@ public partial class MainWindow : Window
         int TunnelMaxSize,
         bool AllowSeparatedByGates);
 
-    private const string BaseWindowTitle = "Mayhem Tradewars Client 1.0 beta1";
+    private const string BaseWindowTitle = "Mayhem Tradewars Client 1.0 beta2";
     private const int MaxCommEntries = 500;
     private const double ClassicCommWindowDefaultHeight = 140;
     private const double DeckCommWindowDefaultHeight = 150;
@@ -95,6 +95,12 @@ public partial class MainWindow : Window
     private bool            _scriptsMenuRebuildPending;
     private bool            _aiMenuRebuildPending;
     private bool            _nativeMenuRefreshPending;
+    private int             _nativeAppMenuRefreshScheduled;
+    private int             _nativeDockMenuRefreshScheduled;
+    private int             _nativeAppMenuSignature;
+    private int             _nativeDockMenuSignature;
+    private bool            _nativeAppMenuSignatureValid;
+    private bool            _nativeDockMenuSignatureValid;
     private bool            _tabStripRefreshPending;
     private bool            _focusTerminalAfterSharedMenuClose;
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
@@ -185,14 +191,17 @@ public partial class MainWindow : Window
     private bool _deferredInfoPanelsRefresh;
     private readonly ConcurrentQueue<byte[]> _pendingSessionLogChunks = new();
     private bool _deferredOnlinePanelRefresh;
+    private bool _deferredStatusBarRefresh;
     private int _displayDrainScheduled;
     private string _statusBarLayoutSignature = string.Empty;
     private bool _statusMacrosHovered;
     private int _sessionLogDrainScheduled;
     private int _infoPanelsRefreshPostScheduled;
+    private int _statusRefreshPostScheduled;
     private int _onlineAutoRefreshRunning;
     private int _serverInputPendingCharacters;
     private long _lastInfoPanelsRefreshTicks;
+    private long _lastStatusBarRefreshTicks;
     private long _lastGameTrafficTicks;
     private long _lastOnlineRefreshTicks;
     private DispatcherTimer? _infoPanelsRefreshTimer;
@@ -278,6 +287,8 @@ public partial class MainWindow : Window
     private bool _mombotPreferencesOpen;
     private bool _mombotPreferencesMenuDeafActive;
     private bool _mombotPreferencesMenuDeafRestore;
+    private bool _mombotInteractivePromptTerminalDeafActive;
+    private bool _mombotInteractivePromptTerminalDeafRestore;
     private bool _mombotPreferencesCaptureSingleKey;
     private string _mombotPreferencesInputPrompt = string.Empty;
     private string _mombotPreferencesInputBuffer = string.Empty;
@@ -315,6 +326,9 @@ public partial class MainWindow : Window
     private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;
     private bool _pendingTerminalSyncMarkerUtf8LeadByte;
+    private bool _suppressNextTradeWarsPromptAfterScriptInput;
+    private long _scriptInputPromptDisplaySuppressUntilUtcTicks;
+    private bool _scriptInputPromptVisible;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;

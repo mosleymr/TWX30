@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -22,11 +24,42 @@ public class NewConnectionDialog : Window
     /// <summary>True when the profile was created from the Auto Setup flow and should start native Mombot.</summary>
     public bool AutoSetupRequested { get; private set; }
 
+    private enum AutoSetupView
+    {
+        Recommended,
+        ByServer,
+        ByDate,
+        ByPlayers,
+    }
+
+    private sealed class AutoServerOption
+    {
+        public AutoServerOption(TwcrawlServerSummary server) => Server = server;
+        public TwcrawlServerSummary Server { get; }
+        public override string ToString() => Server.Name;
+    }
+
+    private sealed class AutoAfterLoginOption
+    {
+        public AutoAfterLoginOption(string value, string label)
+        {
+            Value = value;
+            Label = label;
+        }
+
+        public string Value { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
+    }
+
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(8, 14, 20));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(14, 33, 42));
     private static readonly IBrush BgCard = new SolidColorBrush(Color.FromRgb(16, 53, 67));
     private static readonly IBrush BgCardAlt = new SolidColorBrush(Color.FromRgb(10, 43, 53));
     private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(7, 28, 36));
+    private static readonly IBrush TableHeaderBg = new SolidColorBrush(Color.FromRgb(12, 35, 44));
+    private static readonly IBrush TableHeaderEdge = new SolidColorBrush(Color.FromRgb(34, 78, 91));
+    private static readonly IBrush TableHeaderText = new SolidColorBrush(Color.FromRgb(166, 211, 220));
     private static readonly IBrush Edge = new SolidColorBrush(Color.FromRgb(57, 112, 128));
     private static readonly IBrush InnerEdge = new SolidColorBrush(Color.FromRgb(23, 81, 94));
     private static readonly IBrush FgText = new SolidColorBrush(Color.FromRgb(222, 238, 242));
@@ -42,23 +75,35 @@ public class NewConnectionDialog : Window
     private readonly bool _allowAutoSetup;
     private bool _autoSetupLoaded;
     private CancellationTokenSource? _autoLoadCts;
+    private readonly Dictionary<AutoSetupView, Button> _autoSetupViewButtons = new();
+    private IReadOnlyList<TwcrawlServerSummary> _autoServers = Array.Empty<TwcrawlServerSummary>();
+    private IReadOnlyList<TwcrawlGameSummary> _autoGames = Array.Empty<TwcrawlGameSummary>();
+    private AutoSetupView _autoSetupView = AutoSetupView.Recommended;
     private StackPanel? _serverListPanel;
     private TextBlock? _autoStatusText;
     private TextBlock? _autoValidationText;
     private TextBlock? _selectedGameText;
     private TextBox? _autoUsernameBox;
     private TextBox? _autoPasswordBox;
+    private TextBox? _autoBotNameBox;
+    private ComboBox? _autoServerPicker;
+    private string? _selectedAutoServerId;
+    private ComboBox? _autoAfterLoginCombo;
+    private TextBox? _autoBotCommandBox;
+    private TextBox? _autoMacroBox;
+    private Control? _autoBotCommandRow;
+    private Control? _autoMacroRow;
     private TwcrawlGameSummary? _selectedAutoGame;
 
     public NewConnectionDialog(ConnectionProfile? defaults = null, bool allowAutoSetup = true)
     {
         _allowAutoSetup = allowAutoSetup && defaults == null;
         Title = defaults == null ? "New Connection" : "Edit Connection";
-        Width = _allowAutoSetup ? 1080 : 500;
+        Width = _allowAutoSetup ? 1160 : 500;
         Height = _allowAutoSetup ? 760 : double.NaN;
         SizeToContent = _allowAutoSetup ? SizeToContent.Manual : SizeToContent.Height;
         MinHeight = 200;
-        MinWidth = _allowAutoSetup ? 920 : 500;
+        MinWidth = _allowAutoSetup ? 980 : 500;
         CanResize = _allowAutoSetup;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = BgWin;
@@ -96,7 +141,43 @@ public class NewConnectionDialog : Window
             ItemsSource = new[]
             {
                 new TabItem { Header = "Manual Setup", Content = manualSetup },
-                new TabItem { Header = "Auto Setup (New!)", Content = autoSetup },
+                new TabItem { Header = BuildAutoSetupTabHeader(), Content = autoSetup },
+            },
+        };
+    }
+
+    private static Control BuildAutoSetupTabHeader()
+    {
+        return new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 7,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "Auto Setup",
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
+                new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(150, 16, 28)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(255, 120, 130)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(5, 1),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Child = new TextBlock
+                    {
+                        Text = "NEW",
+                        Foreground = Brushes.White,
+                        FontSize = 8,
+                        FontWeight = FontWeight.Bold,
+                        LineHeight = 9,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                },
             },
         };
     }
@@ -297,6 +378,7 @@ public class NewConnectionDialog : Window
             Text = "Loading active TradeWars servers from twcrawl...",
             Foreground = FgMuted,
             FontSize = 13,
+            IsVisible = true,
         };
         _autoValidationText = BuildValidationText();
         _selectedGameText = new TextBlock
@@ -306,13 +388,44 @@ public class NewConnectionDialog : Window
             FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
         };
-        _autoUsernameBox = CreateTextBox(string.Empty, "username", width: 210);
-        _autoPasswordBox = CreateTextBox(string.Empty, "password", width: 210);
+        _autoUsernameBox = CreateTextBox(string.Empty, "username", width: 180);
+        _autoPasswordBox = CreateTextBox(string.Empty, "password", width: 180);
         _autoPasswordBox.PasswordChar = '*';
+        _autoBotNameBox = CreateTextBox(GetRememberedAutoBotName(), "bot name", width: 50);
+        var afterLoginOptions = new[]
+        {
+            new AutoAfterLoginOption("nothing", "Nothing"),
+            new AutoAfterLoginOption("command", "Run Command"),
+            new AutoAfterLoginOption("macro", "Fire Macro"),
+            new AutoAfterLoginOption("terra", "Land on Terra"),
+        };
+        _autoAfterLoginCombo = new ComboBox
+        {
+            ItemsSource = afterLoginOptions,
+            SelectedIndex = 0,
+            Width = 165,
+            MinHeight = 30,
+            FontSize = 13,
+            Background = BgInput,
+            Foreground = FgText,
+            BorderBrush = InnerEdge,
+        };
+        _autoBotCommandBox = CreateTextBox(string.Empty, "bot command", width: 310);
+        _autoMacroBox = CreateTextBox(string.Empty, "macro", width: 310);
+        _autoBotCommandRow = BuildAutoInlineRow("Bot command", _autoBotCommandBox);
+        _autoMacroRow = BuildAutoInlineRow("Macro", _autoMacroBox);
+        _autoBotCommandRow.IsVisible = false;
+        _autoMacroRow.IsVisible = false;
+
         WireDialogClipboard(_autoUsernameBox);
         WireDialogClipboard(_autoPasswordBox);
+        WireDialogClipboard(_autoBotNameBox);
+        WireDialogClipboard(_autoBotCommandBox);
+        WireDialogClipboard(_autoMacroBox);
 
-        var reloadButton = BuildActionButton("Reload", primary: false);
+        _autoAfterLoginCombo.SelectionChanged += (_, _) => RefreshAutoAfterLoginFields();
+
+        var reloadButton = BuildActionButton("Refresh Data", primary: false);
         reloadButton.Click += async (_, _) => await ReloadAutoServersAsync();
 
         _serverListPanel = new StackPanel { Spacing = 8 };
@@ -332,6 +445,8 @@ public class NewConnectionDialog : Window
         header.Children.Add(_autoStatusText);
         header.Children.Add(reloadButton);
 
+        var viewTabs = BuildAutoSetupViewTabs();
+
         var credentialsGrid = new Grid
         {
             ColumnSpacing = 10,
@@ -342,10 +457,15 @@ public class NewConnectionDialog : Window
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
+                new ColumnDefinition(GridLength.Auto),
                 new ColumnDefinition(GridLength.Star),
                 new ColumnDefinition(GridLength.Auto),
             },
         };
+        credentialsGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         credentialsGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
         credentialsGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
 
@@ -353,12 +473,26 @@ public class NewConnectionDialog : Window
         AddInlineControl(credentialsGrid, 0, 1, _autoUsernameBox);
         AddInlineLabel(credentialsGrid, 0, 2, "Password");
         AddInlineControl(credentialsGrid, 0, 3, _autoPasswordBox);
+        AddInlineLabel(credentialsGrid, 0, 4, "Bot");
+        AddInlineControl(credentialsGrid, 0, 5, _autoBotNameBox);
+        AddInlineLabel(credentialsGrid, 0, 6, "After login");
+        AddInlineControl(credentialsGrid, 0, 7, _autoAfterLoginCombo);
         Grid.SetRow(goButton, 0);
-        Grid.SetColumn(goButton, 5);
+        Grid.SetColumn(goButton, 9);
         credentialsGrid.Children.Add(goButton);
-        Grid.SetRow(_selectedGameText, 1);
+
+        Grid.SetRow(_autoBotCommandRow, 1);
+        Grid.SetColumn(_autoBotCommandRow, 0);
+        Grid.SetColumnSpan(_autoBotCommandRow, 10);
+        credentialsGrid.Children.Add(_autoBotCommandRow);
+        Grid.SetRow(_autoMacroRow, 1);
+        Grid.SetColumn(_autoMacroRow, 0);
+        Grid.SetColumnSpan(_autoMacroRow, 10);
+        credentialsGrid.Children.Add(_autoMacroRow);
+
         Grid.SetColumn(_selectedGameText, 0);
-        Grid.SetColumnSpan(_selectedGameText, 6);
+        Grid.SetColumnSpan(_selectedGameText, 10);
+        Grid.SetRow(_selectedGameText, 2);
         credentialsGrid.Children.Add(_selectedGameText);
 
         var bottom = BuildSection(
@@ -372,18 +506,117 @@ public class NewConnectionDialog : Window
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto),
                 new RowDefinition(new GridLength(1, GridUnitType.Star)),
                 new RowDefinition(GridLength.Auto),
             },
         };
         Grid.SetRow(header, 0);
-        Grid.SetRow(serverScroll, 1);
-        Grid.SetRow(bottom, 2);
+        Grid.SetRow(viewTabs, 1);
+        Grid.SetRow(serverScroll, 2);
+        Grid.SetRow(bottom, 3);
         grid.Children.Add(header);
+        grid.Children.Add(viewTabs);
         grid.Children.Add(serverScroll);
         grid.Children.Add(bottom);
 
+        RefreshAutoAfterLoginFields();
         return grid;
+    }
+
+    private static string GetRememberedAutoBotName()
+    {
+        try
+        {
+            string remembered = AppPreferences.Load().LastNativeMombotBotName.Trim();
+            return string.IsNullOrWhiteSpace(remembered) ? "mombot" : remembered;
+        }
+        catch
+        {
+            return "mombot";
+        }
+    }
+
+    private Control BuildAutoSetupViewTabs()
+    {
+        _autoSetupViewButtons.Clear();
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+
+        AddAutoSetupViewButton(panel, AutoSetupView.Recommended, "Recommended");
+        AddAutoSetupViewButton(panel, AutoSetupView.ByServer, "By Server");
+        AddAutoSetupViewButton(panel, AutoSetupView.ByDate, "By Date");
+        AddAutoSetupViewButton(panel, AutoSetupView.ByPlayers, "By Players");
+        RefreshAutoSetupViewTabs();
+        return panel;
+    }
+
+    private void AddAutoSetupViewButton(StackPanel panel, AutoSetupView view, string text)
+    {
+        var button = BuildSmallButton(text);
+        button.MinWidth = 102;
+        button.Padding = new Thickness(12, 6);
+        button.Click += (_, _) =>
+        {
+            if (_autoSetupView == view)
+                return;
+            _autoSetupView = view;
+            _selectedAutoGame = null;
+            if (_selectedGameText != null)
+            {
+                _selectedGameText.Text = "Select a game above, then enter your first-login account information.";
+                _selectedGameText.Foreground = FgMuted;
+            }
+            RefreshAutoSetupViewTabs();
+            RefreshAutoSetupGameList();
+        };
+        _autoSetupViewButtons[view] = button;
+        panel.Children.Add(button);
+    }
+
+    private void RefreshAutoSetupViewTabs()
+    {
+        foreach ((AutoSetupView view, Button button) in _autoSetupViewButtons)
+        {
+            bool selected = view == _autoSetupView;
+            button.Background = selected ? Accent : BgCardAlt;
+            button.BorderBrush = selected ? AccentHot : InnerEdge;
+            button.Foreground = selected ? AccentInk : FgText;
+        }
+    }
+
+    private static Control BuildAutoInlineRow(string label, Control input)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = FgText,
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            Width = 92,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        row.Children.Add(input);
+        return row;
+    }
+
+    private void RefreshAutoAfterLoginFields()
+    {
+        string selectedAction = (_autoAfterLoginCombo?.SelectedItem as AutoAfterLoginOption)?.Value ?? "nothing";
+        if (_autoBotCommandRow != null)
+            _autoBotCommandRow.IsVisible = string.Equals(selectedAction, "command", StringComparison.OrdinalIgnoreCase);
+        if (_autoMacroRow != null)
+            _autoMacroRow.IsVisible = string.Equals(selectedAction, "macro", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ReloadAutoServersAsync()
@@ -398,6 +631,7 @@ public class NewConnectionDialog : Window
         _serverListPanel.Children.Clear();
         _autoStatusText.Text = "Loading active TradeWars servers from twcrawl...";
         _autoStatusText.Foreground = FgMuted;
+        _autoStatusText.IsVisible = true;
         SetAutoValidation(null);
 
         try
@@ -406,14 +640,13 @@ public class NewConnectionDialog : Window
             if (token.IsCancellationRequested)
                 return;
 
-            _serverListPanel.Children.Clear();
-            foreach (TwcrawlServerSummary server in servers)
-                _serverListPanel.Children.Add(BuildServerCard(server));
+            _autoServers = servers;
+            _autoGames = servers.SelectMany(server => server.GameList).ToArray();
+            RefreshAutoSetupGameList();
 
-            _autoStatusText.Text = servers.Count == 0
-                ? "No active servers were reported by twcrawl."
-                : $"Active servers: {servers.Count}. Expand a server and select a game.";
+            _autoStatusText.Text = servers.Count == 0 ? "No active servers were reported by twcrawl." : string.Empty;
             _autoStatusText.Foreground = servers.Count == 0 ? WarnText : FgMuted;
+            _autoStatusText.IsVisible = servers.Count == 0;
         }
         catch (OperationCanceledException)
         {
@@ -426,53 +659,223 @@ public class NewConnectionDialog : Window
         }
     }
 
-    private Control BuildServerCard(TwcrawlServerSummary server)
+    private void RefreshAutoSetupGameList()
     {
-        var gamesPanel = new StackPanel { Spacing = 4 };
-        gamesPanel.Children.Add(BuildGameHeaderRow());
-        foreach (TwcrawlGameSummary game in server.GameList)
-            gamesPanel.Children.Add(BuildGameRow(game));
+        if (_serverListPanel == null)
+            return;
 
-        return new Expander
+        _serverListPanel.Children.Clear();
+        if (_autoServers.Count == 0)
         {
-            Header = BuildServerHeader(server),
-            Content = new Border
+            _serverListPanel.Children.Add(new TextBlock
             {
-                Background = BgPanel,
-                BorderBrush = InnerEdge,
-                BorderThickness = new Thickness(1, 0, 1, 1),
-                CornerRadius = new CornerRadius(0, 0, 8, 8),
-                Padding = new Thickness(10, 6),
-                Child = gamesPanel,
-            },
-            Background = BgCardAlt,
-            BorderBrush = Edge,
-            Foreground = FgText,
-            IsExpanded = false,
-        };
+                Text = "No games are available yet.",
+                Foreground = FgMuted,
+                FontSize = 13,
+            });
+            return;
+        }
+
+        switch (_autoSetupView)
+        {
+            case AutoSetupView.ByServer:
+                BuildByServerGameList(_serverListPanel);
+                break;
+            case AutoSetupView.ByDate:
+                BuildFlatGameList(
+                    _serverListPanel,
+                    _autoGames.OrderBy(DaysSortKey).ThenBy(game => game.ServerName).ThenBy(game => game.Letter),
+                    includeServerName: true);
+                break;
+            case AutoSetupView.ByPlayers:
+                BuildFlatGameList(
+                    _serverListPanel,
+                    _autoGames.OrderByDescending(game => game.Players).ThenBy(DaysSortKey).ThenBy(game => game.ServerName),
+                    includeServerName: true);
+                break;
+            default:
+                BuildFlatGameList(_serverListPanel, BuildRecommendedGames(), includeServerName: true);
+                break;
+        }
     }
 
-    private static Control BuildServerHeader(TwcrawlServerSummary server)
+    private void BuildByServerGameList(StackPanel target)
     {
-        var grid = new Grid
+        var pickerPanel = new StackPanel
         {
-            ColumnSpacing = 12,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(new GridLength(2.2, GridUnitType.Star)),
-                new ColumnDefinition(new GridLength(1.4, GridUnitType.Star)),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Auto),
-            },
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 4),
         };
 
-        AddHeaderText(grid, 0, server.Name, FgText, FontWeight.SemiBold);
-        AddHeaderText(grid, 1, server.Telnet, FgMuted, FontWeight.Normal);
-        AddHeaderText(grid, 2, $"BigBang {EmptyDash(server.BigBang)}", FgMuted, FontWeight.Normal);
-        AddHeaderText(grid, 3, $"{server.Games} games", FgMuted, FontWeight.Normal);
-        AddHeaderText(grid, 4, $"{server.Players} players", FgMuted, FontWeight.Normal);
-        return grid;
+        pickerPanel.Children.Add(new TextBlock
+        {
+            Text = "Choose Server",
+            Foreground = FgText,
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var options = _autoServers.Select(server => new AutoServerOption(server)).ToArray();
+        int selectedIndex = 0;
+        if (!string.IsNullOrWhiteSpace(_selectedAutoServerId))
+        {
+            int existingIndex = Array.FindIndex(options, option =>
+                string.Equals(option.Server.ServerId, _selectedAutoServerId, StringComparison.OrdinalIgnoreCase));
+            if (existingIndex >= 0)
+                selectedIndex = existingIndex;
+        }
+        _autoServerPicker = new ComboBox
+        {
+            ItemsSource = options,
+            SelectedIndex = selectedIndex,
+            Width = 290,
+            MinHeight = 30,
+            FontSize = 13,
+            Background = BgInput,
+            Foreground = FgText,
+            BorderBrush = InnerEdge,
+        };
+        _autoServerPicker.SelectionChanged += (_, _) =>
+        {
+            if (_autoServerPicker.SelectedItem is AutoServerOption selectedServer)
+                _selectedAutoServerId = selectedServer.Server.ServerId;
+            RefreshAutoSetupGameList();
+        };
+        pickerPanel.Children.Add(_autoServerPicker);
+        target.Children.Add(pickerPanel);
+
+        TwcrawlServerSummary server = ((_autoServerPicker.SelectedItem as AutoServerOption) ?? options[selectedIndex]).Server;
+        _selectedAutoServerId = server.ServerId;
+        BuildFlatGameList(target, server.GameList, includeServerName: false);
+    }
+
+    private void BuildFlatGameList(StackPanel target, IEnumerable<TwcrawlGameSummary> games, bool includeServerName)
+    {
+        target.Children.Add(BuildGameHeaderRow());
+        int count = 0;
+        foreach (TwcrawlGameSummary game in games)
+        {
+            target.Children.Add(BuildGameRow(game, includeServerName));
+            count++;
+        }
+
+        if (count == 0)
+        {
+            target.Children.Add(new Border
+            {
+                Background = BgCardAlt,
+                BorderBrush = InnerEdge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8),
+                Child = new TextBlock
+                {
+                    Text = "No games matched this view.",
+                    Foreground = FgMuted,
+                    FontSize = 13,
+                },
+            });
+        }
+    }
+
+    private IEnumerable<TwcrawlGameSummary> BuildRecommendedGames()
+    {
+        const int recommendedCount = 10;
+        TwcrawlGameSummary[] candidates = _autoGames
+            .Where(IsRecommendedGameCandidate)
+            .ToArray();
+        if (candidates.Length == 0)
+            return Array.Empty<TwcrawlGameSummary>();
+
+        int maxPlayers = Math.Max(1, candidates.Max(game => game.Players));
+        int maxYoungDays = Math.Max(1, Math.Min(90, candidates
+            .Where(game => DaysSortKey(game) < 90)
+            .Select(DaysSortKey)
+            .DefaultIfEmpty(90)
+            .Max()));
+
+        IOrderedEnumerable<TwcrawlGameSummary> SortRecommended(IEnumerable<TwcrawlGameSummary> games) =>
+            games.OrderBy(game => RecommendedScore(game, maxPlayers, maxYoungDays))
+                .ThenBy(game => game.ServerName)
+                .ThenBy(game => game.Letter);
+
+        TwcrawlGameSummary[] youngGames = SortRecommended(candidates.Where(game => DaysSortKey(game) < 90))
+            .Take(recommendedCount)
+            .ToArray();
+        if (youngGames.Length >= recommendedCount)
+            return youngGames;
+
+        return youngGames
+            .Concat(SortRecommended(candidates.Where(game => DaysSortKey(game) >= 90))
+                .Take(recommendedCount - youngGames.Length))
+            .ToArray();
+    }
+
+    private static bool IsRecommendedGameCandidate(TwcrawlGameSummary game)
+        => !ContainsWord(game.Name, "Test");
+
+    private static bool ContainsWord(string? value, string word)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(word))
+            return false;
+
+        int index = 0;
+        while ((index = value.IndexOf(word, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            int end = index + word.Length;
+            bool leftBoundary = index == 0 || !char.IsLetterOrDigit(value[index - 1]);
+            bool rightBoundary = end >= value.Length || !char.IsLetterOrDigit(value[end]);
+            if (leftBoundary && rightBoundary)
+                return true;
+
+            index = end;
+        }
+
+        return false;
+    }
+
+    private static double RecommendedScore(TwcrawlGameSummary game, int maxPlayers, int maxDays)
+    {
+        double playerPenalty = 1.0 - Math.Clamp(game.Players / (double)maxPlayers, 0.0, 1.0);
+        double dayPenalty = Math.Clamp(DaysSortKey(game) / (double)maxDays, 0.0, 1.0);
+
+        // Player count carries most of the ranking weight; warning/time penalties still keep bad candidates down.
+        return (playerPenalty * 0.75) +
+               (dayPenalty * 0.25) +
+               (WarningScore(game) * 1.5) +
+               (IsUnlimitedTime(game.Time) ? 0 : 1.0);
+    }
+
+    private static int WarningScore(TwcrawlGameSummary game)
+    {
+        int score = QualityPenalty(TwcrawlDiscoveryClient.ClassifyLatency(game.Latency)) +
+                    QualityPenalty(TwcrawlDiscoveryClient.ClassifyShipDelay(game.ShipDelay));
+        if (!IsUnlimitedTime(game.Time))
+            score += 1;
+        return score;
+    }
+
+    private static int QualityPenalty(TwcrawlQuality quality)
+        => quality switch
+        {
+            TwcrawlQuality.Bad => 2,
+            TwcrawlQuality.Warn => 1,
+            _ => 0,
+        };
+
+    private static int DaysSortKey(TwcrawlGameSummary game)
+        => game.DaysOpen ?? int.MaxValue;
+
+    private static bool IsUnlimitedTime(string? time)
+        => string.Equals((time ?? string.Empty).Trim(), "Unlimited", StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildAutoGameDisplayName(TwcrawlGameSummary game, bool includeServerName)
+    {
+        string gameName = $"{game.Letter} - {game.Name}";
+        return includeServerName ? $"{game.ServerName} {gameName}" : gameName;
     }
 
     private Control BuildGameHeaderRow()
@@ -480,26 +883,32 @@ public class NewConnectionDialog : Window
         var grid = BuildGameRowGrid();
         AddGameHeader(grid, 0, "Game");
         AddGameHeader(grid, 1, "Days");
-        AddGameHeader(grid, 2, "Time");
-        AddGameHeader(grid, 3, "Turns");
-        AddGameHeader(grid, 4, "Sectors");
-        AddGameHeader(grid, 5, "Players");
-        AddGameHeader(grid, 6, "Warnings");
-        AddGameHeader(grid, 7, "");
-        AddGameHeader(grid, 8, "");
-        return grid;
+        AddGameHeader(grid, 2, "Turns");
+        AddGameHeader(grid, 3, "Sectors");
+        AddGameHeader(grid, 4, "Players");
+        AddGameHeader(grid, 5, "Warnings");
+        AddGameHeader(grid, 6, "Details");
+        AddGameHeader(grid, 7, "Select");
+        return new Border
+        {
+            Background = TableHeaderBg,
+            BorderBrush = TableHeaderEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(5),
+            Padding = new Thickness(8, 4),
+            Child = grid,
+        };
     }
 
-    private Control BuildGameRow(TwcrawlGameSummary game)
+    private Control BuildGameRow(TwcrawlGameSummary game, bool includeServerName)
     {
         var grid = BuildGameRowGrid();
 
-        AddGameText(grid, 0, $"{game.Letter} - {game.Name}", FgText, FontWeight.SemiBold, HorizontalAlignment.Left);
+        AddGameText(grid, 0, BuildAutoGameDisplayName(game, includeServerName), FgText, FontWeight.SemiBold, HorizontalAlignment.Left);
         AddGameText(grid, 1, game.DaysOpen?.ToString() ?? "-", FgMuted, FontWeight.Normal);
-        AddGameText(grid, 2, EmptyDash(game.Time), FgMuted, FontWeight.Normal);
-        AddGameText(grid, 3, EmptyDash(game.Turns), FgMuted, FontWeight.Normal);
-        AddGameText(grid, 4, game.Sectors.ToString("N0"), FgMuted, FontWeight.Normal);
-        AddGameText(grid, 5, game.Players.ToString("N0"), FgMuted, FontWeight.Normal);
+        AddGameText(grid, 2, EmptyDash(game.Turns), FgMuted, FontWeight.Normal);
+        AddGameText(grid, 3, game.Sectors.ToString("N0"), FgMuted, FontWeight.Normal);
+        AddGameText(grid, 4, game.Players.ToString("N0"), FgMuted, FontWeight.Normal);
 
         var warningPanel = new StackPanel
         {
@@ -510,17 +919,19 @@ public class NewConnectionDialog : Window
         };
         AddWarningLabel(warningPanel, "LATENCY", TwcrawlDiscoveryClient.ClassifyLatency(game.Latency));
         AddWarningLabel(warningPanel, "MOVE DELAY", TwcrawlDiscoveryClient.ClassifyShipDelay(game.ShipDelay));
-        Grid.SetColumn(warningPanel, 6);
+        if (!IsUnlimitedTime(game.Time))
+            AddWarningLabel(warningPanel, "TIME LIMIT", TwcrawlQuality.Warn);
+        Grid.SetColumn(warningPanel, 5);
         grid.Children.Add(warningPanel);
 
         var details = BuildSmallButton("View Details");
         details.Click += async (_, _) => await OpenGameDetailsAsync(game);
-        Grid.SetColumn(details, 7);
+        Grid.SetColumn(details, 6);
         grid.Children.Add(details);
 
         var select = BuildSmallButton("Select Game", primary: true);
         select.Click += (_, _) => SelectAutoGame(game);
-        Grid.SetColumn(select, 8);
+        Grid.SetColumn(select, 7);
         grid.Children.Add(select);
 
         return new Border
@@ -541,13 +952,12 @@ public class NewConnectionDialog : Window
             ColumnSpacing = 10,
             ColumnDefinitions =
             {
-                new ColumnDefinition(new GridLength(2.4, GridUnitType.Star)),
+                new ColumnDefinition(new GridLength(3.2, GridUnitType.Star)),
                 new ColumnDefinition(new GridLength(58)),
-                new ColumnDefinition(new GridLength(95)),
                 new ColumnDefinition(new GridLength(100)),
                 new ColumnDefinition(new GridLength(78)),
                 new ColumnDefinition(new GridLength(65)),
-                new ColumnDefinition(new GridLength(132)),
+                new ColumnDefinition(new GridLength(190)),
                 new ColumnDefinition(new GridLength(90)),
                 new ColumnDefinition(new GridLength(96)),
             },
@@ -594,6 +1004,38 @@ public class NewConnectionDialog : Window
             return;
         }
 
+        string botName = _autoBotNameBox?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(botName))
+            botName = "mombot";
+
+        string afterLoginAction = (_autoAfterLoginCombo?.SelectedItem as AutoAfterLoginOption)?.Value ?? "nothing";
+        string botCommand = string.Empty;
+        string macroAfterLogin = string.Empty;
+        if (string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase))
+        {
+            botCommand = _autoBotCommandBox?.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(botCommand))
+            {
+                SetAutoValidation("Enter the bot command to run after login.");
+                _autoBotCommandBox?.Focus();
+                return;
+            }
+        }
+        else if (string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase))
+        {
+            macroAfterLogin = _autoMacroBox?.Text?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(macroAfterLogin))
+            {
+                SetAutoValidation("Enter the macro to fire after login.");
+                _autoMacroBox?.Focus();
+                return;
+            }
+        }
+        else if (string.Equals(afterLoginAction, "terra", StringComparison.OrdinalIgnoreCase))
+        {
+            macroAfterLogin = "pt";
+        }
+
         if (!TwcrawlDiscoveryClient.TryParseTelnetEndpoint(_selectedAutoGame.ServerTelnet, out string host, out int port))
         {
             SetAutoValidation($"Unable to parse telnet endpoint '{_selectedAutoGame.ServerTelnet}'.");
@@ -619,6 +1061,10 @@ public class NewConnectionDialog : Window
             Password = password,
             GameLetter = _selectedAutoGame.Letter,
             LoginSettingsConfigured = true,
+            AutoSetupBotName = botName,
+            AutoSetupAfterLoginAction = afterLoginAction,
+            AutoSetupBotCommand = botCommand,
+            AutoSetupMacroAfterLogin = macroAfterLogin,
         };
         AutoSetupRequested = true;
         Close(true);
@@ -895,7 +1341,7 @@ public class NewConnectionDialog : Window
             grid,
             column,
             text,
-            FgMuted,
+            TableHeaderText,
             FontWeight.SemiBold,
             column == 0 ? HorizontalAlignment.Left : HorizontalAlignment.Center);
     }

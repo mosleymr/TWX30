@@ -336,6 +336,20 @@ public partial class MainWindow
             _mombotPreferencesInputBuffer.Length > 0;
     }
 
+    private bool HasMombotInteractiveStateFor(MtcTabPrototype? owner)
+    {
+        if (owner is null)
+            return HasMombotInteractiveState();
+
+        return owner.MombotPromptOpen ||
+            owner.MombotHotkeyPromptOpen ||
+            owner.MombotScriptPromptOpen ||
+            owner.MombotPreferencesOpen ||
+            owner.MombotMacroPromptOpen ||
+            owner.MombotPreferencesInputHandler != null ||
+            owner.MombotPreferencesInputBuffer.Length > 0;
+    }
+
     private void CloseMombotInteractiveState(bool clearBotIsDeaf = true)
     {
         if (!HasMombotInteractiveState() && !clearBotIsDeaf)
@@ -565,6 +579,7 @@ public partial class MainWindow
             _embeddedGameName = gameName;
             ApplyProfile(BuildProfileFromConfig(config));
             OnGameSelected();
+            ApplyJsonRpcPreferences();
 
             _parser.Feed($"\x1b[1;36m[Game reset: {gameName}]\x1b[0m\r\n");
             _buffer.Dirty = true;
@@ -927,10 +942,41 @@ public partial class MainWindow
 
     private void RequestStatusBarRefresh()
     {
+        var owner = PeekCurrentMtcTabContext();
+        RecordMtcPerf(owner ?? ActiveMtcTab, "status.request");
+        if (MtcPerfSwitches.DisableStatusBar)
+        {
+            RecordMtcSubsystemSkipped(owner ?? ActiveMtcTab, "status-bar");
+            return;
+        }
+
+        if (owner is not null && !IsActiveMtcTab(owner))
+        {
+            MarkMtcTabVisualStateDirty(owner, statusBar: true);
+            owner.StatusRefreshTimer?.Stop();
+            return;
+        }
+
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            var owner = ResolveCurrentMtcTabContext();
-            PostToMtcTabSession(owner, RequestStatusBarRefresh, DispatcherPriority.Background);
+            if (owner is null)
+                return;
+
+            if (Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 1) == 0)
+            {
+                RecordMtcUiPost(owner, "status.request", DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    RecordMtcUiRun(owner, "status.request");
+                    Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 0);
+                    ExecuteInMtcTabSession(owner, RequestStatusBarRefresh);
+                }, DispatcherPriority.Background);
+            }
+            else
+            {
+                RecordMtcPerf(owner, "status.request.coalesced");
+            }
+
             return;
         }
 
@@ -946,7 +992,17 @@ public partial class MainWindow
 
         if (activeOwner is not null)
         {
+            _deferredStatusBarRefresh = true;
+            activeOwner.DeferredStatusBarRefresh = true;
+            TimeSpan delay = GetStatusBarRefreshDelay();
+            if (delay <= TimeSpan.Zero)
+            {
+                RefreshStatusBar();
+                return;
+            }
+
             DispatcherTimer statusRefreshTimer = EnsureMtcTabStatusRefreshTimer(activeOwner);
+            statusRefreshTimer.Interval = delay;
             if (!statusRefreshTimer.IsEnabled)
                 statusRefreshTimer.Start();
             return;
@@ -955,14 +1011,25 @@ public partial class MainWindow
         RefreshStatusBar();
     }
 
+    private TimeSpan GetStatusBarRefreshDelay()
+    {
+        if (HasPendingTerminalDisplayBacklog())
+            return TimeSpan.FromMilliseconds(350);
+
+        long lastRefreshTicks = Volatile.Read(ref _lastStatusBarRefreshTicks);
+        if (lastRefreshTicks == 0)
+            return TimeSpan.Zero;
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(lastRefreshTicks);
+        TimeSpan minInterval = TimeSpan.FromMilliseconds(250);
+        return elapsed >= minInterval ? TimeSpan.Zero : minInterval - elapsed;
+    }
+
     private DispatcherTimer EnsureMtcTabStatusRefreshTimer(MtcTabPrototype tab)
     {
         if (tab.StatusRefreshTimer is null)
         {
-            tab.StatusRefreshTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromMilliseconds(120)
-            };
+            tab.StatusRefreshTimer = new DispatcherTimer(DispatcherPriority.Background);
         }
 
         if (!tab.StatusRefreshTimerWired)
@@ -970,6 +1037,10 @@ public partial class MainWindow
             tab.StatusRefreshTimer.Tick += (_, _) =>
             {
                 tab.StatusRefreshTimer?.Stop();
+                if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+                    return;
+
+                RecordMtcUiRun(tab, "status.timer");
                 ExecuteInOptionalMtcTabSession(tab, RefreshStatusBar);
             };
             tab.StatusRefreshTimerWired = true;
