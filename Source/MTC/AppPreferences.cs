@@ -234,12 +234,6 @@ public class AppPreferences
                             .Select(pair => new XElement("Model",
                                 new XAttribute("Provider", NormalizeGameAgentProvider(pair.Key)),
                                 pair.Value.Trim())))),
-                new XElement("JsonRpc",
-                    new XElement("Enabled", JsonRpcEnabled),
-                    new XElement("BindAddress", NormalizeJsonRpcBindAddress(JsonRpcBindAddress)),
-                    new XElement("Port", NormalizeJsonRpcPort(JsonRpcPort)),
-                    new XElement("AuthToken", NormalizeJsonRpcAuthToken(JsonRpcAuthToken)),
-                    new XElement("ApprovalLevel", MtcRpcApprovalLevels.Normalize(JsonRpcApprovalLevel))),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -393,19 +387,6 @@ public class AppPreferences
                         prefs.GameAgentProviderModels[provider] = value;
                 }
             }
-
-            XElement? jsonRpc = root.Element("JsonRpc");
-            if (jsonRpc != null)
-            {
-                if (bool.TryParse((string?)jsonRpc.Element("Enabled"), out bool jsonRpcEnabled))
-                    prefs.JsonRpcEnabled = jsonRpcEnabled;
-                prefs.JsonRpcBindAddress = NormalizeJsonRpcBindAddress((string?)jsonRpc.Element("BindAddress"));
-                if (int.TryParse((string?)jsonRpc.Element("Port"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int jsonRpcPort))
-                    prefs.JsonRpcPort = NormalizeJsonRpcPort(jsonRpcPort);
-                prefs.JsonRpcAuthToken = NormalizeJsonRpcAuthToken((string?)jsonRpc.Element("AuthToken"));
-                prefs.JsonRpcApprovalLevel = MtcRpcApprovalLevels.Normalize((string?)jsonRpc.Element("ApprovalLevel"));
-            }
-            prefs.EnsureJsonRpcAuthToken();
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");

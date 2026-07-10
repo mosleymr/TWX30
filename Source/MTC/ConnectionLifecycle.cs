@@ -630,16 +630,31 @@ public partial class MainWindow
                 ObserveEmbeddedKeepaliveWatchLine(strippedLine);
                 ObserveNativeMombotWatchLine(strippedLine);
             }
+        }
 
-            if (_appPrefs.EnableRedAlertMode &&
-                !string.IsNullOrWhiteSpace(strippedLine) &&
-                _mombot.ObserveServerLine(strippedLine))
+        void ObserveNativeMombotServerLine(string strippedLine)
+        {
+            var tabMombot = owningTab?.Mombot ?? _mombot;
+
+            if (string.IsNullOrWhiteSpace(strippedLine) ||
+                !tabMombot.ObserveServerLine(strippedLine, observeWatcher: _appPrefs.EnableRedAlertMode))
+            {
+                return;
+            }
+
+            if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+            {
+                MarkMtcTabVisualStateDirty(owningTab, infoPanels: true, statusBar: true);
+                return;
+            }
+
+            PostToMtcTabSession(owningTab, () =>
             {
                 RefreshMombotUi();
                 RequestStatusBarRefresh();
                 RebuildProxyMenu();
                 _buffer.Dirty = true;
-            }
+            });
         }
 
         void ProcessEmbeddedServerData(string text, bool allowUiObservers, bool queueUiObservers = false)
@@ -694,52 +709,52 @@ public partial class MainWindow
                         serverAnsiLineBuf.Clear();
                         serverAnsiLineBuf.Append(remainderAnsi);
 
-                    if (!string.IsNullOrEmpty(remainder))
-                    {
-                        string scriptRemainder = remainder;
-                        string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
-                        Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
-                        if (allowUiObservers)
-                            ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
-                        else
-                            QueueEmbeddedUiObserverLine(strippedRemainder, remainderAnsi, isPrompt: true);
-                        if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                            Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                        bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
-                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                        // Server prompts and partial lines must keep flowing to the interpreter
-                        // even while a proxy menu is open, otherwise waitfor/text triggers stall.
-                        // Match Pascal TWX here: partial prompts go through AutoTextEvent and
-                        // then TextEvent only. They do not fire TextLineEvent and do not
-                        // re-activate triggers until a full CR-terminated line is processed.
-                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                        interpreter.AutoTextEvent(scriptRemainder, false);
-                        Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                        Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                        interpreter.TextEvent(scriptRemainder, false);
-                        if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                        if (!string.IsNullOrEmpty(remainder))
                         {
+                            string scriptRemainder = remainder;
+                            string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
+                            Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
                             if (allowUiObservers)
-                            {
-                                ObserveComputerShipTypeLine(strippedRemainder);
-                                ObserveOnlinePlayersLine(strippedRemainder);
-                                SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                                ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
-                                ObserveNativeMombotWatchLine(strippedRemainder);
-                            }
+                                ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
                             else
+                                QueueEmbeddedUiObserverLine(strippedRemainder, remainderAnsi, isPrompt: true);
+                            if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                                Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                            // Server prompts and partial lines must keep flowing to the interpreter
+                            // even while a proxy menu is open, otherwise waitfor/text triggers stall.
+                            // Match Pascal TWX here: partial prompts go through AutoTextEvent and
+                            // then TextEvent only. They do not fire TextLineEvent and do not
+                            // re-activate triggers until a full CR-terminated line is processed.
+                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                            interpreter.AutoTextEvent(scriptRemainder, false);
+                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                            interpreter.TextEvent(scriptRemainder, false);
+                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
                             {
-                                SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
-                                ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                                if (allowUiObservers)
+                                {
+                                    ObserveComputerShipTypeLine(strippedRemainder);
+                                    ObserveOnlinePlayersLine(strippedRemainder);
+                                    SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
+                                    ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
+                                    ObserveNativeMombotWatchLine(strippedRemainder);
+                                }
+                                else
+                                {
+                                    SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
+                                    ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                                }
+                            }
+                            if (nativeHaggleResponded)
+                            {
+                                serverLineBuf.Clear();
                             }
                         }
-                        if (nativeHaggleResponded)
-                        {
-                            serverLineBuf.Clear();
-                        }
-                    }
                         break;
                     }
 
@@ -748,72 +763,60 @@ public partial class MainWindow
                     if (ansiCrPos == -1)
                         break;
 
-                string lineRaw = bufferedAnsi[lastAnsiProcessedPos..(ansiCrPos + 1)];
-                string lineForScript = NormalizeLegacyInterrogLineForScripts(buffered[lastProcessedPos..crPos]);
-                string lineStripped = Core.AnsiCodes.NormalizeTerminalText(lineForScript);
+                    string lineRaw = bufferedAnsi[lastAnsiProcessedPos..(ansiCrPos + 1)];
+                    string lineForScript = NormalizeLegacyInterrogLineForScripts(buffered[lastProcessedPos..crPos]);
+                    string lineStripped = Core.AnsiCodes.NormalizeTerminalText(lineForScript);
 
-                if (!string.IsNullOrEmpty(lineStripped))
-                {
-                    gi.FeedShipStatusLine(lineStripped);
-                    Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
-                    if (allowUiObservers)
-                        ObserveGameAgentServerLine(lineStripped, lineRaw, isPrompt: false);
-                    else
-                        QueueEmbeddedUiObserverLine(lineStripped, lineRaw, isPrompt: false);
-                    if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                        Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                    if (allowUiObservers)
+                    if (!string.IsNullOrEmpty(lineStripped))
                     {
-                        ObserveComputerShipTypeLine(lineStripped);
-                        ObserveOnlinePlayersLine(lineStripped);
+                        gi.FeedShipStatusLine(lineStripped);
+                        Core.GlobalModules.GlobalAutoRecorder.RecordLine(lineStripped, lineRaw);
+                        if (allowUiObservers)
+                            ObserveGameAgentServerLine(lineStripped, lineRaw, isPrompt: false);
+                        else
+                            QueueEmbeddedUiObserverLine(lineStripped, lineRaw, isPrompt: false);
+                        if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                            Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                        if (allowUiObservers)
+                        {
+                            ObserveComputerShipTypeLine(lineStripped);
+                            ObserveOnlinePlayersLine(lineStripped);
+                        }
                     }
-                }
 
-                gi.History.ProcessLine(lineStripped);
-                gi.ProcessNativeHaggleLine(lineStripped);
-                if (allowUiObservers)
-                    HandlePotentialCommLine(lineRaw);
-                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                Core.ScriptRef.SetCurrentLine(lineForScript);
-
-                // Real server lines must continue to advance script waits/triggers even if a
-                // proxy menu is open locally.
-                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                Core.ScriptRef.SetCurrentLine(lineForScript);
-                interpreter.TextLineEvent(lineForScript, false);
-                Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                Core.ScriptRef.SetCurrentLine(lineForScript);
-                interpreter.TextEvent(lineForScript, false);
-                interpreter.ActivateTriggers();
-
-                if (!string.IsNullOrWhiteSpace(lineStripped))
-                {
+                    gi.History.ProcessLine(lineStripped);
+                    gi.ProcessNativeHaggleLine(lineStripped);
                     if (allowUiObservers)
-                    {
-                        SyncMombotPromptStateFromLine(lineStripped, lineRaw);
-                        ObserveEmbeddedKeepaliveWatchLine(lineStripped);
-                        ObserveNativeMombotWatchLine(lineStripped);
-                    }
-                    else
-                    {
-                        SyncMombotPromptVarsFromLine(runtimeContext, lineStripped);
-                        ObserveEmbeddedKeepaliveWatchLine(lineStripped, gi, owningTab);
-                    }
-                }
+                        HandlePotentialCommLine(lineRaw);
+                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                    Core.ScriptRef.SetCurrentLine(lineForScript);
 
-                if (allowUiObservers &&
-                    _appPrefs.EnableRedAlertMode &&
-                    !string.IsNullOrWhiteSpace(lineStripped) &&
-                    _mombot.ObserveServerLine(lineStripped))
-                {
-                    PostToMtcTabSession(owningTab, () =>
+                    // Real server lines must continue to advance script waits/triggers even if a
+                    // proxy menu is open locally.
+                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                    Core.ScriptRef.SetCurrentLine(lineForScript);
+                    interpreter.TextLineEvent(lineForScript, false);
+                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
+                    Core.ScriptRef.SetCurrentLine(lineForScript);
+                    interpreter.TextEvent(lineForScript, false);
+                    interpreter.ActivateTriggers();
+
+                    if (!string.IsNullOrWhiteSpace(lineStripped))
                     {
-                        RefreshMombotUi();
-                        RequestStatusBarRefresh();
-                        RebuildProxyMenu();
-                        _buffer.Dirty = true;
-                    });
-                }
+                        if (allowUiObservers)
+                        {
+                            SyncMombotPromptStateFromLine(lineStripped, lineRaw);
+                            ObserveEmbeddedKeepaliveWatchLine(lineStripped);
+                            ObserveNativeMombotWatchLine(lineStripped);
+                        }
+                        else
+                        {
+                            SyncMombotPromptVarsFromLine(runtimeContext, lineStripped);
+                            ObserveEmbeddedKeepaliveWatchLine(lineStripped, gi, owningTab);
+                        }
+
+                        ObserveNativeMombotServerLine(lineStripped);
+                    }
 
                     searchPos = crPos + 1;
                     lastProcessedPos = searchPos;

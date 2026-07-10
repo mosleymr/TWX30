@@ -809,7 +809,7 @@ public partial class MainWindow
             _embeddedGameConfig = gameConfig;
         }
 
-        bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, gameConfig, gameName).ShowDialog<bool>(this);
+        bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, GetCurrentJsonRpcConfig(), gameConfig, gameName).ShowDialog<bool>(this);
         if (!saved)
         {
             PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);

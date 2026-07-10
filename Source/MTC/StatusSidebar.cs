@@ -816,7 +816,7 @@ public partial class MainWindow
     {
         Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin: false, StartTemporaryMacroRecording, compact: true);
         Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin: false, StopTemporaryMacroRecording, compact: true);
-        Button playButton = CreateMacroControlButton("▶", "Play Quick Macro", deckSkin: false, () => _ = PlayTemporaryMacroAsync(), compact: true);
+        Button playButton = CreateMacroControlButton("▶", "Play Saved Quick Macro", deckSkin: false, () => _ = PlaySavedQuickMacroOnceAsync(), compact: true);
 
         _macroRecordButton = recordButton;
         _macroStopButton = stopButton;
@@ -848,7 +848,7 @@ public partial class MainWindow
     {
         Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin, StartTemporaryMacroRecording);
         Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin, StopTemporaryMacroRecording);
-        Button playButton = CreateMacroControlButton("▶", "Play Quick Macro", deckSkin, () => _ = PlayTemporaryMacroAsync());
+        Button playButton = CreateMacroControlButton("▶", "Play Saved Quick Macro", deckSkin, () => _ = PlaySavedQuickMacroOnceAsync());
 
         if (deckSkin)
         {

@@ -11,8 +11,8 @@ namespace MTC;
 
 /// <summary>
 /// Application-wide preferences dialog.
-/// Usage: <c>var saved = await new PreferencesDialog(prefs, debugPrefs, gameConfig, gameName).ShowDialog&lt;bool&gt;(owner);</c>
-/// The caller's app preferences, per-game debug preferences, and per-game log preferences
+/// Usage: <c>var saved = await new PreferencesDialog(prefs, debugPrefs, jsonRpcPrefs, gameConfig, gameName).ShowDialog&lt;bool&gt;(owner);</c>
+/// The caller's app preferences, per-game debug preferences, per-game RPC preferences, and per-game log preferences
 /// are updated in-place when the user clicks Save, and the dialog returns <c>true</c>.
 /// </summary>
 internal class PreferencesDialog : Window
@@ -50,6 +50,7 @@ internal class PreferencesDialog : Window
     public PreferencesDialog(
         AppPreferences prefs,
         EmbeddedMtcDebugConfig debugPrefs,
+        EmbeddedMtcJsonRpcConfig jsonRpcPrefs,
         EmbeddedGameConfig? gameConfig,
         string? gameName)
     {
@@ -156,18 +157,19 @@ internal class PreferencesDialog : Window
             AppPreferences.DefaultScrollbackLines.ToString(CultureInfo.InvariantCulture));
         txtScrollbackLines.Width = 120;
         txtScrollbackLines.HorizontalAlignment = HorizontalAlignment.Left;
-        prefs.EnsureJsonRpcAuthToken();
-        var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server", prefs.JsonRpcEnabled);
+        bool hasGame = gameConfig != null && !string.IsNullOrWhiteSpace(gameName);
+        string initialJsonRpcToken = AppPreferences.NormalizeJsonRpcAuthToken(jsonRpcPrefs.AuthToken);
+        var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server for this game", hasGame && jsonRpcPrefs.Enabled);
         var txtJsonRpcBind = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcBindAddress(prefs.JsonRpcBindAddress),
+            AppPreferences.NormalizeJsonRpcBindAddress(jsonRpcPrefs.BindAddress),
             "127.0.0.1");
         var txtJsonRpcPort = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcPort(prefs.JsonRpcPort).ToString(),
+            AppPreferences.NormalizeJsonRpcPort(jsonRpcPrefs.Port).ToString(),
             "7623");
         txtJsonRpcPort.Width = 110;
         txtJsonRpcPort.HorizontalAlignment = HorizontalAlignment.Left;
         var txtJsonRpcToken = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcAuthToken(prefs.JsonRpcAuthToken),
+            initialJsonRpcToken,
             "bearer token");
         var btnRegenerateRpcToken = new Button
         {
@@ -177,7 +179,24 @@ internal class PreferencesDialog : Window
             Margin = new Thickness(8, 0, 0, 0),
         };
         btnRegenerateRpcToken.Click += (_, _) => txtJsonRpcToken.Text = AppPreferences.GenerateJsonRpcAuthToken();
-        var cboJsonRpcApproval = BuildRpcApprovalComboBox(prefs.JsonRpcApprovalLevel);
+        var cboJsonRpcApproval = BuildRpcApprovalComboBox(jsonRpcPrefs.ApprovalLevel);
+        Control[] jsonRpcControls =
+        {
+            txtJsonRpcBind,
+            txtJsonRpcPort,
+            txtJsonRpcToken,
+            btnRegenerateRpcToken,
+            cboJsonRpcApproval,
+        };
+        void UpdateJsonRpcControlState()
+        {
+            chkJsonRpc.IsEnabled = hasGame;
+            bool enabled = hasGame && chkJsonRpc.IsChecked == true;
+            foreach (Control control in jsonRpcControls)
+                control.IsEnabled = enabled;
+        }
+        chkJsonRpc.IsCheckedChanged += (_, _) => UpdateJsonRpcControlState();
+        UpdateJsonRpcControlState();
 
         chkDebug.IsCheckedChanged += (_, _) =>
         {
@@ -243,7 +262,9 @@ internal class PreferencesDialog : Window
 
         var integrationsSection = BuildSection(
             "Integrations",
-            "Local JSON-RPC 2.0 access for reasoning engines and external tools.",
+            hasGame
+                ? $"Local JSON-RPC 2.0 access for game '{gameName}'."
+                : "Open or create a game before enabling JSON-RPC access.",
             BuildCheckGroup(chkJsonRpc),
             BuildTwoColumnRow(
                 BuildField("Bind address", txtJsonRpcBind, "Use 127.0.0.1 unless remote access is intentional."),
@@ -303,14 +324,17 @@ internal class PreferencesDialog : Window
                 int.TryParse(txtScrollbackLines.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int scrollbackLines)
                     ? scrollbackLines
                     : AppPreferences.DefaultScrollbackLines);
-            prefs.JsonRpcEnabled = chkJsonRpc.IsChecked == true;
-            prefs.JsonRpcBindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
-            prefs.JsonRpcPort = AppPreferences.NormalizeJsonRpcPort(
-                int.TryParse(txtJsonRpcPort.Text, out int jsonRpcPort) ? jsonRpcPort : 7623);
-            prefs.JsonRpcAuthToken = AppPreferences.NormalizeJsonRpcAuthToken(txtJsonRpcToken.Text);
-            prefs.JsonRpcApprovalLevel = cboJsonRpcApproval.SelectedItem is RpcApprovalOption rpcApproval
-                ? MtcRpcApprovalLevels.Normalize(rpcApproval.Value)
-                : MtcRpcApprovalLevels.ApproveActions;
+            if (hasGame)
+            {
+                jsonRpcPrefs.Enabled = chkJsonRpc.IsChecked == true;
+                jsonRpcPrefs.BindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
+                jsonRpcPrefs.Port = AppPreferences.NormalizeJsonRpcPort(
+                    int.TryParse(txtJsonRpcPort.Text, out int jsonRpcPort) ? jsonRpcPort : 7623);
+                jsonRpcPrefs.AuthToken = AppPreferences.NormalizeJsonRpcAuthToken(txtJsonRpcToken.Text);
+                jsonRpcPrefs.ApprovalLevel = cboJsonRpcApproval.SelectedItem is RpcApprovalOption rpcApproval
+                    ? MtcRpcApprovalLevels.Normalize(rpcApproval.Value)
+                    : MtcRpcApprovalLevels.ApproveActions;
+            }
             prefs.Save();
             Close(true);
         };
@@ -333,7 +357,7 @@ internal class PreferencesDialog : Window
             {
                 BuildTabItem("General", storageSection, alertsSection, runtimeSection),
                 BuildTabItem("Diagnostics", diagnosticsSection),
-                BuildTabItem("MPC", integrationsSection),
+                BuildTabItem("RPC", integrationsSection),
             },
         };
 
@@ -362,7 +386,7 @@ internal class PreferencesDialog : Window
                         },
                         new TextBlock
                         {
-                            Text = "Tune paths, diagnostics, runtime behavior, and MPC integrations.",
+                            Text = "Tune paths, diagnostics, runtime behavior, and per-game RPC integrations.",
                             Foreground = FgMuted,
                             Margin = new Thickness(0, 0, 0, 8),
                         },

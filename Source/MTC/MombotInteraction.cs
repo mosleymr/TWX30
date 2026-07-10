@@ -1396,24 +1396,13 @@ public partial class MainWindow
         ShowMacroNotice($"temporary macro recorder stopped at {TemporaryMacroMaxCharacters} characters");
     }
 
-    private Task PlayTemporaryMacroAsync()
+    private Task OpenQuickMacroWindowAsync()
     {
         var owner = ActiveMtcTab;
         if (_temporaryMacroRecording)
             return Task.CompletedTask;
 
-        if (!HasActiveMacroConnection())
-        {
-            ShowMacroNotice("temporary macro playback requires an active connection");
-            return Task.CompletedTask;
-        }
-
         string macroText = GetTemporaryMacroText();
-        if (string.IsNullOrWhiteSpace(macroText))
-        {
-            ShowMacroNotice("temporary macro is empty");
-            return Task.CompletedTask;
-        }
 
         if (owner?.QuickMacroPlayWindow is { IsVisible: true } existing)
         {
@@ -1426,7 +1415,8 @@ public partial class MainWindow
             ValidateTemporaryMacroText,
             allowHotkeyAssignment: true,
             existingBindings: _appPrefs.MacroBindings,
-            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)));
+            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)),
+            saveAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => SaveQuickMacroFromDialogAsync(playDialog)));
 
         dialog.Closed += (_, _) =>
         {
@@ -1444,22 +1434,50 @@ public partial class MainWindow
 
         async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
         {
-            if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
-                return parseError ?? "temporary macro is invalid";
-
-            _temporaryMacroChunks.Clear();
-            if (updatedMacroBytes.Length > 0)
-                _temporaryMacroChunks.Add(updatedMacroBytes);
-            UpdateTemporaryMacroControls();
-
-            if (playDialog.AssignToHotkey)
-            {
-                UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
-                ShowMacroNotice($"saved quick macro to {playDialog.AssignedHotkey}");
-            }
+            string? saveError = await SaveQuickMacroFromDialogAsync(playDialog);
+            if (!string.IsNullOrWhiteSpace(saveError))
+                return saveError;
 
             return await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, playDialog.PlayCount);
         }
+    }
+
+    private Task<string?> SaveQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
+    {
+        if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
+            return Task.FromResult<string?>(parseError ?? "temporary macro is invalid");
+
+        _temporaryMacroChunks.Clear();
+        if (updatedMacroBytes.Length > 0)
+            _temporaryMacroChunks.Add(updatedMacroBytes);
+        UpdateTemporaryMacroControls();
+
+        if (playDialog.AssignToHotkey)
+            UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
+
+        return Task.FromResult<string?>(null);
+    }
+
+    private async Task PlaySavedQuickMacroOnceAsync()
+    {
+        if (_temporaryMacroRecording)
+            return;
+
+        if (!HasActiveMacroConnection())
+        {
+            ShowMacroNotice("quick macro playback requires an active connection");
+            return;
+        }
+
+        if (_temporaryMacroChunks.Count == 0 || _temporaryMacroChunks.All(chunk => chunk.Length == 0))
+        {
+            ShowMacroNotice("quick macro is empty");
+            return;
+        }
+
+        string? error = await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, 1);
+        if (!string.IsNullOrWhiteSpace(error))
+            ShowMacroNotice(error);
     }
 
     private void UpdateOpenQuickMacroPlayWindow(string macroText, string statusMessage)

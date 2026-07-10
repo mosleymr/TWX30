@@ -27,16 +27,16 @@ namespace MTC;
 
 public partial class MainWindow
 {
-    private static readonly TimeSpan TerminalDisplayDrainDelay = TimeSpan.FromMilliseconds(16);
-    private static readonly TimeSpan TerminalCatchUpDisplayDrainDelay = TimeSpan.FromMilliseconds(8);
+    private static readonly TimeSpan TerminalActiveDisplayDrainDelay = TimeSpan.Zero;
+    private static readonly TimeSpan TerminalCatchUpDisplayDrainDelay = TimeSpan.Zero;
     private static readonly TimeSpan SessionLogDrainDelay = TimeSpan.FromMilliseconds(150);
-    private const int ActiveDisplayDrainChunkLimit = 256;
-    private const int ActiveDisplayDrainByteLimit = 256 * 1024;
-    private const double ActiveDisplayDrainMilliseconds = 8;
+    private const int ActiveDisplayDrainChunkLimit = 2048;
+    private const int ActiveDisplayDrainByteLimit = 2 * 1024 * 1024;
+    private const double ActiveDisplayDrainMilliseconds = 14;
     private const int CatchUpDisplayDrainThreshold = 512;
-    private const int CatchUpDisplayDrainChunkLimit = 1024;
-    private const int CatchUpDisplayDrainByteLimit = 1024 * 1024;
-    private const double CatchUpDisplayDrainMilliseconds = 12;
+    private const int CatchUpDisplayDrainChunkLimit = 4096;
+    private const int CatchUpDisplayDrainByteLimit = 4 * 1024 * 1024;
+    private const double CatchUpDisplayDrainMilliseconds = 16;
 
     private MtcTabPrototype? ResolveTerminalOwner(MtcTabPrototype? owner)
     {
@@ -227,7 +227,7 @@ public partial class MainWindow
         }
         (owner?.PendingDisplayChunks ?? _pendingDisplayChunks).Enqueue(new PendingDisplayChunk(chunk));
 
-        ScheduleDisplayDrain(owner, TerminalDisplayDrainDelay);
+        ScheduleDisplayDrain(owner, TerminalActiveDisplayDrainDelay);
     }
 
     private void ScheduleDisplayDrain(TimeSpan delay)
@@ -253,12 +253,12 @@ public partial class MainWindow
 
         if (delay <= TimeSpan.Zero)
         {
-            RecordMtcUiPost(drainOwner, "display.drain", DispatcherPriority.Background);
+            RecordMtcUiPost(drainOwner, "display.drain", DispatcherPriority.Render);
             Dispatcher.UIThread.Post(() =>
             {
                 RecordMtcUiRun(drainOwner, "display.drain");
                 ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
-            }, DispatcherPriority.Background);
+            }, DispatcherPriority.Render);
             return;
         }
 
@@ -267,12 +267,12 @@ public partial class MainWindow
             try
             {
                 await System.Threading.Tasks.Task.Delay(delay).ConfigureAwait(false);
-                RecordMtcUiPost(drainOwner, "display.drain.delayed", DispatcherPriority.Background);
+                RecordMtcUiPost(drainOwner, "display.drain.delayed", DispatcherPriority.Render);
                 Dispatcher.UIThread.Post(() =>
                 {
                     RecordMtcUiRun(drainOwner, "display.drain.delayed");
                     ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
-                }, DispatcherPriority.Background);
+                }, DispatcherPriority.Render);
             }
             catch
             {
@@ -341,7 +341,7 @@ public partial class MainWindow
         {
             var nextDelay = Volatile.Read(ref ownerTab.PendingDisplayChunkCount) >= CatchUpDisplayDrainThreshold
                 ? TerminalCatchUpDisplayDrainDelay
-                : TerminalDisplayDrainDelay;
+                : TerminalActiveDisplayDrainDelay;
             ScheduleDisplayDrain(ownerTab, nextDelay);
             return;
         }

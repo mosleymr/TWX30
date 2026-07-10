@@ -560,13 +560,13 @@ internal sealed class mombotService
         return true;
     }
 
-    public bool ObserveServerLine(string line)
+    public bool ObserveServerLine(string line, bool observeWatcher = true)
     {
         if (!Enabled || string.IsNullOrWhiteSpace(line))
             return false;
 
         bool watcherHandled = false;
-        if (Watcher.IsAttached)
+        if (observeWatcher && Watcher.IsAttached)
             watcherHandled = Watcher.ObserveServerLine(line);
 
         if (TryHandlePageLogin(line))

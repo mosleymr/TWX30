@@ -2381,6 +2381,8 @@ public partial class MainWindow
 
         var toolsFindItem = new MenuItem { Header = "_Find..." };
         toolsFindItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFind);
+        var toolsQuickMacroItem = new MenuItem { Header = "_Quick Macro..." };
+        toolsQuickMacroItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OpenQuickMacroWindowAsync);
         var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
         toolsFindRouteItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFindRoute);
         var toolsQCannonCalculatorItem = new MenuItem { Header = "_QCannon Calculator..." };
@@ -2391,7 +2393,7 @@ public partial class MainWindow
         toolsConfigureStatusBarItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConfigureStatusBarAsync);
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewScriptDebugger);
-        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsQuickMacroItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 
         TrackSharedMenuOpenState(fileMenu);
