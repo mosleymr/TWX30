@@ -29,6 +29,8 @@ public partial class MainWindow
 {
     private static readonly TimeSpan TerminalActiveDisplayDrainDelay = TimeSpan.Zero;
     private static readonly TimeSpan TerminalCatchUpDisplayDrainDelay = TimeSpan.Zero;
+    private static readonly TimeSpan TerminalActiveDisplayDrainMinInterval = TimeSpan.FromMilliseconds(8);
+    private static readonly TimeSpan TerminalCatchUpDisplayDrainMinInterval = TimeSpan.FromMilliseconds(4);
     private static readonly TimeSpan SessionLogDrainDelay = TimeSpan.FromMilliseconds(150);
     private const int ActiveDisplayDrainChunkLimit = 2048;
     private const int ActiveDisplayDrainByteLimit = 2 * 1024 * 1024;
@@ -37,6 +39,8 @@ public partial class MainWindow
     private const int CatchUpDisplayDrainChunkLimit = 4096;
     private const int CatchUpDisplayDrainByteLimit = 4 * 1024 * 1024;
     private const double CatchUpDisplayDrainMilliseconds = 16;
+    private const int InactiveVisualSnapshotMaxChunks = 2048;
+    private const int InactiveVisualSnapshotMaxBytes = 512 * 1024;
 
     private MtcTabPrototype? ResolveTerminalOwner(MtcTabPrototype? owner)
     {
@@ -242,43 +246,92 @@ public partial class MainWindow
 
         if (drainOwner.Id != _activeMtcTabId)
         {
-            RecordMtcPerf(drainOwner, "display.drain.schedule.inactive_skip");
-            // Do not schedule display parsing for inactive tabs. This keeps
-            // heavy ZTM/colo output from other tabs off the shared UI budget.
+            RecordMtcPerf(drainOwner, "display.drain.inactive_deferred");
             return;
         }
 
         if (Interlocked.Exchange(ref drainOwner.DisplayDrainScheduled, 1) != 0)
             return;
 
-        if (delay <= TimeSpan.Zero)
+        TimeSpan effectiveDelay = delay <= TimeSpan.Zero
+            ? GetDisplayDrainThrottleDelay(drainOwner)
+            : delay;
+
+        if (effectiveDelay <= TimeSpan.Zero)
         {
-            RecordMtcUiPost(drainOwner, "display.drain", DispatcherPriority.Render);
-            Dispatcher.UIThread.Post(() =>
-            {
-                RecordMtcUiRun(drainOwner, "display.drain");
-                ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
-            }, DispatcherPriority.Render);
+            long postedTicks = RecordMtcUiPostStart(drainOwner, "display.drain", DispatcherPriority.Render);
+            Dispatcher.UIThread.Post(() => RunScheduledDisplayDrain(drainOwner, "display.drain", postedTicks), DispatcherPriority.Render);
             return;
         }
 
-        _ = System.Threading.Tasks.Task.Run(async () =>
+        DispatcherTimer timer = drainOwner.DisplayDrainTimer ??= new DispatcherTimer(DispatcherPriority.Render);
+        if (!drainOwner.DisplayDrainTimerWired)
         {
-            try
+            timer.Tick += (_, _) =>
             {
-                await System.Threading.Tasks.Task.Delay(delay).ConfigureAwait(false);
-                RecordMtcUiPost(drainOwner, "display.drain.delayed", DispatcherPriority.Render);
-                Dispatcher.UIThread.Post(() =>
-                {
-                    RecordMtcUiRun(drainOwner, "display.drain.delayed");
-                    ExecuteInMtcTabBackgroundContext(drainOwner, () => DrainPendingDisplayChunks(drainOwner));
-                }, DispatcherPriority.Render);
-            }
-            catch
-            {
-                Interlocked.Exchange(ref drainOwner.DisplayDrainScheduled, 0);
-            }
-        });
+                drainOwner.DisplayDrainTimer?.Stop();
+                RunScheduledDisplayDrain(drainOwner, "display.drain.delayed");
+            };
+            drainOwner.DisplayDrainTimerWired = true;
+        }
+
+        RecordMtcUiPost(drainOwner, "display.drain.delayed", DispatcherPriority.Render);
+        timer.Stop();
+        timer.Interval = effectiveDelay;
+        timer.Start();
+    }
+
+    private void ScheduleInactiveDisplayDrain(MtcTabPrototype owner)
+    {
+        // Inactive tabs must not parse/render terminal visuals. Script-visible
+        // text is handled by the connection callbacks; this raw queue is only a
+        // visual snapshot source for the next activation.
+        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
+        RecordMtcPerf(owner, "display.inactive.visual_deferred");
+    }
+
+    private void DrainInactiveDisplayChunks(MtcTabPrototype owner)
+    {
+        if (owner.Id == Volatile.Read(ref _activeMtcTabId))
+        {
+            Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
+            ScheduleDisplayDrain(owner, TerminalActiveDisplayDrainDelay);
+            return;
+        }
+
+        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
+        RecordMtcPerf(owner, "display.inactive.drain.skipped");
+    }
+
+    private TimeSpan GetDisplayDrainThrottleDelay(MtcTabPrototype owner)
+    {
+        long lastTicks = Volatile.Read(ref owner.LastDisplayDrainTicks);
+        if (lastTicks <= 0)
+            return TimeSpan.Zero;
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(lastTicks);
+        TimeSpan minInterval = Volatile.Read(ref owner.PendingDisplayChunkCount) >= CatchUpDisplayDrainThreshold
+            ? TerminalCatchUpDisplayDrainMinInterval
+            : TerminalActiveDisplayDrainMinInterval;
+
+        return elapsed >= minInterval ? TimeSpan.Zero : minInterval - elapsed;
+    }
+
+    private void RunScheduledDisplayDrain(MtcTabPrototype owner, string source)
+        => RunScheduledDisplayDrain(owner, source, 0);
+
+    private void RunScheduledDisplayDrain(MtcTabPrototype owner, string source, long postedTicks)
+    {
+        if (owner.Id != Volatile.Read(ref _activeMtcTabId))
+        {
+            RecordMtcPerf(owner, $"{source}.inactive_skip");
+            owner.DisplayDrainTimer?.Stop();
+            Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
+            return;
+        }
+
+        RecordMtcUiRun(owner, source, postedTicks);
+        ExecuteInMtcTabBackgroundContext(owner, () => DrainPendingDisplayChunks(owner));
     }
 
     private bool HasPendingTerminalDisplayBacklog()
@@ -307,7 +360,8 @@ public partial class MainWindow
 
         if (ownerTab.Id != _activeMtcTabId)
         {
-            RecordMtcPerf(ownerTab, "display.drain.inactive_skip");
+            RecordMtcPerf(ownerTab, "display.drain.inactive_deferred");
+            Interlocked.Exchange(ref ownerTab.DisplayDrainScheduled, 0);
             return;
         }
 
@@ -334,6 +388,7 @@ public partial class MainWindow
             lockBuffer: false);
         RecordMtcPerf(ownerTab, "display.drain.processed", processed);
         RecordMtcPerfDuration(ownerTab, "display.drain", started);
+        Volatile.Write(ref ownerTab.LastDisplayDrainTicks, Stopwatch.GetTimestamp());
 
         Interlocked.Exchange(ref ownerTab.DisplayDrainScheduled, 0);
 
@@ -350,34 +405,89 @@ public partial class MainWindow
         RedrawMombotPrompt();
     }
 
-    private void FlushPendingDisplayChunksToBuffer(MtcTabPrototype owner)
+    private void RenderPendingDisplaySnapshotOnActivation(MtcTabPrototype owner)
     {
         if (owner.PendingDisplayChunks.IsEmpty)
         {
             Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
+            Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
             return;
         }
 
         ExecuteInMtcTabBackgroundContext(owner, () =>
         {
-            lock (owner.TerminalBufferSync)
+            long started = Stopwatch.GetTimestamp();
+            var tail = new Queue<byte[]>();
+            long tailBytes = 0;
+            int totalChunks = 0;
+            long totalBytes = 0;
+            int droppedChunks = 0;
+            long droppedBytes = 0;
+
+            while (owner.PendingDisplayChunks.TryDequeue(out PendingDisplayChunk pending))
             {
-                while (!owner.PendingDisplayChunks.IsEmpty)
+                DecrementPendingDisplayBacklog(owner, pending.Bytes.Length);
+                totalChunks++;
+                totalBytes += pending.Bytes.Length;
+
+                if (pending.Bytes.Length == 0)
+                    continue;
+
+                byte[] bytes = pending.Bytes;
+                if (bytes.Length > InactiveVisualSnapshotMaxBytes)
                 {
-                    int processed = DrainDisplayQueueToBuffer(
-                        owner,
-                        int.MaxValue,
-                        int.MaxValue,
-                        maxMillisecondsPerPass: 0,
-                        lockBuffer: false);
-                    RecordMtcPerf(owner, "display.flush.processed", processed);
-                    if (processed == 0)
-                        break;
+                    int skip = bytes.Length - InactiveVisualSnapshotMaxBytes;
+                    droppedBytes += skip;
+                    bytes = bytes[skip..];
+                }
+
+                tail.Enqueue(bytes);
+                tailBytes += bytes.Length;
+
+                while (tail.Count > InactiveVisualSnapshotMaxChunks ||
+                       tailBytes > InactiveVisualSnapshotMaxBytes)
+                {
+                    byte[] dropped = tail.Dequeue();
+                    tailBytes -= dropped.Length;
+                    droppedChunks++;
+                    droppedBytes += dropped.Length;
                 }
             }
+
+            byte[] snapshot = tailBytes <= 0
+                ? []
+                : new byte[(int)Math.Min(tailBytes, InactiveVisualSnapshotMaxBytes)];
+            int offset = 0;
+            foreach (byte[] bytes in tail)
+            {
+                int count = Math.Min(bytes.Length, snapshot.Length - offset);
+                if (count <= 0)
+                    break;
+                Buffer.BlockCopy(bytes, 0, snapshot, offset, count);
+                offset += count;
+            }
+
+            lock (owner.TerminalBufferSync)
+            {
+                using (owner.Buffer.BeginUpdate())
+                {
+                    owner.Buffer.ClearAll();
+                    owner.Parser.ResetState();
+                    if (snapshot.Length > 0)
+                        owner.Parser.FeedVisualSnapshot(snapshot, snapshot.Length);
+                }
+            }
+
+            RecordMtcPerf(owner, "display.snapshot.chunks", totalChunks);
+            RecordMtcPerf(owner, "display.snapshot.bytes", totalBytes);
+            RecordMtcPerf(owner, "display.snapshot.rendered_bytes", snapshot.Length);
+            RecordMtcPerf(owner, "display.snapshot.dropped_chunks", droppedChunks);
+            RecordMtcPerf(owner, "display.snapshot.dropped_bytes", droppedBytes);
+            RecordMtcPerfDuration(owner, "display.snapshot", started);
         });
 
         Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
+        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
     }
 
     private int DrainDisplayQueueToBuffer(

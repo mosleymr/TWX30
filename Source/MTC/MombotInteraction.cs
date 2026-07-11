@@ -1646,25 +1646,12 @@ public partial class MainWindow
         }
         else
         {
-            RedrawLastObservedGamePrompt();
+            // Server prompts are stateful. Do not replay cached prompts locally;
+            // any real prompt redraw must come from the server.
             FocusActiveTerminal();
         }
 
         _buffer.Dirty = true;
-    }
-
-    private void RedrawLastObservedGamePrompt()
-    {
-        string prompt = !string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptAnsi)
-            ? _mombotLastObservedGamePromptAnsi
-            : _mombotLastObservedGamePromptPlain;
-
-        prompt = SanitizeObservedPromptForDisplay(prompt)
-            .Replace("\r", string.Empty, StringComparison.Ordinal)
-            .Replace("\n", string.Empty, StringComparison.Ordinal);
-
-        if (!string.IsNullOrWhiteSpace(prompt))
-            _parser.Feed(prompt);
     }
 
     private bool TryHandleConfiguredMacroHotkey(byte[] bytes)

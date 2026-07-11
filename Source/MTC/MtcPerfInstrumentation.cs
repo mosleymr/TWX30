@@ -45,6 +45,11 @@ public partial class MainWindow
             _counters.AddOrUpdate(name, value, (_, existing) => existing + value);
         }
 
+        public void Max(string name, long value)
+        {
+            _counters.AddOrUpdate(name, value, (_, existing) => Math.Max(existing, value));
+        }
+
         public Dictionary<string, long> DrainCounters()
         {
             var snapshot = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -67,7 +72,8 @@ public partial class MainWindow
 
     private static class MtcPerfSwitches
     {
-        public static readonly bool LoggingEnabled = IsSet("MTC_PERF_ENABLE_LOG") && !IsSet("MTC_PERF_DISABLE_LOG");
+        public static readonly bool LoggingForceEnabled = IsSet("MTC_PERF_ENABLE_LOG");
+        public static readonly bool LoggingDisabled = IsSet("MTC_PERF_DISABLE_LOG");
         public static readonly bool DisableTerminalRendering = IsSet("MTC_PERF_DISABLE_TERMINAL_RENDER");
         public static readonly bool DisableSidePanels = IsSet("MTC_PERF_DISABLE_SIDE_PANELS");
         public static readonly bool DisableStatusBar = IsSet("MTC_PERF_DISABLE_STATUS_BAR");
@@ -102,33 +108,52 @@ public partial class MainWindow
     private MtcTabPerfCounters CreateMtcTabPerfCounters(int tabId, string title)
     {
         var counters = new MtcTabPerfCounters(tabId, title);
-        if (!MtcPerfSwitches.LoggingEnabled)
-            return counters;
-
         lock (_mtcPerfRegistrationLock)
         {
             _mtcPerfCounterSets.Add(counters);
-            _mtcPerfFlushTimer ??= new Timer(
-                _ => FlushMtcPerfCounters(),
-                null,
-                MtcPerfFlushInterval,
-                MtcPerfFlushInterval);
         }
 
-        counters.Add("tab.created");
+        UpdateMtcPerfInstrumentationState();
+        if (IsMtcPerfLoggingEnabled())
+            counters.Add("tab.created");
         return counters;
+    }
+
+    private bool IsMtcPerfLoggingEnabled()
+        => !MtcPerfSwitches.LoggingDisabled &&
+           (MtcPerfSwitches.LoggingForceEnabled || _appPrefs?.PerformanceMonitoringEnabled == true);
+
+    private void UpdateMtcPerfInstrumentationState()
+    {
+        lock (_mtcPerfRegistrationLock)
+        {
+            if (IsMtcPerfLoggingEnabled())
+            {
+                _mtcPerfFlushTimer ??= new Timer(
+                    _ => FlushMtcPerfCounters(),
+                    null,
+                    MtcPerfFlushInterval,
+                    MtcPerfFlushInterval);
+                return;
+            }
+
+            _mtcPerfFlushTimer?.Dispose();
+            _mtcPerfFlushTimer = null;
+        }
     }
 
     private void StopMtcPerfInstrumentation()
     {
+        bool flushBeforeStop = IsMtcPerfLoggingEnabled();
         _mtcPerfFlushTimer?.Dispose();
         _mtcPerfFlushTimer = null;
-        FlushMtcPerfCounters();
+        if (flushBeforeStop)
+            FlushMtcPerfCounters();
     }
 
     private void RecordMtcPerf(MtcTabPrototype? tab, string name, long value = 1)
     {
-        if (!MtcPerfSwitches.LoggingEnabled || tab is null)
+        if (!IsMtcPerfLoggingEnabled() || tab is null)
             return;
 
         tab.Perf.Add(name, value);
@@ -136,7 +161,7 @@ public partial class MainWindow
 
     private void RecordMtcPerfDuration(MtcTabPrototype? tab, string name, long startedTicks)
     {
-        if (!MtcPerfSwitches.LoggingEnabled || tab is null || startedTicks == 0)
+        if (!IsMtcPerfLoggingEnabled() || tab is null || startedTicks == 0)
             return;
 
         long elapsedUs = Stopwatch.GetElapsedTime(startedTicks).Ticks / 10;
@@ -144,27 +169,46 @@ public partial class MainWindow
         tab.Perf.Add(name + ".us", elapsedUs);
     }
 
-    private void RecordMtcUiPost(MtcTabPrototype? tab, string source, DispatcherPriority? priority = null)
+    private long RecordMtcUiPostStart(MtcTabPrototype? tab, string source, DispatcherPriority? priority = null)
     {
-        if (!MtcPerfSwitches.LoggingEnabled || tab is null)
-            return;
+        if (!IsMtcPerfLoggingEnabled() || tab is null)
+            return 0;
 
         tab.Perf.Add("ui.post." + source);
         if (priority is { } p)
             tab.Perf.Add("ui.post.priority." + p);
+        return Stopwatch.GetTimestamp();
+    }
+
+    private void RecordMtcUiPost(MtcTabPrototype? tab, string source, DispatcherPriority? priority = null)
+    {
+        _ = RecordMtcUiPostStart(tab, source, priority);
     }
 
     private void RecordMtcUiRun(MtcTabPrototype? tab, string source)
     {
-        if (!MtcPerfSwitches.LoggingEnabled || tab is null)
+        if (!IsMtcPerfLoggingEnabled() || tab is null)
             return;
 
         tab.Perf.Add("ui.run." + source);
     }
 
+    private void RecordMtcUiRun(MtcTabPrototype? tab, string source, long postedTicks)
+    {
+        RecordMtcUiRun(tab, source);
+        if (!IsMtcPerfLoggingEnabled() || tab is null || postedTicks == 0)
+            return;
+
+        long elapsedUs = Stopwatch.GetElapsedTime(postedTicks).Ticks / 10;
+        string metric = "ui.latency." + source;
+        tab.Perf.Add(metric + ".count");
+        tab.Perf.Add(metric + ".us", elapsedUs);
+        tab.Perf.Max(metric + ".max_us", elapsedUs);
+    }
+
     private void RecordMtcSubsystemSkipped(MtcTabPrototype? tab, string subsystem)
     {
-        if (!MtcPerfSwitches.LoggingEnabled || tab is null)
+        if (!IsMtcPerfLoggingEnabled() || tab is null)
             return;
 
         tab.Perf.Add("diag.skipped." + subsystem);
@@ -172,7 +216,7 @@ public partial class MainWindow
 
     private void FlushMtcPerfCounters()
     {
-        if (!MtcPerfSwitches.LoggingEnabled)
+        if (!IsMtcPerfLoggingEnabled())
             return;
 
         if (Interlocked.Exchange(ref _mtcPerfFlushRunning, 1) != 0)
@@ -242,6 +286,7 @@ public partial class MainWindow
                         .Append('\t').Append("terminal_rows=").Append(tab.Buffer.Rows)
                         .Append('\t').Append("info_post=").Append(Volatile.Read(ref tab.InfoPanelsRefreshPostScheduled))
                         .Append('\t').Append("display_drain=").Append(Volatile.Read(ref tab.DisplayDrainScheduled))
+                        .Append('\t').Append("inactive_display_drain=").Append(Volatile.Read(ref tab.InactiveDisplayDrainScheduled))
                         .Append('\t').Append("sessionlog_drain=").Append(Volatile.Read(ref tab.SessionLogDrainScheduled));
                 }
 

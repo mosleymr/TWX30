@@ -73,6 +73,7 @@ public partial class MainWindow
             _appPrefs.Save();
         }
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+        UpdateMtcPerfInstrumentationState();
         _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
         RestoreInWindowLayoutPreferences();
         if (ActiveMtcTab is { } startupTab)

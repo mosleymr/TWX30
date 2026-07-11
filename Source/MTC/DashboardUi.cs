@@ -350,9 +350,11 @@ public partial class MainWindow
         var (fedScrollViewer, fedTextBlock) = BuildCommLogView(deckSkin);
         var (subScrollViewer, subTextBlock) = BuildCommLogView(deckSkin);
         var (privateScrollViewer, privateTextBlock) = BuildCommLogView(deckSkin);
+        var (eventsScrollViewer, eventsTextBlock) = BuildCommLogView(deckSkin);
         var fedButton = BuildCommTabButton("FedComm", Core.CommMessageChannel.FedComm, deckSkin);
         var subButton = BuildCommTabButton("Subspace", Core.CommMessageChannel.Subspace, deckSkin);
         var privateButton = BuildCommTabButton("Private", Core.CommMessageChannel.Private, deckSkin);
+        var eventsButton = BuildCommTabButton("Events", Core.CommMessageChannel.Event, deckSkin);
 
         var header = new StackPanel
         {
@@ -360,7 +362,7 @@ public partial class MainWindow
             Spacing = deckSkin ? 10 : 8,
             Margin = deckSkin ? new Thickness(8, 6, 8, 4) : new Thickness(6, 4, 6, 2),
             HorizontalAlignment = HorizontalAlignment.Left,
-            Children = { fedButton, subButton, privateButton },
+            Children = { fedButton, subButton, privateButton, eventsButton },
         };
 
         var targetLabel = new TextBlock
@@ -440,6 +442,7 @@ public partial class MainWindow
         logHost.Children.Add(fedScrollViewer);
         logHost.Children.Add(subScrollViewer);
         logHost.Children.Add(privateScrollViewer);
+        logHost.Children.Add(eventsScrollViewer);
 
         var body = new Grid();
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -469,12 +472,15 @@ public partial class MainWindow
             _deckCommFedTabButton = fedButton;
             _deckCommSubspaceTabButton = subButton;
             _deckCommPrivateTabButton = privateButton;
+            _deckCommEventsTabButton = eventsButton;
             _deckCommFedTextBlock = fedTextBlock;
             _deckCommSubspaceTextBlock = subTextBlock;
             _deckCommPrivateTextBlock = privateTextBlock;
+            _deckCommEventsTextBlock = eventsTextBlock;
             _deckCommFedScrollViewer = fedScrollViewer;
             _deckCommSubspaceScrollViewer = subScrollViewer;
             _deckCommPrivateScrollViewer = privateScrollViewer;
+            _deckCommEventsScrollViewer = eventsScrollViewer;
             _deckCommComposeTextBox = composeBox;
             _deckCommPrivateTargetTextBox = targetBox;
             _deckCommPrivateTargetLabel = targetLabel;
@@ -485,12 +491,15 @@ public partial class MainWindow
             _commFedTabButton = fedButton;
             _commSubspaceTabButton = subButton;
             _commPrivateTabButton = privateButton;
+            _commEventsTabButton = eventsButton;
             _commFedTextBlock = fedTextBlock;
             _commSubspaceTextBlock = subTextBlock;
             _commPrivateTextBlock = privateTextBlock;
+            _commEventsTextBlock = eventsTextBlock;
             _commFedScrollViewer = fedScrollViewer;
             _commSubspaceScrollViewer = subScrollViewer;
             _commPrivateScrollViewer = privateScrollViewer;
+            _commEventsScrollViewer = eventsScrollViewer;
             _commComposeTextBox = composeBox;
             _commPrivateTargetTextBox = targetBox;
             _commPrivateTargetLabel = targetLabel;
@@ -754,16 +763,20 @@ public partial class MainWindow
         UpdateCommTabButtonState(_commFedTabButton, "FedComm", _commSelectedChannel == Core.CommMessageChannel.FedComm, deckSkin: false);
         UpdateCommTabButtonState(_commSubspaceTabButton, "Subspace", _commSelectedChannel == Core.CommMessageChannel.Subspace, deckSkin: false);
         UpdateCommTabButtonState(_commPrivateTabButton, "Private", _commSelectedChannel == Core.CommMessageChannel.Private, deckSkin: false);
+        UpdateCommTabButtonState(_commEventsTabButton, "Events", _commSelectedChannel == Core.CommMessageChannel.Event, deckSkin: false);
         UpdateCommTabButtonState(_deckCommFedTabButton, "FedComm", _commSelectedChannel == Core.CommMessageChannel.FedComm, deckSkin: true);
         UpdateCommTabButtonState(_deckCommSubspaceTabButton, "Subspace", _commSelectedChannel == Core.CommMessageChannel.Subspace, deckSkin: true);
         UpdateCommTabButtonState(_deckCommPrivateTabButton, "Private", _commSelectedChannel == Core.CommMessageChannel.Private, deckSkin: true);
+        UpdateCommTabButtonState(_deckCommEventsTabButton, "Events", _commSelectedChannel == Core.CommMessageChannel.Event, deckSkin: true);
 
         if (_commFedScrollViewer != null) _commFedScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.FedComm;
         if (_commSubspaceScrollViewer != null) _commSubspaceScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Subspace;
         if (_commPrivateScrollViewer != null) _commPrivateScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Private;
+        if (_commEventsScrollViewer != null) _commEventsScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Event;
         if (_deckCommFedScrollViewer != null) _deckCommFedScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.FedComm;
         if (_deckCommSubspaceScrollViewer != null) _deckCommSubspaceScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Subspace;
         if (_deckCommPrivateScrollViewer != null) _deckCommPrivateScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Private;
+        if (_deckCommEventsScrollViewer != null) _deckCommEventsScrollViewer.IsVisible = _commSelectedChannel == Core.CommMessageChannel.Event;
     }
 
     private void UpdateCommTabButtonState(Button? button, string label, bool selected, bool deckSkin)
@@ -807,6 +820,7 @@ public partial class MainWindow
         bool deckSkin)
     {
         bool isPrivate = _commSelectedChannel == Core.CommMessageChannel.Private;
+        bool isEvent = _commSelectedChannel == Core.CommMessageChannel.Event;
 
         if (targetLabel != null)
             targetLabel.IsVisible = isPrivate;
@@ -827,9 +841,11 @@ public partial class MainWindow
             {
                 Core.CommMessageChannel.Subspace => "Send subspace message",
                 Core.CommMessageChannel.Private => "Send private message",
+                Core.CommMessageChannel.Event => "Server events are read-only",
                 _ => "Send fedcomm message",
             };
-            composeBox.Foreground = HudText;
+            composeBox.IsEnabled = !isEvent;
+            composeBox.Foreground = isEvent ? HudMuted : HudText;
         }
     }
 
@@ -839,6 +855,9 @@ public partial class MainWindow
         TextBox? targetBox = deckSkin ? _deckCommPrivateTargetTextBox : _commPrivateTargetTextBox;
 
         if (composeBox == null)
+            return;
+
+        if (_commSelectedChannel == Core.CommMessageChannel.Event)
             return;
 
         string message = (composeBox.Text ?? string.Empty).Trim();
@@ -900,10 +919,10 @@ public partial class MainWindow
         SendToTelnet(bytes);
     }
 
-    private void HandlePotentialCommLine(string ansiLine)
+    private bool HandlePotentialCommLine(string ansiLine)
     {
         if (!Core.AnsiCodes.TryParseCommMessageLine(ansiLine, out Core.CommMessageInfo info))
-            return;
+            return false;
 
         var owner = ResolveCurrentMtcTabContext();
         PostToMtcTabSession(owner, () =>
@@ -918,7 +937,77 @@ public partial class MainWindow
             RefreshCommComposerState();
             RefreshCommWindowText();
         });
+
+        return true;
     }
+
+    private bool HandlePotentialGameEventLine(string strippedLine, string ansiLine)
+    {
+        if (!TryNormalizeCommEventLine(strippedLine, ansiLine, out string eventText))
+            return false;
+
+        var owner = ResolveCurrentMtcTabContext();
+        PostToMtcTabSession(owner, () =>
+        {
+            _commEntries.Add(new CommEntry(Core.CommMessageChannel.Event, string.Empty, eventText, IsLocal: false));
+            if (_commEntries.Count > MaxCommEntries)
+                _commEntries.RemoveAt(0);
+            if (!PrepareMtcTabVisualRefresh())
+                return;
+            RefreshCommWindowText();
+        });
+
+        return true;
+    }
+
+    private static bool TryNormalizeCommEventLine(string strippedLine, string ansiLine, out string eventText)
+    {
+        eventText = string.Empty;
+        string text = string.IsNullOrWhiteSpace(strippedLine)
+            ? Core.AnsiCodes.NormalizeTerminalText(Core.AnsiCodes.StripANSI(Core.AnsiCodes.PrepareScriptAnsiText(ansiLine)))
+            : Core.AnsiCodes.NormalizeTerminalText(strippedLine);
+        text = text.Trim();
+
+        if (string.IsNullOrWhiteSpace(text) ||
+            text.StartsWith('>') ||
+            text.StartsWith("Command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Computer command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Planet command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Citadel command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Corporate command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Trader command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Port command ", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("{General}", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("{FedSpace}", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Sub-space radio", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("Federation comm-link", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        foreach (Regex pattern in CommWindowEventLinePatterns)
+        {
+            if (pattern.IsMatch(text))
+            {
+                eventText = text;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static readonly Regex[] CommWindowEventLinePatterns =
+    [
+        new(@"^(?:Deployed|Displayed) Fighters Report Sector \d+:", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^Limpet(?: mine)?(?: in)? sector \d+.*activated", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^Your fighters in sector \d+ .*", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^.+ destroyed [\d,]+ of your fighters in sector \d+\.?$", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^.+ destroyed [\d,]+ fighters\.?$", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^Shipboard Computers .+", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^Photon Missile launched into sector \d+", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+        new(@"^Probe (?:Destroyed|Self Destructs)!?$", RegexOptions.Compiled | RegexOptions.IgnoreCase),
+    ];
 
     private void RefreshCommWindowText()
     {
@@ -934,9 +1023,11 @@ public partial class MainWindow
         UpdateCommTextBlock(_commFedTextBlock, _commFedScrollViewer, Core.CommMessageChannel.FedComm);
         UpdateCommTextBlock(_commSubspaceTextBlock, _commSubspaceScrollViewer, Core.CommMessageChannel.Subspace);
         UpdateCommTextBlock(_commPrivateTextBlock, _commPrivateScrollViewer, Core.CommMessageChannel.Private);
+        UpdateCommTextBlock(_commEventsTextBlock, _commEventsScrollViewer, Core.CommMessageChannel.Event);
         UpdateCommTextBlock(_deckCommFedTextBlock, _deckCommFedScrollViewer, Core.CommMessageChannel.FedComm);
         UpdateCommTextBlock(_deckCommSubspaceTextBlock, _deckCommSubspaceScrollViewer, Core.CommMessageChannel.Subspace);
         UpdateCommTextBlock(_deckCommPrivateTextBlock, _deckCommPrivateScrollViewer, Core.CommMessageChannel.Private);
+        UpdateCommTextBlock(_deckCommEventsTextBlock, _deckCommEventsScrollViewer, Core.CommMessageChannel.Event);
     }
 
     private void UpdateCommTextBlock(TextBlock? textBlock, ScrollViewer? scrollViewer, Core.CommMessageChannel channel)
@@ -982,10 +1073,6 @@ public partial class MainWindow
         void Apply()
         {
             ApplyShipStatusToTabState(owner, s, notifyChanged: true, observeAgent: true);
-
-            // Ship status can update many times per macro burst; persist it after the burst quiets.
-            if (_currentProfilePath != null)
-                RequestCurrentGameConfigSave();
         }
 
         if (Dispatcher.UIThread.CheckAccess())
@@ -1116,21 +1203,32 @@ public partial class MainWindow
 
     private void ObserveOnlinePlayersLine(string line)
     {
-        string trimmed = line.Trim();
-
         if (!Dispatcher.UIThread.CheckAccess())
         {
             if (!ShouldDispatchOnlinePlayersLine(line))
                 return;
 
-            string capturedLine = line;
             var owner = ResolveCurrentMtcTabContext();
+            if (owner is not null)
+            {
+                ObserveOnlinePlayersLineState(line);
+                return;
+            }
+
+            string capturedLine = line;
             PostToMtcTabSession(
                 owner,
                 () => ObserveOnlinePlayersLine(capturedLine),
                 DispatcherPriority.Background);
             return;
         }
+
+        ObserveOnlinePlayersLineState(line);
+    }
+
+    private void ObserveOnlinePlayersLineState(string line)
+    {
+        string trimmed = line.Trim();
 
         if (IsOnlinePlayersHeaderLine(line))
         {
@@ -1184,6 +1282,22 @@ public partial class MainWindow
             return true;
 
         if (_capturingOnlinePlayers)
+            return true;
+
+        string trimmed = line.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+            return false;
+
+        return trimmed.EndsWith(" enters the game.", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.EndsWith(" exits the game.", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldDispatchOnlinePlayersLineForCapture(string line, bool capturingOnlinePlayers)
+    {
+        if (IsOnlinePlayersHeaderLine(line))
+            return true;
+
+        if (capturingOnlinePlayers)
             return true;
 
         string trimmed = line.Trim();
@@ -1257,9 +1371,21 @@ public partial class MainWindow
     private void BeginOnlinePlayersCapture()
     {
         MarkOnlineRefreshObserved();
-        _capturingOnlinePlayers = true;
-        _onlinePlayersCaptureSawPlayer = false;
+        SetOnlinePlayersCaptureFlags(capturing: true, sawPlayer: false);
         _pendingOnlinePlayers.Clear();
+    }
+
+    private void SetOnlinePlayersCaptureFlags(bool capturing, bool sawPlayer)
+    {
+        _capturingOnlinePlayers = capturing;
+        _onlinePlayersCaptureSawPlayer = sawPlayer;
+
+        var owner = PeekCurrentMtcTabContext();
+        if (owner is null)
+            return;
+
+        owner.CapturingOnlinePlayers = capturing;
+        owner.OnlinePlayersCaptureSawPlayer = sawPlayer;
     }
 
     private void MarkOnlineRefreshObserved()
@@ -1409,14 +1535,13 @@ public partial class MainWindow
         }
 
         _pendingOnlinePlayers.Clear();
-        _onlinePlayersCaptureSawPlayer = false;
-        _capturingOnlinePlayers = false;
+        SetOnlinePlayersCaptureFlags(capturing: false, sawPlayer: false);
     }
 
     private void AddPendingOnlinePlayer(string playerName)
     {
         if (AddUniqueOnlinePlayer(_pendingOnlinePlayers, playerName))
-            _onlinePlayersCaptureSawPlayer = true;
+            SetOnlinePlayersCaptureFlags(_capturingOnlinePlayers, sawPlayer: true);
     }
 
     private static bool AddUniqueOnlinePlayer(List<string> players, string playerName)
@@ -1887,8 +2012,7 @@ public partial class MainWindow
             return;
         }
 
-        _capturingOnlinePlayers = false;
-        _onlinePlayersCaptureSawPlayer = false;
+        SetOnlinePlayersCaptureFlags(capturing: false, sawPlayer: false);
         _pendingOnlinePlayers.Clear();
         _onlinePlayers.Clear();
 

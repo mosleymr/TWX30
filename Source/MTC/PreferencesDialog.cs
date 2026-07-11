@@ -145,6 +145,7 @@ internal class PreferencesDialog : Window
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
+        var chkPerformanceMonitoring = BuildCheckBox("Enable MTC performance monitoring", prefs.PerformanceMonitoringEnabled);
 
         var cboPreparedCacheLimit = BuildMemoryLimitComboBox(
             prefs.PreparedScriptCacheLimitKb,
@@ -244,6 +245,11 @@ internal class PreferencesDialog : Window
             BuildCheckGroup(chkCreateGameLogs, chkCreateAnsiGameLogs),
             BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkAutoRecorderDebug, chkTriggerDebug, chkDebugDatabaseChanges, chkDebugPortHaggle, chkDebugPlanetHaggle));
 
+        var appDiagnosticsSection = BuildSection(
+            "Application Diagnostics",
+            "Global process instrumentation for MTC. Leave off unless measuring UI or tab performance.",
+            BuildCheckGroup(chkPerformanceMonitoring));
+
         var alertsSection = BuildSection(
             "Alerts",
             "Safety switches that change how aggressively MTC reacts.",
@@ -314,6 +320,7 @@ internal class PreferencesDialog : Window
             prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
+            prefs.PerformanceMonitoringEnabled = chkPerformanceMonitoring.IsChecked == true;
             prefs.PreparedScriptCacheLimitKb = GetMemoryLimitKb(
                 cboPreparedCacheLimit,
                 AppPreferences.DefaultPreparedScriptCacheLimitKb);
@@ -356,7 +363,7 @@ internal class PreferencesDialog : Window
             Items =
             {
                 BuildTabItem("General", storageSection, alertsSection, runtimeSection),
-                BuildTabItem("Diagnostics", diagnosticsSection),
+                BuildTabItem("Diagnostics", appDiagnosticsSection, diagnosticsSection),
                 BuildTabItem("RPC", integrationsSection),
             },
         };

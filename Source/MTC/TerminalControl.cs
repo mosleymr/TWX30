@@ -63,9 +63,13 @@ public class TerminalControl : Control
     private TerminalBuffer _buffer;
     private readonly DispatcherTimer _cursorTimer;
     private readonly DispatcherTimer _windowMoveTimer;
+    private readonly DispatcherTimer _scrollbarHideTimer;
     private bool _cursorOn = true;
     private bool _dirtySubscriptionActive;
     private bool _hostWindowMoving;
+    private bool _scrollbarVisible;
+    private bool _scrollbarHover;
+    private bool _scrollbarDragging;
     private int _redrawQueued;
     private CachedRenderRow[] _visibleRowCache = [];
     private long _visibleRowCacheDirtyVersion = -1;
@@ -113,6 +117,17 @@ public class TerminalControl : Control
 
     private static readonly SolidColorBrush SelectionBrush =
         new(Color.FromArgb(100, 51, 153, 255));  // translucent blue
+    private static readonly SolidColorBrush ScrollbarTrackBrush =
+        new(Color.FromArgb(80, 0, 170, 190));
+    private static readonly SolidColorBrush ScrollbarThumbBrush =
+        new(Color.FromArgb(210, 118, 230, 235));
+    private static readonly SolidColorBrush ScrollbarThumbHoverBrush =
+        new(Color.FromArgb(235, 0, 255, 220));
+
+    private const double ScrollbarWidth = 7;
+    private const double ScrollbarHitWidth = 18;
+    private const double ScrollbarMargin = 4;
+    private const double ScrollbarMinThumbHeight = 28;
 
     /// <summary>
     /// Set by the owner to forward key bytes to the server.
@@ -167,6 +182,19 @@ public class TerminalControl : Control
             _hostWindowMoving = false;
             InvalidateVisual();
         };
+        _scrollbarHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1250) };
+        _scrollbarHideTimer.Tick += (_, _) =>
+        {
+            if (_scrollbarDragging || _scrollbarHover)
+                return;
+
+            _scrollbarHideTimer.Stop();
+            if (!_scrollbarVisible)
+                return;
+
+            _scrollbarVisible = false;
+            InvalidateVisual();
+        };
 
         AttachedToVisualTree += (_, _) =>
         {
@@ -177,6 +205,7 @@ public class TerminalControl : Control
         {
             _cursorTimer.Stop();
             _windowMoveTimer.Stop();
+            _scrollbarHideTimer.Stop();
             RemoveDirtySubscription();
         };
 
@@ -428,6 +457,8 @@ public class TerminalControl : Control
             ctx.DrawText(indFt, new Point(4, (_lineHeight - indFt.Height) / 2));
         }
 
+        RenderScrollbar(ctx);
+
         if (cacheUpToDate)
             _buffer.AcknowledgeDirty(renderedDirtyVersion);
         Interlocked.Exchange(ref _redrawQueued, 0);
@@ -522,10 +553,84 @@ public class TerminalControl : Control
                 _hasSelection = _selCurrent != _selAnchor;
             }
 
+            ShowScrollbar();
             InvalidateVisual();
         }
         e.Handled = true;
         base.OnPointerWheelChanged(e);
+    }
+
+    private void RenderScrollbar(DrawingContext ctx)
+    {
+        if (!_scrollbarVisible || _buffer.ScrollbackCount <= 0 || Bounds.Width <= 0 || Bounds.Height <= 0)
+            return;
+
+        var geometry = GetScrollbarGeometry();
+        if (geometry.Track.Height <= 0 || geometry.Thumb.Height <= 0)
+            return;
+
+        ctx.FillRectangle(ScrollbarTrackBrush, geometry.Track, 3);
+        ctx.FillRectangle(_scrollbarHover || _scrollbarDragging ? ScrollbarThumbHoverBrush : ScrollbarThumbBrush, geometry.Thumb, 3);
+    }
+
+    private (Rect Track, Rect Thumb) GetScrollbarGeometry()
+    {
+        double trackHeight = Math.Max(0, Bounds.Height - ScrollbarMargin * 2);
+        double trackX = Math.Max(0, Bounds.Width - ScrollbarMargin - ScrollbarWidth);
+        var track = new Rect(trackX, ScrollbarMargin, ScrollbarWidth, trackHeight);
+
+        int scrollbackCount = Math.Max(0, _buffer.ScrollbackCount);
+        int viewportRows = Math.Max(1, _buffer.Rows);
+        int totalRows = scrollbackCount + viewportRows;
+        if (scrollbackCount <= 0 || totalRows <= viewportRows || trackHeight <= 0)
+            return (track, new Rect());
+
+        double thumbHeight = Math.Clamp(
+            trackHeight * viewportRows / totalRows,
+            Math.Min(ScrollbarMinThumbHeight, trackHeight),
+            trackHeight);
+        double travel = Math.Max(0, trackHeight - thumbHeight);
+        double topDocumentRow = scrollbackCount - Math.Clamp(_scrollOffset, 0, scrollbackCount);
+        double thumbY = ScrollbarMargin + (scrollbackCount == 0 ? travel : topDocumentRow / scrollbackCount * travel);
+        var thumb = new Rect(trackX, thumbY, ScrollbarWidth, thumbHeight);
+        return (track, thumb);
+    }
+
+    private bool IsScrollbarHit(Point point)
+        => _buffer.ScrollbackCount > 0 &&
+           point.X >= Math.Max(0, Bounds.Width - ScrollbarHitWidth) &&
+           point.X <= Bounds.Width &&
+           point.Y >= 0 &&
+           point.Y <= Bounds.Height;
+
+    private void ShowScrollbar(bool restartHideTimer = true)
+    {
+        if (!_scrollbarVisible)
+            _scrollbarVisible = true;
+
+        if (restartHideTimer && !_scrollbarDragging && !_scrollbarHover)
+        {
+            _scrollbarHideTimer.Stop();
+            _scrollbarHideTimer.Start();
+        }
+    }
+
+    private void SetScrollOffsetFromScrollbarY(double y)
+    {
+        var geometry = GetScrollbarGeometry();
+        double travel = geometry.Track.Height - geometry.Thumb.Height;
+        if (travel <= 0)
+            return;
+
+        double relative = Math.Clamp(
+            y - geometry.Track.Y - geometry.Thumb.Height / 2,
+            0,
+            travel);
+        double topDocumentRow = relative / travel * _buffer.ScrollbackCount;
+        int nextOffset = _buffer.ScrollbackCount - (int)Math.Round(topDocumentRow);
+        _scrollOffset = Math.Clamp(nextOffset, 0, _buffer.ScrollbackCount);
+        _scrollAccumulator = 0;
+        InvalidateVisual();
     }
 
     // ── Keyboard input ─────────────────────────────────────────────────────
@@ -708,6 +813,18 @@ public class TerminalControl : Control
         // on some platforms, causing the selection anchor to jump.
         if (props.PointerUpdateKind == PointerUpdateKind.LeftButtonPressed)
         {
+            if (IsScrollbarHit(e.GetPosition(this)))
+            {
+                Focus();
+                ShowScrollbar(restartHideTimer: false);
+                _scrollbarHover = true;
+                _scrollbarDragging = true;
+                SetScrollOffsetFromScrollbarY(e.GetPosition(this).Y);
+                e.Pointer.Capture(this);
+                e.Handled = true;
+                return;
+            }
+
             Focus();
             _selAnchor   = _selCurrent = PixelToDocumentCell(e.GetPosition(this));
             _hasSelection = false;
@@ -721,6 +838,29 @@ public class TerminalControl : Control
 
     protected override void OnPointerMoved(PointerEventArgs e)
     {
+        if (_scrollbarDragging)
+        {
+            SetScrollOffsetFromScrollbarY(e.GetPosition(this).Y);
+            e.Handled = true;
+            return;
+        }
+
+        bool scrollbarHover = IsScrollbarHit(e.GetPosition(this));
+        if (_scrollbarHover != scrollbarHover)
+        {
+            _scrollbarHover = scrollbarHover;
+            if (_scrollbarHover)
+            {
+                ShowScrollbar(restartHideTimer: false);
+                _scrollbarHideTimer.Stop();
+            }
+            else
+            {
+                ShowScrollbar();
+            }
+            InvalidateVisual();
+        }
+
         if (e.Pointer.Captured == this)
         {
             var pos = PixelToDocumentCell(e.GetPosition(this));
@@ -744,6 +884,16 @@ public class TerminalControl : Control
         if (e.Pointer.Captured == this &&
             props.PointerUpdateKind == PointerUpdateKind.LeftButtonReleased)
         {
+            if (_scrollbarDragging)
+            {
+                _scrollbarDragging = false;
+                _scrollbarHover = IsScrollbarHit(e.GetPosition(this));
+                e.Pointer.Capture(null);
+                ShowScrollbar();
+                e.Handled = true;
+                return;
+            }
+
             var pos = PixelToDocumentCell(e.GetPosition(this));
             // Same line-end snap as OnPointerMoved
             if (pos.Row > _selAnchor.Row && pos.Col == 0 && pos.Row > 0)
@@ -758,9 +908,27 @@ public class TerminalControl : Control
 
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
+        if (_scrollbarDragging)
+        {
+            _scrollbarDragging = false;
+            ShowScrollbar();
+        }
+
         // Capture was taken away externally (e.g. ContextMenu popup appearing).
         // Do NOT touch _selCurrent / _hasSelection — just let Avalonia clean up.
         base.OnPointerCaptureLost(e);
+    }
+
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        if (!_scrollbarDragging && _scrollbarHover)
+        {
+            _scrollbarHover = false;
+            ShowScrollbar();
+            InvalidateVisual();
+        }
+
+        base.OnPointerExited(e);
     }
 
     // ── Clipboard ─────────────────────────────────────────────────────────

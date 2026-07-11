@@ -34,6 +34,7 @@ namespace TWXProxy.Core
         FedComm,
         Subspace,
         Private,
+        Event,
     }
 
     public readonly record struct CommMessageInfo(CommMessageChannel Channel, string Sender, string MessageText);

@@ -291,9 +291,9 @@ public sealed class MacroPlayDialog : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 12, 0, 0),
         };
+        buttons.Children.Add(_playButton);
         if (_saveButton != null)
             buttons.Children.Add(_saveButton);
-        buttons.Children.Add(_playButton);
         buttons.Children.Add(btnCancel);
 
         Content = new StackPanel

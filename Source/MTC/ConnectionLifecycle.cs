@@ -576,7 +576,7 @@ public partial class MainWindow
         {
             string trimmed = strippedLine.Trim();
             if (string.IsNullOrWhiteSpace(trimmed))
-                return false;
+                return queuedOnlineCapture || owningTab?.CapturingOnlinePlayers == true;
 
             if (IsGameAgentWindowActive(owningTab))
                 return true;
@@ -592,6 +592,11 @@ public partial class MainWindow
             if (IsOnlinePlayersHeaderLine(strippedLine))
             {
                 queuedOnlineCapture = true;
+                if (owningTab is not null)
+                {
+                    owningTab.CapturingOnlinePlayers = true;
+                    owningTab.OnlinePlayersCaptureSawPlayer = false;
+                }
                 return true;
             }
 
@@ -613,6 +618,9 @@ public partial class MainWindow
             if (!string.IsNullOrEmpty(ansiLine) && Core.AnsiCodes.TryParseCommMessageLine(ansiLine, out _))
                 return true;
 
+            if (TryNormalizeCommEventLine(strippedLine, ansiLine, out _))
+                return true;
+
             return _appPrefs.EnableRedAlertMode &&
                 (trimmed.StartsWith("Shipboard Computers", StringComparison.Ordinal) ||
                  trimmed.Contains("is powering up weapons systems!", StringComparison.Ordinal));
@@ -620,16 +628,44 @@ public partial class MainWindow
 
         void ProcessEmbeddedQueuedUiObserverLine(string strippedLine, string ansiLine, bool isPrompt)
         {
+            if (owningTab is not null && owningTab.Id != Volatile.Read(ref _activeMtcTabId))
+            {
+                ExecuteInMtcTabBackgroundContext(owningTab, () =>
+                    ProcessEmbeddedQueuedStateObserverLine(strippedLine, ansiLine, isPrompt));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(strippedLine))
+            {
+                ObserveOnlinePlayersLine(strippedLine);
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(strippedLine))
             {
                 ObserveGameAgentServerLine(strippedLine, ansiLine, isPrompt);
                 ObserveComputerShipTypeLine(strippedLine);
                 ObserveOnlinePlayersLine(strippedLine);
-                HandlePotentialCommLine(ansiLine);
+                if (!HandlePotentialCommLine(ansiLine))
+                    HandlePotentialGameEventLine(strippedLine, ansiLine);
                 SyncMombotPromptStateFromLine(strippedLine, ansiLine);
                 ObserveEmbeddedKeepaliveWatchLine(strippedLine);
                 ObserveNativeMombotWatchLine(strippedLine);
             }
+        }
+
+        void ProcessEmbeddedQueuedStateObserverLine(string strippedLine, string ansiLine, bool isPrompt)
+        {
+            if (string.IsNullOrWhiteSpace(strippedLine))
+            {
+                ObserveOnlinePlayersLine(strippedLine);
+                return;
+            }
+
+            ObserveComputerShipTypeLine(strippedLine);
+            ObserveOnlinePlayersLine(strippedLine);
+            SyncMombotPromptVarsFromLine(runtimeContext, strippedLine);
+            ObserveEmbeddedKeepaliveWatchLine(strippedLine, gi, owningTab);
         }
 
         void ObserveNativeMombotServerLine(string strippedLine)
@@ -787,7 +823,10 @@ public partial class MainWindow
                     gi.History.ProcessLine(lineStripped);
                     gi.ProcessNativeHaggleLine(lineStripped);
                     if (allowUiObservers)
-                        HandlePotentialCommLine(lineRaw);
+                    {
+                        if (!HandlePotentialCommLine(lineRaw))
+                            HandlePotentialGameEventLine(lineStripped, lineRaw);
+                    }
                     Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
                     Core.ScriptRef.SetCurrentLine(lineForScript);
 
@@ -841,9 +880,6 @@ public partial class MainWindow
                 var capturedUiObserverLines = queuedUiObserverLines.ToArray();
                 Dispatcher.UIThread.Post(() =>
                 {
-                    if (owningTab.Id != _activeMtcTabId)
-                        return;
-
                     ExecuteInOptionalMtcTabSession(owningTab, () =>
                     {
                         foreach (var item in capturedUiObserverLines)

@@ -1187,7 +1187,8 @@ return
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 :planet~landonplanetentercitadel
 #-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-send "l "&$planet~planet&"*tnl1*tnl2*tnl3*snl1*snl2*snl3*c "
+#send "l "&$planet~planet&"*tnl1*tnl2*tnl3*snl1*snl2*snl3*c* "
+send "l "&$planet~planet&"*c* "
 waiton "Fuel Ore"
 getword currentline $planet~planetfuel 6
 striptext $planet~planetfuel ","

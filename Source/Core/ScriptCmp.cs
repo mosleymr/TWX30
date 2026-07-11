@@ -2528,6 +2528,15 @@ namespace TWXProxy.Core
             if (label.StartsWith(":", StringComparison.Ordinal))
                 return false;
 
+            if (label.StartsWith("~", StringComparison.Ordinal))
+            {
+                if (label.Length == 1)
+                    return false;
+
+                normalizedLabel = label.Substring(1).ToUpperInvariant();
+                return true;
+            }
+
             if (label.Contains('~'))
             {
                 normalizedLabel = label.ToUpperInvariant();
@@ -3758,6 +3767,15 @@ namespace TWXProxy.Core
             string labelName = value.Substring(1);
             if (string.IsNullOrWhiteSpace(labelName))
                 return false;
+
+            if (labelName.StartsWith("~", StringComparison.Ordinal))
+            {
+                if (labelName.Length == 1)
+                    return false;
+
+                qualifiedLabel = labelName.Substring(1).ToUpperInvariant();
+                return true;
+            }
 
             if (labelName.Contains('~'))
             {

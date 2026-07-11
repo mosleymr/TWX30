@@ -85,6 +85,7 @@ public class AppPreferences
     public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
+    public bool PerformanceMonitoringEnabled { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
     public int MombotHotkeyPrewarmLimitKb { get; set; } = DefaultMombotHotkeyPrewarmLimitKb;
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
@@ -196,6 +197,7 @@ public class AppPreferences
                 new XElement("ScrollbackLines", NormalizeScrollbackLines(ScrollbackLines)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
+                new XElement("PerformanceMonitoringEnabled", PerformanceMonitoringEnabled),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
                 new XElement("MombotHotkeyPrewarmLimitKb", MombotHotkeyPrewarmLimitKb),
                 new XElement("PortHaggleMode", PortHaggleMode),
@@ -340,6 +342,8 @@ public class AppPreferences
                 prefs.PreparedVmEnabled = preparedVmEnabled;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
+            if (bool.TryParse((string?)root.Element("PerformanceMonitoringEnabled"), out bool performanceMonitoringEnabled))
+                prefs.PerformanceMonitoringEnabled = performanceMonitoringEnabled;
             if (int.TryParse((string?)root.Element("PreparedScriptCacheLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int preparedCacheLimitKb))
                 prefs.PreparedScriptCacheLimitKb = NormalizeMemoryLimitKb(preparedCacheLimitKb, DefaultPreparedScriptCacheLimitKb);
             if (int.TryParse((string?)root.Element("MombotHotkeyPrewarmLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int hotkeyPrewarmLimitKb))

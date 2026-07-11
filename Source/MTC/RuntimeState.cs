@@ -817,6 +817,7 @@ public partial class MainWindow
         }
 
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+        UpdateMtcPerfInstrumentationState();
         _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
@@ -902,42 +903,51 @@ public partial class MainWindow
 
     private void ApplyDebugLoggingPreferences()
     {
-        AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
-        string programDir = AppPaths.ProgramDir;
-        Core.GlobalModules.ProgramDir = programDir;
-        EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
-        Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
-        Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
-        Core.GlobalModules.PreparedScriptCacheLimitBytes =
-            Math.Max(1, _appPrefs.PreparedScriptCacheLimitKb) * 1024L;
-        Core.GlobalModules.MombotHotkeyPrewarmLimitBytes =
-            Math.Max(1, _appPrefs.MombotHotkeyPrewarmLimitKb) * 1024L;
-        AppPaths.EnsureDebugLogDir();
-        string debugGameName = GetDebugLogGameName();
-        Core.GlobalModules.ConfigureDebugLogging(
-            string.IsNullOrWhiteSpace(debugGameName)
-                ? AppPaths.GetDebugLogPath()
-                : AppPaths.GetDebugLogPathForGame(debugGameName),
-            debugPrefs.DebugLoggingEnabled,
-            debugPrefs.VerboseDebugLogging,
-            debugPrefs.TriggerDebugLogging,
-            debugPrefs.ScriptTraceDebugLogging,
-            debugPrefs.AutoRecorderDebugLogging);
-        Core.GlobalModules.ConfigureHaggleDebugLogging(
-            AppPaths.GetPortHaggleDebugLogPath(),
-            debugPrefs.DebugPortHaggleEnabled,
-            AppPaths.GetPlanetHaggleDebugLogPath(),
-            debugPrefs.DebugPlanetHaggleEnabled);
-        Core.GlobalModules.ConfigureDatabaseCorrectionLogging(
-            string.IsNullOrWhiteSpace(debugGameName)
-                ? AppPaths.GetDatabaseCorrectionLogPath()
-                : AppPaths.GetDatabaseCorrectionLogPathForGame(debugGameName),
-            debugPrefs.DebugLoggingEnabled && debugPrefs.DebugDatabaseChanges);
-        _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
-        _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
-        RefreshSessionLogTarget();
-        if (_gameInstance != null)
-            _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
+        MtcTabPrototype? owner = ResolveCurrentMtcTabContext();
+        IDisposable? runtimeScope = owner is null ? null : Core.GlobalModules.UseRuntimeContext(owner.RuntimeContext);
+        try
+        {
+            AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
+            string programDir = AppPaths.ProgramDir;
+            Core.GlobalModules.ProgramDir = programDir;
+            EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
+            Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
+            Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
+            Core.GlobalModules.PreparedScriptCacheLimitBytes =
+                Math.Max(1, _appPrefs.PreparedScriptCacheLimitKb) * 1024L;
+            Core.GlobalModules.MombotHotkeyPrewarmLimitBytes =
+                Math.Max(1, _appPrefs.MombotHotkeyPrewarmLimitKb) * 1024L;
+            AppPaths.EnsureDebugLogDir();
+            string debugGameName = GetDebugLogGameName();
+            Core.GlobalModules.ConfigureDebugLogging(
+                string.IsNullOrWhiteSpace(debugGameName)
+                    ? AppPaths.GetDebugLogPath()
+                    : AppPaths.GetDebugLogPathForGame(debugGameName),
+                debugPrefs.DebugLoggingEnabled,
+                debugPrefs.VerboseDebugLogging,
+                debugPrefs.TriggerDebugLogging,
+                debugPrefs.ScriptTraceDebugLogging,
+                debugPrefs.AutoRecorderDebugLogging);
+            Core.GlobalModules.ConfigureHaggleDebugLogging(
+                AppPaths.GetPortHaggleDebugLogPath(),
+                debugPrefs.DebugPortHaggleEnabled,
+                AppPaths.GetPlanetHaggleDebugLogPath(),
+                debugPrefs.DebugPlanetHaggleEnabled);
+            Core.GlobalModules.ConfigureDatabaseCorrectionLogging(
+                string.IsNullOrWhiteSpace(debugGameName)
+                    ? AppPaths.GetDatabaseCorrectionLogPath()
+                    : AppPaths.GetDatabaseCorrectionLogPathForGame(debugGameName),
+                debugPrefs.DebugLoggingEnabled && debugPrefs.DebugDatabaseChanges);
+            _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
+            _standaloneNativeHaggle.SetPlanetHaggleMode(ResolveGlobalPlanetHaggleMode());
+            RefreshSessionLogTarget();
+            if (_gameInstance != null)
+                _gameInstance.Logger.LogDirectory = AppPaths.GetDebugLogDir();
+        }
+        finally
+        {
+            runtimeScope?.Dispose();
+        }
     }
 
     private void RequestStatusBarRefresh()

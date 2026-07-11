@@ -159,6 +159,10 @@ if ($nearfig > 0) and ($nearfig <> $player~current_sector)
 	if ($salesman = true) and ($merchant~upgrade = true) and (port.exists[$player~current_sector] = true)
 		gosub :merchant~salesmanupgradeall
 	end
+	if ($salesman <> true) and ($cansellfuelhere <> true) and ($cansellorghere <> true) and ($cansellequiphere <> true)
+		gosub :postport
+		goto :select_next_port
+	end
 	if (($cansellfuelhere <> true) and ($cansellorghere <> true) and ($cansellequiphere <> true) and ($canbuyfuelhere <> true) and ($canbuyorghere <> true) and ($canbuyequiphere <> true))
 		gosub :postport
 		goto :select_next_port
@@ -535,7 +539,7 @@ end
 send "q q q z a 999* * * * "
 gosub :port~domaxport
 gosub :player~quikstats
-gosub :planet~landonplanetentercitadel
+gosub :planet~landingsub
 gosub :refreshport
 return
 
@@ -679,7 +683,7 @@ if ($cansellfuelhere = true) or ($cansellorghere = true) or ($cansellequiphere =
 	setvar $goodport true
 end
 
-if ($canbuyfuelhere = true) or ($canbuyorghere = true) or ($canbuyequiphere = true)
+if ($salesman = true) and (($canbuyfuelhere = true) or ($canbuyorghere = true) or ($canbuyequiphere = true))
 	setvar $goodport true
 end
 
