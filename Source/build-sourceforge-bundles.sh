@@ -87,3 +87,6 @@ for rid in "${RIDS[@]}"; do
   echo "Unsupported package RID: ${rid}" >&2
   exit 1
 done
+
+install -m 0644 "${SCRIPT_DIR}/mtc-updates.example.json" "${BIN_ROOT}/mtc-updates.json"
+echo "==> Wrote update manifest: ${BIN_ROOT}/mtc-updates.json"

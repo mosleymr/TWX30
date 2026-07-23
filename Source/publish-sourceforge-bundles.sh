@@ -27,6 +27,7 @@ Optional environment:
   DISCORD_WEBHOOK_CONTENT          Optional extra Discord message content line
   DISCORD_WEBHOOK_THREAD_ID        Optional Discord thread_id query value
   DISCORD_WEBHOOK_THREAD_NAME      Optional Discord thread_name body value
+  MTC_UPDATE_MANIFEST              Optional path to mtc-updates.json; default: TWX30/bin/mtc-updates.json
 EOF
 }
 
@@ -59,13 +60,14 @@ if [[ $REBUILD -eq 1 ]]; then
   RID_LIST="${REBUILD_RID_LIST:-osx-arm64 osx-x64 linux-x64}" ./build-sourceforge-bundles.sh
 fi
 
-if [[ -z "${SOURCEFORGE_API_KEY:-}" ]]; then
+SOURCEFORGE_API_KEY="${SOURCEFORGE_API_KEY:-}"
+if [[ -z "${SOURCEFORGE_API_KEY}" && $DRY_RUN -eq 0 ]]; then
   echo "SOURCEFORGE_API_KEY is required." >&2
   exit 1
 fi
 
 PROJECT="${SOURCEFORGE_PROJECT:-twx30}"
-USERNAME="${SOURCEFORGE_USERNAME:-mosleymr}"
+SOURCEFORGE_UPLOAD_USER="${SOURCEFORGE_USERNAME:-mosleymr}"
 REMOTE_DIR="${SOURCEFORGE_REMOTE_DIR:-/home/frs/project/${PROJECT}}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 DISCORD_WEBHOOK_USERNAME="${DISCORD_WEBHOOK_USERNAME:-}"
@@ -73,6 +75,10 @@ DISCORD_WEBHOOK_AVATAR_URL="${DISCORD_WEBHOOK_AVATAR_URL:-}"
 DISCORD_WEBHOOK_CONTENT="${DISCORD_WEBHOOK_CONTENT:-}"
 DISCORD_WEBHOOK_THREAD_ID="${DISCORD_WEBHOOK_THREAD_ID:-}"
 DISCORD_WEBHOOK_THREAD_NAME="${DISCORD_WEBHOOK_THREAD_NAME:-}"
+UPDATE_MANIFEST_PATH="${MTC_UPDATE_MANIFEST:-${BIN_ROOT}/mtc-updates.json}"
+if [[ ! -f "${UPDATE_MANIFEST_PATH}" && -f "${SCRIPT_DIR}/mtc-updates.example.json" ]]; then
+  UPDATE_MANIFEST_PATH="${SCRIPT_DIR}/mtc-updates.example.json"
+fi
 SUMMARY_FILE="$(mktemp /tmp/sourceforge-summary.XXXXXX)"
 cleanup() {
   rm -f "$SUMMARY_FILE"
@@ -138,7 +144,7 @@ for rid in "${RIDS[@]}"; do
 
     file_name="$(basename "${package_path}")"
     remote_path="${REMOTE_DIR}/${file_name}"
-    api_url="https://sourceforge.net/projects/TWX30/files/${file_name}"
+    api_url="https://sourceforge.net/projects/twx30/files/${file_name}"
     default_arg="$(api_defaults_for_rid "${rid}" "${file_name}")"
     curl_args=(
       -fsS
@@ -153,18 +159,18 @@ for rid in "${RIDS[@]}"; do
 
     echo "==> Uploading ${file_name} to SourceForge..."
     if [[ $DRY_RUN -eq 1 ]]; then
-      echo "scp -o BatchMode=yes ${package_path} ${USERNAME}@frs.sourceforge.net:${remote_path}"
+      echo "scp -o BatchMode=yes ${package_path} ${SOURCEFORGE_UPLOAD_USER}@frs.sourceforge.net:${remote_path}"
       echo "curl -H 'Accept: application/json' -X PUT -d 'api_key=<redacted>' -d 'download_label=${file_name}'${default_arg:+ -d '${default_arg}'} ${api_url}"
       continue
     fi
 
-    scp -o BatchMode=yes "${package_path}" "${USERNAME}@frs.sourceforge.net:${remote_path}"
+    scp -o BatchMode=yes "${package_path}" "${SOURCEFORGE_UPLOAD_USER}@frs.sourceforge.net:${remote_path}"
 
     curl "${curl_args[@]}" "${api_url}" >/tmp/sourceforge-upload-response.json
 
     echo "==> Updated SourceForge metadata for ${file_name}"
 
-    python3 - "$SUMMARY_FILE" "$rid" "$file_name" "https://sourceforge.net/projects/TWX30/files/${file_name}/download" <<'PY'
+    python3 - "$SUMMARY_FILE" "$rid" "$file_name" "https://sourceforge.net/projects/twx30/files/${file_name}/download" <<'PY'
 import json
 import sys
 
@@ -180,6 +186,47 @@ with open(summary_file, "a", encoding="utf-8") as fh:
 PY
   done < <(package_files_for_rid "${rid}")
 done
+
+if [[ -f "${UPDATE_MANIFEST_PATH}" ]]; then
+  file_name="mtc-updates.json"
+  remote_path="${REMOTE_DIR}/${file_name}"
+  api_url="https://sourceforge.net/projects/twx30/files/${file_name}"
+  curl_args=(
+    -fsS
+    -H "Accept: application/json"
+    -X PUT
+    -d "api_key=${SOURCEFORGE_API_KEY}"
+    -d "download_label=${file_name}"
+  )
+
+  echo "==> Uploading ${file_name} to SourceForge..."
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "scp -o BatchMode=yes ${UPDATE_MANIFEST_PATH} ${SOURCEFORGE_UPLOAD_USER}@frs.sourceforge.net:${remote_path}"
+    echo "curl -H 'Accept: application/json' -X PUT -d 'api_key=<redacted>' -d 'download_label=${file_name}' ${api_url}"
+  else
+    scp -o BatchMode=yes "${UPDATE_MANIFEST_PATH}" "${SOURCEFORGE_UPLOAD_USER}@frs.sourceforge.net:${remote_path}"
+    curl "${curl_args[@]}" "${api_url}" >/tmp/sourceforge-upload-response.json
+    echo "==> Updated SourceForge metadata for ${file_name}"
+
+    python3 - "$SUMMARY_FILE" "update manifest" "$file_name" "https://sourceforge.net/projects/twx30/files/${file_name}/download" <<'PY'
+import json
+import sys
+
+summary_file, rid, file_name, download_url = sys.argv[1:]
+entry = {
+    "rid": rid,
+    "file_name": file_name,
+    "download_url": download_url,
+}
+
+with open(summary_file, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+PY
+  fi
+else
+  echo "Missing MTC update manifest: ${UPDATE_MANIFEST_PATH}" >&2
+  exit 1
+fi
 
 if [[ $DRY_RUN -eq 0 && -n "$DISCORD_WEBHOOK_URL" ]]; then
   DISCORD_PAYLOAD="$(

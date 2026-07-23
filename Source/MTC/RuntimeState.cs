@@ -33,15 +33,19 @@ public partial class MainWindow
 
         void Apply()
         {
+            bool wasConnected = _state.Connected;
             _state.Connected = true;
-            ObserveGameAgentConnectionChanged(connected: true);
-            RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
-            // Open (or create) the sector database for this game connection.
-            OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
             SetTerminalConnected(true);
-            OnGameConnected();
-            UpdateTemporaryMacroControls();
-            _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
+            if (!wasConnected)
+            {
+                ObserveGameAgentConnectionChanged(connected: true);
+                RefreshSessionLogTarget(CurrentInterpreter?.ScriptDirectory);
+                // Open (or create) the sector database for this game connection.
+                OpenSessionDatabase(DeriveGameName(), _state.Sectors, useSharedProxyDatabase: false);
+                OnGameConnected();
+                UpdateTemporaryMacroControls();
+                _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
+            }
             RefreshStatusBar();
             _buffer.Dirty = true;
         }
@@ -58,8 +62,10 @@ public partial class MainWindow
 
         void Apply()
         {
+            bool wasConnected = _state.Connected;
             _state.Connected = false;
-            ObserveGameAgentConnectionChanged(connected: false);
+            if (wasConnected)
+                ObserveGameAgentConnectionChanged(connected: false);
             _sessionLog.CloseLog();
             // Flush and close the database.
             try { _sessionDb?.CloseDatabase(); } catch { /* best-effort */ }
@@ -70,7 +76,8 @@ public partial class MainWindow
             SetTerminalConnected(false);
             OnGameDisconnected();
             UpdateTemporaryMacroControls();
-            _parser.Feed("\x1b[1;31m[Disconnected]\x1b[0m\r\n");
+            if (wasConnected)
+                _parser.Feed("\x1b[1;31m[Disconnected]\x1b[0m\r\n");
             RefreshStatusBar();
             _buffer.Dirty = true;
         }
@@ -745,8 +752,9 @@ public partial class MainWindow
         {
             Width = aboutImageSize,
             Text =
-                "Mayhem Tradewars Client (MTC)\n" +
-                "Version 1.0.0\n\n" +
+                $"{MtcVersion.ProductName} ({MtcVersion.ShortProductName})\n" +
+                $"Version {MtcVersion.DisplayVersion}\n" +
+                $"Package {MtcVersion.PackageVersion}\n\n" +
                 "Cross-platform Trade Wars 2002 client\n" +
                 "built on TWXProxy Core.\n\n" +
                 "Copyright (C) 2026 Matt Mosley\n" +
@@ -824,6 +832,8 @@ public partial class MainWindow
         await SaveCurrentDebugConfigAsync();
         ApplyDebugLoggingPreferences();
         ApplyJsonRpcPreferences();
+        if (!_appPrefs.UpdateChecksEnabled)
+            HideMtcUpdateBanner();
         ApplySessionLogSettings(_embeddedGameConfig);
         ApplyRedAlertPreference();
         RebuildScriptsMenu();
@@ -927,7 +937,8 @@ public partial class MainWindow
                 debugPrefs.VerboseDebugLogging,
                 debugPrefs.TriggerDebugLogging,
                 debugPrefs.ScriptTraceDebugLogging,
-                debugPrefs.AutoRecorderDebugLogging);
+                debugPrefs.AutoRecorderDebugLogging,
+                debugPrefs.VariablePersistenceDebugLogging);
             Core.GlobalModules.ConfigureHaggleDebugLogging(
                 AppPaths.GetPortHaggleDebugLogPath(),
                 debugPrefs.DebugPortHaggleEnabled,
@@ -979,6 +990,12 @@ public partial class MainWindow
                 {
                     RecordMtcUiRun(owner, "status.request");
                     Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 0);
+                    if (!IsActiveMtcTab(owner))
+                    {
+                        MarkMtcTabVisualStateDirty(owner, statusBar: true);
+                        return;
+                    }
+
                     ExecuteInMtcTabSession(owner, RequestStatusBarRefresh);
                 }, DispatcherPriority.Background);
             }

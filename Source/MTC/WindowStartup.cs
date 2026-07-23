@@ -98,7 +98,7 @@ public partial class MainWindow
         RebuildScriptsMenu();
         RefreshNotesMenuState();
         _parser.Feed("\x1b[2J\x1b[H");
-        _parser.Feed("\x1b[1;33mMayhem Tradewars Client 1.0 beta2\x1b[0m\r\n");
+        _parser.Feed($"\x1b[1;33m{MtcVersion.WindowTitle}\x1b[0m\r\n");
         _parser.Feed("\x1b[37mUse \x1b[1;32mFile \u25b6 New Connection\x1b[0;37m or \x1b[1;32mOpen\x1b[0;37m to select a game, then \x1b[1;32mFile \u25b6 Connect\x1b[0;37m to connect.\x1b[0m\r\n");
         _buffer.Dirty = true;
 
@@ -147,6 +147,7 @@ public partial class MainWindow
             RequestNativeAppMenuRefresh(force: true);
             RequestNativeDockMenuRefresh(force: true);
             _ = EnsureSharedPathsConfiguredAsync();
+            QueueStartupMtcUpdateCheck();
         };
         Activated += (_, _) => FocusActiveTerminal();
         Closed    += (_, _) =>
@@ -164,6 +165,9 @@ public partial class MainWindow
             _nativeDockMenuAttached = false;
             _mombotKeepaliveTimer.Stop();
             _onlineAutoRefreshTimer.Stop();
+            _updateCheckCts?.Cancel();
+            _updateCheckCts?.Dispose();
+            _updateCheckCts = null;
             CloseOwnedChildWindows();
             StopOwnedChildProcesses();
             StopAllMtcTabSessions();

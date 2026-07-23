@@ -476,10 +476,11 @@ namespace TWXProxy.Core
         {
             public HashSet<string> PinnedNamespaces { get; } = new(StringComparer.OrdinalIgnoreCase);
             public HashSet<string> PinnedLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, string> LabelAliases { get; } = new(StringComparer.OrdinalIgnoreCase);
             public bool PinRootLabels { get; set; }
 
             public bool HasAnyHints =>
-                PinRootLabels || PinnedNamespaces.Count > 0 || PinnedLabels.Count > 0;
+                PinRootLabels || PinnedNamespaces.Count > 0 || PinnedLabels.Count > 0 || LabelAliases.Count > 0;
         }
 
         private sealed class StrictNamespaceReference
@@ -3001,12 +3002,16 @@ namespace TWXProxy.Core
 
             try
             {
-                PreparedScriptProgram prepared = PreparedScriptDecoder.Decode(this);
-                PreparedInstruction[] instructions = prepared.Instructions;
                 // Dynamic GOTO/GOSUB targets are valid TWX script behavior.  The
                 // bytecode pruner must preserve labels assigned to variables even
                 // when include-branch source pruning is not enabled.
                 DynamicReachabilityHints dynamicHints = BuildDynamicReachabilityHints();
+                MaterializeDynamicLabelAliases(dynamicHints);
+                var labelsPinnedBeforePrune = new HashSet<string>(
+                    dynamicHints.PinnedLabels.Where(label => FindLabel(label) >= 0),
+                    StringComparer.OrdinalIgnoreCase);
+                PreparedScriptProgram prepared = PreparedScriptDecoder.Decode(this);
+                PreparedInstruction[] instructions = prepared.Instructions;
                 HashSet<string> pinnedNamespaces;
                 bool pinRootLabels;
                 if (dynamicHints.HasAnyHints)
@@ -3330,6 +3335,20 @@ namespace TWXProxy.Core
                 report.ReachableLabelCount = newLabels.Count;
                 report.PrunedCodeBytes = newCodeSize;
 
+                if (labelsPinnedBeforePrune.Count > 0)
+                {
+                    var retainedLabels = new HashSet<string>(
+                        newLabels.Select(label => label.Name),
+                        StringComparer.OrdinalIgnoreCase);
+                    string? missingPinnedLabel = labelsPinnedBeforePrune.FirstOrDefault(label => !retainedLabels.Contains(label));
+                    if (!string.IsNullOrEmpty(missingPinnedLabel))
+                    {
+                        report.Status = "skipped";
+                        report.Reason = $"Pinned variable-held label '{missingPinnedLabel}' would be pruned";
+                        return;
+                    }
+                }
+
                 if (!codeChanged && !paramsChanged && !labelsChanged)
                 {
                     report.Status = "unchanged";
@@ -3426,6 +3445,7 @@ namespace TWXProxy.Core
                     if (TryGetLiteralLabelAssignment(tokens, currentNamespace, out string literalVariable, out string qualifiedLabel, allowRootLocal: true))
                     {
                         AddToLookup(literalLabelsByVariable, literalVariable, qualifiedLabel);
+                        hints.PinnedLabels.Add(qualifiedLabel);
                     }
                     else if (TryGetVariableAliasAssignment(tokens, currentNamespace, out string destinationVariable, out string sourceVariable))
                     {
@@ -3442,6 +3462,7 @@ namespace TWXProxy.Core
             {
                 var visitedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var pendingVariables = new Queue<string>();
+                var resolvedLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 pendingVariables.Enqueue(dynamicVariable);
 
                 bool resolvedAnyLabels = false;
@@ -3456,7 +3477,10 @@ namespace TWXProxy.Core
                     if (literalLabelsByVariable.TryGetValue(variable, out HashSet<string>? labels))
                     {
                         foreach (string label in labels)
+                        {
                             hints.PinnedLabels.Add(label);
+                            resolvedLabels.Add(label);
+                        }
                         resolvedAnyLabels = true;
                     }
 
@@ -3478,9 +3502,49 @@ namespace TWXProxy.Core
                             AddDynamicFallbackScope(hints, fallbackScope);
                     }
                 }
+
+                if (resolvedLabels.Count > 0 &&
+                    fallbackNamespacesByVariable.TryGetValue(dynamicVariable, out HashSet<string>? dynamicFallbackScopes))
+                {
+                    foreach (string fallbackScope in dynamicFallbackScopes)
+                    {
+                        if (string.IsNullOrEmpty(fallbackScope))
+                            continue;
+
+                        foreach (string label in resolvedLabels)
+                        {
+                            if (label.IndexOf('~') >= 0)
+                                continue;
+
+                            AddLabelAlias(hints, fallbackScope + "~" + label, label);
+                        }
+                    }
+                }
             }
 
             return hints;
+        }
+
+        private void MaterializeDynamicLabelAliases(DynamicReachabilityHints hints)
+        {
+            if (hints.LabelAliases.Count == 0)
+                return;
+
+            foreach ((string aliasLabel, string targetLabel) in hints.LabelAliases)
+            {
+                if (FindLabel(aliasLabel) >= 0)
+                {
+                    hints.PinnedLabels.Add(aliasLabel);
+                    continue;
+                }
+
+                int targetOffset = FindLabel(targetLabel);
+                if (targetOffset < 0)
+                    continue;
+
+                BuildLabel(aliasLabel, targetOffset);
+                hints.PinnedLabels.Add(aliasLabel);
+            }
         }
 
         private HashSet<string> BuildPinnedDynamicNamespaces(out bool pinRootLabels)
@@ -3727,6 +3791,18 @@ namespace TWXProxy.Core
             }
 
             values.Add(value);
+        }
+
+        private static void AddLabelAlias(DynamicReachabilityHints hints, string aliasLabel, string targetLabel)
+        {
+            if (string.IsNullOrWhiteSpace(aliasLabel) || string.IsNullOrWhiteSpace(targetLabel))
+                return;
+
+            if (string.Equals(aliasLabel, targetLabel, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!hints.LabelAliases.ContainsKey(aliasLabel))
+                hints.LabelAliases[aliasLabel] = targetLabel;
         }
 
         private static void AddDynamicFallbackScope(DynamicReachabilityHints hints, string currentNamespace)

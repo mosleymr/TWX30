@@ -117,6 +117,7 @@ internal class EmbeddedMtcDebugConfig
     public bool DebugLoggingEnabled { get; set; } = true;
     public bool VerboseDebugLogging { get; set; }
     public bool ScriptTraceDebugLogging { get; set; }
+    public bool VariablePersistenceDebugLogging { get; set; }
     public bool AutoRecorderDebugLogging { get; set; }
     public bool TriggerDebugLogging { get; set; }
     public bool DebugDatabaseChanges { get; set; }

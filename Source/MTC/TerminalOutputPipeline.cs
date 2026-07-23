@@ -39,7 +39,6 @@ public partial class MainWindow
     private const int CatchUpDisplayDrainChunkLimit = 4096;
     private const int CatchUpDisplayDrainByteLimit = 4 * 1024 * 1024;
     private const double CatchUpDisplayDrainMilliseconds = 16;
-    private const int InactiveVisualSnapshotMaxChunks = 2048;
     private const int InactiveVisualSnapshotMaxBytes = 512 * 1024;
 
     private MtcTabPrototype? ResolveTerminalOwner(MtcTabPrototype? owner)
@@ -176,6 +175,7 @@ public partial class MainWindow
         {
             Interlocked.Exchange(ref owner.PendingDisplayChunkCount, 0);
             Interlocked.Exchange(ref owner.PendingDisplayByteCount, 0);
+            ClearInactiveDisplaySnapshot(owner);
         }
 
         ResetTerminalDisplayArtifactFilterState(owner);
@@ -218,9 +218,7 @@ public partial class MainWindow
         {
             RecordMtcPerf(owner, "display.enqueue.inactive.chunks");
             RecordMtcPerf(owner, "display.enqueue.inactive.bytes", chunk.Length);
-            Interlocked.Increment(ref owner.PendingDisplayChunkCount);
-            Interlocked.Add(ref owner.PendingDisplayByteCount, chunk.Length);
-            owner.PendingDisplayChunks.Enqueue(new PendingDisplayChunk(chunk));
+            RetainInactiveDisplaySnapshot(owner, chunk);
             return;
         }
 
@@ -232,6 +230,65 @@ public partial class MainWindow
         (owner?.PendingDisplayChunks ?? _pendingDisplayChunks).Enqueue(new PendingDisplayChunk(chunk));
 
         ScheduleDisplayDrain(owner, TerminalActiveDisplayDrainDelay);
+    }
+
+    private void RetainInactiveDisplaySnapshot(MtcTabPrototype owner, byte[] chunk)
+    {
+        lock (owner.InactiveDisplaySnapshotSync)
+        {
+            if (owner.InactiveDisplaySnapshotBuffer.Length != InactiveVisualSnapshotMaxBytes)
+            {
+                owner.InactiveDisplaySnapshotBuffer = new byte[InactiveVisualSnapshotMaxBytes];
+                owner.InactiveDisplaySnapshotStart = 0;
+                owner.InactiveDisplaySnapshotLength = 0;
+            }
+
+            int copyLength = Math.Min(chunk.Length, InactiveVisualSnapshotMaxBytes);
+            int sourceOffset = chunk.Length - copyLength;
+            if (chunk.Length > copyLength)
+            {
+                RecordMtcPerf(owner, "display.enqueue.inactive.trim_oversized");
+                RecordMtcPerf(owner, "display.enqueue.inactive.trim_bytes", chunk.Length - copyLength);
+                owner.InactiveDisplaySnapshotStart = 0;
+                owner.InactiveDisplaySnapshotLength = 0;
+            }
+            else
+            {
+                int free = InactiveVisualSnapshotMaxBytes - owner.InactiveDisplaySnapshotLength;
+                if (copyLength > free)
+                {
+                    int droppedBytes = copyLength - free;
+                    owner.InactiveDisplaySnapshotStart =
+                        (owner.InactiveDisplaySnapshotStart + droppedBytes) % InactiveVisualSnapshotMaxBytes;
+                    owner.InactiveDisplaySnapshotLength -= droppedBytes;
+                    RecordMtcPerf(owner, "display.enqueue.inactive.trim_bytes", droppedBytes);
+                }
+            }
+
+            int writeOffset =
+                (owner.InactiveDisplaySnapshotStart + owner.InactiveDisplaySnapshotLength) %
+                InactiveVisualSnapshotMaxBytes;
+            int firstCopyLength = Math.Min(copyLength, InactiveVisualSnapshotMaxBytes - writeOffset);
+            Buffer.BlockCopy(chunk, sourceOffset, owner.InactiveDisplaySnapshotBuffer, writeOffset, firstCopyLength);
+
+            int remaining = copyLength - firstCopyLength;
+            if (remaining > 0)
+            {
+                Buffer.BlockCopy(
+                    chunk,
+                    sourceOffset + firstCopyLength,
+                    owner.InactiveDisplaySnapshotBuffer,
+                    0,
+                    remaining);
+            }
+
+            owner.InactiveDisplaySnapshotLength += copyLength;
+        }
+
+        RecordMtcPerf(owner, "display.inactive.snapshot.chunks");
+        RecordMtcPerf(owner, "display.inactive.snapshot.bytes", chunk.Length);
+        RecordMtcPerf(owner, "display.inactive.snapshot.deferred");
+        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
     }
 
     private void ScheduleDisplayDrain(TimeSpan delay)
@@ -281,28 +338,6 @@ public partial class MainWindow
         timer.Start();
     }
 
-    private void ScheduleInactiveDisplayDrain(MtcTabPrototype owner)
-    {
-        // Inactive tabs must not parse/render terminal visuals. Script-visible
-        // text is handled by the connection callbacks; this raw queue is only a
-        // visual snapshot source for the next activation.
-        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
-        RecordMtcPerf(owner, "display.inactive.visual_deferred");
-    }
-
-    private void DrainInactiveDisplayChunks(MtcTabPrototype owner)
-    {
-        if (owner.Id == Volatile.Read(ref _activeMtcTabId))
-        {
-            Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
-            ScheduleDisplayDrain(owner, TerminalActiveDisplayDrainDelay);
-            return;
-        }
-
-        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
-        RecordMtcPerf(owner, "display.inactive.drain.skipped");
-    }
-
     private TimeSpan GetDisplayDrainThrottleDelay(MtcTabPrototype owner)
     {
         long lastTicks = Volatile.Read(ref owner.LastDisplayDrainTicks);
@@ -340,6 +375,9 @@ public partial class MainWindow
     private bool HasPendingTerminalDisplayBacklog(MtcTabPrototype? owner)
     {
         if (!(owner?.PendingDisplayChunks ?? _pendingDisplayChunks).IsEmpty)
+            return true;
+
+        if (owner is not null && Volatile.Read(ref owner.InactiveDisplaySnapshotLength) > 0)
             return true;
 
         return owner is not null
@@ -402,10 +440,73 @@ public partial class MainWindow
         }
 
         FlushDeferredPanelRefreshes();
-        RedrawMombotPrompt();
     }
 
     private void RenderPendingDisplaySnapshotOnActivation(MtcTabPrototype owner)
+    {
+        DrainQueuedDisplayChunksToTerminalState(owner, "display.activation_drain");
+        DrainInactiveDisplaySnapshotToTerminalState(owner, "display.activation_snapshot");
+    }
+
+    private void DrainInactiveDisplaySnapshotToTerminalState(MtcTabPrototype owner, string source)
+    {
+        byte[] snapshot = TakeInactiveDisplaySnapshot(owner);
+        if (snapshot.Length == 0)
+            return;
+
+        ExecuteInMtcTabBackgroundContext(owner, () =>
+        {
+            long started = Stopwatch.GetTimestamp();
+            lock (owner.TerminalBufferSync)
+            {
+                using (owner.Buffer.BeginUpdate())
+                {
+                    owner.Parser.Feed(snapshot, snapshot.Length);
+                }
+            }
+
+            RecordMtcPerf(owner, $"{source}.bytes", snapshot.Length);
+            RecordMtcPerfDuration(owner, source, started);
+        });
+    }
+
+    private byte[] TakeInactiveDisplaySnapshot(MtcTabPrototype owner)
+    {
+        lock (owner.InactiveDisplaySnapshotSync)
+        {
+            int length = owner.InactiveDisplaySnapshotLength;
+            if (length <= 0 || owner.InactiveDisplaySnapshotBuffer.Length == 0)
+                return Array.Empty<byte>();
+
+            var snapshot = new byte[length];
+            int firstCopyLength = Math.Min(length, owner.InactiveDisplaySnapshotBuffer.Length - owner.InactiveDisplaySnapshotStart);
+            Buffer.BlockCopy(
+                owner.InactiveDisplaySnapshotBuffer,
+                owner.InactiveDisplaySnapshotStart,
+                snapshot,
+                0,
+                firstCopyLength);
+
+            int remaining = length - firstCopyLength;
+            if (remaining > 0)
+                Buffer.BlockCopy(owner.InactiveDisplaySnapshotBuffer, 0, snapshot, firstCopyLength, remaining);
+
+            owner.InactiveDisplaySnapshotStart = 0;
+            owner.InactiveDisplaySnapshotLength = 0;
+            return snapshot;
+        }
+    }
+
+    private static void ClearInactiveDisplaySnapshot(MtcTabPrototype owner)
+    {
+        lock (owner.InactiveDisplaySnapshotSync)
+        {
+            owner.InactiveDisplaySnapshotStart = 0;
+            owner.InactiveDisplaySnapshotLength = 0;
+        }
+    }
+
+    private void DrainQueuedDisplayChunksToTerminalState(MtcTabPrototype owner, string source)
     {
         if (owner.PendingDisplayChunks.IsEmpty)
         {
@@ -417,73 +518,26 @@ public partial class MainWindow
         ExecuteInMtcTabBackgroundContext(owner, () =>
         {
             long started = Stopwatch.GetTimestamp();
-            var tail = new Queue<byte[]>();
-            long tailBytes = 0;
-            int totalChunks = 0;
-            long totalBytes = 0;
-            int droppedChunks = 0;
-            long droppedBytes = 0;
-
-            while (owner.PendingDisplayChunks.TryDequeue(out PendingDisplayChunk pending))
+            int queuedChunks = Volatile.Read(ref owner.PendingDisplayChunkCount);
+            long queuedBytes = Volatile.Read(ref owner.PendingDisplayByteCount);
+            int processedChunks = 0;
+            while (!owner.PendingDisplayChunks.IsEmpty)
             {
-                DecrementPendingDisplayBacklog(owner, pending.Bytes.Length);
-                totalChunks++;
-                totalBytes += pending.Bytes.Length;
-
-                if (pending.Bytes.Length == 0)
-                    continue;
-
-                byte[] bytes = pending.Bytes;
-                if (bytes.Length > InactiveVisualSnapshotMaxBytes)
-                {
-                    int skip = bytes.Length - InactiveVisualSnapshotMaxBytes;
-                    droppedBytes += skip;
-                    bytes = bytes[skip..];
-                }
-
-                tail.Enqueue(bytes);
-                tailBytes += bytes.Length;
-
-                while (tail.Count > InactiveVisualSnapshotMaxChunks ||
-                       tailBytes > InactiveVisualSnapshotMaxBytes)
-                {
-                    byte[] dropped = tail.Dequeue();
-                    tailBytes -= dropped.Length;
-                    droppedChunks++;
-                    droppedBytes += dropped.Length;
-                }
-            }
-
-            byte[] snapshot = tailBytes <= 0
-                ? []
-                : new byte[(int)Math.Min(tailBytes, InactiveVisualSnapshotMaxBytes)];
-            int offset = 0;
-            foreach (byte[] bytes in tail)
-            {
-                int count = Math.Min(bytes.Length, snapshot.Length - offset);
-                if (count <= 0)
+                int processed = DrainDisplayQueueToBuffer(
+                    owner,
+                    int.MaxValue,
+                    int.MaxValue,
+                    maxMillisecondsPerPass: 0,
+                    lockBuffer: true);
+                if (processed <= 0)
                     break;
-                Buffer.BlockCopy(bytes, 0, snapshot, offset, count);
-                offset += count;
+                processedChunks += processed;
             }
 
-            lock (owner.TerminalBufferSync)
-            {
-                using (owner.Buffer.BeginUpdate())
-                {
-                    owner.Buffer.ClearAll();
-                    owner.Parser.ResetState();
-                    if (snapshot.Length > 0)
-                        owner.Parser.FeedVisualSnapshot(snapshot, snapshot.Length);
-                }
-            }
-
-            RecordMtcPerf(owner, "display.snapshot.chunks", totalChunks);
-            RecordMtcPerf(owner, "display.snapshot.bytes", totalBytes);
-            RecordMtcPerf(owner, "display.snapshot.rendered_bytes", snapshot.Length);
-            RecordMtcPerf(owner, "display.snapshot.dropped_chunks", droppedChunks);
-            RecordMtcPerf(owner, "display.snapshot.dropped_bytes", droppedBytes);
-            RecordMtcPerfDuration(owner, "display.snapshot", started);
+            RecordMtcPerf(owner, $"{source}.queued_chunks", queuedChunks);
+            RecordMtcPerf(owner, $"{source}.queued_bytes", queuedBytes);
+            RecordMtcPerf(owner, $"{source}.processed", processedChunks);
+            RecordMtcPerfDuration(owner, source, started);
         });
 
         Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);

@@ -47,6 +47,21 @@ internal class PreferencesDialog : Window
         new("Full automation", MtcRpcApprovalLevels.FullAutomation),
     };
 
+    private static readonly UpdateOption[] UpdateLaneOptions =
+    {
+        new("Beta", AppPreferences.UpdateLaneBeta),
+        new("Stable", AppPreferences.UpdateLaneStable),
+        new("Dev", AppPreferences.UpdateLaneDev),
+    };
+
+    private static readonly UpdateOption[] UpdateCadenceOptions =
+    {
+        new("Daily", AppPreferences.UpdateCadenceDaily),
+        new("Manual only", AppPreferences.UpdateCadenceManual),
+        new("Every startup", AppPreferences.UpdateCadenceStartup),
+        new("Weekly", AppPreferences.UpdateCadenceWeekly),
+    };
+
     public PreferencesDialog(
         AppPreferences prefs,
         EmbeddedMtcDebugConfig debugPrefs,
@@ -134,6 +149,7 @@ internal class PreferencesDialog : Window
         var chkDebug = BuildCheckBox("Enable debug logging", debugPrefs.DebugLoggingEnabled);
         var chkVerbose = BuildCheckBox("Enable verbose parameter debug logging", debugPrefs.VerboseDebugLogging);
         var chkScriptTrace = BuildCheckBox("Enable script VM trace logging (huge)", debugPrefs.ScriptTraceDebugLogging);
+        var chkVariablePersistenceDebug = BuildCheckBox("Debug savevar/loadvar logging (very noisy)", debugPrefs.VariablePersistenceDebugLogging);
         var chkAutoRecorderDebug = BuildCheckBox("Enable AutoRecorder debug logging", debugPrefs.AutoRecorderDebugLogging);
         var chkTriggerDebug = BuildCheckBox("Enable trigger debug logging (very noisy)", debugPrefs.TriggerDebugLogging);
         var chkDebugDatabaseChanges = BuildCheckBox("Debug Database Changes", debugPrefs.DebugDatabaseChanges);
@@ -146,6 +162,25 @@ internal class PreferencesDialog : Window
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
         var chkPerformanceMonitoring = BuildCheckBox("Enable MTC performance monitoring", prefs.PerformanceMonitoringEnabled);
+        var chkUpdateChecks = BuildCheckBox("Check for MTC updates", prefs.UpdateChecksEnabled);
+        var cboUpdateLane = BuildUpdateOptionComboBox(
+            UpdateLaneOptions,
+            AppPreferences.NormalizeUpdateLane(prefs.UpdateLane));
+        var cboUpdateCadence = BuildUpdateOptionComboBox(
+            UpdateCadenceOptions,
+            AppPreferences.NormalizeUpdateCadence(prefs.UpdateCadence));
+        var txtUpdateManifestUrl = BuildPathTextBox(
+            AppPreferences.NormalizeUpdateManifestUrl(prefs.UpdateManifestUrl),
+            AppPreferences.DefaultUpdateManifestUrl);
+        void UpdateUpdateControlState()
+        {
+            bool enabled = chkUpdateChecks.IsChecked == true;
+            cboUpdateLane.IsEnabled = enabled;
+            cboUpdateCadence.IsEnabled = enabled;
+            txtUpdateManifestUrl.IsEnabled = enabled;
+        }
+        chkUpdateChecks.IsCheckedChanged += (_, _) => UpdateUpdateControlState();
+        UpdateUpdateControlState();
 
         var cboPreparedCacheLimit = BuildMemoryLimitComboBox(
             prefs.PreparedScriptCacheLimitKb,
@@ -204,6 +239,7 @@ internal class PreferencesDialog : Window
             bool debugEnabled = chkDebug.IsChecked == true;
             chkVerbose.IsEnabled = debugEnabled;
             chkScriptTrace.IsEnabled = debugEnabled;
+            chkVariablePersistenceDebug.IsEnabled = debugEnabled;
             chkAutoRecorderDebug.IsEnabled = debugEnabled;
             chkTriggerDebug.IsEnabled = debugEnabled;
             chkDebugDatabaseChanges.IsEnabled = debugEnabled;
@@ -211,6 +247,7 @@ internal class PreferencesDialog : Window
             {
                 chkVerbose.IsChecked = false;
                 chkScriptTrace.IsChecked = false;
+                chkVariablePersistenceDebug.IsChecked = false;
                 chkAutoRecorderDebug.IsChecked = false;
                 chkTriggerDebug.IsChecked = false;
                 chkDebugDatabaseChanges.IsChecked = false;
@@ -218,6 +255,7 @@ internal class PreferencesDialog : Window
         };
         chkVerbose.IsEnabled = chkDebug.IsChecked == true;
         chkScriptTrace.IsEnabled = chkDebug.IsChecked == true;
+        chkVariablePersistenceDebug.IsEnabled = chkDebug.IsChecked == true;
         chkAutoRecorderDebug.IsEnabled = chkDebug.IsChecked == true;
         chkTriggerDebug.IsEnabled = chkDebug.IsChecked == true;
         chkDebugDatabaseChanges.IsEnabled = chkDebug.IsChecked == true;
@@ -243,12 +281,21 @@ internal class PreferencesDialog : Window
                 ? "Logging controls for the currently selected game."
                 : $"Logging controls for game '{gameName}'.",
             BuildCheckGroup(chkCreateGameLogs, chkCreateAnsiGameLogs),
-            BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkAutoRecorderDebug, chkTriggerDebug, chkDebugDatabaseChanges, chkDebugPortHaggle, chkDebugPlanetHaggle));
+            BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkVariablePersistenceDebug, chkAutoRecorderDebug, chkTriggerDebug, chkDebugDatabaseChanges, chkDebugPortHaggle, chkDebugPlanetHaggle));
 
         var appDiagnosticsSection = BuildSection(
             "Application Diagnostics",
             "Global process instrumentation for MTC. Leave off unless measuring UI or tab performance.",
             BuildCheckGroup(chkPerformanceMonitoring));
+
+        var updatesSection = BuildSection(
+            "Updates",
+            "Global MTC update checks. Downloads open the platform installer instead of replacing the running app.",
+            BuildCheckGroup(chkUpdateChecks),
+            BuildTwoColumnRow(
+                BuildField("Lane", cboUpdateLane, "Beta tracks normal test builds; stable can be used for GA releases."),
+                BuildField("Check cadence", cboUpdateCadence, "Manual checks are still available under About.")),
+            BuildField("Manifest URL", txtUpdateManifestUrl, "JSON manifest URL. SourceForge and GitHub-hosted manifests both work."));
 
         var alertsSection = BuildSection(
             "Alerts",
@@ -306,6 +353,7 @@ internal class PreferencesDialog : Window
             debugPrefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
             debugPrefs.VerboseDebugLogging = debugPrefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
             debugPrefs.ScriptTraceDebugLogging = debugPrefs.DebugLoggingEnabled && chkScriptTrace.IsChecked == true;
+            debugPrefs.VariablePersistenceDebugLogging = debugPrefs.DebugLoggingEnabled && chkVariablePersistenceDebug.IsChecked == true;
             debugPrefs.AutoRecorderDebugLogging = debugPrefs.DebugLoggingEnabled && chkAutoRecorderDebug.IsChecked == true;
             debugPrefs.TriggerDebugLogging = debugPrefs.DebugLoggingEnabled && chkTriggerDebug.IsChecked == true;
             debugPrefs.DebugDatabaseChanges = debugPrefs.DebugLoggingEnabled && chkDebugDatabaseChanges.IsChecked == true;
@@ -321,6 +369,10 @@ internal class PreferencesDialog : Window
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
             prefs.PerformanceMonitoringEnabled = chkPerformanceMonitoring.IsChecked == true;
+            prefs.UpdateChecksEnabled = chkUpdateChecks.IsChecked == true;
+            prefs.UpdateLane = GetUpdateOptionValue(cboUpdateLane, AppPreferences.UpdateLaneBeta);
+            prefs.UpdateCadence = GetUpdateOptionValue(cboUpdateCadence, AppPreferences.UpdateCadenceDaily);
+            prefs.UpdateManifestUrl = AppPreferences.NormalizeUpdateManifestUrl(txtUpdateManifestUrl.Text);
             prefs.PreparedScriptCacheLimitKb = GetMemoryLimitKb(
                 cboPreparedCacheLimit,
                 AppPreferences.DefaultPreparedScriptCacheLimitKb);
@@ -364,6 +416,7 @@ internal class PreferencesDialog : Window
             {
                 BuildTabItem("General", storageSection, alertsSection, runtimeSection),
                 BuildTabItem("Diagnostics", appDiagnosticsSection, diagnosticsSection),
+                BuildTabItem("Updates", updatesSection),
                 BuildTabItem("RPC", integrationsSection),
             },
         };
@@ -678,10 +731,34 @@ internal class PreferencesDialog : Window
         return combo;
     }
 
+    private static ComboBox BuildUpdateOptionComboBox(UpdateOption[] options, string selectedValue)
+    {
+        var combo = new ComboBox
+        {
+            ItemsSource = options,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+            MinWidth = 170,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        combo.SelectedItem = options.FirstOrDefault(option =>
+            string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase)) ?? options[0];
+        return combo;
+    }
+
     private static int GetMemoryLimitKb(ComboBox combo, int defaultValue)
     {
         return combo.SelectedItem is MemoryLimitOption option
             ? option.Kilobytes
+            : defaultValue;
+    }
+
+    private static string GetUpdateOptionValue(ComboBox combo, string defaultValue)
+    {
+        return combo.SelectedItem is UpdateOption option
+            ? option.Value
             : defaultValue;
     }
 
@@ -713,6 +790,20 @@ internal class PreferencesDialog : Window
     private sealed class RpcApprovalOption
     {
         public RpcApprovalOption(string label, string value)
+        {
+            Label = label;
+            Value = value;
+        }
+
+        public string Label { get; }
+        public string Value { get; }
+
+        public override string ToString() => Label;
+    }
+
+    private sealed class UpdateOption
+    {
+        public UpdateOption(string label, string value)
         {
             Label = label;
             Value = value;

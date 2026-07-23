@@ -1659,11 +1659,15 @@ namespace TWXProxy.Core
         private PauseReason _pausedReason = PauseReason.None;
         private bool _forceStopRequested;
         private bool _isExecuting;
+        private int _executionWatchdogActivityCounter;
         private bool _lastLineHandled;
         private int _lastCodePos = -1;
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
         private const int MAX_LOOP_ITERATIONS = 50;  // Max iterations before warning
+        private const int MAX_COMMANDS_PER_EXECUTION_SLICE = 1_000_000;
+        private const int EXECUTION_WATCHDOG_CHECK_MASK = 0x0FFF;
+        private static readonly TimeSpan MAX_EXECUTION_SLICE_DURATION = TimeSpan.FromSeconds(10);
         private bool _resetLoopDetectionOnNextExecute;
         private bool _enableVariableDebug = false;  // Toggle for [VAR] output
         private string _waitText = string.Empty;
@@ -3047,6 +3051,56 @@ namespace TWXProxy.Core
             }
         }
 
+        internal void MarkExecutionWatchdogActivity()
+        {
+            unchecked
+            {
+                _executionWatchdogActivityCounter++;
+            }
+        }
+
+        private void CheckExecutionWatchdog(
+            int commandsExecuted,
+            ref int watchdogCommandBaseline,
+            ref long watchdogStartTimestamp,
+            ref int watchdogActivityCounter)
+        {
+            int currentActivityCounter = _executionWatchdogActivityCounter;
+            if (currentActivityCounter != watchdogActivityCounter)
+            {
+                watchdogActivityCounter = currentActivityCounter;
+                watchdogCommandBaseline = commandsExecuted;
+                watchdogStartTimestamp = Stopwatch.GetTimestamp();
+                return;
+            }
+
+            int commandsSinceActivity = commandsExecuted - watchdogCommandBaseline;
+            if (commandsSinceActivity >= MAX_COMMANDS_PER_EXECUTION_SLICE)
+            {
+                ResetExecutionWatchdogCheckpoint(commandsExecuted, ref watchdogCommandBaseline, ref watchdogStartTimestamp);
+                return;
+            }
+
+            if ((commandsSinceActivity & EXECUTION_WATCHDOG_CHECK_MASK) != 0)
+                return;
+
+            TimeSpan elapsed = Stopwatch.GetElapsedTime(watchdogStartTimestamp);
+            if (elapsed >= MAX_EXECUTION_SLICE_DURATION)
+            {
+                ResetExecutionWatchdogCheckpoint(commandsExecuted, ref watchdogCommandBaseline, ref watchdogStartTimestamp);
+            }
+        }
+
+        private static void ResetExecutionWatchdogCheckpoint(
+            int commandsExecuted,
+            ref int watchdogCommandBaseline,
+            ref long watchdogStartTimestamp)
+        {
+            // Long local loops are valid TWX patterns; checkpoint instead of killing them.
+            watchdogCommandBaseline = commandsExecuted;
+            watchdogStartTimestamp = Stopwatch.GetTimestamp();
+        }
+
         private CmdParam[] GetDispatchParamBuffer(int paramCount)
         {
             if (!_dispatchParamCache.TryGetValue(paramCount, out var buffer))
@@ -3474,6 +3528,9 @@ namespace TWXProxy.Core
             var server = GlobalModules.TWXServer;
             IExecutionObserver? observer = ExecutionObserver;
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
+            long executionWatchdogStart = Stopwatch.GetTimestamp();
+            int executionWatchdogCommandBaseline = 0;
+            int executionWatchdogActivityCounter = _executionWatchdogActivityCounter;
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
@@ -3585,6 +3642,7 @@ namespace TWXProxy.Core
                     if (commandName == "RETURN")
                     {
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         if (GlobalModules.VerboseDebugMode)
                             GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
                         long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
@@ -3620,6 +3678,7 @@ namespace TWXProxy.Core
                             dispatchParams[i] = _cmdParams[i];
 
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         resolvedParamCount += _cmdParams.Count;
                         action = cmd.OnCmd(this, dispatchParams);
                     }
@@ -3713,6 +3772,9 @@ namespace TWXProxy.Core
             var server = GlobalModules.TWXServer;
             IExecutionObserver? observer = ExecutionObserver;
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
+            long executionWatchdogStart = Stopwatch.GetTimestamp();
+            int executionWatchdogCommandBaseline = 0;
+            int executionWatchdogActivityCounter = _executionWatchdogActivityCounter;
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
@@ -3823,6 +3885,7 @@ namespace TWXProxy.Core
                     if (instruction.IsReturnCommand)
                     {
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         if (GlobalModules.VerboseDebugMode)
                             GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
                         long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
@@ -3851,6 +3914,7 @@ namespace TWXProxy.Core
                     try
                     {
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         action = instruction.Handler(this, dispatchParams);
                     }
                     catch (Exception ex)
@@ -3946,6 +4010,9 @@ namespace TWXProxy.Core
             var server = GlobalModules.TWXServer;
             IExecutionObserver? observer = ExecutionObserver;
             long metricsStart = GlobalModules.EnableVmMetrics ? Stopwatch.GetTimestamp() : 0;
+            long executionWatchdogStart = Stopwatch.GetTimestamp();
+            int executionWatchdogCommandBaseline = 0;
+            int executionWatchdogActivityCounter = _executionWatchdogActivityCounter;
             int commandsExecuted = 0;
             int resolvedParamCount = 0;
             _isExecuting = true;
@@ -4319,6 +4386,7 @@ namespace TWXProxy.Core
                     if (commandName == "RETURN")
                     {
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         if (GlobalModules.VerboseDebugMode)
                             GlobalModules.DebugLog($"[Execute] RETURN - popping substack (depth={_subStack.Count}, codePos={_codePos})\n");
                         long returnStart = observer != null ? Stopwatch.GetTimestamp() : 0;
@@ -4353,6 +4421,7 @@ namespace TWXProxy.Core
                             dispatchParams[i] = _cmdParams[i];
 
                         commandsExecuted++;
+                        CheckExecutionWatchdog(commandsExecuted, ref executionWatchdogCommandBaseline, ref executionWatchdogStart, ref executionWatchdogActivityCounter);
                         resolvedParamCount += _cmdParams.Count;
                         action = cmd.OnCmd(this, dispatchParams);
                     }
@@ -4628,7 +4697,7 @@ namespace TWXProxy.Core
             server.BroadcastLiteral($"\r\n{AnsiCodes.ANSI_15}Variables for {AnsiCodes.ANSI_7}{scriptName}{AnsiCodes.ANSI_15}\r\n");
 
             bool found = false;
-            foreach (var param in _cmp.ParamList.OfType<VarParam>())
+            foreach (var param in _cmp.ParamList.OfType<VarParam>().OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrEmpty(searchName) &&
                     param.Name.IndexOf(searchName, StringComparison.OrdinalIgnoreCase) < 0)

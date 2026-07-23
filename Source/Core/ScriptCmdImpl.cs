@@ -1203,6 +1203,8 @@ namespace TWXProxy.Core
                 }
 
                 _activeGameInstance.ObserveScriptSend(output);
+                if (script is Script activeScript)
+                    activeScript.MarkExecutionWatchdogActivity();
 
                 // SendToServerAsync preserves order through the shared async socket pump.
                 _activeGameInstance.SendToServerAsync(data).GetAwaiter().GetResult();

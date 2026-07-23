@@ -34,7 +34,9 @@ public partial class MainWindow
         public Core.ModLog SessionLog { get; init; } = null!;
         public Core.ModDatabase? SessionDb { get; set; }
         public Core.GameInstance? GameInstance { get; set; }
+        public int EmbeddedServerConnectedState;
         public Core.ExpansionModuleHost? ModuleHost { get; set; }
+        public List<IDisposable> ModuleMenuRegistrations { get; set; } = [];
         public Core.GameFileLock? GameFileLock { get; set; }
         public Action<bool, Core.NativeHaggleChangeSource>? EmbeddedNativeHaggleChangedHandler { get; set; }
         public Action? EmbeddedNativeHaggleStatsChangedHandler { get; set; }
@@ -42,6 +44,10 @@ public partial class MainWindow
         public ConcurrentQueue<PendingDisplayChunk> PendingDisplayChunks { get; } = new();
         public int PendingDisplayChunkCount;
         public long PendingDisplayByteCount;
+        public object InactiveDisplaySnapshotSync { get; } = new();
+        public byte[] InactiveDisplaySnapshotBuffer { get; set; } = Array.Empty<byte>();
+        public int InactiveDisplaySnapshotStart;
+        public int InactiveDisplaySnapshotLength;
         public ConcurrentQueue<byte[]> PendingSessionLogChunks { get; } = new();
         public int PendingSessionLogChunkCount;
         public long PendingSessionLogByteCount;
@@ -688,6 +694,20 @@ public partial class MainWindow
         bool delayed)
     {
         string postSource = delayed ? $"{source}.delayed" : source;
+        if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+        {
+            Core.ShipStatus latestStatus = tab.PendingShipStatus ?? fallbackStatus;
+            tab.PendingShipStatus = null;
+            Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 0);
+            ExecuteInMtcTabBackgroundContext(tab, () =>
+            {
+                ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: false);
+                MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+            });
+            RecordMtcPerf(tab, $"{postSource}.inactive_background");
+            return;
+        }
+
         RecordMtcUiPost(tab, postSource, DispatcherPriority.Background);
         Dispatcher.UIThread.Post(() =>
         {
@@ -813,6 +833,7 @@ public partial class MainWindow
         tab.SessionDb = _sessionDb;
         tab.GameInstance = _gameInstance;
         tab.ModuleHost = _moduleHost;
+        tab.ModuleMenuRegistrations = _moduleMenuRegistrations;
         tab.GameFileLock = _gameFileLock;
         tab.TerminalLivePaused = _terminalLivePaused;
         tab.DeferredInfoPanelsRefresh = _deferredInfoPanelsRefresh;
@@ -829,7 +850,6 @@ public partial class MainWindow
         tab.RedAlertEnabled = _redAlertEnabled;
         tab.CurrentGameConfigSaveRunning = _currentGameConfigSaveRunning;
         tab.CurrentGameConfigSaveAgain = _currentGameConfigSaveAgain;
-        tab.TerminalInputHandler = _terminalInputHandler ?? tab.TerminalInputHandler;
         tab.ProxyCts = _proxyCts;
         tab.PendingEmbeddedStop = _pendingEmbeddedStop;
         tab.EmbeddedGameConfig = _embeddedGameConfig;
@@ -921,6 +941,7 @@ public partial class MainWindow
         _sessionDb = tab.SessionDb;
         _gameInstance = tab.GameInstance;
         _moduleHost = tab.ModuleHost;
+        _moduleMenuRegistrations = tab.ModuleMenuRegistrations;
         _gameFileLock = tab.GameFileLock;
         _terminalLivePaused = tab.TerminalLivePaused;
         _deferredInfoPanelsRefresh = tab.DeferredInfoPanelsRefresh;
@@ -1715,6 +1736,7 @@ public partial class MainWindow
             return;
 
         CaptureLiveMtcTabShell();
+
         _activeMtcTabId = tabId;
         BindActiveMtcTabSession();
         RestoreActiveMtcTabContent();
@@ -2054,6 +2076,8 @@ public partial class MainWindow
 
     private async Task StopMtcTabSessionAsync(MtcTabPrototype tab)
     {
+        Interlocked.Exchange(ref tab.EmbeddedServerConnectedState, 0);
+        tab.State.Connected = false;
         await ExecuteInOptionalMtcTabSessionAsync(tab, async () =>
         {
             try { _telnet.Disconnect(); } catch { }

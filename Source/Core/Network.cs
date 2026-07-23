@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -155,6 +156,10 @@ namespace TWXProxy.Core
         private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
         private readonly ConcurrentQueue<byte[]> _serverSendQueue = new();
         private readonly SemaphoreSlim _serverSendSignal = new(0);
+        private readonly object _fastServerDataResponderLock = new();
+        private readonly List<Action<FastServerDataEventArgs>> _fastServerDataResponders = new();
+        private readonly object _proxyMenuCommandLock = new();
+        private readonly Dictionary<string, ProxyMenuCommand> _proxyMenuCommands = new(StringComparer.OrdinalIgnoreCase);
         private int _serverDataDispatchDepth;
         private int _serverSendPumpScheduled;
         private readonly object _serverOutputBoundaryLock = new();
@@ -223,6 +228,7 @@ namespace TWXProxy.Core
         // Events for script processing hooks
         public event EventHandler<DataReceivedEventArgs>? ServerDataReceived;
         public event EventHandler<DataReceivedEventArgs>? LocalDataReceived;
+        public event EventHandler<DataReceivedEventArgs>? ServerDataSent;
         public event EventHandler<CommandEventArgs>? CommandReceived;
         public event EventHandler? Connected;
         public event EventHandler<DisconnectEventArgs>? Disconnected;
@@ -1115,16 +1121,16 @@ namespace TWXProxy.Core
                         }
                         
                         Disconnected?.Invoke(this, new DisconnectEventArgs("Server closed connection"));
-                        // Start auto-reconnect if allowed
-                        if (_autoReconnect && !token.IsCancellationRequested)
-                            _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+                        StartReconnectIfNeeded();
                         break;
                     }
 
-                    MarkServerReceive();
+                    long receiveTimestamp = MarkServerReceive();
 
                     var data = new byte[bytesRead];
                     Array.Copy(buffer, data, bytesRead);
+
+                    DispatchFastServerDataResponders(data, receiveTimestamp, isRawReceive: true);
 
                     LogVerbose($"[{_gameName}] Server -> Local: {bytesRead} bytes");
 
@@ -1169,6 +1175,8 @@ namespace TWXProxy.Core
 
                     if (cleanData.Length > 0)
                     {
+                        DispatchFastServerDataResponders(cleanData, receiveTimestamp, isRawReceive: false);
+
                         foreach (byte[] segment in SplitServerOutputForDispatch(cleanData))
                         {
                             if (segment.Length == 0)
@@ -1245,38 +1253,42 @@ namespace TWXProxy.Core
                 }
 
                 Disconnected?.Invoke(this, new DisconnectEventArgs(ex.Message));
-                // Start auto-reconnect if allowed
-                if (_autoReconnect && !token.IsCancellationRequested)
-                    _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+                StartReconnectIfNeeded();
             }
         }
 
         private async Task ReconnectLoopAsync(CancellationToken token)
         {
-            while (!token.IsCancellationRequested && _autoReconnect)
+            try
             {
-                int reconnectDelay = _reconnectDelayMs;
-                try { await Task.Delay(reconnectDelay, token); } catch (OperationCanceledException) { return; }
-                if (token.IsCancellationRequested) return;
-                if (_serverClient?.Connected == true) return; // already reconnected
+                while (!token.IsCancellationRequested && _autoReconnect)
+                {
+                    int reconnectDelay = _reconnectDelayMs;
+                    try { await Task.Delay(reconnectDelay, token); } catch (OperationCanceledException) { return; }
+                    if (token.IsCancellationRequested) return;
+                    if (_serverClient?.Connected == true) return; // already reconnected
 
-                try
-                {
-                    Log($"[{_gameName}] Auto-reconnect attempt...");
-                    GlobalModules.DebugLog($"[AutoReconnect] Connecting to {_serverAddress}:{_serverPort}\n");
-                    await ConnectToServerAsync();
-                    GlobalModules.DebugLog($"[AutoReconnect] Connected successfully\n");
-                    GlobalModules.FlushDebugLog();
-                    Log($"[{_gameName}] Auto-reconnect succeeded");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    Log($"[{_gameName}] Auto-reconnect failed: {ex.Message}, retrying in {reconnectDelay / 1000}s...");
-                    GlobalModules.DebugLog($"[AutoReconnect] Failed: {ex.Message}, retrying...\n");
+                    try
+                    {
+                        Log($"[{_gameName}] Auto-reconnect attempt...");
+                        GlobalModules.DebugLog($"[AutoReconnect] Connecting to {_serverAddress}:{_serverPort}\n");
+                        await ConnectToServerAsync();
+                        GlobalModules.DebugLog($"[AutoReconnect] Connected successfully\n");
+                        GlobalModules.FlushDebugLog();
+                        Log($"[{_gameName}] Auto-reconnect succeeded");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[{_gameName}] Auto-reconnect failed: {ex.Message}, retrying in {reconnectDelay / 1000}s...");
+                        GlobalModules.DebugLog($"[AutoReconnect] Failed: {ex.Message}, retrying...\n");
+                    }
                 }
             }
-            System.Threading.Interlocked.Exchange(ref _reconnectLoopRunning, 0);
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _reconnectLoopRunning, 0);
+            }
         }
 
         /// <summary>
@@ -1330,6 +1342,13 @@ namespace TWXProxy.Core
                     TimeSpan elapsed = DateTime.UtcNow - probeUtc;
                     if (elapsed < LocalInputResponseTimeout)
                         continue;
+
+                    if (IsServerDataDispatchActive())
+                    {
+                        Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: " +
+                            $"elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
+                        continue;
+                    }
 
                     await DisconnectStaleServerAsync(probeUtc, lastReceiveTicks, elapsed, token);
                 }
@@ -1391,14 +1410,14 @@ namespace TWXProxy.Core
 
             Disconnected?.Invoke(this, new DisconnectEventArgs(reason));
 
-            if (_autoReconnect && !token.IsCancellationRequested)
-                _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+            StartReconnectIfNeeded();
         }
 
-        private void MarkServerReceive()
+        private long MarkServerReceive()
         {
             Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
             ClearPendingLocalInputProbe();
+            return Stopwatch.GetTimestamp();
         }
 
         private void ClearPendingLocalInputProbe()
@@ -1459,6 +1478,7 @@ namespace TWXProxy.Core
             var buffer = new byte[8192];
             var commandBuffer = new StringBuilder();
             bool inCommandMode = false;
+            int scriptFullLineInputEchoLength = 0;
 
             try
             {
@@ -1544,6 +1564,8 @@ namespace TWXProxy.Core
                                     // GETINPUT/GETCONSOLEINPUT wait, do not also forward that same
                                     // character to the server or reuse it as the pending reply.
                                     bool suppressCurrentCharForNewInputWait = !scriptWaitingForInput && enteredInputWait;
+                                    if (!scriptWaitingForInput)
+                                        scriptFullLineInputEchoLength = 0;
 
                                     bool sendToServer = !textOutConsumed &&
                                                         !scriptWaitingForInput &&
@@ -1583,16 +1605,23 @@ namespace TWXProxy.Core
                                         {
                                             await session.WriteStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            if (scriptFullLineInputEchoLength > 0)
+                                                scriptFullLineInputEchoLength--;
                                         }
                                         else if (b != 13 && b != 10)
                                         {
+                                            if (scriptFullLineInputEchoLength == 0 && (b >= 32 || b == 9))
+                                                await session.WriteStream.WriteAsync(new byte[] { 32 }, 0, 1, token);
                                             await session.WriteStream.WriteAsync(new byte[] { b }, 0, 1, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            if (b >= 32 || b == 9)
+                                                scriptFullLineInputEchoLength++;
                                         }
                                         else if (b == 13)
                                         {
                                             await session.WriteStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            scriptFullLineInputEchoLength = 0;
                                         }
                                     }
 
@@ -1799,10 +1828,181 @@ namespace TWXProxy.Core
 
             byte[] copy = new byte[data.Length];
             Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+            DispatchServerDataSent(copy);
             _serverSendQueue.Enqueue(copy);
             _serverSendSignal.Release();
             ScheduleServerSendPump();
             return Task.CompletedTask;
+        }
+
+        public FastServerSendResult TrySendToServerImmediate(byte[] data)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            long startTimestamp = Stopwatch.GetTimestamp();
+
+            if (data.Length == 0)
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "No data to send.");
+
+            NetworkStream? stream = _serverStream;
+            if (stream == null || _serverClient?.Connected != true)
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "Server is not connected.");
+
+            if (!_serverSendLock.Wait(0))
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "Server send lock is busy.");
+
+            try
+            {
+                stream.Write(data, 0, data.Length);
+                stream.Flush();
+                DispatchServerDataSent(data);
+                return FastServerSendResult.Succeeded(startTimestamp, Stopwatch.GetTimestamp(), data.Length);
+            }
+            catch (Exception ex)
+            {
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), ex.Message);
+            }
+            finally
+            {
+                _serverSendLock.Release();
+            }
+        }
+
+        public IDisposable RegisterFastServerDataResponder(Action<FastServerDataEventArgs> responder)
+        {
+            ArgumentNullException.ThrowIfNull(responder);
+
+            lock (_fastServerDataResponderLock)
+                _fastServerDataResponders.Add(responder);
+
+            return new FastServerDataResponderRegistration(this, responder);
+        }
+
+        public IDisposable RegisterProxyMenuCommand(ProxyMenuCommand command)
+        {
+            ArgumentNullException.ThrowIfNull(command);
+
+            string path = NormalizeProxyMenuPath(command.Path);
+            if (path.Length == 0)
+                throw new ArgumentException("Proxy menu command path cannot be empty.", nameof(command));
+
+            var registered = command with { Path = path };
+            lock (_proxyMenuCommandLock)
+                _proxyMenuCommands[path] = registered;
+
+            return new ProxyMenuCommandRegistration(this, path, registered);
+        }
+
+        internal bool HasProxyMenuPath(string path)
+        {
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands.ContainsKey(normalized) ||
+                       _proxyMenuCommands.Keys.Any(key => key.StartsWith(normalized, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        internal IReadOnlyList<ProxyMenuCommand> GetProxyMenuChildCommands(string parentPath)
+        {
+            string normalized = NormalizeProxyMenuPath(parentPath);
+            int childLength = normalized.Length + 1;
+
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands
+                    .Where(pair =>
+                        pair.Key.Length == childLength &&
+                        (normalized.Length == 0 || pair.Key.StartsWith(normalized, StringComparison.OrdinalIgnoreCase)))
+                    .Select(pair => pair.Value)
+                    .OrderBy(command => command.Path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        internal bool HasProxyMenuChildren(string parentPath)
+            => GetProxyMenuChildCommands(parentPath).Count > 0;
+
+        internal string GetProxyMenuCommandDescription(string path)
+        {
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands.TryGetValue(normalized, out ProxyMenuCommand? command)
+                    ? command.Description
+                    : string.Empty;
+            }
+        }
+
+        internal async Task<ProxyMenuCommandResult?> ExecuteProxyMenuCommandAsync(string path)
+        {
+            ProxyMenuCommand? command;
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+                _proxyMenuCommands.TryGetValue(normalized, out command);
+
+            if (command?.ExecuteAsync == null)
+                return null;
+
+            var context = new ProxyMenuCommandContext(this, normalized);
+            return await command.ExecuteAsync(context).ConfigureAwait(false);
+        }
+
+        internal void UnregisterProxyMenuCommand(string path, ProxyMenuCommand command)
+        {
+            lock (_proxyMenuCommandLock)
+            {
+                if (_proxyMenuCommands.TryGetValue(path, out ProxyMenuCommand? current) &&
+                    ReferenceEquals(current, command))
+                {
+                    _proxyMenuCommands.Remove(path);
+                }
+            }
+        }
+
+        internal void UnregisterFastServerDataResponder(Action<FastServerDataEventArgs> responder)
+        {
+            lock (_fastServerDataResponderLock)
+                _fastServerDataResponders.Remove(responder);
+        }
+
+        private static string NormalizeProxyMenuPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return string.Empty;
+
+            var normalized = new StringBuilder(path.Length);
+            foreach (char c in path)
+            {
+                if (!char.IsWhiteSpace(c) && c != '>' && c != '/')
+                    normalized.Append(char.ToUpperInvariant(c));
+            }
+
+            return normalized.ToString();
+        }
+
+        private void DispatchFastServerDataResponders(byte[] data, long receiveTimestamp, bool isRawReceive)
+        {
+            Action<FastServerDataEventArgs>[] responders;
+            lock (_fastServerDataResponderLock)
+            {
+                if (_fastServerDataResponders.Count == 0)
+                    return;
+
+                responders = _fastServerDataResponders.ToArray();
+            }
+
+            var args = new FastServerDataEventArgs(this, data, receiveTimestamp, Stopwatch.GetTimestamp(), isRawReceive);
+            foreach (Action<FastServerDataEventArgs> responder in responders)
+            {
+                try
+                {
+                    responder(args);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[{_gameName}] Fast server data responder failed: {ex.Message}");
+                }
+            }
         }
 
         private void ScheduleServerSendPump()
@@ -2166,6 +2366,25 @@ namespace TWXProxy.Core
             }
         }
 
+        private void DispatchServerDataSent(byte[] data)
+        {
+            EventHandler<DataReceivedEventArgs>? handler = ServerDataSent;
+            if (handler == null || data.Length == 0)
+                return;
+
+            byte[] copy = new byte[data.Length];
+            Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+
+            try
+            {
+                handler(this, new DataReceivedEventArgs(copy));
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[Network] ServerDataSent observer failed: {ex}\n");
+            }
+        }
+
         private bool ShouldSuppressScriptPipeToggleOutput(byte[] cleanData)
         {
             if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0 &&
@@ -2515,6 +2734,12 @@ namespace TWXProxy.Core
             }
         }
 
+        private bool IsServerDataDispatchActive()
+        {
+            lock (_deferredLocalOutputLock)
+                return _serverDataDispatchDepth > 0;
+        }
+
         private bool TryQueueDeferredLocalOutput(byte[] data, bool broadcastDeaf)
         {
             lock (_deferredLocalOutputLock)
@@ -2768,6 +2993,131 @@ namespace TWXProxy.Core
         public DataReceivedEventArgs(byte[] data)
         {
             Data = data;
+        }
+    }
+
+    public sealed class FastServerDataEventArgs : EventArgs
+    {
+        private readonly GameInstance _gameInstance;
+        private string? _text;
+
+        internal FastServerDataEventArgs(
+            GameInstance gameInstance,
+            byte[] data,
+            long receiveTimestamp,
+            long dispatchTimestamp,
+            bool isRawReceive)
+        {
+            _gameInstance = gameInstance;
+            Data = data;
+            ReceiveTimestamp = receiveTimestamp;
+            DispatchTimestamp = dispatchTimestamp;
+            IsRawReceive = isRawReceive;
+        }
+
+        public byte[] Data { get; }
+        public long ReceiveTimestamp { get; }
+        public long DispatchTimestamp { get; }
+        public bool IsRawReceive { get; }
+        public string Text => _text ??= Encoding.Latin1.GetString(Data);
+
+        public FastServerSendResult TrySendToServerImmediate(byte[] data)
+            => _gameInstance.TrySendToServerImmediate(data);
+
+        public Task SendToServerAsync(byte[] data)
+            => _gameInstance.SendToServerAsync(data);
+    }
+
+    public readonly record struct FastServerSendResult(
+        bool Success,
+        int BytesSent,
+        long StartTimestamp,
+        long EndTimestamp,
+        string Error)
+    {
+        public static FastServerSendResult Succeeded(long startTimestamp, long endTimestamp, int bytesSent)
+            => new(true, bytesSent, startTimestamp, endTimestamp, string.Empty);
+
+        public static FastServerSendResult Failed(long startTimestamp, long endTimestamp, string error)
+            => new(false, 0, startTimestamp, endTimestamp, error);
+    }
+
+    internal sealed class FastServerDataResponderRegistration : IDisposable
+    {
+        private GameInstance? _gameInstance;
+        private Action<FastServerDataEventArgs>? _responder;
+
+        public FastServerDataResponderRegistration(
+            GameInstance gameInstance,
+            Action<FastServerDataEventArgs> responder)
+        {
+            _gameInstance = gameInstance;
+            _responder = responder;
+        }
+
+        public void Dispose()
+        {
+            GameInstance? gameInstance = Interlocked.Exchange(ref _gameInstance, null);
+            Action<FastServerDataEventArgs>? responder = Interlocked.Exchange(ref _responder, null);
+            if (gameInstance != null && responder != null)
+                gameInstance.UnregisterFastServerDataResponder(responder);
+        }
+    }
+
+    public enum ProxyMenuCommandResult
+    {
+        StayInMenu,
+        ExitMenu,
+    }
+
+    public sealed record ProxyMenuCommand
+    {
+        public required string Path { get; init; }
+        public required string Description { get; init; }
+        public Func<ProxyMenuCommandContext, Task<ProxyMenuCommandResult>>? ExecuteAsync { get; init; }
+    }
+
+    public sealed class ProxyMenuCommandContext
+    {
+        internal ProxyMenuCommandContext(GameInstance gameInstance, string path)
+        {
+            GameInstance = gameInstance;
+            Path = path;
+        }
+
+        public GameInstance GameInstance { get; }
+        public string Path { get; }
+        public char Key => Path.Length == 0 ? '\0' : Path[^1];
+
+        public Task SendMessageAsync(string message)
+            => GameInstance.SendMessageAsync(message);
+
+        public Task SendToServerAsync(string text)
+            => GameInstance.SendToServerAsync(Encoding.ASCII.GetBytes(text));
+    }
+
+    internal sealed class ProxyMenuCommandRegistration : IDisposable
+    {
+        private GameInstance? _gameInstance;
+        private ProxyMenuCommand? _command;
+        private readonly string _path;
+
+        public ProxyMenuCommandRegistration(
+            GameInstance gameInstance,
+            string path,
+            ProxyMenuCommand command)
+        {
+            _gameInstance = gameInstance;
+            _path = path;
+            _command = command;
+        }
+
+        public void Dispose()
+        {
+            GameInstance? gameInstance = Interlocked.Exchange(ref _gameInstance, null);
+            ProxyMenuCommand? command = Interlocked.Exchange(ref _command, null);
+            if (gameInstance != null && command != null)
+                gameInstance.UnregisterProxyMenuCommand(_path, command);
         }
     }
 

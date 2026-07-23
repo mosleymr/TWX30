@@ -110,7 +110,10 @@ namespace TWXProxy.Core
 
         private bool IsClosedArea(SectorData area, ushort areaIndex, ushort last, ushort depth)
         {
-            if (_bubbleSize > _maxBubbleSize || !HasUsableWarpList(area))
+            if (_bubbleSize > _maxBubbleSize ||
+                areaIndex == 0 ||
+                areaIndex > _areaCovered.Length ||
+                !HasUsableWarpList(area))
             {
                 return false;
             }
@@ -132,6 +135,9 @@ namespace TWXProxy.Core
                 
                 if (warp == 0)
                     break;
+
+                if (warp > _areaCovered.Length)
+                    return false;
                 
                 if (warp != last && _areaCovered[warp - 1] != _analysisVisitStamp)
                 {
@@ -199,7 +205,7 @@ namespace TWXProxy.Core
                 return -1;
 
             int sectorCount = database.SectorCount;
-            if (_areaCovered.Length < sectorCount)
+            if (_areaCovered.Length != sectorCount)
                 _areaCovered = new int[sectorCount];
             _areaTraversal.Clear();
             _analysisDatabase = database;
@@ -348,7 +354,7 @@ namespace TWXProxy.Core
             if (area == null)
                 return;
 
-            if (_areaCovered.Length < database.SectorCount)
+            if (_areaCovered.Length != database.SectorCount)
                 _areaCovered = new int[database.SectorCount];
             _analysisDatabase = database;
             _analysisVisitStamp++;

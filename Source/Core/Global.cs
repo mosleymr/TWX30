@@ -142,6 +142,7 @@ namespace TWXProxy.Core
         public bool DebugMode { get; set; } = true;
         public bool VerboseDebugMode { get; set; } = false;
         public bool ScriptTraceDebugMode { get; set; } = false;
+        public bool VariablePersistenceDebugMode { get; set; } = false;
         public bool AutoRecorderDebugMode { get; set; } = true;
         public bool TriggerDebugMode { get; set; } = false;
         public string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
@@ -304,6 +305,15 @@ namespace TWXProxy.Core
         {
             get => CurrentContext.ScriptTraceDebugMode;
             set => CurrentContext.ScriptTraceDebugMode = value;
+        }
+        /// <summary>
+        /// Enables high-volume SAVEVAR/LOADVAR persistence tracing separately from
+        /// general debug and VM trace logging.
+        /// </summary>
+        public static bool VariablePersistenceDebugMode
+        {
+            get => CurrentContext.VariablePersistenceDebugMode;
+            set => CurrentContext.VariablePersistenceDebugMode = value;
         }
         /// <summary>
         /// Enables AutoRecorder parser/database chatter. This is useful when
@@ -674,7 +684,8 @@ namespace TWXProxy.Core
             bool verboseEnabled,
             bool triggerEnabled,
             bool scriptTraceEnabled = false,
-            bool autoRecorderEnabled = true)
+            bool autoRecorderEnabled = true,
+            bool variablePersistenceEnabled = false)
         {
             bool signalWriter = false;
             TwxRuntimeContext context = CurrentContext;
@@ -689,9 +700,10 @@ namespace TWXProxy.Core
                 bool triggerChanged = context.TriggerDebugMode != triggerEnabled;
                 bool scriptTraceChanged = context.ScriptTraceDebugMode != scriptTraceEnabled;
                 bool autoRecorderChanged = context.AutoRecorderDebugMode != autoRecorderEnabled;
+                bool variablePersistenceChanged = context.VariablePersistenceDebugMode != variablePersistenceEnabled;
 
                 if (!pathChanged && !enabledChanged && !verboseChanged && !triggerChanged &&
-                    !scriptTraceChanged && !autoRecorderChanged)
+                    !scriptTraceChanged && !autoRecorderChanged && !variablePersistenceChanged)
                     return;
 
                 context.DebugLogPath = resolvedPath;
@@ -700,6 +712,7 @@ namespace TWXProxy.Core
                 context.TriggerDebugMode = triggerEnabled;
                 context.ScriptTraceDebugMode = scriptTraceEnabled;
                 context.AutoRecorderDebugMode = autoRecorderEnabled;
+                context.VariablePersistenceDebugMode = variablePersistenceEnabled;
 
                 signalWriter = enabled || EnableVmMetrics || Volatile.Read(ref _pendingDebugMessageCount) > 0;
             }
@@ -788,7 +801,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void InitializeDebugLog()
         {
-            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode, ScriptTraceDebugMode, AutoRecorderDebugMode);
+            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode, ScriptTraceDebugMode, AutoRecorderDebugMode, VariablePersistenceDebugMode);
             ConfigureHaggleDebugLogging(PortHaggleDebugLogPath, PortHaggleDebugMode, PlanetHaggleDebugLogPath, PlanetHaggleDebugMode);
         }
 
@@ -858,6 +871,20 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Console.WriteLine($"[SCRIPT TRACE LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
+        public static void VariablePersistenceDebugLog(string message)
+        {
+            if (!DebugMode || !VariablePersistenceDebugMode) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VARIABLE PERSISTENCE LOG ERROR] {ex.Message}: {message}");
             }
         }
 

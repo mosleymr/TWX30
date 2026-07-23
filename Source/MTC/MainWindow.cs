@@ -43,7 +43,7 @@ public partial class MainWindow : Window
         int TunnelMaxSize,
         bool AllowSeparatedByGates);
 
-    private const string BaseWindowTitle = "Mayhem Tradewars Client 1.0 beta2";
+    private const string BaseWindowTitle = MtcVersion.WindowTitle;
     private const int MaxCommEntries = 500;
     private const double ClassicCommWindowDefaultHeight = 140;
     private const double DeckCommWindowDefaultHeight = 150;
@@ -73,9 +73,16 @@ public partial class MainWindow : Window
     // ── Current saved profile path (null = not yet saved) ──────────────────
     private string?         _currentProfilePath;
     private AppPreferences  _appPrefs = new();
+    private Border?         _updateBanner;
+    private TextBlock?      _updateBannerText;
+    private Button?         _updateBannerDownloadButton;
+    private MtcUpdateCheckResult? _pendingMtcUpdate;
+    private bool            _mtcUpdateDialogOpen;
+    private CancellationTokenSource? _updateCheckCts;
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private Core.ExpansionModuleHost?      _moduleHost;     // embedded proxy expansion modules
+    private List<IDisposable>              _moduleMenuRegistrations = [];
     private Core.GameFileLock?             _gameFileLock;
     private Core.NativeHaggleEngine _standaloneNativeHaggle = null!;
     private GameAgentRuntime                 _gameAgent = null!;
@@ -161,6 +168,9 @@ public partial class MainWindow : Window
     private Button? _deckMacroRecordButton;
     private Button? _deckMacroStopButton;
     private Button? _deckMacroPlayButton;
+    private static readonly TimeSpan QuickMacroPlayHoldThreshold = TimeSpan.FromMilliseconds(500);
+    private CancellationTokenSource? _quickMacroPlayHoldCancellation;
+    private bool _quickMacroPlayHoldTriggered;
     private List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;

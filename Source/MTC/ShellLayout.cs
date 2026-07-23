@@ -200,6 +200,10 @@ public partial class MainWindow
         DockPanel.SetDock(_menuBarHost, Dock.Top);
         dock.Children.Add(_menuBarHost);
 
+        _updateBanner = BuildUpdateBanner();
+        DockPanel.SetDock(_updateBanner, Dock.Top);
+        dock.Children.Add(_updateBanner);
+
         // ── Status bar ────────────────────────────────────────────────────
         _statusText.Text              = "[ disconnected ]";
         _statusText.Foreground         = HudText;
@@ -1908,12 +1912,19 @@ public partial class MainWindow
     }
 
     private void SetTerminalConnected(bool connected)
+        => SetTerminalConnected(ResolveCurrentMtcTabContext(), connected);
+
+    private void SetTerminalConnected(MtcTabPrototype? owner, bool connected)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            PostToCurrentMtcTabSession(() => SetTerminalConnected(connected), DispatcherPriority.Background);
+            PostToMtcTabSession(owner, () => SetTerminalConnected(owner, connected), DispatcherPriority.Background);
             return;
         }
+
+        owner ??= ResolveCurrentMtcTabContext();
+        if (owner is not null && owner.Id != _activeMtcTabId)
+            return;
 
         if (!PrepareMtcTabVisualRefresh())
             return;
@@ -2367,13 +2378,16 @@ public partial class MainWindow
             Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
-        var helpAbout    = new MenuItem { Header = "_About" };
+        var helpUpdates = new MenuItem { Header = "_Update MTC..." };
+        helpUpdates.Click += (_, _) => _ = OnCheckForMtcUpdatesAsync(force: true);
+
+        var helpAbout    = new MenuItem { Header = "_About MTC" };
         helpAbout.Click += (_, _) => _ = ShowAboutAsync();
 
         var helpMenu = new MenuItem
         {
-            Header = "_Help",
-            Items  = { helpAbout },
+            Header = "_About",
+            Items  = { helpUpdates, new Separator(), helpAbout },
         };
 
         var mapViewItem = new MenuItem { Header = "_View Map" };

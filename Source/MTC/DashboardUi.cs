@@ -1618,6 +1618,12 @@ public partial class MainWindow
                     {
                         RecordMtcUiRun(requestedOwner, "panels.request.coalesced");
                         Interlocked.Exchange(ref requestedOwner.InfoPanelsRefreshPostScheduled, 0);
+                        if (!IsActiveMtcTab(requestedOwner))
+                        {
+                            MarkMtcTabVisualStateDirty(requestedOwner, infoPanels: true);
+                            return;
+                        }
+
                         RequestInfoPanelsRefresh();
                     }),
                     DispatcherPriority.Background);
@@ -2324,6 +2330,14 @@ public partial class MainWindow
             if (owner is null)
                 return;
 
+            if (!IsActiveMtcTab(owner))
+            {
+                MarkMtcTabVisualStateDirty(owner, statusBar: true);
+                owner.StatusRefreshTimer?.Stop();
+                Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 0);
+                return;
+            }
+
             if (Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 1) == 0)
             {
                 RecordMtcUiPost(owner, "status.refresh", DispatcherPriority.Background);
@@ -2331,6 +2345,12 @@ public partial class MainWindow
                 {
                     RecordMtcUiRun(owner, "status.refresh");
                     Interlocked.Exchange(ref owner.StatusRefreshPostScheduled, 0);
+                    if (!IsActiveMtcTab(owner))
+                    {
+                        MarkMtcTabVisualStateDirty(owner, statusBar: true);
+                        return;
+                    }
+
                     ExecuteInMtcTabSession(owner, RefreshStatusBar);
                 }, DispatcherPriority.Background);
             }

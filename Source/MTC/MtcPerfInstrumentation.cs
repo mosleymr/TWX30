@@ -251,6 +251,7 @@ public partial class MainWindow
                 bool hasBacklog = tab is not null &&
                                   (Volatile.Read(ref tab.PendingDisplayChunkCount) > 0 ||
                                    Volatile.Read(ref tab.PendingDisplayByteCount) > 0 ||
+                                   Volatile.Read(ref tab.InactiveDisplaySnapshotLength) > 0 ||
                                    Volatile.Read(ref tab.PendingSessionLogChunkCount) > 0 ||
                                    Volatile.Read(ref tab.PendingSessionLogByteCount) > 0 ||
                                    Volatile.Read(ref tab.PausedTerminalChunkCount) > 0 ||
@@ -275,6 +276,7 @@ public partial class MainWindow
                 {
                     lines.Append('\t').Append("display_chunks=").Append(Volatile.Read(ref tab.PendingDisplayChunkCount))
                         .Append('\t').Append("display_bytes=").Append(Volatile.Read(ref tab.PendingDisplayByteCount))
+                        .Append('\t').Append("inactive_snapshot_bytes=").Append(Volatile.Read(ref tab.InactiveDisplaySnapshotLength))
                         .Append('\t').Append("sessionlog_chunks=").Append(Volatile.Read(ref tab.PendingSessionLogChunkCount))
                         .Append('\t').Append("sessionlog_bytes=").Append(Volatile.Read(ref tab.PendingSessionLogByteCount))
                         .Append('\t').Append("sessionlog_empty=").Append(tab.PendingSessionLogChunks.IsEmpty ? "1" : "0")

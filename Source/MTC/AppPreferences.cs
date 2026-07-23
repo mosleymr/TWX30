@@ -16,6 +16,14 @@ public class AppPreferences
     public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
+    public const string UpdateLaneStable = "stable";
+    public const string UpdateLaneBeta = "beta";
+    public const string UpdateLaneDev = "dev";
+    public const string UpdateCadenceManual = "manual";
+    public const string UpdateCadenceStartup = "startup";
+    public const string UpdateCadenceDaily = "daily";
+    public const string UpdateCadenceWeekly = "weekly";
+    public const string DefaultUpdateManifestUrl = "https://sourceforge.net/projects/twx30/files/mtc-updates.json/download";
 
     public sealed class MacroBinding
     {
@@ -86,6 +94,11 @@ public class AppPreferences
     public bool PreparedVmEnabled { get; set; } = true;
     public bool VmMetricsEnabled { get; set; }
     public bool PerformanceMonitoringEnabled { get; set; }
+    public bool UpdateChecksEnabled { get; set; } = true;
+    public string UpdateLane { get; set; } = UpdateLaneBeta;
+    public string UpdateCadence { get; set; } = UpdateCadenceDaily;
+    public string UpdateManifestUrl { get; set; } = DefaultUpdateManifestUrl;
+    public DateTimeOffset? UpdateLastCheckUtc { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
     public int MombotHotkeyPrewarmLimitKb { get; set; } = DefaultMombotHotkeyPrewarmLimitKb;
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
@@ -198,6 +211,14 @@ public class AppPreferences
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PerformanceMonitoringEnabled", PerformanceMonitoringEnabled),
+                new XElement("Updates",
+                    new XElement("Enabled", UpdateChecksEnabled),
+                    new XElement("Lane", NormalizeUpdateLane(UpdateLane)),
+                    new XElement("Cadence", NormalizeUpdateCadence(UpdateCadence)),
+                    new XElement("ManifestUrl", NormalizeUpdateManifestUrl(UpdateManifestUrl)),
+                    UpdateLastCheckUtc.HasValue
+                        ? new XElement("LastCheckUtc", UpdateLastCheckUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))
+                        : null),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
                 new XElement("MombotHotkeyPrewarmLimitKb", MombotHotkeyPrewarmLimitKb),
                 new XElement("PortHaggleMode", PortHaggleMode),
@@ -344,6 +365,16 @@ public class AppPreferences
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
             if (bool.TryParse((string?)root.Element("PerformanceMonitoringEnabled"), out bool performanceMonitoringEnabled))
                 prefs.PerformanceMonitoringEnabled = performanceMonitoringEnabled;
+            XElement? updates = root.Element("Updates");
+            if (updates != null)
+            {
+                if (bool.TryParse((string?)updates.Element("Enabled"), out bool updatesEnabled))
+                    prefs.UpdateChecksEnabled = updatesEnabled;
+                prefs.UpdateLane = NormalizeUpdateLane((string?)updates.Element("Lane"));
+                prefs.UpdateCadence = NormalizeUpdateCadence((string?)updates.Element("Cadence"));
+                prefs.UpdateManifestUrl = NormalizeUpdateManifestUrl((string?)updates.Element("ManifestUrl"));
+                prefs.UpdateLastCheckUtc = ParseUpdateLastCheckUtc((string?)updates.Element("LastCheckUtc"));
+            }
             if (int.TryParse((string?)root.Element("PreparedScriptCacheLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int preparedCacheLimitKb))
                 prefs.PreparedScriptCacheLimitKb = NormalizeMemoryLimitKb(preparedCacheLimitKb, DefaultPreparedScriptCacheLimitKb);
             if (int.TryParse((string?)root.Element("MombotHotkeyPrewarmLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int hotkeyPrewarmLimitKb))
@@ -646,6 +677,57 @@ public class AppPreferences
     {
         string normalized = (value ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(normalized) ? GenerateJsonRpcAuthToken() : normalized;
+    }
+
+    public static string NormalizeUpdateLane(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            UpdateLaneStable => UpdateLaneStable,
+            UpdateLaneBeta => UpdateLaneBeta,
+            UpdateLaneDev => UpdateLaneDev,
+            _ => UpdateLaneBeta,
+        };
+    }
+
+    public static string NormalizeUpdateCadence(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            UpdateCadenceManual => UpdateCadenceManual,
+            UpdateCadenceStartup => UpdateCadenceStartup,
+            UpdateCadenceDaily => UpdateCadenceDaily,
+            UpdateCadenceWeekly => UpdateCadenceWeekly,
+            _ => UpdateCadenceDaily,
+        };
+    }
+
+    public static string NormalizeUpdateManifestUrl(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return DefaultUpdateManifestUrl;
+
+        return normalized.Replace(
+            "sourceforge.net/projects/TWX30/",
+            "sourceforge.net/projects/twx30/",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static DateTimeOffset? ParseUpdateLastCheckUtc(string? value)
+    {
+        if (DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
+        {
+            return parsed.ToUniversalTime();
+        }
+
+        return null;
     }
 
     public void EnsureJsonRpcAuthToken()

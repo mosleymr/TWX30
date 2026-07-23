@@ -63,6 +63,7 @@ namespace TWXProxy.Core
         private int _pendingSectorDefenseQuantity;
         private string _pendingSectorDefenseOwner = string.Empty;
         private FighterType _pendingSectorDefenseType = FighterType.None;
+        private int _pendingTransporterShipNumber;
 
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
@@ -203,6 +204,7 @@ namespace TWXProxy.Core
             _pendingPlanetProductTransferKind = PlanetProductTransferKind.None;
             _pendingPlanetProductName = string.Empty;
             _pendingPlanetProductQuantity = 0;
+            _pendingTransporterShipNumber = 0;
 
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] State reset reason={reason}\n");
         }
@@ -339,11 +341,19 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxTraderLine = new(
-            @"^\s*(?<label>[A-Za-z][A-Za-z' ]{0,15})\s*:\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
+            @"^\s*(?<label>Traders|Federals|Aliens|Ferrengi|Jem'?Hada)\s*:\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxTraderContinuationLine = new(
+            @"^\s*(?<name>.+?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxShipLine = new(
-            @"^\s*Ships\s+:\s+(.+?)\s+\[Owned by\]\s+(.+?),\s+w/\s+([\d,]+)\s+ftrs,",
+            @"^\s*Ships\s+:\s+(?<name>.+?)\s+\[Owned by\]\s*(?<owner>.*?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs,",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxShipContinuationLine = new(
+            @"^\s*(?<name>.+?)\s+\[Owned by\]\s*(?<owner>.*?),\s+w/\s+(?<fighters>[\d,]+)\s+ftrs,",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxPortSectorPrompt = new(
@@ -506,6 +516,14 @@ namespace TWXProxy.Core
             @"^For your (good|great|excellent) trading you receive ([\d,]+) experience point",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private static readonly Regex _rxTransporterShipChoice = new(
+            @"^Choose which ship to beam to \(Q=Quit\)\s+(\d+)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _rxTransporterSuccess = new(
+            @"^Security code accepted, engaging transporter control\.$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
         // ── Public API ─────────────────────────────────────────────────────────
 
         /// <summary>
@@ -525,6 +543,9 @@ namespace TWXProxy.Core
                 return;
 
             if (TryProcessPhotonMissileLaunch(rawLine, ansiLine))
+                return;
+
+            if (TryProcessTransporterShipChange(trimmedLine))
                 return;
 
             // Log any line that looks warp-related so we can trace what the game sends
@@ -1887,6 +1908,32 @@ namespace TWXProxy.Core
             return line.StartsWith("Photon Missile launched into sector", StringComparison.OrdinalIgnoreCase);
         }
 
+        private bool TryProcessTransporterShipChange(string trimmedLine)
+        {
+            var choice = _rxTransporterShipChoice.Match(trimmedLine);
+            if (choice.Success)
+            {
+                _pendingTransporterShipNumber = ParseCommaInt(choice.Groups[1].Value);
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Transporter pending ship={_pendingTransporterShipNumber}\n");
+                return true;
+            }
+
+            if (_pendingTransporterShipNumber <= 0)
+                return false;
+
+            if (_rxTransporterSuccess.IsMatch(trimmedLine))
+            {
+                int shipNumber = _pendingTransporterShipNumber;
+                _pendingTransporterShipNumber = 0;
+                EmitShipStatusDelta(new ShipStatusDelta { ShipNumber = shipNumber });
+                GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Transporter ship changed ship={shipNumber}\n");
+                return true;
+            }
+
+            _pendingTransporterShipNumber = 0;
+            return false;
+        }
+
         private void EmitPendingPlanetProductDelta(PlanetProductTransferKind confirmationKind, string confirmationProductName)
         {
             if (_pendingPlanetProductTransferKind == PlanetProductTransferKind.None ||
@@ -2154,7 +2201,11 @@ namespace TWXProxy.Core
 
         private void ParseTraderSummary(Match m)
         {
-            _currentTrader.DisplayLabel = NormalizeTraderDisplayLabel(m.Groups["label"].Value);
+            if (m.Groups["label"].Success && !string.IsNullOrWhiteSpace(m.Groups["label"].Value))
+                _currentTrader.DisplayLabel = NormalizeTraderDisplayLabel(m.Groups["label"].Value);
+            else if (string.IsNullOrWhiteSpace(_currentTrader.DisplayLabel))
+                _currentTrader.DisplayLabel = "Traders";
+
             _currentTrader.Name = m.Groups["name"].Value.Trim();
             _currentTrader.ShipName = string.Empty;
             _currentTrader.ShipType = string.Empty;
@@ -2190,7 +2241,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            var m = _rxTraderLine.Match(trimmed);
+            var m = _rxTraderContinuationLine.Match(trimmed);
             if (m.Success)
                 ParseTraderSummary(m);
         }
@@ -2254,10 +2305,10 @@ namespace TWXProxy.Core
 
         private void ParseShipSummary(Match m)
         {
-            _currentShip.Name = m.Groups[1].Value.Trim();
-            _currentShip.Owner = m.Groups[2].Value.Trim();
+            _currentShip.Name = m.Groups["name"].Value.Trim();
+            _currentShip.Owner = m.Groups["owner"].Value.Trim();
             _currentShip.ShipType = string.Empty;
-            _currentShip.Fighters = ParseCommaInt(m.Groups[3].Value);
+            _currentShip.Fighters = ParseCommaInt(m.Groups["fighters"].Value);
         }
 
         private void ParseShipContinuation(ModDatabase db, int sectorNum, string line)
@@ -2284,7 +2335,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            var m = _rxShipLine.Match(trimmed);
+            var m = _rxShipContinuationLine.Match(trimmed);
             if (m.Success)
                 ParseShipSummary(m);
         }

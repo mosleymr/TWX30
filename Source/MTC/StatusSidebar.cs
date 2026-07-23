@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -812,11 +814,84 @@ public partial class MainWindow
         return button;
     }
 
+    private Button CreateQuickMacroPlayButton(bool deckSkin, bool compact = false)
+    {
+        var button = CreateMacroControlButton(
+            "▶",
+            "Play Saved Quick Macro (hold to open Quick Macro)",
+            deckSkin,
+            OnQuickMacroPlayButtonClicked,
+            compact);
+
+        button.PointerPressed += (_, _) =>
+        {
+            BeginQuickMacroPlayHold();
+        };
+        button.PointerReleased += (_, _) =>
+        {
+            CancelQuickMacroPlayHold();
+        };
+        button.PointerCaptureLost += (_, _) =>
+        {
+            if (!_quickMacroPlayHoldTriggered)
+                CancelQuickMacroPlayHold();
+        };
+        return button;
+    }
+
+    private void OnQuickMacroPlayButtonClicked()
+    {
+        if (_quickMacroPlayHoldTriggered)
+        {
+            _quickMacroPlayHoldTriggered = false;
+            return;
+        }
+
+        _ = PlaySavedQuickMacroOnceAsync();
+    }
+
+    private void BeginQuickMacroPlayHold()
+    {
+        CancelQuickMacroPlayHold();
+        _quickMacroPlayHoldTriggered = false;
+        var cancellation = new CancellationTokenSource();
+        _quickMacroPlayHoldCancellation = cancellation;
+        _ = TriggerQuickMacroPlayHoldAsync(cancellation);
+    }
+
+    private void CancelQuickMacroPlayHold()
+    {
+        _quickMacroPlayHoldCancellation?.Cancel();
+        _quickMacroPlayHoldCancellation = null;
+    }
+
+    private async Task TriggerQuickMacroPlayHoldAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(QuickMacroPlayHoldThreshold, cancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!ReferenceEquals(_quickMacroPlayHoldCancellation, cancellation) || cancellation.IsCancellationRequested)
+                return;
+
+            _quickMacroPlayHoldTriggered = true;
+            _quickMacroPlayHoldCancellation = null;
+            _ = ExecuteInActiveMtcTabSessionAsync(OpenQuickMacroWindowAsync);
+        }, DispatcherPriority.Input);
+    }
+
     private Control BuildStatusMacroBox()
     {
         Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin: false, StartTemporaryMacroRecording, compact: true);
         Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin: false, StopTemporaryMacroRecording, compact: true);
-        Button playButton = CreateMacroControlButton("▶", "Play Saved Quick Macro", deckSkin: false, () => _ = PlaySavedQuickMacroOnceAsync(), compact: true);
+        Button playButton = CreateQuickMacroPlayButton(deckSkin: false, compact: true);
 
         _macroRecordButton = recordButton;
         _macroStopButton = stopButton;
@@ -848,7 +923,7 @@ public partial class MainWindow
     {
         Button recordButton = CreateMacroControlButton("●", "Record Quick Macro", deckSkin, StartTemporaryMacroRecording);
         Button stopButton = CreateMacroControlButton("■", "Stop Recording", deckSkin, StopTemporaryMacroRecording);
-        Button playButton = CreateMacroControlButton("▶", "Play Saved Quick Macro", deckSkin, () => _ = PlaySavedQuickMacroOnceAsync());
+        Button playButton = CreateQuickMacroPlayButton(deckSkin);
 
         if (deckSkin)
         {

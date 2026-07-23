@@ -502,6 +502,15 @@ public partial class MainWindow
                         suppressRanges.Add((rangeStart, contentEnd));
                         ArmPromptSuppression();
                     }
+                    else if (LooksLikeTradeWarsPromptLine(normalized) &&
+                             promptDisplaySuppressionActive)
+                    {
+                        suppressRanges ??= [];
+                        suppressRanges.Add((rangeStart, contentEnd));
+                        suppressNextPrompt = false;
+                        suppressUntilTicks = 0;
+                        stateChanged = true;
+                    }
                     else if (TryGetMombotPromptNameFromLine(normalized, out _) &&
                              promptDisplaySuppressionActive)
                     {
@@ -536,6 +545,20 @@ public partial class MainWindow
             return Encoding.Latin1.GetBytes(filtered.ToString());
         }
 
+        static bool LooksLikeTradeWarsPromptLine(string normalized)
+        {
+            if (string.IsNullOrWhiteSpace(normalized))
+                return false;
+
+            return normalized.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("Citadel command (", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("Planet command (", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("Corporate command (", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.StartsWith("StarDock command (", StringComparison.OrdinalIgnoreCase) ||
+                   normalized.Contains(" command (?=help)", StringComparison.OrdinalIgnoreCase);
+        }
+
         _ = Task.Run(async () =>
         {
             using var runtimeScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
@@ -549,12 +572,12 @@ public partial class MainWindow
                     var chunk = buf[..n].ToArray();
                     bool terminalDeaf = IsEmbeddedTerminalClientDeaf(owningTab);
 
-                    byte[] displayChunk = FilterTerminalDisplayArtifacts(owningTab, chunk);
-                    displayChunk = FilterEmbeddedPromptDuringScriptInput(displayChunk, terminalDeaf);
+                    byte[] artifactFilteredChunk = FilterTerminalDisplayArtifacts(owningTab, chunk);
+                    byte[] displayChunk = FilterEmbeddedPromptDuringScriptInput(artifactFilteredChunk, terminalDeaf);
                     if (displayChunk.Length > 0)
                         EnqueueDisplayChunk(owningTab, displayChunk, force: terminalDeaf);
-                    if (!terminalDeaf)
-                        QueueSessionLogChunk(owningTab, chunk);
+                    if (!terminalDeaf && artifactFilteredChunk.Length > 0)
+                        QueueSessionLogChunk(owningTab, artifactFilteredChunk);
                 }
             }
             catch (OperationCanceledException) { }
@@ -910,14 +933,23 @@ public partial class MainWindow
         // update game-connection state (status bar, _state.Connected) here.
         gi.Connected += (_, _) =>
         {
+            bool wasConnected = owningTab is not null
+                ? Interlocked.Exchange(ref owningTab.EmbeddedServerConnectedState, 1) == 1
+                : _state.Connected;
+            if (owningTab is not null)
+                owningTab.State.Connected = true;
+
             Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 _state.Connected = true;
-                ObserveGameAgentConnectionChanged(connected: true);
                 SetTerminalConnected(true);
-                OnGameConnected();
-                _ = ExecuteInOptionalMtcTabSessionAsync(owningTab, () => TryAutoStartNativeBotAsync("server-connect"));
-                _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
+                if (!wasConnected)
+                {
+                    ObserveGameAgentConnectionChanged(connected: true);
+                    OnGameConnected();
+                    _ = ExecuteInOptionalMtcTabSessionAsync(owningTab, () => TryAutoStartNativeBotAsync("server-connect"));
+                    _parser.Feed($"\x1b[1;32m[Connected to {_state.Host}:{_state.Port}]\x1b[0m\r\n");
+                }
                 RefreshStatusBar();
                 _buffer.Dirty = true;
             }));
@@ -925,6 +957,12 @@ public partial class MainWindow
 
         gi.Disconnected += (_, _) =>
         {
+            bool wasConnected = owningTab is not null
+                ? Interlocked.Exchange(ref owningTab.EmbeddedServerConnectedState, 0) == 1
+                : _state.Connected;
+            if (owningTab is not null)
+                owningTab.State.Connected = false;
+
             ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 bool stopNativeMombot = _mombot.Enabled && ShouldStopNativeMombotAfterDisconnect();
@@ -940,7 +978,14 @@ public partial class MainWindow
                 Dispatcher.UIThread.Post(() => ExecuteInOptionalMtcTabSession(owningTab, () =>
                 {
                     _state.Connected = false;
-                    ObserveGameAgentConnectionChanged(connected: false);
+                    if (wasConnected)
+                        ObserveGameAgentConnectionChanged(connected: false);
+                    if (wasConnected)
+                    {
+                        var disconnectMessage = Encoding.UTF8.GetBytes(
+                            $"\r\n\x1b[1;31m[MTC] Game server disconnected from {_state.Host}:{_state.Port}. Session is closed; type $c to reconnect.\x1b[0m\r\n");
+                        EnqueueDisplayChunk(owningTab, disconnectMessage, force: true);
+                    }
                     // In embedded mode the proxy is still alive after a server
                     // disconnect, so keep the terminal "connected" unless the
                     // GameInstance itself is being torn down.
@@ -1070,6 +1115,8 @@ public partial class MainWindow
         ReloadRegisteredBotConfigs();
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mombot.AttachSession(gi, _sessionDb, interpreter, GetOrCreateEmbeddedMombotConfig(gameConfig));
+        gi.ServerDataSent += (_, e) =>
+            ExecuteInOptionalMtcTabSession(owningTab, () => _mombot.ObserveOutboundText(e.Text));
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(runtimeContext, gi);  // routes getinput through the pipe, not the system console
         await LoadEmbeddedExpansionModulesAsync(gameName, programDir, effectiveScriptDir, gi, interpreter);
@@ -1225,6 +1272,13 @@ public partial class MainWindow
                 Database = _sessionDb,
             });
             RebindMtcTabSessionAfterAwait(owningTab);
+            RegisterEmbeddedModuleMenuCommands(
+                owningTab,
+                gameName,
+                programDir,
+                scriptDirectory,
+                gameInstance,
+                interpreter);
 
             Core.GlobalModules.DebugLog(
                 $"[MTC.ModuleHost] Loaded {_moduleHost.LoadedModules.Count} module(s) for game '{gameName}'.\n");
@@ -1239,6 +1293,7 @@ public partial class MainWindow
     private async Task DisposeEmbeddedExpansionModulesAsync()
     {
         var owningTab = ResolveCurrentMtcTabContext();
+        DisposeEmbeddedModuleMenuCommands();
         Core.ExpansionModuleHost? moduleHost = _moduleHost;
         _moduleHost = null;
 
@@ -1254,5 +1309,49 @@ public partial class MainWindow
         {
             Core.GlobalModules.DebugLog($"[MTC.ModuleHost] Failed to dispose modules: {ex}\n");
         }
+    }
+
+    private void RegisterEmbeddedModuleMenuCommands(
+        MtcTabPrototype? owningTab,
+        string gameName,
+        string programDir,
+        string scriptDirectory,
+        Core.GameInstance gameInstance,
+        Core.ModInterpreter interpreter)
+    {
+        DisposeEmbeddedModuleMenuCommands();
+
+        _moduleMenuRegistrations.Add(gameInstance.RegisterProxyMenuCommand(new Core.ProxyMenuCommand
+        {
+            Path = "MR",
+            Description = "Reload modules",
+            ExecuteAsync = async _ =>
+            {
+                await gameInstance.SendMessageAsync("\r\nReloading expansion modules...\r\n");
+                await ExecuteInOptionalMtcTabSessionAsync(owningTab, async () =>
+                {
+                    await LoadEmbeddedExpansionModulesAsync(
+                        gameName,
+                        programDir,
+                        scriptDirectory,
+                        gameInstance,
+                        interpreter);
+                    int count = _moduleHost?.LoadedModules.Count ?? 0;
+                    await gameInstance.SendMessageAsync($"Reloaded {count} expansion module(s).\r\n");
+                    RefreshStatusBar();
+                    RebuildProxyMenu();
+                });
+
+                return Core.ProxyMenuCommandResult.ExitMenu;
+            },
+        }));
+    }
+
+    private void DisposeEmbeddedModuleMenuCommands()
+    {
+        foreach (IDisposable registration in _moduleMenuRegistrations)
+            registration.Dispose();
+
+        _moduleMenuRegistrations.Clear();
     }
 }

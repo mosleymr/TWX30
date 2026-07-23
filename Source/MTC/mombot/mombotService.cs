@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Core = TWXProxy.Core;
 
 namespace MTC.mombot;
@@ -88,6 +89,8 @@ internal sealed class mombotService
     private readonly HashSet<string> _authorizedUsers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _commandAliases = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, mombotTransientModeRestore> _transientModeRestores = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _outboundLineLock = new();
+    private readonly StringBuilder _outboundLineBuffer = new();
     private readonly Core.TwxRuntimeContext _runtimeContext;
 
     public mombotService(Core.TwxRuntimeContext? runtimeContext = null)
@@ -580,9 +583,7 @@ internal sealed class mombotService
 
         if (context.CommandLine.Length == 0)
         {
-            mombotSettings settings = Settings;
-            PublishMessage($"mombot: you are logged into this bot. Use {settings.BotName} help for commands.");
-            return true;
+            return watcherHandled;
         }
 
         mombotCommandContext dispatchContext = NormalizeDispatchContext(
@@ -603,6 +604,62 @@ internal sealed class mombotService
         ExecuteCommandContext(dispatchContext);
 
         return true;
+    }
+
+    public void ObserveOutboundText(string text)
+    {
+        if (!Enabled || string.IsNullOrEmpty(text))
+            return;
+
+        List<string> completeLines = new();
+        lock (_outboundLineLock)
+        {
+            foreach (char ch in text)
+            {
+                if (ch == '\r' || ch == '\n')
+                {
+                    if (_outboundLineBuffer.Length > 0)
+                    {
+                        completeLines.Add(_outboundLineBuffer.ToString());
+                        _outboundLineBuffer.Clear();
+                    }
+                    continue;
+                }
+
+                if (ch == '\b' || ch == 127)
+                {
+                    if (_outboundLineBuffer.Length > 0)
+                        _outboundLineBuffer.Length--;
+                    continue;
+                }
+
+                _outboundLineBuffer.Append(ch);
+                if (_outboundLineBuffer.Length > 4096)
+                    _outboundLineBuffer.Clear();
+            }
+        }
+
+        foreach (string line in completeLines)
+            ObserveCompletedOutboundLine(line);
+    }
+
+    private void ObserveCompletedOutboundLine(string line)
+    {
+        if (!TryParseTrustedOutboundSelfCommand(line, out mombotCommandContext? context) || context == null)
+            return;
+
+        if (context.CommandLine.Length == 0)
+            return;
+
+        mombotCommandContext dispatchContext = NormalizeDispatchContext(
+            context.CommandName,
+            context.Parameters,
+            context.SelfCommand,
+            context.Route,
+            context.UserName,
+            context.TrustedSelfCommand,
+            context.TypedParameterLine);
+        ExecuteCommandContext(dispatchContext);
     }
 
     public IReadOnlyList<mombotDispatchResult> ExecuteCommandLine(
@@ -902,19 +959,64 @@ internal sealed class mombotService
 
     private mombotDispatchResult ExecuteListAll(string canonical)
     {
-        IReadOnlyList<Core.RunningScriptInfo> running = GetRunningScripts();
-        if (running.Count == 0)
-            return PublishNativeResult(canonical, "mombot sees no running scripts.");
+        IReadOnlyList<string> scriptNames = GetListAllScriptNames();
+        string message = BuildListAllMessage(scriptNames);
 
-        PublishMessage("mombot active scripts:");
-        foreach (Core.RunningScriptInfo script in running)
+        // Script-bot listall forces switchboard output to subspace in normal use.
+        // Match that behavior instead of printing a local-only native status block.
+        SendSwitchboardStyleSubspaceMessage(message);
+
+        return new mombotDispatchResult(true, mombotDispatchKind.Native, canonical, $"mombot listed {scriptNames.Count} active script(s).");
+    }
+
+    private IReadOnlyList<string> GetListAllScriptNames()
+    {
+        var scriptNames = new List<string>();
+        foreach (Core.RunningScriptInfo script in GetRunningScripts())
         {
-            string kind = script.IsSystemScript ? "system" : "user";
-            string paused = script.Paused ? " paused" : string.Empty;
-            PublishMessage($"  [{kind}] {script.Name}{paused}");
+            if (!string.IsNullOrWhiteSpace(script.Name))
+                scriptNames.Add(script.Name);
         }
 
-        return new mombotDispatchResult(true, mombotDispatchKind.Native, canonical, $"mombot listed {running.Count} active script(s).");
+        if (Enabled && !scriptNames.Any(name => string.Equals(name, "mombot.cts", StringComparison.OrdinalIgnoreCase)))
+            scriptNames.Add("mombot.cts");
+
+        return scriptNames;
+    }
+
+    private static string BuildListAllMessage(IReadOnlyList<string> scriptNames)
+    {
+        var parts = new List<string>
+        {
+            " Current script(s) loaded",
+            "--------------------------",
+        };
+
+        foreach (string scriptName in scriptNames)
+            parts.Add("   " + scriptName);
+
+        return string.Join("*", parts) + "*";
+    }
+
+    private void SendSwitchboardStyleSubspaceMessage(string message)
+    {
+        if (_gameInstance == null || !_gameInstance.IsConnected)
+        {
+            PublishMessage(message.Replace("*", "\r\n", StringComparison.Ordinal));
+            return;
+        }
+
+        string mode = GetSessionVar("$BOT~MODE", "General");
+        if (string.IsNullOrWhiteSpace(mode))
+            mode = "General";
+
+        string botName = Settings.BotName;
+        if (string.IsNullOrWhiteSpace(botName))
+            botName = "mombot";
+
+        string switchboardMessage = "'*[" + mode + "] {" + botName + "} - * " + message + "*";
+        string serverText = switchboardMessage.Replace("*", "\r", StringComparison.Ordinal);
+        _gameInstance.SendToServerAsync(System.Text.Encoding.ASCII.GetBytes(serverText)).GetAwaiter().GetResult();
     }
 
     private mombotDispatchResult ExecuteBotStatus(string canonical)
@@ -1673,65 +1775,44 @@ internal sealed class mombotService
     private bool TryParseIncomingCommand(string line, out mombotCommandContext? context)
     {
         context = null;
-        mombotSettings settings = Settings;
-        string botName = settings.BotName;
-        string teamName = settings.TeamName;
 
-        if (_config.AcceptSelfCommands &&
-            TryParseOwnCommand(line, botName, selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
+        // ObserveServerLine is only called after a CR-terminated server line.
+        // Keep completed self-quote commands here; filtering partial composition
+        // belongs in the line-framing layer, not by removing this command path.
+        if (_config.AcceptSelfCommands)
         {
-            return true;
+            foreach (string targetName in GetOwnCommandTargets(includeAll: true))
+            {
+                if (TryParseOwnCommand(
+                    line,
+                    targetName,
+                    selfCommand: false,
+                    route: "subspace",
+                    userName: "self",
+                    trustedSelfCommand: true,
+                    out context))
+                {
+                    return true;
+                }
+            }
         }
 
-        if (_config.AcceptSelfCommands &&
-            !string.Equals(teamName, botName, StringComparison.OrdinalIgnoreCase) &&
-            TryParseOwnCommand(line, teamName, selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
+        if (_config.AcceptSubspaceCommands)
         {
-            return true;
+            foreach (string targetName in GetOwnCommandTargets(includeAll: true))
+            {
+                if (TryParseRemoteCommand(line, 'R', targetName, "subspace", out context))
+                    return true;
+            }
         }
 
-        if (_config.AcceptSelfCommands &&
-            TryParseOwnCommand(line, "all", selfCommand: false, route: "subspace", userName: "self", trustedSelfCommand: true, out context))
+        if (_config.AcceptPrivateCommands)
         {
-            return true;
-        }
-
-        if (_config.AcceptSubspaceCommands &&
-            TryParseRemoteCommand(line, 'R', botName, "subspace", out context))
-        {
-            return true;
-        }
-
-        if (_config.AcceptSubspaceCommands &&
-            !string.Equals(teamName, botName, StringComparison.OrdinalIgnoreCase) &&
-            TryParseRemoteCommand(line, 'R', teamName, "subspace", out context))
-        {
-            return true;
-        }
-
-        if (_config.AcceptSubspaceCommands &&
-            TryParseRemoteCommand(line, 'R', "all", "subspace", out context))
-        {
-            return true;
-        }
-
-        if (_config.AcceptPrivateCommands &&
-            TryParseRemoteCommand(line, 'P', botName, "private", out context))
-        {
-            return true;
-        }
-
-        if (_config.AcceptPrivateCommands &&
-            !string.Equals(teamName, botName, StringComparison.OrdinalIgnoreCase) &&
-            TryParseRemoteCommand(line, 'P', teamName, "private", out context))
-        {
-            return true;
-        }
-
-        if (_config.AcceptPrivateCommands &&
-            TryParseRemoteCommand(line, 'P', "all", "private", out context))
-        {
-            return true;
+            foreach (string targetName in GetOwnCommandTargets(includeAll: true))
+            {
+                if (TryParseRemoteCommand(line, 'P', targetName, "private", out context))
+                    return true;
+            }
         }
 
         return false;
@@ -1743,17 +1824,72 @@ internal sealed class mombotService
         if (string.IsNullOrWhiteSpace(line))
             return false;
 
-        mombotSettings settings = Settings;
-        if (TryParseOwnCommand(line, settings.BotName, out context))
-            return true;
-
-        if (!string.Equals(settings.TeamName, settings.BotName, StringComparison.OrdinalIgnoreCase) &&
-            TryParseOwnCommand(line, settings.TeamName, out context))
+        foreach (string targetName in GetOwnCommandTargets(includeAll: true))
         {
-            return true;
+            if (TryParseOwnCommand(line, targetName, out context))
+                return true;
         }
 
-        return TryParseOwnCommand(line, "all", out context);
+        return false;
+    }
+
+    private bool TryParseTrustedOutboundSelfCommand(string line, out mombotCommandContext? context)
+    {
+        context = null;
+        if (!_config.AcceptSelfCommands || string.IsNullOrWhiteSpace(line))
+            return false;
+
+        foreach (string targetName in GetOwnCommandTargets(includeAll: true))
+        {
+            if (TryParseOwnCommand(
+                line,
+                targetName,
+                selfCommand: false,
+                route: "subspace",
+                userName: "self",
+                trustedSelfCommand: true,
+                out context))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private IReadOnlyList<string> GetOwnCommandTargets(bool includeAll)
+    {
+        mombotSettings settings = Settings;
+        var targets = new List<string>();
+
+        AddCommandTarget(targets, GetSessionVar("$SWITCHBOARD~BOT_NAME", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$SWITCHBOARD~bot_name", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$BOT~BOT_NAME", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$bot~bot_name", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$bot_name", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$bot~name", string.Empty));
+        AddCommandTarget(targets, settings.BotName);
+
+        AddCommandTarget(targets, GetSessionVar("$BOT~BOT_TEAM_NAME", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$BOT~bot_team_name", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$bot~bot_team_name", string.Empty));
+        AddCommandTarget(targets, GetSessionVar("$bot_team_name", string.Empty));
+        AddCommandTarget(targets, settings.TeamName);
+
+        if (includeAll)
+            AddCommandTarget(targets, "all");
+
+        return targets;
+    }
+
+    private static void AddCommandTarget(List<string> targets, string? value)
+    {
+        string target = value?.Trim() ?? string.Empty;
+        if (target.Length == 0 || string.Equals(target, "0", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        if (!targets.Any(existing => string.Equals(existing, target, StringComparison.OrdinalIgnoreCase)))
+            targets.Add(target);
     }
 
     private static bool TryParseOwnCommand(string line, string targetName, out mombotCommandContext? context)
