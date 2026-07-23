@@ -444,8 +444,52 @@ public partial class MainWindow
 
     private void RenderPendingDisplaySnapshotOnActivation(MtcTabPrototype owner)
     {
-        DrainQueuedDisplayChunksToTerminalState(owner, "display.activation_drain");
+        CondensePendingDisplayChunksForInactiveTab(owner, "display.activation_condense");
         DrainInactiveDisplaySnapshotToTerminalState(owner, "display.activation_snapshot");
+    }
+
+    private void CondensePendingDisplayChunksForInactiveTab(MtcTabPrototype? owner, string source)
+    {
+        owner = ResolveTerminalOwner(owner);
+        if (owner is null)
+            return;
+
+        int queuedChunks = Volatile.Read(ref owner.PendingDisplayChunkCount);
+        long queuedBytes = Volatile.Read(ref owner.PendingDisplayByteCount);
+        if (queuedChunks <= 0 && owner.PendingDisplayChunks.IsEmpty)
+        {
+            Interlocked.Exchange(ref owner.PendingDisplayChunkCount, 0);
+            Interlocked.Exchange(ref owner.PendingDisplayByteCount, 0);
+            Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
+            Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
+            return;
+        }
+
+        long started = Stopwatch.GetTimestamp();
+        int condensedChunks = 0;
+        long condensedBytes = 0;
+        while (owner.PendingDisplayChunks.TryDequeue(out PendingDisplayChunk pending))
+        {
+            DecrementPendingDisplayBacklog(owner, pending.Bytes.Length);
+            if (pending.Bytes.Length > 0)
+            {
+                RetainInactiveDisplaySnapshot(owner, pending.Bytes);
+                condensedBytes += pending.Bytes.Length;
+            }
+
+            condensedChunks++;
+        }
+
+        Interlocked.Exchange(ref owner.PendingDisplayChunkCount, 0);
+        Interlocked.Exchange(ref owner.PendingDisplayByteCount, 0);
+        Interlocked.Exchange(ref owner.DisplayDrainScheduled, 0);
+        Interlocked.Exchange(ref owner.InactiveDisplayDrainScheduled, 0);
+
+        RecordMtcPerf(owner, $"{source}.queued_chunks", queuedChunks);
+        RecordMtcPerf(owner, $"{source}.queued_bytes", queuedBytes);
+        RecordMtcPerf(owner, $"{source}.condensed_chunks", condensedChunks);
+        RecordMtcPerf(owner, $"{source}.condensed_bytes", condensedBytes);
+        RecordMtcPerfDuration(owner, source, started);
     }
 
     private void DrainInactiveDisplaySnapshotToTerminalState(MtcTabPrototype owner, string source)

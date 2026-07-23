@@ -1761,6 +1761,26 @@ public partial class MainWindow
         RefreshInfoPanels();
     }
 
+    private void RefreshInfoPanelsOnTabActivation()
+    {
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        // Activation must restore the visible panel snapshot even if that tab is
+        // currently deaf/muted. Deaf mode suppresses live churn, not tab restore.
+        _deferredInfoPanelsRefresh = false;
+        _deferredOnlinePanelRefresh = false;
+        if (ActiveMtcTab is { } activeInfoTab)
+        {
+            activeInfoTab.DeferredInfoPanelsRefresh = false;
+            activeInfoTab.DeferredOnlinePanelRefresh = false;
+            Interlocked.Exchange(ref activeInfoTab.InfoPanelsRefreshPostScheduled, 0);
+        }
+
+        Volatile.Write(ref _lastInfoPanelsRefreshTicks, Stopwatch.GetTimestamp());
+        RefreshInfoPanels();
+    }
+
     private void RequestCurrentGameConfigSave()
     {
         if (!Dispatcher.UIThread.CheckAccess())

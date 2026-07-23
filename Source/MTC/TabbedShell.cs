@@ -1735,7 +1735,9 @@ public partial class MainWindow
         if (_activeMtcTabId == tabId)
             return;
 
+        var previousTab = ActiveMtcTab;
         CaptureLiveMtcTabShell();
+        CondensePendingDisplayChunksForInactiveTab(previousTab, "display.tab_deactivate_condense");
 
         _activeMtcTabId = tabId;
         BindActiveMtcTabSession();
@@ -1805,8 +1807,8 @@ public partial class MainWindow
 
             RestoreLiveMtcTabStatusBar();
             RefreshActiveMtcTabUiStateScoped();
-            RequestInfoPanelsRefresh(force: true);
-            RequestStatusBarRefresh();
+            RefreshInfoPanelsOnTabActivation();
+            RefreshStatusBar();
             UpdateWindowTitle();
             PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
             return;
