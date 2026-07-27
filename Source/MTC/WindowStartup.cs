@@ -74,7 +74,10 @@ public partial class MainWindow
         }
         AppPaths.SetConfiguredProgramDir(_appPrefs.ProgramDirectory);
         UpdateMtcPerfInstrumentationState();
-        _useCommandDeckSkin = _appPrefs.CommandDeckSkinEnabled;
+        // Command Deck is an explicit per-session workspace. MTC always opens
+        // in the classic skin, regardless of the skin used in the prior run.
+        _useCommandDeckSkin = false;
+        _appPrefs.CommandDeckSkinEnabled = false;
         RestoreInWindowLayoutPreferences();
         if (ActiveMtcTab is { } startupTab)
             CaptureMtcTabSession(startupTab);

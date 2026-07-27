@@ -2125,7 +2125,7 @@ public partial class MainWindow
             return;
 
         _useCommandDeckSkin = useCommandDeckSkin;
-        _appPrefs.CommandDeckSkinEnabled = useCommandDeckSkin;
+        _appPrefs.CommandDeckSkinEnabled = false;
         _appPrefs.Save();
         ApplySelectedSkinSafe();
     }
