@@ -147,6 +147,10 @@ public partial class MainWindow : Window
     };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
+    private Viewbox? _deckWorkspaceScaler;
+    private Control? _deckWorkspace;
+    private double _deckWorkspaceMinimumWidth;
+    private double _deckWorkspaceMinimumHeight;
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DeckPanelState> _deckPanelStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, TerminalControl> _deckTerminalControls = [];

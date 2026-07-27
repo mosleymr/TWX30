@@ -97,6 +97,8 @@ public class TerminalControl : Control
     private Typeface _typeFace;
     private double _viewportPixelWidth;
     private double _viewportPixelHeight;
+    private int _minimumColumns = MinimumTerminalColumns;
+    private int _minimumRows = 3;
 
     // Brush cache – one SolidColorBrush per unique TermColor
     private readonly Dictionary<TermColor, SolidColorBrush> _brushCache = [];
@@ -146,7 +148,8 @@ public class TerminalControl : Control
     public TerminalBuffer Buffer => _buffer;
     public int Columns => _buffer.Columns;
     public int Rows => _buffer.Rows;
-    public double MinimumPixelWidth => MinimumTerminalColumns * _charWidth;
+    public double MinimumPixelWidth => _minimumColumns * _charWidth;
+    public double MinimumPixelHeight => _minimumRows * _lineHeight;
     public Action<string>? Diagnostics { get; set; }
 
     public TerminalControl(TerminalBuffer buffer)
@@ -288,10 +291,19 @@ public class TerminalControl : Control
         ApplyViewportPixelSize();
     }
 
+    public void SetMinimumGridSize(int columns, int rows)
+    {
+        _minimumColumns = Math.Max(MinimumTerminalColumns, columns);
+        _minimumRows = Math.Max(3, rows);
+        ApplyViewportPixelSize();
+        InvalidateMeasure();
+    }
+
     private void ApplyViewportPixelSize()
     {
         double minWidth = MinimumPixelWidth;
         MinWidth = minWidth;
+        MinHeight = MinimumPixelHeight;
 
         if (_viewportPixelWidth > 0)
             Width = Math.Max(minWidth, _viewportPixelWidth);
@@ -307,8 +319,8 @@ public class TerminalControl : Control
             ? MinimumPixelWidth
             : Math.Max(MinimumPixelWidth, availableSize.Width);
         double height = double.IsInfinity(availableSize.Height)
-            ? _lineHeight * 3
-            : availableSize.Height;
+            ? MinimumPixelHeight
+            : Math.Max(MinimumPixelHeight, availableSize.Height);
 
         return new Size(width, height);
     }
@@ -342,8 +354,8 @@ public class TerminalControl : Control
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        int newCols = Math.Max(MinimumTerminalColumns, (int)(finalSize.Width / _charWidth));
-        int newRows = Math.Max(3,  (int)(finalSize.Height / _lineHeight));
+        int newCols = Math.Max(_minimumColumns, (int)(finalSize.Width / _charWidth));
+        int newRows = Math.Max(_minimumRows, (int)(finalSize.Height / _lineHeight));
         if (newCols != _buffer.Columns || newRows != _buffer.Rows)
         {
             InvalidateVisibleRowCache();

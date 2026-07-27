@@ -33,8 +33,8 @@ public sealed class FloatingDeckPanel : Border
     private readonly Button? _closeButton;
     private readonly TextBlock _titleText;
     private double _bodyHeight;
-    private readonly double _minBodyHeight;
-    private readonly double _minPanelWidth;
+    private double _minBodyHeight;
+    private double _minPanelWidth;
     private bool _isDragging;
     private bool _isResizing;
     private bool _isClosed;
@@ -263,6 +263,15 @@ public sealed class FloatingDeckPanel : Border
         if (!_isMinimized)
             _bodyHost.Height = _bodyHeight;
         StateChanged?.Invoke(this);
+    }
+
+    public void SetMinimumPanelSize(double width, double bodyHeight)
+    {
+        _minPanelWidth = Math.Max(220, width);
+        _minBodyHeight = Math.Max(120, bodyHeight);
+        MinWidth = _minPanelWidth;
+        _bodyHost.MinHeight = _minBodyHeight;
+        SetPanelSize(Math.Max(PanelWidth, _minPanelWidth), Math.Max(_bodyHeight, _minBodyHeight));
     }
 
     public void SetMinimized(bool minimized)

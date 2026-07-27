@@ -12,7 +12,7 @@ namespace MTC;
 public class AppPreferences
 {
     public const int MaxRecentFiles = 10;
-    public const int CurrentCommandDeckLayoutVersion = 5;
+    public const int CurrentCommandDeckLayoutVersion = 6;
     public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);

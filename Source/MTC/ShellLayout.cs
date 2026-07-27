@@ -20,6 +20,13 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private const int DeckConsoleDefaultColumns = 80;
+    private const int DeckConsoleDefaultRows = 24;
+    private const double DeckConsolePanelHorizontalChrome = 66;
+    private const double DeckConsolePanelVerticalChrome = 62;
+    private const double DeckWorkspaceBaseWidth = 1280;
+    private const double DeckWorkspaceBaseHeight = 820;
+
     private TerminalControl CreateTerminalControl()
     {
         var control = new TerminalControl(_buffer);
@@ -356,6 +363,8 @@ public partial class MainWindow
         _deckPanels.Clear();
         _deckPanelsInitialized = false;
         _suppressDeckPanelStateSync = false;
+        _deckWorkspaceMinimumWidth = DeckWorkspaceBaseWidth;
+        _deckWorkspaceMinimumHeight = DeckWorkspaceBaseHeight;
         _tacticalMap = new TacticalMapControl(
             () => ActiveMtcTab?.State.Sector ?? 0,
             () =>
@@ -402,13 +411,16 @@ public partial class MainWindow
         if (ShouldShowNotesPanel())
             CreateDeckPanel("notes", "NOTES", "GAME", BuildNotesPanel(), canClose: false);
         UpdateCommandDeckActiveConsole();
+        ExpandDeckWorkspaceMinimumToFitPanels();
         Dispatcher.UIThread.Post(EnsureDeckPanelsInitialized, DispatcherPriority.Loaded);
 
         Grid.SetRow(surfaceRoot, 1);
         rootGrid.Children.Add(surfaceRoot);
 
-        return new Border
+        _deckWorkspace = new Border
         {
+            Width = _deckWorkspaceMinimumWidth,
+            Height = _deckWorkspaceMinimumHeight,
             Background = HudShell,
             BorderBrush = HudEdge,
             BorderThickness = new Thickness(1.5),
@@ -416,6 +428,17 @@ public partial class MainWindow
             Padding = UiThickness(16),
             Child = rootGrid,
         };
+        _deckWorkspaceScaler = new Viewbox
+        {
+            Stretch = Stretch.Uniform,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Child = _deckWorkspace,
+        };
+        _deckWorkspaceScaler.SizeChanged += (_, _) => UpdateDeckWorkspaceSize();
+        Dispatcher.UIThread.Post(UpdateDeckWorkspaceSize, DispatcherPriority.Loaded);
+        return _deckWorkspaceScaler;
     }
 
     private void CreateDeckConsolePanel(MtcTabPrototype tab)
@@ -425,6 +448,7 @@ public partial class MainWindow
             ? _deckTermCtrl
             : CreateTerminalControl(tab);
         terminal.SetBuffer(tab.Buffer);
+        terminal.SetMinimumGridSize(DeckConsoleDefaultColumns, DeckConsoleDefaultRows);
         terminal.SendInput = bytes =>
         {
             if (tab.Id != _activeMtcTabId)
@@ -437,13 +461,56 @@ public partial class MainWindow
         if (tab.Id == _activeMtcTabId)
             _deckTermCtrl = terminal;
 
+        string panelId = GetDeckConsolePanelId(tab);
         CreateDeckPanel(
-            GetDeckConsolePanelId(tab),
+            panelId,
             tab.Title,
             $"GAME {tab.Id}",
             BuildDeckGameConsoleBody(terminal),
             canClose: false,
             activated: () => ActivateMtcTab(tab.Id));
+        if (_deckPanels.TryGetValue(panelId, out FloatingDeckPanel? panel))
+        {
+            (double panelWidth, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tab.Id);
+            panel.SetMinimumPanelSize(panelWidth, bodyHeight);
+        }
+    }
+
+    private (double Width, double BodyHeight) GetDeckConsoleDefaultPanelSize(int tabId)
+    {
+        if (!_deckTerminalControls.TryGetValue(tabId, out TerminalControl? terminal))
+            return (760, 430);
+
+        return (
+            Math.Ceiling(terminal.MinimumPixelWidth + DeckConsolePanelHorizontalChrome),
+            Math.Ceiling(terminal.MinimumPixelHeight + DeckConsolePanelVerticalChrome));
+    }
+
+    private void ExpandDeckWorkspaceMinimumToFitPanels()
+    {
+        double right = 0;
+        double bottom = 0;
+        foreach (DeckPanelState state in _deckPanelStates.Values.Where(state => !state.Closed))
+        {
+            right = Math.Max(right, state.Left + state.Width + DeckPanelGridSize);
+            bottom = Math.Max(bottom, state.Top + state.BodyHeight + 56 + DeckPanelGridSize);
+        }
+
+        _deckWorkspaceMinimumWidth = Math.Max(DeckWorkspaceBaseWidth, right + 32);
+        _deckWorkspaceMinimumHeight = Math.Max(DeckWorkspaceBaseHeight, bottom + 190);
+    }
+
+    private void UpdateDeckWorkspaceSize()
+    {
+        if (_deckWorkspaceScaler is null || _deckWorkspace is null)
+            return;
+
+        Rect bounds = _deckWorkspaceScaler.Bounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+            return;
+
+        _deckWorkspace.Width = Math.Max(_deckWorkspaceMinimumWidth, bounds.Width);
+        _deckWorkspace.Height = Math.Max(_deckWorkspaceMinimumHeight, bounds.Height);
     }
 
     private void CreateDeckPanel(
@@ -542,8 +609,8 @@ public partial class MainWindow
 
     private DeckPanelState CreateDefaultDeckPanelState(string panelId)
     {
-        double surfaceWidth = Math.Max(860, (Bounds.Width > 100 ? Bounds.Width : Width) - 64);
-        double surfaceHeight = Math.Max(460, (Bounds.Height > 100 ? Bounds.Height : Height) - 170);
+        double surfaceWidth = DeckWorkspaceBaseWidth - 64;
+        double surfaceHeight = DeckWorkspaceBaseHeight - 170;
         double horizontalMargin = 18;
         double panelGap = 18;
         double availableWidth = Math.Max(680, surfaceWidth - (horizontalMargin * 2) - panelGap);
@@ -554,12 +621,10 @@ public partial class MainWindow
         {
             int tabId = int.TryParse(panelId.AsSpan("console:".Length), out int parsedId) ? parsedId : 1;
             int slot = Math.Max(0, _mtcTabs.FindIndex(tab => tab.Id == tabId));
+            (double width, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tabId);
             double sharedPanelWidth = Math.Clamp(surfaceWidth * 0.24, 280, 340);
-            double consoleAreaWidth = Math.Max(480, surfaceWidth - sharedPanelWidth - (horizontalMargin * 3));
-            int columns = consoleAreaWidth >= 980 ? 2 : 1;
-            double width = columns == 1 ? consoleAreaWidth : (consoleAreaWidth - panelGap) / columns;
-            int rows = Math.Max(1, (int)Math.Ceiling(_mtcTabs.Count / (double)columns));
-            double bodyHeight = Math.Clamp((surfaceHeight - 72) / rows - panelGap, 230, 520);
+            double consoleAreaWidth = Math.Max(width, surfaceWidth - sharedPanelWidth - (horizontalMargin * 3));
+            int columns = Math.Max(1, (int)Math.Floor((consoleAreaWidth + panelGap) / (width + panelGap)));
             return new DeckPanelState
             {
                 PanelId = panelId,
@@ -714,13 +779,12 @@ public partial class MainWindow
         double margin = DeckPanelGridSize;
         double sharedWidth = Math.Clamp(_deckSurface.Bounds.Width * 0.24, 280, 340);
         double availableWidth = Math.Max(420, _deckSurface.Bounds.Width - sharedWidth - (margin * 3));
-        double availableHeight = Math.Max(260, _deckSurface.Bounds.Height - (margin * 2));
-        int columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(tabs.Length * availableWidth / availableHeight)));
+        double defaultPanelWidth = tabs.Max(tab => GetDeckConsoleDefaultPanelSize(tab.Id).Width);
+        double defaultBodyHeight = tabs.Max(tab => GetDeckConsoleDefaultPanelSize(tab.Id).BodyHeight);
+        double defaultPanelHeight = defaultBodyHeight + 56;
+        int columns = Math.Max(1, (int)Math.Floor((availableWidth + margin) / (defaultPanelWidth + margin)));
         columns = Math.Min(columns, tabs.Length);
         int rows = (int)Math.Ceiling(tabs.Length / (double)columns);
-        double panelWidth = (availableWidth - (margin * (columns - 1))) / columns;
-        double panelHeight = (availableHeight - (margin * (rows - 1))) / rows;
-        double bodyHeight = Math.Max(160, panelHeight - 56);
 
         _suppressDeckPanelStateSync = true;
         try
@@ -731,8 +795,9 @@ public partial class MainWindow
                 if (!_deckPanels.TryGetValue(panelId, out FloatingDeckPanel? panel))
                     continue;
 
-                double left = margin + (index % columns) * (panelWidth + margin);
-                double top = margin + (index / columns) * (panelHeight + margin);
+                (double panelWidth, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tabs[index].Id);
+                double left = margin + (index % columns) * (defaultPanelWidth + margin);
+                double top = margin + (index / columns) * (defaultPanelHeight + margin);
                 panel.SetPanelSize(panelWidth, bodyHeight);
                 panel.MoveTo(left, top, clampToHost: false);
                 panel.SetMinimized(false);
@@ -748,6 +813,13 @@ public partial class MainWindow
             if (_deckPanels.TryGetValue(GetDeckConsolePanelId(tab), out FloatingDeckPanel? panel))
                 OnDeckPanelStateChanged(panel);
         }
+        _deckWorkspaceMinimumHeight = Math.Max(
+            DeckWorkspaceBaseHeight,
+            190 + (margin * 2) + (rows * defaultPanelHeight) + ((rows - 1) * margin));
+        _deckWorkspaceMinimumWidth = Math.Max(
+            DeckWorkspaceBaseWidth,
+            defaultPanelWidth + sharedWidth + (margin * 4) + 32);
+        UpdateDeckWorkspaceSize();
         _appPrefs.Save();
     }
 
@@ -1086,16 +1158,41 @@ public partial class MainWindow
 
     private Control BuildDeckGameConsoleBody(TerminalControl terminal)
     {
-        return new Border
+        var sizeText = new TextBlock
         {
-            MinHeight = 160,
+            Text = $"{terminal.Columns}×{terminal.Rows}",
+            Foreground = HudMuted,
+            FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace"),
+            FontSize = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextAlignment = TextAlignment.Right,
+            Margin = new Thickness(0, 4, 2, 0),
+        };
+        terminal.ViewportSizeChanged += (_, columns, rows) =>
+            sizeText.Text = $"{columns}×{rows}";
+
+        var body = new Grid
+        {
+            RowDefinitions =
+            {
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = GridLength.Auto },
+            },
+        };
+        var terminalFrame = new Border
+        {
             Background = Brushes.Black,
             BorderBrush = HudInnerEdge,
             BorderThickness = new Thickness(1.5),
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(5),
-            Child = BuildTerminalScrollHost(terminal),
+            Child = terminal,
         };
+        Grid.SetRow(terminalFrame, 0);
+        Grid.SetRow(sizeText, 1);
+        body.Children.Add(terminalFrame);
+        body.Children.Add(sizeText);
+        return body;
     }
 
     private Control BuildDeckTraderPanel()
