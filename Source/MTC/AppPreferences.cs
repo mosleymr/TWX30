@@ -13,6 +13,7 @@ public class AppPreferences
 {
     public const int MaxRecentFiles = 10;
     public const int CurrentCommandDeckLayoutVersion = 6;
+    public const int CurrentMainWindowGeometryVersion = 1;
     public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
@@ -105,6 +106,7 @@ public class AppPreferences
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }
     public int CommandDeckLayoutVersion { get; set; }
+    public int MainWindowGeometryVersion { get; set; }
     public string LastNativeMombotBotName { get; set; } = string.Empty;
     public bool HasMainWindowPosition { get; private set; }
     public int MainWindowX { get; private set; }
@@ -225,6 +227,7 @@ public class AppPreferences
                 new XElement("PlanetHaggleMode", PlanetHaggleMode),
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
+                new XElement("MainWindowGeometryVersion", MainWindowGeometryVersion),
                 new XElement("LastNativeMombotBotName", LastNativeMombotBotName),
                 HasMainWindowPosition || HasMainWindowSize
                     ? new XElement("MainWindowPosition",
@@ -383,6 +386,8 @@ public class AppPreferences
                 prefs.CommandDeckSkinEnabled = commandDeckEnabled;
             if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
                 prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
+            if (int.TryParse((string?)root.Element("MainWindowGeometryVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowGeometryVersion))
+                prefs.MainWindowGeometryVersion = mainWindowGeometryVersion;
             prefs.LastNativeMombotBotName = ((string?)root.Element("LastNativeMombotBotName") ?? string.Empty).Trim();
             XElement? mainWindowPosition = root.Element("MainWindowPosition");
             if (mainWindowPosition != null)

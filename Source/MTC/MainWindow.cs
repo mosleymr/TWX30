@@ -44,6 +44,8 @@ public partial class MainWindow : Window
         bool AllowSeparatedByGates);
 
     private const string BaseWindowTitle = MtcVersion.WindowTitle;
+    private const double DefaultMainWindowWidth = 1100;
+    private const double DefaultMainWindowHeight = 650;
     private const int MaxCommEntries = 500;
     private const double ClassicCommWindowDefaultHeight = 140;
     private const double DeckCommWindowDefaultHeight = 150;

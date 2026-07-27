@@ -34,8 +34,8 @@ public partial class MainWindow
     {
         Title          = BaseWindowTitle;
         Icon           = new WindowIcon(AssetLoader.Open(new Uri("avares://MTC/mtc2.png")));
-        Width          = 1100;
-        Height         = 650;
+        Width          = DefaultMainWindowWidth;
+        Height         = DefaultMainWindowHeight;
         MinWidth       = 800;
         MinHeight      = 500;
         Background     = BgWindow;
@@ -59,6 +59,7 @@ public partial class MainWindow
         _appPrefs = AppPreferences.Load();
         _terminalFontSize = GetNearestTerminalFontSize(_appPrefs.TerminalFontSize);
         _buffer.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
+        MigrateMainWindowGeometryIfNeeded();
         RestoreMainWindowBoundsIfPossible();
         _standaloneNativeHaggle.SetEnabled(true);
         _standaloneNativeHaggle.SetPortHaggleMode(ResolveGlobalPortHaggleMode());
@@ -228,6 +229,25 @@ public partial class MainWindow
         RestoreMainWindowPositionIfPossible();
     }
 
+    private void MigrateMainWindowGeometryIfNeeded()
+    {
+        if (_appPrefs.MainWindowGeometryVersion >= AppPreferences.CurrentMainWindowGeometryVersion)
+            return;
+
+        // A short-lived Command Deck build allowed its near-fullscreen bounds to
+        // overwrite the classic window size. Repair only that oversized shape;
+        // preserve ordinary user-resized classic windows.
+        if (_appPrefs.HasMainWindowSize &&
+            _appPrefs.MainWindowWidth >= DefaultMainWindowWidth * 1.9 &&
+            _appPrefs.MainWindowHeight >= DefaultMainWindowHeight * 1.9)
+        {
+            _appPrefs.SetMainWindowSize(DefaultMainWindowWidth, DefaultMainWindowHeight);
+        }
+
+        _appPrefs.MainWindowGeometryVersion = AppPreferences.CurrentMainWindowGeometryVersion;
+        _appPrefs.Save();
+    }
+
     private void RestoreMainWindowSizeIfPossible()
     {
         if (!_appPrefs.HasMainWindowSize)
@@ -251,7 +271,9 @@ public partial class MainWindow
 
     private void OnMainWindowSizeChanged()
     {
-        if (_suppressMainWindowPositionPersistence || WindowState != WindowState.Normal)
+        if (_suppressMainWindowPositionPersistence ||
+            _useCommandDeckSkin ||
+            WindowState != WindowState.Normal)
             return;
 
         CaptureMainWindowSize();
@@ -259,7 +281,7 @@ public partial class MainWindow
 
     private void CaptureMainWindowSize()
     {
-        if (WindowState != WindowState.Normal)
+        if (_useCommandDeckSkin || WindowState != WindowState.Normal)
             return;
 
         double width = Bounds.Width > 0 ? Bounds.Width : Width;
@@ -271,7 +293,9 @@ public partial class MainWindow
     {
         NotifyTerminalWindowMove();
 
-        if (_suppressMainWindowPositionPersistence || WindowState != WindowState.Normal)
+        if (_suppressMainWindowPositionPersistence ||
+            _useCommandDeckSkin ||
+            WindowState != WindowState.Normal)
             return;
 
         PixelPoint currentPosition = Position;

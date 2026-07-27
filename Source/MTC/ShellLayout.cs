@@ -2233,8 +2233,6 @@ public partial class MainWindow
         _useCommandDeckSkin = useCommandDeckSkin;
         _appPrefs.CommandDeckSkinEnabled = false;
         _appPrefs.Save();
-        if (useCommandDeckSkin && WindowState != WindowState.FullScreen)
-            WindowState = WindowState.Maximized;
         ApplySelectedSkinSafe();
     }
 
