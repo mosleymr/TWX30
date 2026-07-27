@@ -436,9 +436,18 @@ public partial class MainWindow
             VerticalAlignment = VerticalAlignment.Stretch,
             Child = _deckWorkspace,
         };
-        _deckWorkspaceScaler.SizeChanged += (_, _) => UpdateDeckWorkspaceSize();
+        _deckWorkspaceHost = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Children =
+            {
+                _deckWorkspaceScaler,
+            },
+        };
+        _deckWorkspaceHost.SizeChanged += (_, _) => UpdateDeckWorkspaceSize();
         Dispatcher.UIThread.Post(UpdateDeckWorkspaceSize, DispatcherPriority.Loaded);
-        return _deckWorkspaceScaler;
+        return _deckWorkspaceHost;
     }
 
     private void CreateDeckConsolePanel(MtcTabPrototype tab)
@@ -502,10 +511,10 @@ public partial class MainWindow
 
     private void UpdateDeckWorkspaceSize()
     {
-        if (_deckWorkspaceScaler is null || _deckWorkspace is null)
+        if (_deckWorkspaceHost is null || _deckWorkspace is null)
             return;
 
-        Rect bounds = _deckWorkspaceScaler.Bounds;
+        Rect bounds = _deckWorkspaceHost.Bounds;
         if (bounds.Width <= 0 || bounds.Height <= 0)
             return;
 
@@ -2224,6 +2233,8 @@ public partial class MainWindow
         _useCommandDeckSkin = useCommandDeckSkin;
         _appPrefs.CommandDeckSkinEnabled = false;
         _appPrefs.Save();
+        if (useCommandDeckSkin && WindowState != WindowState.FullScreen)
+            WindowState = WindowState.Maximized;
         ApplySelectedSkinSafe();
     }
 

@@ -147,6 +147,7 @@ public partial class MainWindow : Window
     };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
+    private Grid? _deckWorkspaceHost;
     private Viewbox? _deckWorkspaceScaler;
     private Control? _deckWorkspace;
     private double _deckWorkspaceMinimumWidth;
