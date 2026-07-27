@@ -38,6 +38,24 @@ namespace TWXProxy.Core
         Config,
     }
 
+    public sealed class NativeBotClientInputResult
+    {
+        public static NativeBotClientInputResult NotHandled { get; } = new(false, string.Empty);
+        public static NativeBotClientInputResult Handled { get; } = new(true, string.Empty);
+
+        private NativeBotClientInputResult(bool handled, string promptSeed)
+        {
+            IsHandled = handled;
+            PromptSeed = promptSeed;
+        }
+
+        public bool IsHandled { get; }
+        public string PromptSeed { get; }
+
+        public static NativeBotClientInputResult StartPrompt(string promptSeed)
+            => new(true, promptSeed ?? string.Empty);
+    }
+
     /// <summary>
     /// Represents a single game instance with server and local connections
     /// </summary>
@@ -47,6 +65,12 @@ namespace TWXProxy.Core
         {
             public byte[] Data { get; init; } = Array.Empty<byte>();
             public bool BroadcastDeaf { get; init; }
+        }
+
+        private enum ScriptPipeToggleOutputAction
+        {
+            None,
+            Suppress
         }
 
         private sealed class ClientSession
@@ -60,6 +84,10 @@ namespace TWXProxy.Core
             public bool EchoMarks { get; set; }
             public MenuHandler MenuHandler { get; init; } = null!;
             public Task? ReadTask { get; set; }
+            public bool NativeBotCommandMode { get; set; }
+            public bool NativeBotHotkeyMode { get; set; }
+            public bool SuppressNextLineFeedAfterNativeBotPrompt { get; set; }
+            public StringBuilder NativeBotCommandBuffer { get; } = new();
             public bool IsConnected => IsDirect ? WriteStream != Stream.Null : (TcpClient?.Connected ?? false);
         }
 
@@ -132,6 +160,9 @@ namespace TWXProxy.Core
         public Func<string, bool>? NativeBotStopper { get; set; }
         public Func<string, bool>? NativeBotRebooter { get; set; }
         public Func<string, string?>? NativeBotScriptRedirector { get; set; }
+        public Func<bool>? NativeBotCanAcceptLocalInput { get; set; }
+        public Func<string, Task<bool>>? NativeBotLocalInputExecutor { get; set; }
+        public Func<byte, Task<NativeBotClientInputResult>>? NativeBotHotkeyExecutor { get; set; }
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
@@ -168,7 +199,7 @@ namespace TWXProxy.Core
         private int _deferredLocalOutputFlushScheduled;
         private int _suppressScriptPipeToggleMessageCount;
         private int _suppressScriptPipeTogglePromptCount;
-        
+
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
         private readonly List<byte> _clientBufferDuringNegotiation = new();
@@ -1182,7 +1213,8 @@ namespace TWXProxy.Core
                             if (segment.Length == 0)
                                 continue;
 
-                            bool suppressLocalOutput = ShouldSuppressScriptPipeToggleOutput(segment);
+                            ScriptPipeToggleOutputAction pipeToggleAction = GetScriptPipeToggleOutputAction(segment);
+                            bool suppressLocalOutput = pipeToggleAction != ScriptPipeToggleOutputAction.None;
                             if (!suppressLocalOutput)
                             {
                                 UpdateServerOutputBoundaryState(segment);
@@ -1272,16 +1304,29 @@ namespace TWXProxy.Core
                     {
                         Log($"[{_gameName}] Auto-reconnect attempt...");
                         GlobalModules.DebugLog($"[AutoReconnect] Connecting to {_serverAddress}:{_serverPort}\n");
+                        await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nConnecting to {ServerEndpoint}...\r\n"), broadcastDeaf: true, token: token);
                         await ConnectToServerAsync();
                         GlobalModules.DebugLog($"[AutoReconnect] Connected successfully\n");
                         GlobalModules.FlushDebugLog();
                         Log($"[{_gameName}] Auto-reconnect succeeded");
+                        await SendToLocalAsync(Encoding.ASCII.GetBytes("Connected!\r\n"), broadcastDeaf: true, token: token);
                         return;
                     }
                     catch (Exception ex)
                     {
                         Log($"[{_gameName}] Auto-reconnect failed: {ex.Message}, retrying in {reconnectDelay / 1000}s...");
                         GlobalModules.DebugLog($"[AutoReconnect] Failed: {ex.Message}, retrying...\n");
+                        try
+                        {
+                            await SendToLocalAsync(
+                                Encoding.ASCII.GetBytes($"\r\nConnection failed: {ex.Message}; retrying in {reconnectDelay / 1000}s...\r\n"),
+                                broadcastDeaf: true,
+                                token: token);
+                        }
+                        catch
+                        {
+                            // Local clients may be gone while the proxy keeps retrying.
+                        }
                     }
                 }
             }
@@ -1473,6 +1518,235 @@ namespace TWXProxy.Core
             return $"hex={hex}, ascii='{ascii}'";
         }
 
+        private bool CanAcceptNativeBotClientInput()
+        {
+            Func<bool>? canAccept = NativeBotCanAcceptLocalInput;
+            if (canAccept == null)
+                return false;
+
+            try
+            {
+                return canAccept();
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] accept check failed: {ex.Message}\n");
+                return false;
+            }
+        }
+
+        private async Task<bool> TryHandleNativeBotClientInputAsync(
+            ClientSession session,
+            byte value,
+            bool scriptWaitingForInput,
+            bool keypressMode,
+            CancellationToken token)
+        {
+            if (session.SuppressNextLineFeedAfterNativeBotPrompt)
+            {
+                session.SuppressNextLineFeedAfterNativeBotPrompt = false;
+                if (value == 0x0A)
+                    return true;
+            }
+
+            if (session.NativeBotCommandMode)
+                return await HandleNativeBotClientCommandInputAsync(session, value, token);
+
+            if (session.NativeBotHotkeyMode)
+                return await HandleNativeBotClientHotkeyInputAsync(session, value, token);
+
+            if (scriptWaitingForInput ||
+                keypressMode ||
+                !CanAcceptNativeBotClientInput())
+            {
+                return false;
+            }
+
+            if (value == (byte)'>')
+            {
+                await BeginNativeBotClientCommandPromptAsync(session, string.Empty, token);
+                return true;
+            }
+
+            if (value == 0x09)
+            {
+                await BeginNativeBotClientHotkeyPromptAsync(session, token);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async Task BeginNativeBotClientCommandPromptAsync(ClientSession session, string initialValue, CancellationToken token)
+        {
+            session.NativeBotHotkeyMode = false;
+            session.NativeBotCommandMode = true;
+            session.NativeBotCommandBuffer.Clear();
+            if (!string.IsNullOrEmpty(initialValue))
+                session.NativeBotCommandBuffer.Append(initialValue);
+
+            await WriteNativeBotClientPromptAsync(session, "\r\nmombot> " + initialValue, token);
+        }
+
+        private async Task BeginNativeBotClientHotkeyPromptAsync(ClientSession session, CancellationToken token)
+        {
+            session.NativeBotCommandMode = false;
+            session.NativeBotCommandBuffer.Clear();
+            session.NativeBotHotkeyMode = true;
+
+            await WriteNativeBotClientPromptAsync(session, "\r\nmombot hotkey> ", token);
+        }
+
+        private async Task<bool> HandleNativeBotClientCommandInputAsync(ClientSession session, byte value, CancellationToken token)
+        {
+            if (!CanAcceptNativeBotClientInput())
+            {
+                ResetNativeBotClientInputState(session);
+                return false;
+            }
+
+            switch (value)
+            {
+                case 0x1B:
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+
+                case 0x0D:
+                    session.SuppressNextLineFeedAfterNativeBotPrompt = true;
+                    await SubmitNativeBotClientCommandAsync(session, token);
+                    return true;
+
+                case 0x0A:
+                    await SubmitNativeBotClientCommandAsync(session, token);
+                    return true;
+
+                case 0x08:
+                case 0x7F:
+                    if (session.NativeBotCommandBuffer.Length > 0)
+                    {
+                        session.NativeBotCommandBuffer.Length--;
+                        await WriteNativeBotClientPromptAsync(session, "\b \b", token);
+                    }
+                    return true;
+
+                case 0x09:
+                    session.NativeBotCommandMode = false;
+                    session.NativeBotCommandBuffer.Clear();
+                    await BeginNativeBotClientHotkeyPromptAsync(session, token);
+                    return true;
+
+                default:
+                    if (value >= 0x20)
+                    {
+                        session.NativeBotCommandBuffer.Append((char)value);
+                        await WriteNativeBotClientPromptAsync(session, Encoding.Latin1.GetString(new[] { value }), token);
+                    }
+                    return true;
+            }
+        }
+
+        private async Task<bool> HandleNativeBotClientHotkeyInputAsync(ClientSession session, byte value, CancellationToken token)
+        {
+            if (!CanAcceptNativeBotClientInput())
+            {
+                ResetNativeBotClientInputState(session);
+                return false;
+            }
+
+            switch (value)
+            {
+                case 0x1B:
+                case 0x0D:
+                    session.SuppressNextLineFeedAfterNativeBotPrompt = value == 0x0D;
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+
+                case 0x0A:
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+            }
+
+            session.NativeBotHotkeyMode = false;
+
+            Func<byte, Task<NativeBotClientInputResult>>? executor = NativeBotHotkeyExecutor;
+            if (executor == null)
+            {
+                await WriteNativeBotClientPromptAsync(session, "\r\nmombot: hotkeys are unavailable.\r\n", token);
+                return true;
+            }
+
+            try
+            {
+                NativeBotClientInputResult result = await executor(value);
+                if (!string.IsNullOrEmpty(result.PromptSeed))
+                {
+                    await BeginNativeBotClientCommandPromptAsync(session, result.PromptSeed, token);
+                    return true;
+                }
+
+                if (!result.IsHandled)
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] hotkey failed for {value}: {ex}\n");
+                GlobalModules.FlushDebugLog();
+                await WriteNativeBotClientPromptAsync(session, $"\r\nmombot: hotkey failed: {ex.Message}\r\n", token);
+            }
+
+            return true;
+        }
+
+        private async Task SubmitNativeBotClientCommandAsync(ClientSession session, CancellationToken token)
+        {
+            string input = session.NativeBotCommandBuffer.ToString().Trim();
+            ResetNativeBotClientInputState(session);
+            await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+
+            if (string.IsNullOrWhiteSpace(input))
+                return;
+
+            Func<string, Task<bool>>? executor = NativeBotLocalInputExecutor;
+            if (executor == null)
+            {
+                await WriteNativeBotClientPromptAsync(session, "mombot: local commands are unavailable.\r\n", token);
+                return;
+            }
+
+            try
+            {
+                bool handled = await executor(input);
+                if (!handled)
+                    await WriteNativeBotClientPromptAsync(session, "mombot: command was not handled.\r\n", token);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] command failed for '{input}': {ex}\n");
+                GlobalModules.FlushDebugLog();
+                await WriteNativeBotClientPromptAsync(session, $"mombot: command failed: {ex.Message}\r\n", token);
+            }
+        }
+
+        private static void ResetNativeBotClientInputState(ClientSession session)
+        {
+            session.NativeBotCommandMode = false;
+            session.NativeBotHotkeyMode = false;
+            session.NativeBotCommandBuffer.Clear();
+        }
+
+        private static async Task WriteNativeBotClientPromptAsync(ClientSession session, string text, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            byte[] bytes = Encoding.Latin1.GetBytes(text);
+            await session.WriteStream.WriteAsync(bytes, 0, bytes.Length, token);
+            await session.WriteStream.FlushAsync(token);
+        }
+
         private async Task ReadFromClientAsync(ClientSession session, CancellationToken token)
         {
             var buffer = new byte[8192];
@@ -1551,6 +1825,9 @@ namespace TWXProxy.Core
                                 else if (!handled)
                                 {
                                     bool keypressMode = scriptWaitingForInput && (_interpreter?.HasKeypressInputWaiting ?? false);
+                                    if (await TryHandleNativeBotClientInputAsync(session, b, scriptWaitingForInput, keypressMode, token))
+                                        continue;
+
                                     bool echoKeypressInput = keypressMode && (_interpreter?.HasEchoingKeypressInputWaiting ?? false);
                                     bool textOutConsumed = false;
                                     bool enteredInputWait = false;
@@ -1587,7 +1864,9 @@ namespace TWXProxy.Core
                                         else
                                         {
                                             byte[] forwarded = new byte[] { b };
-                                            await SendToServerAsync(forwarded);
+                                            FastServerSendResult immediate = TrySendToServerImmediate(forwarded);
+                                            if (!immediate.Success)
+                                                await SendToServerAsync(forwarded);
                                             MarkLocalInputProbe(forwarded);
                                         }
                                     }
@@ -1626,7 +1905,9 @@ namespace TWXProxy.Core
                                     }
 
                                     if (!textOutConsumed && !suppressCurrentCharForNewInputWait)
+                                    {
                                         LocalDataReceived?.Invoke(this, new DataReceivedEventArgs(new byte[] { b }));
+                                    }
                                     else if (suppressCurrentCharForNewInputWait)
                                         GlobalModules.DebugLog($"[INPUT] Suppressed trigger character {b} ('{c}') after text-out handler opened input wait\n");
                                 }
@@ -2385,12 +2666,12 @@ namespace TWXProxy.Core
             }
         }
 
-        private bool ShouldSuppressScriptPipeToggleOutput(byte[] cleanData)
+        private ScriptPipeToggleOutputAction GetScriptPipeToggleOutputAction(byte[] cleanData)
         {
             if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0 &&
                 Volatile.Read(ref _suppressScriptPipeTogglePromptCount) <= 0)
             {
-                return false;
+                return ScriptPipeToggleOutputAction.None;
             }
 
             string text = Encoding.Latin1.GetString(cleanData);
@@ -2409,17 +2690,17 @@ namespace TWXProxy.Core
                     Interlocked.Increment(ref _suppressScriptPipeTogglePromptCount);
 
                 GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of script-triggered message toggle response\n");
-                return true;
+                return ScriptPipeToggleOutputAction.Suppress;
             }
 
             if (containsPrompt && Volatile.Read(ref _suppressScriptPipeTogglePromptCount) > 0)
             {
                 Interlocked.Decrement(ref _suppressScriptPipeTogglePromptCount);
                 GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of follow-up prompt after script-triggered message toggle\n");
-                return true;
+                return ScriptPipeToggleOutputAction.Suppress;
             }
 
-            return false;
+            return ScriptPipeToggleOutputAction.None;
         }
 
         private static IEnumerable<byte[]> SplitServerOutputForDispatch(byte[] data)
@@ -2505,6 +2786,16 @@ namespace TWXProxy.Core
             return result;
         }
 
+        private static byte[] CopyBytes(byte[] data)
+        {
+            if (data.Length == 0)
+                return Array.Empty<byte>();
+
+            var result = new byte[data.Length];
+            Buffer.BlockCopy(data, 0, result, 0, data.Length);
+            return result;
+        }
+
         private void SendNativeHaggleResponse(string response)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
@@ -2587,7 +2878,7 @@ namespace TWXProxy.Core
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             // ECHO/ECHOEX and script prompts use broadcastDeaf so menu/status
-            // messages remain visible while scripts mute server output.  Do not
+            // messages remain visible while scripts mute server output. Do not
             // defer those behind server dispatch, or a deafing script can appear
             // to hang without showing its own progress message.
             if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))

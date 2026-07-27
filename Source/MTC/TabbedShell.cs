@@ -52,9 +52,6 @@ public partial class MainWindow
         public int PendingSessionLogChunkCount;
         public long PendingSessionLogByteCount;
         public object TerminalDisplayArtifactSync { get; } = new();
-        public bool SuppressNextTradeWarsPromptAfterScriptInput { get; set; }
-        public long ScriptInputPromptDisplaySuppressUntilUtcTicks { get; set; }
-        public bool ScriptInputPromptVisible { get; set; }
         public object TerminalBufferSync { get; } = new();
         public List<byte[]> PausedTerminalChunks { get; } = [];
         public int PausedTerminalChunkCount;

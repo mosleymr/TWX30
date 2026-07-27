@@ -1480,6 +1480,8 @@ public partial class MainWindow
             ArmNativeMombotPostLoginMacro(relogSettings);
             SetMombotCurrentVars("1", "$relogging", "$connectivity~relogging");
             ApplyMombotConfigChange(config => config.Enabled = true);
+            _gameInstance.AutoReconnect = true;
+            _gameInstance.StartReconnectIfNeeded();
             LoadMombotStartupScripts();
             bool launchedConnectivityRelog = false;
             if (relogSettings.LoginType != MTC.mombot.mombotRelogLoginType.NormalRelog)
@@ -1768,6 +1770,7 @@ public partial class MainWindow
         CurrentInterpreter?.ClearActiveBotContext(nativeBotName);
 
         ApplyMombotConfigChange(config => config.Enabled = false);
+        _gameInstance.AutoReconnect = _state.AutoReconnect;
         _gameInstance.ActiveBotName = string.Empty;
         var nativeScriptReferences = GetConfiguredBotScriptPaths(nativeBotConfig, scriptDirectory)
             .Concat(_mombot.GetStartupScriptReferences())

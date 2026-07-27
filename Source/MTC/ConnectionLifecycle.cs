@@ -347,6 +347,12 @@ public partial class MainWindow
             }));
             return true;
         };
+        gi.NativeBotCanAcceptLocalInput = () => _mombot.Enabled;
+        gi.NativeBotLocalInputExecutor = input =>
+            ExecuteInOptionalMtcTabSessionAsync(owningTab, () => ExecuteMombotRemoteInputAsync(input));
+        gi.NativeBotHotkeyExecutor = keyByte =>
+            ExecuteInOptionalMtcTabSessionAsync(owningTab, () => ExecuteMombotRemoteHotkeyAsync(keyByte));
+
         // Two in-process pipes for bidirectional communication.
         // serverToTerm: gi writes game output → MTC reads for the ANSI parser.
         // termToServer: MTC writes keystrokes → gi reads as "local client" input.
@@ -372,192 +378,56 @@ public partial class MainWindow
             toTerminal:   serverToTerm.Writer.AsStream(),   // gi writes game output here
             fromTerminal: termToServer.Reader.AsStream());  // gi reads keystrokes from here
 
-        // Replace the keyboard → telnet wiring with keyboard → pipe.
+        _proxyCts = new CancellationTokenSource();
+        var cts = _proxyCts;
+
+        // Replace the keyboard -> telnet wiring with keyboard -> pipe. The
+        // dedicated writer keeps Pipe.Flush off the UI thread while preserving
+        // strict outbound input order.
         var termWriter = termToServer.Writer.AsStream();
+        var terminalInputQueue = new BlockingCollection<byte[]>();
+        var terminalInputThread = new Thread(() =>
+        {
+            try
+            {
+                foreach (byte[] data in terminalInputQueue.GetConsumingEnumerable(cts.Token))
+                {
+                    if (data.Length == 0)
+                        continue;
+
+                    termWriter.Write(data, 0, data.Length);
+                    termWriter.Flush();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Core.GlobalModules.DebugLog($"[MTC.ConnectEmbedded] terminal input writer failed: {ex.Message}\n");
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "MTC embedded input writer"
+        };
+        terminalInputThread.Start();
+
         SetTerminalInputHandler(bytes =>
         {
             ExecuteInOptionalMtcTabSession(owningTab, () => RouteTerminalInput(bytes, data =>
             {
-                try { termWriter.Write(data, 0, data.Length); termWriter.Flush(); }
-                catch { }
+                if (data.Length == 0 || cts.IsCancellationRequested)
+                    return;
+
+                try { terminalInputQueue.Add(data.ToArray(), cts.Token); }
+                catch (OperationCanceledException) { }
+                catch (InvalidOperationException) { }
             }));
         });
 
         // Background task: pipe-reader → AnsiParser.
-        _proxyCts = new CancellationTokenSource();
-        var cts       = _proxyCts;
         var termReader = serverToTerm.Reader.AsStream();
-
-        void ClearScriptInputPromptDisplayState()
-        {
-            if (owningTab is not null)
-            {
-                owningTab.SuppressNextTradeWarsPromptAfterScriptInput = false;
-                owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = 0;
-                owningTab.ScriptInputPromptVisible = false;
-                return;
-            }
-
-            _suppressNextTradeWarsPromptAfterScriptInput = false;
-            _scriptInputPromptDisplaySuppressUntilUtcTicks = 0;
-            _scriptInputPromptVisible = false;
-        }
-
-        byte[] FilterEmbeddedPromptDuringScriptInput(byte[] chunk, bool terminalDeaf)
-        {
-            if (chunk.Length == 0)
-                return chunk;
-
-            bool scriptWaitingForInput = interpreter.IsAnyScriptWaitingForInput();
-            bool scriptMenuDisplayActive = Core.GlobalModules.TWXMenu is Core.MenuManager menuManager &&
-                                           (menuManager.IsMenuOpen() || menuManager.HasSuspendedMenu);
-            long nowTicks = DateTime.UtcNow.Ticks;
-            bool suppressNextPrompt = owningTab?.SuppressNextTradeWarsPromptAfterScriptInput ?? _suppressNextTradeWarsPromptAfterScriptInput;
-            long suppressUntilTicks = owningTab?.ScriptInputPromptDisplaySuppressUntilUtcTicks ?? _scriptInputPromptDisplaySuppressUntilUtcTicks;
-            bool scriptInputPromptVisible = owningTab?.ScriptInputPromptVisible ?? _scriptInputPromptVisible;
-            bool stateChanged = false;
-
-            if (suppressNextPrompt && suppressUntilTicks <= nowTicks)
-            {
-                suppressNextPrompt = false;
-                suppressUntilTicks = 0;
-                stateChanged = true;
-            }
-
-            if (!terminalDeaf && !scriptWaitingForInput && !scriptMenuDisplayActive && !suppressNextPrompt && !scriptInputPromptVisible && chunk.AsSpan().IndexOf((byte)'>') < 0)
-            {
-                StoreExpiredPromptSuppressionState();
-                return chunk;
-            }
-
-            void StorePromptSuppressionState()
-            {
-                if (!stateChanged)
-                    return;
-
-                if (owningTab is not null)
-                {
-                    owningTab.SuppressNextTradeWarsPromptAfterScriptInput = suppressNextPrompt;
-                    owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = suppressUntilTicks;
-                    owningTab.ScriptInputPromptVisible = scriptInputPromptVisible;
-                    return;
-                }
-
-                _suppressNextTradeWarsPromptAfterScriptInput = suppressNextPrompt;
-                _scriptInputPromptDisplaySuppressUntilUtcTicks = suppressUntilTicks;
-                _scriptInputPromptVisible = scriptInputPromptVisible;
-            }
-
-            void StoreExpiredPromptSuppressionState()
-            {
-                if (!stateChanged)
-                    return;
-
-                if (owningTab is not null)
-                {
-                    owningTab.SuppressNextTradeWarsPromptAfterScriptInput = false;
-                    owningTab.ScriptInputPromptDisplaySuppressUntilUtcTicks = 0;
-                    return;
-                }
-
-                _suppressNextTradeWarsPromptAfterScriptInput = false;
-                _scriptInputPromptDisplaySuppressUntilUtcTicks = 0;
-            }
-
-            void ArmPromptSuppression()
-            {
-                suppressNextPrompt = true;
-                suppressUntilTicks = DateTime.UtcNow.AddSeconds(30).Ticks;
-                scriptInputPromptVisible = true;
-                stateChanged = true;
-            }
-
-            string text = Encoding.Latin1.GetString(chunk);
-            List<(int Start, int End)>? suppressRanges = null;
-            int index = 0;
-
-            while (index < text.Length)
-            {
-                int rangeStart = index;
-                while (index < text.Length && (text[index] == '\r' || text[index] == '\n'))
-                    index++;
-
-                int contentStart = index;
-                while (index < text.Length && text[index] != '\r' && text[index] != '\n')
-                    index++;
-
-                int contentEnd = index;
-                if (contentEnd > contentStart)
-                {
-                    string segment = text[contentStart..contentEnd];
-                    string normalized = Core.AnsiCodes.NormalizeTerminalText(segment).Trim();
-                    bool promptDisplaySuppressionActive = terminalDeaf ||
-                                                          scriptWaitingForInput ||
-                                                          scriptMenuDisplayActive ||
-                                                          suppressNextPrompt ||
-                                                          scriptInputPromptVisible;
-                    if (normalized == ">" && promptDisplaySuppressionActive)
-                    {
-                        suppressRanges ??= [];
-                        suppressRanges.Add((rangeStart, contentEnd));
-                        ArmPromptSuppression();
-                    }
-                    else if (LooksLikeTradeWarsPromptLine(normalized) &&
-                             promptDisplaySuppressionActive)
-                    {
-                        suppressRanges ??= [];
-                        suppressRanges.Add((rangeStart, contentEnd));
-                        suppressNextPrompt = false;
-                        suppressUntilTicks = 0;
-                        stateChanged = true;
-                    }
-                    else if (TryGetMombotPromptNameFromLine(normalized, out _) &&
-                             promptDisplaySuppressionActive)
-                    {
-                        suppressRanges ??= [];
-                        suppressRanges.Add((rangeStart, contentEnd));
-                        suppressNextPrompt = false;
-                        suppressUntilTicks = 0;
-                        stateChanged = true;
-                    }
-                }
-            }
-
-            if (suppressRanges is null)
-            {
-                StorePromptSuppressionState();
-                return chunk;
-            }
-
-            var filtered = new StringBuilder(text.Length);
-            int copyStart = 0;
-            foreach ((int start, int end) in suppressRanges)
-            {
-                if (start > copyStart)
-                    filtered.Append(text, copyStart, start - copyStart);
-                copyStart = Math.Max(copyStart, end);
-            }
-
-            if (copyStart < text.Length)
-                filtered.Append(text, copyStart, text.Length - copyStart);
-
-            StorePromptSuppressionState();
-            return Encoding.Latin1.GetBytes(filtered.ToString());
-        }
-
-        static bool LooksLikeTradeWarsPromptLine(string normalized)
-        {
-            if (string.IsNullOrWhiteSpace(normalized))
-                return false;
-
-            return normalized.StartsWith("Command [TL=", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.StartsWith("Computer command [TL=", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.StartsWith("Citadel command (", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.StartsWith("Planet command (", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.StartsWith("Corporate command (", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.StartsWith("StarDock command (", StringComparison.OrdinalIgnoreCase) ||
-                   normalized.Contains(" command (?=help)", StringComparison.OrdinalIgnoreCase);
-        }
 
         _ = Task.Run(async () =>
         {
@@ -573,7 +443,7 @@ public partial class MainWindow
                     bool terminalDeaf = IsEmbeddedTerminalClientDeaf(owningTab);
 
                     byte[] artifactFilteredChunk = FilterTerminalDisplayArtifacts(owningTab, chunk);
-                    byte[] displayChunk = FilterEmbeddedPromptDuringScriptInput(artifactFilteredChunk, terminalDeaf);
+                    byte[] displayChunk = artifactFilteredChunk;
                     if (displayChunk.Length > 0)
                         EnqueueDisplayChunk(owningTab, displayChunk, force: terminalDeaf);
                     if (!terminalDeaf && artifactFilteredChunk.Length > 0)
@@ -591,6 +461,8 @@ public partial class MainWindow
         var serverLineBuf = new System.Text.StringBuilder();
         var serverAnsiLineBuf = new System.Text.StringBuilder();
         bool serverScriptInAnsi = false;
+        string lastDispatchedPartialLine = string.Empty;
+        string lastDispatchedPartialAnsiLine = string.Empty;
 
         object serverDataSync = new();
         const int MaxQueuedEmbeddedUiObserverLines = 64;
@@ -771,47 +643,59 @@ public partial class MainWindow
                         if (!string.IsNullOrEmpty(remainder))
                         {
                             string scriptRemainder = remainder;
-                            string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
-                            Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
-                            if (allowUiObservers)
-                                ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
-                            else
-                                QueueEmbeddedUiObserverLine(strippedRemainder, remainderAnsi, isPrompt: true);
-                            if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
-                                Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
-                            bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
-                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                            // Server prompts and partial lines must keep flowing to the interpreter
-                            // even while a proxy menu is open, otherwise waitfor/text triggers stall.
-                            // Match Pascal TWX here: partial prompts go through AutoTextEvent and
-                            // then TextEvent only. They do not fire TextLineEvent and do not
-                            // re-activate triggers until a full CR-terminated line is processed.
-                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                            interpreter.AutoTextEvent(scriptRemainder, false);
-                            Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                            Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                            interpreter.TextEvent(scriptRemainder, false);
-                            if (!string.IsNullOrWhiteSpace(strippedRemainder))
+                            bool alreadyDispatchedPartial =
+                                string.Equals(scriptRemainder, lastDispatchedPartialLine, StringComparison.Ordinal) &&
+                                string.Equals(remainderAnsi, lastDispatchedPartialAnsiLine, StringComparison.Ordinal);
+
+                            if (!alreadyDispatchedPartial)
                             {
+                                lastDispatchedPartialLine = scriptRemainder;
+                                lastDispatchedPartialAnsiLine = remainderAnsi;
+
+                                string strippedRemainder = Core.AnsiCodes.NormalizeTerminalText(scriptRemainder);
+                                Core.GlobalModules.GlobalAutoRecorder.ProcessPrompt(strippedRemainder, remainderAnsi);
                                 if (allowUiObservers)
-                                {
-                                    ObserveComputerShipTypeLine(strippedRemainder);
-                                    ObserveOnlinePlayersLine(strippedRemainder);
-                                    SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
-                                    ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
-                                    ObserveNativeMombotWatchLine(strippedRemainder);
-                                }
+                                    ObserveGameAgentServerLine(strippedRemainder, remainderAnsi, isPrompt: true);
                                 else
+                                    QueueEmbeddedUiObserverLine(strippedRemainder, remainderAnsi, isPrompt: true);
+                                if (Core.GlobalModules.GlobalAutoRecorder.CurrentSector > 0)
+                                    Core.ScriptRef.SetCurrentSector(runtimeContext, Core.GlobalModules.GlobalAutoRecorder.CurrentSector);
+                                bool nativeHaggleResponded = gi.ProcessNativeHaggleLine(strippedRemainder);
+                                Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                                Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                                // Server prompts and partial lines must keep flowing to the interpreter
+                                // even while a proxy menu is open, otherwise waitfor/text triggers stall.
+                                // Match Pascal TWX here: partial prompts go through AutoTextEvent and
+                                // then TextEvent only. They do not fire TextLineEvent and do not
+                                // re-activate triggers until a full CR-terminated line is processed.
+                                Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                                Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                                interpreter.AutoTextEvent(scriptRemainder, false);
+                                Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
+                                Core.ScriptRef.SetCurrentLine(scriptRemainder);
+                                interpreter.TextEvent(scriptRemainder, false);
+                                if (!string.IsNullOrWhiteSpace(strippedRemainder))
                                 {
-                                    SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
-                                    ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                                    if (allowUiObservers)
+                                    {
+                                        ObserveComputerShipTypeLine(strippedRemainder);
+                                        ObserveOnlinePlayersLine(strippedRemainder);
+                                        SyncMombotPromptStateFromLine(strippedRemainder, remainderAnsi);
+                                        ObserveEmbeddedKeepaliveWatchLine(strippedRemainder);
+                                        ObserveNativeMombotWatchLine(strippedRemainder);
+                                    }
+                                    else
+                                    {
+                                        SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
+                                        ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                                    }
                                 }
-                            }
-                            if (nativeHaggleResponded)
-                            {
-                                serverLineBuf.Clear();
+                                if (nativeHaggleResponded)
+                                {
+                                    serverLineBuf.Clear();
+                                    lastDispatchedPartialLine = string.Empty;
+                                    lastDispatchedPartialAnsiLine = string.Empty;
+                                }
                             }
                         }
                         break;
@@ -825,6 +709,8 @@ public partial class MainWindow
                     string lineRaw = bufferedAnsi[lastAnsiProcessedPos..(ansiCrPos + 1)];
                     string lineForScript = NormalizeLegacyInterrogLineForScripts(buffered[lastProcessedPos..crPos]);
                     string lineStripped = Core.AnsiCodes.NormalizeTerminalText(lineForScript);
+                    lastDispatchedPartialLine = string.Empty;
+                    lastDispatchedPartialAnsiLine = string.Empty;
 
                     if (!string.IsNullOrEmpty(lineStripped))
                     {
@@ -855,13 +741,7 @@ public partial class MainWindow
 
                     // Real server lines must continue to advance script waits/triggers even if a
                     // proxy menu is open locally.
-                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                    Core.ScriptRef.SetCurrentLine(lineForScript);
-                    interpreter.TextLineEvent(lineForScript, false);
-                    Core.ScriptRef.SetCurrentAnsiLine(lineRaw);
-                    Core.ScriptRef.SetCurrentLine(lineForScript);
-                    interpreter.TextEvent(lineForScript, false);
-                    interpreter.ActivateTriggers();
+                    interpreter.DispatchCompleteLine(lineForScript, lineRaw, false);
 
                     if (!string.IsNullOrWhiteSpace(lineStripped))
                     {
@@ -889,6 +769,8 @@ public partial class MainWindow
                 if (lastProcessedPos >= buffered.Length)
                 {
                     serverLineBuf.Clear();
+                    lastDispatchedPartialLine = string.Empty;
+                    lastDispatchedPartialAnsiLine = string.Empty;
                     string ansiRemainder = lastAnsiProcessedPos < bufferedAnsi.Length
                         ? bufferedAnsi[lastAnsiProcessedPos..]
                         : string.Empty;
@@ -966,6 +848,13 @@ public partial class MainWindow
             ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
                 bool stopNativeMombot = _mombot.Enabled && ShouldStopNativeMombotAfterDisconnect();
+                bool nativeMombotWillRelog = _mombot.Enabled && !stopNativeMombot && ShouldNativeMombotAutoRelog();
+                if (nativeMombotWillRelog)
+                {
+                    gi.AutoReconnect = true;
+                    gi.StartReconnectIfNeeded();
+                }
+
                 if (stopNativeMombot)
                 {
                     SuppressNativeMombotRelogState(
@@ -983,7 +872,9 @@ public partial class MainWindow
                     if (wasConnected)
                     {
                         var disconnectMessage = Encoding.UTF8.GetBytes(
-                            $"\r\n\x1b[1;31m[MTC] Game server disconnected from {_state.Host}:{_state.Port}. Session is closed; type $c to reconnect.\x1b[0m\r\n");
+                            nativeMombotWillRelog
+                                ? $"\r\n\x1b[1;31m[MTC] Game server disconnected from {_state.Host}:{_state.Port}. Native relog is active; reconnect attempts will continue until Mombot/relog is stopped.\x1b[0m\r\n"
+                                : $"\r\n\x1b[1;31m[MTC] Game server disconnected from {_state.Host}:{_state.Port}. Session is closed; type $c to reconnect.\x1b[0m\r\n");
                         EnqueueDisplayChunk(owningTab, disconnectMessage, force: true);
                     }
                     // In embedded mode the proxy is still alive after a server
@@ -1008,52 +899,70 @@ public partial class MainWindow
         // LocalDataReceived fires byte-by-byte; we accumulate into lines and call
         // interpreter.LocalInputEvent(line) when Enter arrives.
         var getInputBuffer = new System.Text.StringBuilder();
+        object getInputBufferSync = new();
+
+        void RunLocalInputBufferAction(Action action)
+        {
+            if (owningTab is not null)
+            {
+                ExecuteInMtcTabBackgroundContext(owningTab, action);
+                return;
+            }
+
+            using var inputScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
+            action();
+        }
 
         gi.ClearInputBufferRequested += (_, _) =>
-            ExecuteInOptionalMtcTabSession(owningTab, () => getInputBuffer.Clear());
+            RunLocalInputBufferAction(() =>
+            {
+                lock (getInputBufferSync)
+                    getInputBuffer.Clear();
+            });
 
         gi.LocalDataReceived += (_, e) =>
         {
-            ExecuteInOptionalMtcTabSession(owningTab, () =>
+            RunLocalInputBufferAction(() =>
             {
-                // Backspace / DEL
-                if (e.Data.Length == 1 && (e.Data[0] == 8 || e.Data[0] == 127))
+                lock (getInputBufferSync)
                 {
-                    if (getInputBuffer.Length > 0)
-                        getInputBuffer.Length--;
-                    return;
-                }
+                    // Backspace / DEL
+                    if (e.Data.Length == 1 && (e.Data[0] == 8 || e.Data[0] == 127))
+                    {
+                        if (getInputBuffer.Length > 0)
+                            getInputBuffer.Length--;
+                        return;
+                    }
 
-                string text = e.Text;
-                getInputBuffer.Append(text);
+                    string text = e.Text;
+                    getInputBuffer.Append(text);
 
-                // Keypress mode: fire immediately on any printable character.
-                if (interpreter.HasKeypressInputWaiting && getInputBuffer.Length > 0)
-                {
-                    string key = getInputBuffer.ToString();
-                    getInputBuffer.Clear();
-                    ClearScriptInputPromptDisplayState();
-                    interpreter.LocalInputEvent(key);
-                    return;
-                }
+                    // Keypress mode: fire immediately on any printable character.
+                    if (interpreter.HasKeypressInputWaiting && getInputBuffer.Length > 0)
+                    {
+                        string key = getInputBuffer.ToString();
+                        getInputBuffer.Clear();
+                        interpreter.LocalInputEvent(key);
+                        return;
+                    }
 
-                // Not waiting for input and connected — discard the buffer so stale
-                // data doesn't trigger a line event next time getinput is active.
-                if (gi.IsConnected && !interpreter.IsAnyScriptWaitingForInput())
-                {
-                    getInputBuffer.Clear();
-                    return;
-                }
+                    // Not waiting for input and connected -- discard the buffer so stale
+                    // data doesn't trigger a line event next time getinput is active.
+                    if (gi.IsConnected && !interpreter.IsAnyScriptWaitingForInput())
+                    {
+                        getInputBuffer.Clear();
+                        return;
+                    }
 
-                // Full-line getinput: deliver when Enter (\r or \n) arrives.
-                if (getInputBuffer.ToString().Contains('\r') || getInputBuffer.ToString().Contains('\n'))
-                {
-                    string line = getInputBuffer.ToString().TrimEnd('\r', '\n');
-                    getInputBuffer.Clear();
-                    // Blank Enter is a valid response for getinput/getconsoleinput and
-                    // must be delivered to scripts to preserve TWX27 behavior.
-                    ClearScriptInputPromptDisplayState();
-                    interpreter.LocalInputEvent(line);
+                    // Full-line getinput: deliver when Enter (\r or \n) arrives.
+                    if (getInputBuffer.ToString().Contains('\r') || getInputBuffer.ToString().Contains('\n'))
+                    {
+                        string line = getInputBuffer.ToString().TrimEnd('\r', '\n');
+                        getInputBuffer.Clear();
+                        // Blank Enter is a valid response for getinput/getconsoleinput and
+                        // must be delivered to scripts to preserve TWX27 behavior.
+                        interpreter.LocalInputEvent(line);
+                    }
                 }
             });
         };
@@ -1072,7 +981,6 @@ public partial class MainWindow
 
             ExecuteInOptionalMtcTabSession(owningTab, () =>
             {
-                ClearScriptInputPromptDisplayState();
                 _mombot.HandleObservedScriptStop();
                 ScheduleNativeMombotStartupWatch(owningTab);
                 HandleNativeMombotPostLoginScriptStop();
@@ -1116,7 +1024,16 @@ public partial class MainWindow
         SyncMombotRuntimeConfigFromTwxpCfg(gameConfig);
         _mombot.AttachSession(gi, _sessionDb, interpreter, GetOrCreateEmbeddedMombotConfig(gameConfig));
         gi.ServerDataSent += (_, e) =>
-            ExecuteInOptionalMtcTabSession(owningTab, () => _mombot.ObserveOutboundText(e.Text));
+        {
+            if (owningTab is not null)
+            {
+                ExecuteInMtcTabBackgroundContext(owningTab, () => _mombot.ObserveOutboundText(e.Text));
+                return;
+            }
+
+            using var outboundScope = Core.GlobalModules.UseRuntimeContext(runtimeContext);
+            _mombot.ObserveOutboundText(e.Text);
+        };
         RefreshStatusBar();
         Core.ScriptRef.SetActiveGameInstance(runtimeContext, gi);  // routes getinput through the pipe, not the system console
         await LoadEmbeddedExpansionModulesAsync(gameName, programDir, effectiveScriptDir, gi, interpreter);

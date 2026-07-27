@@ -161,7 +161,7 @@ internal class PreferencesDialog : Window
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
-        var chkPerformanceMonitoring = BuildCheckBox("Enable MTC performance monitoring", prefs.PerformanceMonitoringEnabled);
+        var chkPerformanceMonitoring = BuildCheckBox("Enable MTC performance monitoring when MTC_PERF_ENABLE_LOG=1", prefs.PerformanceMonitoringEnabled);
         var chkUpdateChecks = BuildCheckBox("Check for MTC updates", prefs.UpdateChecksEnabled);
         var cboUpdateLane = BuildUpdateOptionComboBox(
             UpdateLaneOptions,
@@ -285,7 +285,7 @@ internal class PreferencesDialog : Window
 
         var appDiagnosticsSection = BuildSection(
             "Application Diagnostics",
-            "Global process instrumentation for MTC. Leave off unless measuring UI or tab performance.",
+            "Global process instrumentation for MTC. Requires MTC_PERF_ENABLE_LOG=1 and should stay off during normal play.",
             BuildCheckGroup(chkPerformanceMonitoring));
 
         var updatesSection = BuildSection(

@@ -16,3 +16,4 @@
          [destroyports]   destroys every port it drains if you 
                           have enough fighters
          [bubble]         only visits bubble sectors  
+         [all]            attempts to do all planets in sector  

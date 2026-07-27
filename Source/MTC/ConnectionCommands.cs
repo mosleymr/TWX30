@@ -80,6 +80,7 @@ public partial class MainWindow
             string.IsNullOrWhiteSpace(targetDatabasePath) ? DatabasePathForMode(resolvedGameName, editedProfile.EmbeddedProxy) : targetDatabasePath,
             _embeddedGameConfig);
         await SaveEmbeddedGameConfigAsync(resolvedGameName, config);
+        TwEditCatalogService.ApplyEditDefaults(resolvedGameName, editedProfile.EditId);
 
         string newConfigPath = GameConfigPathForMode(resolvedGameName, editedProfile.EmbeddedProxy);
         if (!string.IsNullOrWhiteSpace(previousConfigPath) &&
@@ -292,6 +293,7 @@ public partial class MainWindow
             newProfile,
             DatabasePathForMode(gameName, newProfile.EmbeddedProxy));
         await SaveEmbeddedGameConfigAsync(gameName, config);
+        TwEditCatalogService.ApplyEditDefaults(gameName, newProfile.EditId);
         await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
         if (dlg.AutoSetupRequested)
             await ConfigureAndStartNativeMombotForAutoSetupAsync(newProfile);
@@ -369,6 +371,7 @@ public partial class MainWindow
             targetDatabasePath,
             _embeddedGameConfig);
         await SaveEmbeddedGameConfigAsync(gameName, config);
+        TwEditCatalogService.ApplyEditDefaults(gameName, saveAsProfile.EditId);
         await ApplyLoadedGameConfigAsync(config, path, addToRecent: true);
     }
 

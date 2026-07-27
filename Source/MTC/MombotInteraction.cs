@@ -4840,6 +4840,142 @@ public partial class MainWindow
         await ExecuteMombotHotkeyInternalActionAsync(actionRef);
     }
 
+    private async Task<bool> ExecuteMombotRemoteInputAsync(string input)
+    {
+        if (!_mombot.Enabled)
+            return false;
+
+        await ExecuteMombotUiCommandAsync(input);
+        return true;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeyAsync(byte keyByte)
+    {
+        if (!_mombot.Enabled)
+            return Core.NativeBotClientInputResult.NotHandled;
+
+        if (keyByte == (byte)'?')
+        {
+            await ExecuteMombotUiCommandAsync("help");
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (keyByte >= (byte)'0' && keyByte <= (byte)'9')
+        {
+            await ExecuteMombotHotkeyScriptAsync(keyByte == (byte)'0' ? 10 : keyByte - (byte)'0');
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (keyByte == 0x09)
+        {
+            if (TryResolveMombotHotkeyCommand(0x09, out string? tabCommandOrAction) &&
+                !string.IsNullOrWhiteSpace(tabCommandOrAction))
+            {
+                return await ExecuteMombotRemoteHotkeySelectionAsync(tabCommandOrAction);
+            }
+
+            await ExecuteMombotUiCommandAsync("stopmodules");
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (TryResolveMombotHotkeyCommand(keyByte, out string? commandOrAction) &&
+            !string.IsNullOrWhiteSpace(commandOrAction))
+        {
+            return await ExecuteMombotRemoteHotkeySelectionAsync(commandOrAction);
+        }
+
+        return Core.NativeBotClientInputResult.Handled;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeySelectionAsync(string commandOrAction)
+    {
+        if (string.IsNullOrWhiteSpace(commandOrAction))
+            return Core.NativeBotClientInputResult.Handled;
+
+        if (commandOrAction.StartsWith(":", StringComparison.Ordinal))
+            return await ExecuteMombotRemoteHotkeyActionAsync(commandOrAction);
+
+        await ExecuteMombotUiCommandAsync(commandOrAction);
+        return Core.NativeBotClientInputResult.Handled;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeyActionAsync(string actionRef)
+    {
+        string normalized = actionRef.Trim().ToLowerInvariant();
+        switch (normalized)
+        {
+            case ":internal_commands~twarpswitch":
+                return Core.NativeBotClientInputResult.StartPrompt("twarp ");
+
+            case ":internal_commands~mowswitch":
+                return Core.NativeBotClientInputResult.StartPrompt("mow ");
+
+            case ":internal_commands~stopmodules":
+                await ExecuteMombotUiCommandAsync("stopmodules");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autocap":
+            case ":internal_commands~autocapture":
+                await ExecuteMombotUiCommandAsync("cap");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autokill":
+                await ExecuteMombotUiCommandAsync("kill furb silent");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autorefurb":
+                await ExecuteMombotUiCommandAsync("refurb");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~hkill":
+            case ":holo_kill":
+                await ExecuteMombotUiCommandAsync("hkill");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~htorp":
+            case ":holotorp":
+                await ExecuteMombotUiCommandAsync("htorp");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~surround":
+                await ExecuteMombotUiCommandAsync("surround");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~xenter":
+            case ":internal_commands~exit":
+                await ExecuteMombotUiCommandAsync("xenter");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~clear":
+                await ExecuteMombotUiCommandAsync("clear");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~kit":
+                await ExecuteMombotUiCommandAsync("macro_kit");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~dock_shopper":
+                await ExecuteMombotUiCommandAsync("dock_shopper");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~fotonswitch":
+                await ExecuteMombotUiCommandAsync(ResolveMombotPhotonHotkeyCommand());
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":user_interface~script_access":
+                PublishMombotLocalMessage("Remote Mombot script access uses TAB-1 through TAB-0 for configured hotkey scripts.");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":menus~preferencesmenu":
+                PublishMombotLocalMessage("Mombot preferences are available in the host MTC window.");
+                return Core.NativeBotClientInputResult.Handled;
+        }
+
+        PublishMombotLocalMessage($"Mombot could not execute remote hotkey action {actionRef}: no native mapping is defined for this action.");
+        ApplyMombotExecutionRefresh();
+        return Core.NativeBotClientInputResult.Handled;
+    }
+
     private string ResolveMombotPhotonHotkeyCommand()
     {
         string mode = ReadCurrentMombotVar(string.Empty, "$BOT~MODE");

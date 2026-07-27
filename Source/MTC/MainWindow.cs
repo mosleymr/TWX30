@@ -342,9 +342,6 @@ public partial class MainWindow : Window
     private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;
     private bool _pendingTerminalSyncMarkerUtf8LeadByte;
-    private bool _suppressNextTradeWarsPromptAfterScriptInput;
-    private long _scriptInputPromptDisplaySuppressUntilUtcTicks;
-    private bool _scriptInputPromptVisible;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;

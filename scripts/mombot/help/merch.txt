@@ -21,3 +21,4 @@
          {upmcic #}   maximum mcic to upgrade (default: -60)
        {sellmcic #}   minimum mcic to sell product (default: none)
          {minpct #}   minimum percent to sell to a port (default: 50)
+      {file [file]}   only go to sectors in [file], one sector per line

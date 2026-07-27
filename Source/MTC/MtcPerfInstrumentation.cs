@@ -121,7 +121,8 @@ public partial class MainWindow
 
     private bool IsMtcPerfLoggingEnabled()
         => !MtcPerfSwitches.LoggingDisabled &&
-           (MtcPerfSwitches.LoggingForceEnabled || _appPrefs?.PerformanceMonitoringEnabled == true);
+           MtcPerfSwitches.LoggingForceEnabled &&
+           _appPrefs?.PerformanceMonitoringEnabled == true;
 
     private void UpdateMtcPerfInstrumentationState()
     {

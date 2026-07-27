@@ -190,6 +190,7 @@ namespace TWXProxy.Core
         void CloseMenu(bool force);
         void RemoveScriptMenus(object script);
         MenuItem? GetMenuByName(string menuName);
+        bool TryGetCurrentPrompt(out string prompt);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
         void SuspendMenuForInput(bool clearDisplay = true);
         bool HasSuspendedMenu { get; }
@@ -430,6 +431,19 @@ namespace TWXProxy.Core
         {
             using var runtimeScope = BindRuntimeContext();
             return _menuStack.Count > 0;
+        }
+
+        public bool TryGetCurrentPrompt(out string prompt)
+        {
+            using var runtimeScope = BindRuntimeContext();
+            prompt = string.Empty;
+            if (_menuStack.Count == 0)
+                return false;
+
+            MenuItem menu = _menuStack.Peek();
+            string promptText = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
+            prompt = $"{promptText}> ";
+            return true;
         }
 
         public bool IsMenuOnStack(string menuName)

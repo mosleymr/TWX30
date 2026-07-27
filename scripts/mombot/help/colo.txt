@@ -11,7 +11,7 @@
           speed - cycles - cycles to grab colos (default max)
           milk  - min colos - min colos before grab (default 0)
           timed - delay  - time to wait each cycle (default 15 seconds)
-         red   - jump sector - sector next to terra (can place planet there too)
+          red   - jump sector - sector next to terra (can place planet there too)
           speed port   - same as speed but uses port for ore
         - [misc]  - cycles/min colos/delay
         - [t/b]   - [t]warp/[b]warp  (default is [t]warp)

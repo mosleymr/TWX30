@@ -198,6 +198,26 @@ public class NewConnectionDialog : Window
         var txtLoginName = CreateTextBox(profile.LoginName, width: 250);
         var txtPassword = CreateTextBox(profile.Password, width: 250);
         var txtGameLetter = CreateTextBox(profile.GameLetter, width: 88);
+        IReadOnlyList<TwEditOption> editOptions = TwEditCatalogService.LoadOptions();
+        var cboEdit = new ComboBox
+        {
+            ItemsSource = editOptions,
+            SelectedItem = editOptions.FirstOrDefault(option =>
+                string.Equals(option.Id, profile.EditId, StringComparison.OrdinalIgnoreCase)) ?? editOptions[0],
+            Width = 250,
+            MinHeight = 30,
+            FontSize = 13,
+            Background = BgInput,
+            Foreground = FgText,
+            BorderBrush = InnerEdge,
+        };
+        var btnViewEdit = BuildSmallButton("View Edit");
+        var editPicker = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children = { cboEdit, btnViewEdit },
+        };
 
         var cboProtocol = new ComboBox
         {
@@ -221,13 +241,14 @@ public class NewConnectionDialog : Window
         var validationText = BuildValidationText();
 
         var connectionFields = BuildConnectionFieldsGrid(txtName, txtServer, cboProtocol, txtPort, txtSectors);
+        var editRow = BuildRow("Edit:", editPicker);
         var listenPortRow = BuildRow("Listen port:", txtListenPort);
         var loginScriptRow = BuildRow("Login script:", txtLoginScript);
         var loginNameRow = BuildRow("Username:", txtLoginName);
         var passwordRow = BuildRow("Password:", txtPassword);
         var gameLetterRow = BuildRow("Game letter:", txtGameLetter);
 
-        var connectionSection = BuildSection("Game & Server", connectionFields);
+        var connectionSection = BuildSection("Game & Server", connectionFields, editRow);
         var proxySection = BuildSection("Proxy Mode", chkEmbedded, chkListenForConnections, listenPortRow, chkStandaloneProxy, chkAutoReconnect);
         var loginSection = BuildSection("Login Automation", chkUseLogin, chkUseRLogin, loginScriptRow, loginNameRow, passwordRow, gameLetterRow);
 
@@ -258,6 +279,18 @@ public class NewConnectionDialog : Window
         chkUseLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         chkUseRLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         RefreshModeVisibility();
+        void RefreshEditButton()
+        {
+            btnViewEdit.IsEnabled = (cboEdit.SelectedItem as TwEditOption)?.Edit != null;
+        }
+
+        cboEdit.SelectionChanged += (_, _) => RefreshEditButton();
+        btnViewEdit.Click += async (_, _) =>
+        {
+            if ((cboEdit.SelectedItem as TwEditOption)?.Edit is { } edit)
+                await new TwEditViewDialog(edit).ShowDialog(this);
+        };
+        RefreshEditButton();
 
         WireDialogClipboard(txtName);
         WireDialogClipboard(txtServer);
@@ -340,6 +373,7 @@ public class NewConnectionDialog : Window
                 GameLetter = string.IsNullOrWhiteSpace(txtGameLetter.Text)
                     ? string.Empty
                     : txtGameLetter.Text.Trim().Substring(0, 1).ToUpperInvariant(),
+                EditId = (cboEdit.SelectedItem as TwEditOption)?.Id ?? string.Empty,
                 LoginSettingsConfigured = chkEmbedded.IsChecked == true,
                 ScrollbackLines = profile.ScrollbackLines,
             };

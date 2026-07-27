@@ -92,6 +92,17 @@ RUNTIME_FIELDS = [
     "gc_pause_s_s_avg",
 ]
 
+NATIVE_MEMORY_FIELDS = [
+    "time",
+    "pid",
+    "vm_allocate_resident_mb",
+    "vm_allocate_dirty_mb",
+    "graphics_owned_resident_mb",
+    "ioaccelerator_graphics_resident_mb",
+    "iosurface_resident_mb",
+    "malloc_resident_mb",
+]
+
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -556,6 +567,64 @@ def collect_runtime_counters(
     return None
 
 
+def memory_megabytes(value: str) -> float:
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMG]?)", value.strip())
+    if match is None:
+        return 0.0
+
+    amount = float(match.group(1))
+    return amount * {"": 1.0 / 1024.0 / 1024.0, "K": 1.0 / 1024.0, "M": 1.0, "G": 1024.0}[match.group(2)]
+
+
+def collect_native_memory_summary(pid: int) -> dict[str, Any] | None:
+    """Return a compact vmmap summary without retaining the verbose report."""
+    if shutil.which("vmmap") is None:
+        return None
+
+    try:
+        report = run_text(["vmmap", str(pid)], timeout=20.0)
+    except Exception:
+        return None
+
+    prefixes = {
+        "VM_ALLOCATE": "vm_allocate",
+        "owned unmapped (graphics)": "graphics_owned",
+        "IOAccelerator (graphics)": "ioaccelerator_graphics",
+        "IOSurface": "iosurface",
+    }
+    values = {key: 0.0 for key in prefixes.values()}
+    values["malloc"] = 0.0
+
+    for line in report.splitlines():
+        for prefix, key in prefixes.items():
+            if not line.startswith(prefix):
+                continue
+            if prefix == "VM_ALLOCATE" and line.startswith("VM_ALLOCATE ("):
+                continue
+            columns = line[len(prefix):].split()
+            if len(columns) >= 3:
+                values[key] = memory_megabytes(columns[1])
+                if key == "vm_allocate":
+                    values["vm_allocate_dirty"] = memory_megabytes(columns[2])
+            break
+        else:
+            if re.match(r"MALLOC_(?:LARGE|SMALL|TINY)\s+", line):
+                columns = line.split()
+                if len(columns) >= 3:
+                    values["malloc"] += memory_megabytes(columns[2])
+
+    return {
+        "time": now_iso(),
+        "pid": pid,
+        "vm_allocate_resident_mb": f"{values['vm_allocate']:.1f}",
+        "vm_allocate_dirty_mb": f"{values.get('vm_allocate_dirty', 0.0):.1f}",
+        "graphics_owned_resident_mb": f"{values['graphics_owned']:.1f}",
+        "ioaccelerator_graphics_resident_mb": f"{values['ioaccelerator_graphics']:.1f}",
+        "iosurface_resident_mb": f"{values['iosurface']:.1f}",
+        "malloc_resident_mb": f"{values['malloc']:.1f}",
+    }
+
+
 def average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
@@ -638,6 +707,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-counters-every", type=int, default=0, help="Collect dotnet-counters every N minutes. Default: disabled")
     parser.add_argument("--runtime-counters-duration", type=int, default=10, help="dotnet-counters collection seconds. Default: 10")
     parser.add_argument("--dotnet-counters", help="Path to dotnet-counters. Default: ~/.dotnet/tools/dotnet-counters or PATH")
+    parser.add_argument("--native-memory-every", type=int, default=0, help="Write a compact vmmap summary every N minutes. Default: disabled")
     parser.add_argument("--cpu-warn", type=float, default=75.0, help="CPU percent warning threshold. Default: 75")
     parser.add_argument("--rss-growth-warn-mb", type=float, default=512.0, help="RSS growth warning threshold. Default: 512 MB")
     parser.add_argument("--sample-on-warning", action="store_true", help="Run macOS sample(1) when severe warnings repeat.")
@@ -656,12 +726,15 @@ def main() -> int:
     details_jsonl = out_dir / "details.jsonl"
     warnings_log = out_dir / "warnings.log"
     runtime_csv = out_dir / "runtime_summary.csv"
+    native_memory_csv = out_dir / "native_memory.csv"
     monitor_log = out_dir / "monitor.log"
 
     perf_tail = PerfTail(args.perf_log, start_at_end=not args.include_existing_perf)
     dotnet_counters = find_dotnet_counters(args.dotnet_counters)
     runtime_every_seconds = args.runtime_counters_every * 60
     next_runtime_at = time.monotonic() + runtime_every_seconds if runtime_every_seconds > 0 else float("inf")
+    native_memory_every_seconds = args.native_memory_every * 60
+    next_native_memory_at = time.monotonic() + native_memory_every_seconds if native_memory_every_seconds > 0 else float("inf")
     next_sample_allowed_at = 0.0
     ending_at = datetime.now() + timedelta(hours=args.duration_hours)
     fixed_pid = args.pid
@@ -681,6 +754,8 @@ def main() -> int:
         handle.write(f"{now_iso()} start pid={current_pid or ''} perf_log={args.perf_log} out_dir={out_dir}\n")
         if runtime_every_seconds > 0:
             handle.write(f"{now_iso()} dotnet_counters={dotnet_counters or 'not-found'} every={args.runtime_counters_every}m\n")
+        if native_memory_every_seconds > 0:
+            handle.write(f"{now_iso()} native_memory=vmmap-summary every={args.native_memory_every}m\n")
 
     while not stop:
         started = time.monotonic()
@@ -759,6 +834,21 @@ def main() -> int:
                     with monitor_log.open("a", encoding="utf-8") as handle:
                         handle.write(f"{now_iso()} runtime collection failed pid={stats.pid}\n")
             next_runtime_at = time.monotonic() + runtime_every_seconds
+
+        if native_memory_every_seconds > 0 and stats.found and time.monotonic() >= next_native_memory_at:
+            native_memory_row = collect_native_memory_summary(stats.pid)
+            if native_memory_row:
+                append_csv(native_memory_csv, NATIVE_MEMORY_FIELDS, native_memory_row)
+                with monitor_log.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"{native_memory_row['time']} native_memory pid={stats.pid} "
+                        f"vm_allocate_resident_mb={native_memory_row['vm_allocate_resident_mb']} "
+                        f"graphics_owned_resident_mb={native_memory_row['graphics_owned_resident_mb']}\n"
+                    )
+            else:
+                with monitor_log.open("a", encoding="utf-8") as handle:
+                    handle.write(f"{now_iso()} native_memory collection failed pid={stats.pid}\n")
+            next_native_memory_at = time.monotonic() + native_memory_every_seconds
 
         if args.once or datetime.now() >= ending_at:
             break

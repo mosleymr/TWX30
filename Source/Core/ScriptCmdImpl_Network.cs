@@ -71,7 +71,23 @@ namespace TWXProxy.Core
                     {
                         GlobalModules.DebugLog($"[CONNECT] FAILED: {ex.Message}\n");
                         GlobalModules.FlushDebugLog();
-                        Console.WriteLine($"[Script] CONNECT failed: {ex.Message}");
+                        try
+                        {
+                            await gameInstance.SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nConnection failed: {ex.Message}\r\n"), broadcastDeaf: true);
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"[Script] CONNECT failed: {ex.Message}");
+                        }
+
+                        if (gameInstance.AutoReconnect)
+                        {
+                            gameInstance.StartReconnectIfNeeded();
+                        }
+                        else if (GetActiveInterpreter() is ModInterpreter interpreter)
+                        {
+                            interpreter.ProgramEvent("Failed to Connect.", string.Empty, false);
+                        }
                     }
                 });
             }

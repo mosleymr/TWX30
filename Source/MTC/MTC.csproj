@@ -27,6 +27,8 @@
     <AvaloniaResource Include="mtc.png" />
     <AvaloniaResource Include="mtc2.png" />
     <AvaloniaResource Include="mombot/mombot.png" />
+    <EmbeddedResource Include="Data/tw2002-edits.json" LogicalName="MTC.Data.tw2002-edits.json" />
+    <None Include="Data/tw2002-edits.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\Installer\Windows\Assets\mtc2.ico" Visible="false" />
   </ItemGroup>
 

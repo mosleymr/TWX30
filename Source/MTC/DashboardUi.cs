@@ -1432,6 +1432,9 @@ public partial class MainWindow
         if (IsNativeMombotRelogInProgress())
             return false;
 
+        if (IsAnyScriptWaitingForConsoleInput())
+            return false;
+
         if (!IsOnlineAutoRefreshPromptSafe())
             return false;
 
@@ -1486,6 +1489,21 @@ public partial class MainWindow
     private bool HasPendingUserTypedCommand()
         => HasPendingUserTypedServerCommand() || HasPendingNativeMombotCommandInput();
 
+    private bool IsAnyScriptWaitingForConsoleInput()
+    {
+        try
+        {
+            Core.ModInterpreter? interpreter = CurrentInterpreter;
+            return interpreter?.HasKeypressInputWaiting == true ||
+                interpreter?.IsAnyScriptWaitingForInput() == true;
+        }
+        catch
+        {
+            // Automated server input must fail closed when ownership is uncertain.
+            return true;
+        }
+    }
+
     private bool HasPendingNativeMombotCommandInput()
         => (_mombotPromptOpen && _mombotPromptBuffer.Length > 0) ||
            (_mombotPreferencesOpen && _mombotPreferencesInputBuffer.Length > 0);
@@ -1511,6 +1529,11 @@ public partial class MainWindow
 
     private async Task SendOnlineRefreshCommandAsync()
     {
+        // Recheck at the send boundary in case a script armed GETCONSOLEINPUT
+        // after the timer's initial eligibility test.
+        if (IsAnyScriptWaitingForConsoleInput())
+            return;
+
         byte[] payload = System.Text.Encoding.ASCII.GetBytes("#\r");
 
         if (_gameInstance?.IsConnected == true)

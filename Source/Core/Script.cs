@@ -138,6 +138,7 @@ namespace TWXProxy.Core
         private List<string> _autoRun;
         private Timer _tmrTime;
         private int _timerEventCount;
+        private readonly object _scriptEventLock = new();
         private string _lastScript = string.Empty;
         private string _activeBot = string.Empty;
         private string _activeBotScript = string.Empty;
@@ -1194,57 +1195,81 @@ namespace TWXProxy.Core
         public bool HasEchoingKeypressInputWaiting =>
             _scriptList.Any(s => s.WaitingForInput && s.KeypressMode && s.EchoKeypressInput);
 
+        internal void RunSerializedScriptEvent(Action action)
+        {
+            lock (_scriptEventLock)
+            {
+                action();
+            }
+        }
+
+        internal T RunSerializedScriptEvent<T>(Func<T> action)
+        {
+            lock (_scriptEventLock)
+            {
+                return action();
+            }
+        }
+
         public bool TextOutEvent(string text, Script? startScript)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
-            GlobalModules.TriggerDebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
-            // Trigger matching text out triggers in active scripts
-            int i = 0;
-
-            // Find starting script
-            if (startScript != null)
+            return RunSerializedScriptEvent(() =>
             {
+                GlobalModules.TriggerDebugLog($"[ModInterpreter.TextOutEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
+                // Trigger matching text out triggers in active scripts
+                int i = 0;
+
+                // Find starting script
+                if (startScript != null)
+                {
+                    while (i < _scriptList.Count)
+                    {
+                        if (_scriptList[i] == startScript)
+                        {
+                            i++;
+                            break;
+                        }
+                        i++;
+                    }
+                }
+
+                bool result = false;
+
+                // Loop through scripts and trigger off any text out triggers
                 while (i < _scriptList.Count)
                 {
-                    if (_scriptList[i] == startScript)
+                    Script script = _scriptList[i];
+                    bool handled = false;
+                    bool completed = script.TextOutEvent(text, ref handled);
+                    if (completed)
+                    {
+                        StopByHandle(script);
+                    }
+                    else if (IsScriptStillAtIndex(i, script))
                     {
                         i++;
+                    }
+
+                    if (handled)
+                    {
+                        result = true;
                         break;
                     }
-                    i++;
-                }
-            }
-
-            bool result = false;
-
-            // Loop through scripts and trigger off any text out triggers
-            while (i < _scriptList.Count)
-            {
-                Script script = _scriptList[i];
-                bool handled = false;
-                bool completed = script.TextOutEvent(text, ref handled);
-                if (completed)
-                {
-                    StopByHandle(script);
-                }
-                else if (IsScriptStillAtIndex(i, script))
-                {
-                    i++;
                 }
 
-                if (handled)
-                {
-                    result = true;
-                    break;
-                }
-            }
-
-            return result;
+                return result;
+            });
         }
 
         public void TextEvent(string text, bool forceTrigger)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(() => TextEventCore(text, forceTrigger));
+        }
+
+        private void TextEventCore(string text, bool forceTrigger)
+        {
             // Trigger matching text triggers in active scripts
             // [ModInterpreter.TextEvent] per-line logging removed — too high-frequency.
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
@@ -1265,6 +1290,11 @@ namespace TWXProxy.Core
         public void TextLineEvent(string text, bool forceTrigger)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(() => TextLineEventCore(text, forceTrigger));
+        }
+
+        private void TextLineEventCore(string text, bool forceTrigger)
+        {
             // Trigger matching textline triggers in active scripts
             GlobalModules.TriggerDebugLog($"[ModInterpreter.TextLineEvent] Text='{text}', scriptCount={_scriptList.Count}\n");
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
@@ -1285,6 +1315,11 @@ namespace TWXProxy.Core
         public void AutoTextEvent(string text, bool forceTrigger)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(() => AutoTextEventCore(text, forceTrigger));
+        }
+
+        private void AutoTextEventCore(string text, bool forceTrigger)
+        {
             // Trigger matching auto text triggers in active scripts
             string currentAnsiLine = ScriptRef.GetGlobalCurrentAnsiLine();
             int i = 0;
@@ -1299,6 +1334,23 @@ namespace TWXProxy.Core
                 else if (IsScriptStillAtIndex(i, script))
                     i++;
             }
+        }
+
+        public void DispatchCompleteLine(string text, string ansiText, bool forceTrigger)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(() =>
+            {
+                ScriptRef.SetCurrentAnsiLine(ansiText);
+                ScriptRef.SetCurrentLine(text);
+                TextLineEventCore(text, forceTrigger);
+
+                ScriptRef.SetCurrentAnsiLine(ansiText);
+                ScriptRef.SetCurrentLine(text);
+                TextEventCore(text, forceTrigger);
+
+                ActivateTriggersCore();
+            });
         }
 
         public bool EventActive(string eventName)
@@ -1316,6 +1368,11 @@ namespace TWXProxy.Core
         public void ActivateTriggers()
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(ActivateTriggersCore);
+        }
+
+        private void ActivateTriggersCore()
+        {
             // All text related triggers are deactivated for the rest of the line after they activate.
             // This is to prevent double triggering. Turn them back on.
             // Pascal TWX does not resume script execution here; it only re-enables triggers.
@@ -1665,9 +1722,9 @@ namespace TWXProxy.Core
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
         private const int MAX_LOOP_ITERATIONS = 50;  // Max iterations before warning
-        private const int MAX_COMMANDS_PER_EXECUTION_SLICE = 1_000_000;
+        private const int MIN_COMMANDS_PER_NO_IO_WATCHDOG_CHECK = 4_096;
         private const int EXECUTION_WATCHDOG_CHECK_MASK = 0x0FFF;
-        private static readonly TimeSpan MAX_EXECUTION_SLICE_DURATION = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan MAX_EXECUTION_SLICE_DURATION = TimeSpan.FromSeconds(2);
         private bool _resetLoopDetectionOnNextExecute;
         private bool _enableVariableDebug = false;  // Toggle for [VAR] output
         private string _waitText = string.Empty;
@@ -2280,6 +2337,11 @@ namespace TWXProxy.Core
             if (sender is not DelayTimer timer)
                 return;
 
+            _owner.RunSerializedScriptEvent(() => DelayTimerEventCore(timer));
+        }
+
+        private void DelayTimerEventCore(DelayTimer timer)
+        {
             string labelName;
             bool term = false;
 
@@ -3075,11 +3137,8 @@ namespace TWXProxy.Core
             }
 
             int commandsSinceActivity = commandsExecuted - watchdogCommandBaseline;
-            if (commandsSinceActivity >= MAX_COMMANDS_PER_EXECUTION_SLICE)
-            {
-                ResetExecutionWatchdogCheckpoint(commandsExecuted, ref watchdogCommandBaseline, ref watchdogStartTimestamp);
+            if (commandsSinceActivity < MIN_COMMANDS_PER_NO_IO_WATCHDOG_CHECK)
                 return;
-            }
 
             if ((commandsSinceActivity & EXECUTION_WATCHDOG_CHECK_MASK) != 0)
                 return;
@@ -3087,18 +3146,10 @@ namespace TWXProxy.Core
             TimeSpan elapsed = Stopwatch.GetElapsedTime(watchdogStartTimestamp);
             if (elapsed >= MAX_EXECUTION_SLICE_DURATION)
             {
-                ResetExecutionWatchdogCheckpoint(commandsExecuted, ref watchdogCommandBaseline, ref watchdogStartTimestamp);
+                throw new ScriptException(
+                    $"Script '{ScriptName}' appears to be spinning without server I/O or pause " +
+                    $"({commandsSinceActivity:N0} commands in {elapsed.TotalSeconds:F1}s).");
             }
-        }
-
-        private static void ResetExecutionWatchdogCheckpoint(
-            int commandsExecuted,
-            ref int watchdogCommandBaseline,
-            ref long watchdogStartTimestamp)
-        {
-            // Long local loops are valid TWX patterns; checkpoint instead of killing them.
-            watchdogCommandBaseline = commandsExecuted;
-            watchdogStartTimestamp = Stopwatch.GetTimestamp();
         }
 
         private CmdParam[] GetDispatchParamBuffer(int paramCount)
@@ -4946,6 +4997,7 @@ namespace TWXProxy.Core
                 _keypressMode = false;
                 _echoKeypressInput = false;
                 _inputVarParam = null;
+                Locked = false;
                 
                 // Unpause the script before resuming
                 _paused = false;
@@ -5068,6 +5120,7 @@ namespace TWXProxy.Core
 
         public void SetWaitingForInput(CmdParam varParam, bool keypressMode = false, bool echoKeypressInput = false)
         {
+            Locked = true;
             _waitingForInput = true;
             _keypressMode = keypressMode;
             _echoKeypressInput = echoKeypressInput;

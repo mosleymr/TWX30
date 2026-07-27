@@ -829,7 +829,9 @@ namespace TWXProxy.Core
         /// </summary>
         public static void DebugLog(string message)
         {
+            if (IsNativeHaggleDebugMessage(message)) return;
             if (!DebugMode) return;
+            if (IsVerboseRuntimeDebugMessage(message) && !VerboseDebugMode) return;
 
             try
             {
@@ -839,6 +841,39 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[DEBUG LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        private static bool IsNativeHaggleDebugMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return false;
+
+            return message.StartsWith("[NativeHaggle]", StringComparison.Ordinal) ||
+                   message.StartsWith("[MTC.NativeHaggle]", StringComparison.Ordinal);
+        }
+
+        private static bool IsVerboseRuntimeDebugMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return false;
+
+            if (message.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            return message.StartsWith("[FORCEVAR]", StringComparison.Ordinal) ||
+                   message.StartsWith("[FILEEXISTS]", StringComparison.Ordinal) ||
+                   message.StartsWith("[LIE]", StringComparison.Ordinal) ||
+                   message.StartsWith("[VARCACHE]", StringComparison.Ordinal) ||
+                   message.StartsWith("[DEBUG]", StringComparison.Ordinal) ||
+                   message.StartsWith("[ModInterpreter.Load]", StringComparison.Ordinal) ||
+                   message.StartsWith("[ScriptCmp.LoadFromFile]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.ProgramEvent]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.Dispose]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.Stop]", StringComparison.Ordinal);
         }
 
         /// <summary>
