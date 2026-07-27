@@ -149,6 +149,8 @@ public partial class MainWindow : Window
     private Canvas? _deckSurface;
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DeckPanelState> _deckPanelStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, TerminalControl> _deckTerminalControls = [];
+    private StackPanel _deckOnlinePlayersHost = new() { Spacing = 3 };
     private int _deckNextZIndex = 100;
     private bool _deckPanelsInitialized;
     private bool _suppressDeckPanelStateSync;

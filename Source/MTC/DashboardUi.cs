@@ -2012,6 +2012,7 @@ public partial class MainWindow
             return;
 
         _onlinePlayersHost.Children.Clear();
+        _deckOnlinePlayersHost.Children.Clear();
         string currentTraderName = GetCurrentTraderOnlineName();
         List<string> otherOnlinePlayers = _onlinePlayers
             .Where(playerName => !string.IsNullOrWhiteSpace(playerName) &&
@@ -2020,28 +2021,34 @@ public partial class MainWindow
 
         if (otherOnlinePlayers.Count == 0)
         {
-            _onlinePlayersHost.Children.Add(new TextBlock
+            foreach (StackPanel host in new[] { _onlinePlayersHost, _deckOnlinePlayersHost })
             {
-                Text = "No one else is online",
-                Foreground = HudMuted,
-                FontSize = 11,
-                FontStyle = FontStyle.Italic,
-                TextWrapping = TextWrapping.Wrap,
-            });
+                host.Children.Add(new TextBlock
+                {
+                    Text = "No one else is online",
+                    Foreground = HudMuted,
+                    FontSize = 11,
+                    FontStyle = FontStyle.Italic,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
             return;
         }
 
         foreach (string playerName in otherOnlinePlayers)
         {
-            _onlinePlayersHost.Children.Add(new TextBlock
+            foreach (StackPanel host in new[] { _onlinePlayersHost, _deckOnlinePlayersHost })
             {
-                Text = playerName,
-                Foreground = HudText,
-                FontSize = 11,
-                FontWeight = FontWeight.SemiBold,
-                TextWrapping = TextWrapping.NoWrap,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
+                host.Children.Add(new TextBlock
+                {
+                    Text = playerName,
+                    Foreground = HudText,
+                    FontSize = 11,
+                    FontWeight = FontWeight.SemiBold,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                });
+            }
         }
     }
 

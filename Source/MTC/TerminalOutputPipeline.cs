@@ -214,7 +214,7 @@ public partial class MainWindow
             return;
         }
 
-        if (owner is not null && owner.Id != _activeMtcTabId)
+        if (owner is not null && !ShouldRenderMtcTabTerminal(owner))
         {
             RecordMtcPerf(owner, "display.enqueue.inactive.chunks");
             RecordMtcPerf(owner, "display.enqueue.inactive.bytes", chunk.Length);
@@ -301,7 +301,7 @@ public partial class MainWindow
             return;
         MtcTabPrototype drainOwner = owner;
 
-        if (drainOwner.Id != _activeMtcTabId)
+        if (!ShouldRenderMtcTabTerminal(drainOwner))
         {
             RecordMtcPerf(drainOwner, "display.drain.inactive_deferred");
             return;
@@ -357,7 +357,7 @@ public partial class MainWindow
 
     private void RunScheduledDisplayDrain(MtcTabPrototype owner, string source, long postedTicks)
     {
-        if (owner.Id != Volatile.Read(ref _activeMtcTabId))
+        if (!ShouldRenderMtcTabTerminal(owner))
         {
             RecordMtcPerf(owner, $"{source}.inactive_skip");
             owner.DisplayDrainTimer?.Stop();
@@ -396,7 +396,7 @@ public partial class MainWindow
 
         var ownerTab = owner;
 
-        if (ownerTab.Id != _activeMtcTabId)
+        if (!ShouldRenderMtcTabTerminal(ownerTab))
         {
             RecordMtcPerf(ownerTab, "display.drain.inactive_deferred");
             Interlocked.Exchange(ref ownerTab.DisplayDrainScheduled, 0);

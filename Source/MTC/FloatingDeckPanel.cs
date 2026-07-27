@@ -31,6 +31,7 @@ public sealed class FloatingDeckPanel : Border
     private readonly Border _bodyHost;
     private readonly Button _minButton;
     private readonly Button? _closeButton;
+    private readonly TextBlock _titleText;
     private double _bodyHeight;
     private readonly double _minBodyHeight;
     private readonly double _minPanelWidth;
@@ -52,6 +53,7 @@ public sealed class FloatingDeckPanel : Border
     public bool CanClose { get; }
     public bool IsMinimized => _isMinimized;
     public bool IsClosed => _isClosed;
+    public bool IsActive { get; private set; }
     public double PanelWidth => Width;
     public double PanelHeight => GetCurrentPanelHeight();
     public double BodyHeight => _bodyHeight;
@@ -101,7 +103,7 @@ public sealed class FloatingDeckPanel : Border
             Child = body,
         };
 
-        var titleText = new TextBlock
+        _titleText = new TextBlock
         {
             Text = title,
             FontFamily = titleFont,
@@ -170,7 +172,7 @@ public sealed class FloatingDeckPanel : Border
                 },
                 Children =
                 {
-                    titleText,
+                    _titleText,
                     headerRight,
                 },
             },
@@ -227,6 +229,16 @@ public sealed class FloatingDeckPanel : Border
         Child = resizeGrid;
     }
 
+    public void SetTitle(string title)
+        => _titleText.Text = string.IsNullOrWhiteSpace(title) ? "GAME" : title.Trim();
+
+    public void SetActive(bool active)
+    {
+        IsActive = active;
+        BorderThickness = active ? new Thickness(2.6) : new Thickness(1.4);
+        _titleText.FontWeight = active ? FontWeight.ExtraBold : FontWeight.Bold;
+    }
+
     public void MoveTo(double left, double top, bool clampToHost = true)
     {
         if (clampToHost && Parent is Control host)
@@ -241,6 +253,15 @@ public sealed class FloatingDeckPanel : Border
 
         Canvas.SetLeft(this, left);
         Canvas.SetTop(this, top);
+        StateChanged?.Invoke(this);
+    }
+
+    public void SetPanelSize(double width, double bodyHeight)
+    {
+        Width = Math.Max(_minPanelWidth, width);
+        _bodyHeight = Math.Max(_minBodyHeight, bodyHeight);
+        if (!_isMinimized)
+            _bodyHost.Height = _bodyHeight;
         StateChanged?.Invoke(this);
     }
 

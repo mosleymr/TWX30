@@ -89,6 +89,7 @@ public partial class MainWindow
         public bool CurrentGameConfigSaveAgain { get; set; }
         public bool CurrentGameConfigSaveTimerWired { get; set; }
         public int Closed;
+        public int DeckConsoleVisible;
         public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
         public MTC.mombot.mombotService Mombot { get; init; } = null!;
         public GameAgentRuntime GameAgent { get; init; } = null!;
@@ -1303,7 +1304,11 @@ public partial class MainWindow
                 return;
 
             _termCtrl?.SetBuffer(tab.Buffer);
-            _deckTermCtrl?.SetBuffer(tab.Buffer);
+            if (_deckTerminalControls.TryGetValue(tab.Id, out TerminalControl? deckTerminal))
+            {
+                deckTerminal.SetBuffer(tab.Buffer);
+                _deckTermCtrl = deckTerminal;
+            }
             SetTerminalConnected(_state.Connected || _telnet.IsConnected || (_gameInstance?.IsRunning == true));
             UpdateTerminalLiveSelector();
             UpdateClassicTerminalSizeStatus();
@@ -1704,6 +1709,7 @@ public partial class MainWindow
         {
             RefreshMtcTabStrip();
             RefreshMtcTabOwnedWindowTitles(owner);
+            UpdateCommandDeckActiveConsole();
         }
     }
 
@@ -1734,7 +1740,8 @@ public partial class MainWindow
 
         var previousTab = ActiveMtcTab;
         CaptureLiveMtcTabShell();
-        CondensePendingDisplayChunksForInactiveTab(previousTab, "display.tab_deactivate_condense");
+        if (previousTab is not null && !IsMtcTabDeckConsoleVisible(previousTab))
+            CondensePendingDisplayChunksForInactiveTab(previousTab, "display.tab_deactivate_condense");
 
         _activeMtcTabId = tabId;
         BindActiveMtcTabSession();
@@ -1769,6 +1776,7 @@ public partial class MainWindow
         var index = _mtcTabs.IndexOf(tab);
         CloseMtcTabOwnedWindows(tab);
         Interlocked.Exchange(ref tab.Closed, 1);
+        Interlocked.Exchange(ref tab.DeckConsoleVisible, 0);
         tab.DisplayDrainTimer?.Stop();
         tab.InfoPanelsRefreshTimer?.Stop();
         tab.StatusRefreshTimer?.Stop();
@@ -1785,6 +1793,9 @@ public partial class MainWindow
             RestoreActiveMtcTabContent();
         }
 
+        if (_useCommandDeckSkin)
+            ApplySelectedSkinSafe();
+
         RefreshMtcTabStrip();
         ApplyJsonRpcPreferences();
     }
@@ -1800,7 +1811,20 @@ public partial class MainWindow
             }
 
             BindActiveMtcTabSession();
-            ApplySelectedSkinSafe();
+            bool commandDeckAlreadyHostsEveryGame =
+                _useCommandDeckSkin &&
+                _deckSurface is not null &&
+                _mtcTabs.Where(tab => tab.IsLiveSession)
+                    .All(tab => _deckTerminalControls.ContainsKey(tab.Id));
+            if (commandDeckAlreadyHostsEveryGame)
+            {
+                UpdateCommandDeckActiveConsole();
+                _shellHost.Child = _liveTabShell;
+            }
+            else
+            {
+                ApplySelectedSkinSafe();
+            }
 
             RestoreLiveMtcTabStatusBar();
             RefreshActiveMtcTabUiStateScoped();
