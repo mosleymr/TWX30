@@ -357,9 +357,13 @@ public partial class MainWindow
         _deckPanelsInitialized = false;
         _suppressDeckPanelStateSync = false;
         _tacticalMap = new TacticalMapControl(
-            () => _state.Sector,
-            () => _sessionDb,
-            () => _state)
+            () => ActiveMtcTab?.State.Sector ?? 0,
+            () =>
+            {
+                MtcTabPrototype? focusedTab = ActiveMtcTab;
+                return focusedTab?.RuntimeContext.ActiveDatabase ?? focusedTab?.SessionDb;
+            },
+            () => ActiveMtcTab?.State)
         {
             MinHeight = UiSize(220),
         };
