@@ -808,6 +808,10 @@ public partial class MainWindow
 
     private async Task OnPreferencesAsync()
     {
+        MtcTabPrototype? owner = ResolveCurrentMtcTabContext() ?? ActiveMtcTab;
+        if (owner is not null)
+            EnsureMtcTabSessionBound(owner);
+
         EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
         string gameName = GetDebugLogGameName();
         EmbeddedGameConfig? gameConfig = _embeddedGameConfig;
@@ -815,6 +819,11 @@ public partial class MainWindow
         {
             gameConfig = await LoadOrCreateEmbeddedGameConfigAsync(gameName);
             _embeddedGameConfig = gameConfig;
+            if (owner is not null)
+            {
+                owner.EmbeddedGameConfig = gameConfig;
+                owner.EmbeddedGameName = gameName;
+            }
         }
 
         bool saved = await new PreferencesDialog(_appPrefs, debugPrefs, GetCurrentJsonRpcConfig(), gameConfig, gameName).ShowDialog<bool>(this);
@@ -830,6 +839,8 @@ public partial class MainWindow
         await ClearScriptDirectoryFromAllGameConfigsAsync();
         RefreshRuntimeScriptDirectoryFromPreferences();
         await SaveCurrentDebugConfigAsync();
+        if (owner is not null)
+            CaptureMtcTabSession(owner);
         ApplyDebugLoggingPreferences();
         ApplyJsonRpcPreferences();
         if (!_appPrefs.UpdateChecksEnabled)

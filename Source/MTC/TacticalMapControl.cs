@@ -73,6 +73,9 @@ public class TacticalMapControl : Control
     private bool _previewLimitHighlightedSectors = true;
     private bool _previewZoomControlsDepth;
     private string? _previewLegendText;
+    private Core.ModDatabase? _majorSpaceLaneDb;
+    private long _majorSpaceLaneChangeStamp = long.MinValue;
+    private HashSet<int> _majorSpaceLaneSectors = [];
 
     private static string GetViewModeLabel(TacticalMapViewMode viewMode)
     {
@@ -848,7 +851,8 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = visited;
-        PopulateMajorSpaceLaneSectors(snapshot, db);
+        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+            snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, visited);
         else
@@ -921,7 +925,8 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = BuildPreviewDepths(snapshot.Sectors, centerSector);
-        PopulateMajorSpaceLaneSectors(snapshot, db);
+        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+            snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
         else
@@ -929,32 +934,6 @@ public class TacticalMapControl : Control
         PopulateOwnershipOverlays(snapshot, db);
 
         return snapshot;
-    }
-
-    private static void PopulateMajorSpaceLaneSectors(MapSnapshot snapshot, Core.ModDatabase db)
-    {
-        snapshot.MajorSpaceLaneSectors.Clear();
-
-        void AddPath(int fromSector, int toSector)
-        {
-            if (fromSector <= 0 || toSector <= 0 || fromSector == 65535 || toSector == 65535)
-                return;
-
-            foreach (int sectorNumber in db.CalculateBidirectionalShortestPath(fromSector, toSector))
-                snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
-        }
-
-        var header = db.DBHeader;
-        int stardock = header.StarDock;
-        int alpha = header.AlphaCentauri;
-        int rylos = header.Rylos;
-
-        AddPath(1, stardock);
-        AddPath(stardock, 1);
-        AddPath(alpha, stardock);
-        AddPath(stardock, alpha);
-        AddPath(rylos, stardock);
-        AddPath(stardock, rylos);
     }
 
     private void PopulateOwnershipOverlays(MapSnapshot snapshot, Core.ModDatabase db)
@@ -1899,6 +1878,18 @@ public class TacticalMapControl : Control
         }
 
         return port.ClassIndex > 0 ? $"C{port.ClassIndex}" : "PORT";
+    }
+
+    private HashSet<int> GetCachedMajorSpaceLaneSectors(Core.ModDatabase db)
+    {
+        long changeStamp = db.ChangeStamp;
+        if (ReferenceEquals(_majorSpaceLaneDb, db) && _majorSpaceLaneChangeStamp == changeStamp)
+            return _majorSpaceLaneSectors;
+
+        _majorSpaceLaneDb = db;
+        _majorSpaceLaneChangeStamp = changeStamp;
+        _majorSpaceLaneSectors = db.GetMajorSpaceLaneSectors();
+        return _majorSpaceLaneSectors;
     }
 
     private readonly record struct HexCell(int Q, int R);

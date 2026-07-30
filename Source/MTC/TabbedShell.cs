@@ -175,6 +175,7 @@ public partial class MainWindow
         public QCannonCalculatorWindow? QCannonCalculatorWindow { get; set; }
         public DataMiningWindow? DataMiningWindow { get; set; }
         public RouteWindow? RouteWindow { get; set; }
+        public MajorSpaceLanesWindow? MajorSpaceLanesWindow { get; set; }
         public BubblesWindow? BubblesWindow { get; set; }
         public SectorInfoWindow? SectorInfoWindow { get; set; }
         public GameInfoWindow? GameInfoWindow { get; set; }
@@ -853,7 +854,8 @@ public partial class MainWindow
         tab.EmbeddedGameConfig = _embeddedGameConfig;
         tab.EmbeddedGameName = _embeddedGameName;
         tab.CurrentProfilePath = _currentProfilePath;
-        tab.CommWindowVisible = _commWindowVisible;
+        if (tab.Id == _activeMtcTabId)
+            tab.CommWindowVisible = _commWindowVisible;
         tab.CommSelectedChannel = _commSelectedChannel;
         tab.CommPrivateTarget = _commPrivateTarget;
         tab.TemporaryMacroRecording = _temporaryMacroRecording;
@@ -1985,6 +1987,7 @@ public partial class MainWindow
         tab.QCannonCalculatorWindow = null;
         tab.DataMiningWindow = null;
         tab.RouteWindow = null;
+        tab.MajorSpaceLanesWindow = null;
         tab.BubblesWindow = null;
         tab.SectorInfoWindow = null;
         tab.GameInfoWindow = null;
@@ -2132,12 +2135,23 @@ public partial class MainWindow
     private Control BuildMtcTabButton(MtcTabPrototype tab)
     {
         var active = tab.Id == _activeMtcTabId;
-        var tabBackground = active ? HudAccent : HudHeaderAlt;
-        var tabBorder = active
-            ? HudAccentOk
-            : (tab.IsLiveSession ? HudEdge : HudAccentHot);
-        var tabForeground = active ? HudAccentInk : HudText;
-        var tabMutedForeground = active ? HudAccentInk : HudMuted;
+        bool redAlert = _appPrefs.EnableRedAlertMode && tab.RedAlertEnabled;
+        IBrush tabBackground = redAlert
+            ? (active
+                ? new SolidColorBrush(Color.FromRgb(196, 28, 36))
+                : new SolidColorBrush(Color.FromRgb(76, 22, 28)))
+            : (active ? HudAccent : HudHeaderAlt);
+        IBrush tabBorder = redAlert
+            ? new SolidColorBrush(Color.FromRgb(255, 208, 208))
+            : active
+                ? HudAccentOk
+                : (tab.IsLiveSession ? HudEdge : HudAccentHot);
+        IBrush tabForeground = redAlert
+            ? Brushes.White
+            : (active ? HudAccentInk : HudText);
+        IBrush tabMutedForeground = redAlert
+            ? new SolidColorBrush(Color.FromRgb(255, 214, 214))
+            : (active ? HudAccentInk : HudMuted);
         var frame = new Border
         {
             Background = tabBackground,
@@ -2172,10 +2186,12 @@ public partial class MainWindow
             Width = UiSize(8),
             Height = UiSize(8),
             CornerRadius = UiCornerRadius(4),
-            Background = tab.IsLiveSession
-                ? (active ? HudAccentInk : HudAccent)
-                : HudAccentHot,
-            Opacity = active ? 1.0 : 0.65,
+            Background = redAlert
+                ? new SolidColorBrush(Color.FromRgb(255, 74, 84))
+                : tab.IsLiveSession
+                    ? (active ? HudAccentInk : HudAccent)
+                    : HudAccentHot,
+            Opacity = active || redAlert ? 1.0 : 0.65,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = UiThickness(6, 0, 0, 0),
         });

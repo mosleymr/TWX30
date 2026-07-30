@@ -2647,7 +2647,7 @@ public partial class MainWindow
         fileQuit.Click += (_, _) => Close();
 
         var filePrefs    = new MenuItem { Header = "_Preferences…" };
-        filePrefs.Click += (_, _) => _ = OnPreferencesAsync();
+        filePrefs.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnPreferencesAsync);
 
         var fileMacros = new MenuItem { Header = "_Macros…" };
         fileMacros.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnMacrosAsync);
@@ -2715,11 +2715,13 @@ public partial class MainWindow
         viewGameInfoItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewGameInfo);
         var viewAliensItem = new MenuItem { Header = "_Aliens..." };
         viewAliensItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewAliens);
+        var viewMajorSpaceLanesItem = new MenuItem { Header = "Show _MSL's..." };
+        viewMajorSpaceLanesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewMajorSpaceLanes);
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
-        _viewCommWindow.Click += (_, _) => ToggleCommWindow();
+        _viewCommWindow.Click += (_, _) => ExecuteInActiveMtcTabSession(ToggleCommWindow);
         _viewNotes.Click += (_, _) => ToggleNotesPanel();
         _viewShowHaggleDetails.Click += async (_, _) => await ToggleShowHaggleDetailsAsync();
         _viewBottomBar.Click += (_, _) => ToggleBottomBar();
@@ -2732,7 +2734,7 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewMajorSpaceLanesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpUpdates = new MenuItem { Header = "_Update MTC..." };
@@ -2913,6 +2915,27 @@ public partial class MainWindow
         };
         if (owner != null)
             owner.RouteWindow = win;
+        ShowMtcTabOwnedWindow(owner, win);
+    }
+
+    private void OnViewMajorSpaceLanes()
+    {
+        var owner = ActiveMtcTab;
+        if (owner?.MajorSpaceLanesWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var win = new MajorSpaceLanesWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb));
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.MajorSpaceLanesWindow, win))
+                owner.MajorSpaceLanesWindow = null;
+        };
+        if (owner != null)
+            owner.MajorSpaceLanesWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 
