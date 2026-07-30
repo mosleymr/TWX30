@@ -2830,6 +2830,8 @@ public partial class MainWindow
         _statusCommFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusBotFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusBotFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusDockShopperFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusDockShopperFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusHaggleFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusHaggleFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusLivePausedFrame.Margin = new Thickness(0, 4, 0, 4);
@@ -2847,6 +2849,7 @@ public partial class MainWindow
             Children =
             {
                 recordButton,
+                _statusDockShopperFrame,
                 _statusMapFrame,
                 _statusBotFrame,
                 _statusHaggleFrame,

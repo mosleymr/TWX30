@@ -190,6 +190,7 @@ public partial class MainWindow : Window
     private readonly Button _statusCommButton = new();
     private readonly Button _statusBotButton = new();
     private readonly Button _statusMapButton = new();
+    private readonly Button _statusDockShopperButton = new();
     private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
     private readonly Button _statusLivePausedButton = new() { Content = "LIVE" };
     private readonly Button _statusRedAlertButton = new() { Content = "RED ALERT" };
@@ -198,6 +199,7 @@ public partial class MainWindow : Window
     private readonly Border _statusCommFrame = new();
     private readonly Border _statusBotFrame = new();
     private readonly Border _statusMapFrame = new();
+    private readonly Border _statusDockShopperFrame = new();
     private readonly Border _statusHaggleFrame = new();
     private readonly Border _statusLivePausedFrame = new();
     private readonly Border _statusRedAlertFrame = new();
@@ -231,6 +233,7 @@ public partial class MainWindow : Window
     private bool _statusCommHovered;
     private bool _statusBotHovered;
     private bool _statusMapHovered;
+    private bool _statusDockShopperHovered;
     private bool _statusHaggleHovered;
     private bool _statusLivePausedHovered;
     private bool _redAlertEnabled;

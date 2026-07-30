@@ -808,8 +808,11 @@ public partial class MainWindow
         ToolTip.SetTip(button, toolTip);
         button.Click += (_, _) =>
         {
-            onClick();
-            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
+            ExecuteInActiveMtcTabSession(() =>
+            {
+                onClick();
+                PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
+            });
         };
         return button;
     }

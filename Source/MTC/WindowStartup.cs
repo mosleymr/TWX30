@@ -209,13 +209,18 @@ public partial class MainWindow
     private void SaveInWindowLayoutPreferences()
     {
         _appPrefs.ShowCommWindow = _commWindowVisible;
+        SaveCommWindowSizePreferences();
+        _appPrefs.ShowNotesPanel = _notesPanelVisible;
+    }
+
+    private void SaveCommWindowSizePreferences()
+    {
         _appPrefs.ClassicCommWindowHeight = NormalizeStoredPanelHeight(
             _classicCommWindowHeight,
             ClassicCommWindowDefaultHeight);
         _appPrefs.DeckCommWindowHeight = NormalizeStoredPanelHeight(
             _deckCommWindowHeight,
             DeckCommWindowDefaultHeight);
-        _appPrefs.ShowNotesPanel = _notesPanelVisible;
     }
 
     private static double NormalizeStoredPanelHeight(double value, double fallback)

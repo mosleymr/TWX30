@@ -413,6 +413,9 @@ public partial class MainWindow
                         // byte proves it was the start of a real ANSI sequence.
                         filtered.Add(0x1B);
                         filtered.Add(value);
+                        ConsumePendingNativeMombotEscapeEchoSuppression(
+                            ref pendingNativeMombotEscapeEchoSuppressions,
+                            ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
                         continue;
                     }
 
@@ -430,7 +433,13 @@ public partial class MainWindow
                 {
                     if (index + 1 < chunk.Length)
                     {
-                        if (!IsAnsiEscapeIntroducer(chunk[index + 1]))
+                        if (IsAnsiEscapeIntroducer(chunk[index + 1]))
+                        {
+                            ConsumePendingNativeMombotEscapeEchoSuppression(
+                                ref pendingNativeMombotEscapeEchoSuppressions,
+                                ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
+                        }
+                        else
                         {
                             filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
                             ConsumePendingNativeMombotEscapeEchoSuppression(

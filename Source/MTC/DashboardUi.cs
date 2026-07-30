@@ -561,11 +561,14 @@ public partial class MainWindow
 
     private void ToggleCommWindow()
     {
+        MtcTabPrototype? tab = ResolveCurrentMtcTabContext();
         bool opening = !_commWindowVisible;
         if (!opening)
             CaptureCommWindowHeights();
         _commWindowVisible = opening;
-        SaveInWindowLayoutPreferences();
+        if (tab != null)
+            tab.CommWindowVisible = opening;
+        SaveCommWindowSizePreferences();
         _appPrefs.Save();
 
         ApplyCommWindowVisibility();
@@ -715,7 +718,7 @@ public partial class MainWindow
         if (_deckCommPanelBorder is { IsVisible: true } && _deckCommPanelBorder.Bounds.Height >= CommWindowMinHeight)
             _deckCommWindowHeight = _deckCommPanelBorder.Bounds.Height;
 
-        SaveInWindowLayoutPreferences();
+        SaveCommWindowSizePreferences();
     }
 
     private void ApplyCommWindowVisibility()

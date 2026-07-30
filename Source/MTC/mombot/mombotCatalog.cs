@@ -160,6 +160,7 @@ internal static class mombotCatalog
 
             new mombotCommandSpec("status", mombotCommandKind.Module, "commands/data/status.cts", "Show bot or game status.", new[] { "qss" }),
             new mombotCommandSpec("port", mombotCommandKind.Module, "commands/general/port.cts", "Port helper/build/upgrade command.", ServerInteractive: true),
+            new mombotCommandSpec("lsd", mombotCommandKind.Module, "modes/resource/lsd.cts", "Run LoneStar Dock Shopper order.", ServerInteractive: true),
             new mombotCommandSpec("storeship", mombotCommandKind.Module, "commands/data/storeship.cts", "Ship store helper.", new[] { "shipstore" }, ServerInteractive: true),
             new mombotCommandSpec("xenter", mombotCommandKind.Module, "commands/grid/xenter.cts", "Cross-enter helper command should stay script-backed.", ServerInteractive: true),
             new mombotCommandSpec("htorp", mombotCommandKind.Module, "commands/offense/htorp.cts", "Holotorp command surface.", new[] { "holotorp" }, ServerInteractive: true),

@@ -475,6 +475,20 @@ public class TacticalMapControl : Control
             StrokeWidth = 1.4f,
             PathEffect = SKPathEffect.CreateDash([6f, 6f], 0),
         };
+        using var majorLaneGlow = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            Color = new SKColor(0x33, 0x99, 0xff, 44),
+            StrokeWidth = 8f,
+        };
+        using var majorLanePaint = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            Color = new SKColor(0x33, 0x99, 0xff, 210),
+            StrokeWidth = 2.5f,
+        };
 
         var drawnEdges = new HashSet<(int A, int B)>();
         foreach ((int sectorNumber, SKPoint position) in snapshot.Positions)
@@ -498,6 +512,9 @@ public class TacticalMapControl : Control
                 bool gateEdge = snapshot.GateSector > 0 &&
                                 ((sectorNumber == snapshot.GateSector && snapshot.HighlightedSectors.Contains(targetSector)) ||
                                  (targetSector == snapshot.GateSector && snapshot.HighlightedSectors.Contains(sectorNumber)));
+                bool majorLaneEdge = !snapshot.IsPreview &&
+                                     snapshot.MajorSpaceLaneSectors.Contains(sectorNumber) &&
+                                     snapshot.MajorSpaceLaneSectors.Contains(targetSector);
 
                 SKPoint start = position;
                 SKPoint end = snapshot.Positions[targetSector];
@@ -520,8 +537,8 @@ public class TacticalMapControl : Control
                     }
                 }
 
-                canvas.DrawLine(start, end, linkGlow);
-                canvas.DrawLine(start, end, twoWay ? linkPaint : oneWayPaint);
+                canvas.DrawLine(start, end, majorLaneEdge ? majorLaneGlow : linkGlow);
+                canvas.DrawLine(start, end, majorLaneEdge ? majorLanePaint : twoWay ? linkPaint : oneWayPaint);
             }
         }
     }
@@ -589,10 +606,13 @@ public class TacticalMapControl : Control
 
             bool isCurrent = sectorNumber == snapshot.CurrentSector;
             bool isLandmark = snapshot.Landmarks.Contains(sectorNumber);
+            bool isMajorLane = snapshot.MajorSpaceLaneSectors.Contains(sectorNumber);
             SKColor fillColor = isCurrent
                 ? new SKColor(0xff, 0xc0, 0x54)
                 : isLandmark
                     ? new SKColor(0x52, 0xa4, 0xff)
+                    : isMajorLane
+                        ? new SKColor(0x33, 0x99, 0xff)
                     : sector?.Explored == Core.ExploreType.Yes
                         ? new SKColor(0x00, 0xd9, 0xd0)
                         : sector?.Explored == Core.ExploreType.Density
@@ -609,6 +629,8 @@ public class TacticalMapControl : Control
                 ? new SKColor(0xff, 0xe8, 0xa4)
                 : isLandmark
                     ? new SKColor(0x8a, 0xc6, 0xff)
+                    : isMajorLane
+                        ? new SKColor(0x9d, 0xcf, 0xff)
                     : new SKColor(0x73, 0xd4, 0xd9);
             canvas.DrawCircle(position, isCurrent ? NodeRadius + 4f : NodeRadius + 1.5f, ringPaint);
             if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay overlay))
@@ -826,6 +848,7 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = visited;
+        PopulateMajorSpaceLaneSectors(snapshot, db);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, visited);
         else
@@ -898,6 +921,7 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = BuildPreviewDepths(snapshot.Sectors, centerSector);
+        PopulateMajorSpaceLaneSectors(snapshot, db);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
         else
@@ -905,6 +929,32 @@ public class TacticalMapControl : Control
         PopulateOwnershipOverlays(snapshot, db);
 
         return snapshot;
+    }
+
+    private static void PopulateMajorSpaceLaneSectors(MapSnapshot snapshot, Core.ModDatabase db)
+    {
+        snapshot.MajorSpaceLaneSectors.Clear();
+
+        void AddPath(int fromSector, int toSector)
+        {
+            if (fromSector <= 0 || toSector <= 0 || fromSector == 65535 || toSector == 65535)
+                return;
+
+            foreach (int sectorNumber in db.CalculateBidirectionalShortestPath(fromSector, toSector))
+                snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
+        }
+
+        var header = db.DBHeader;
+        int stardock = header.StarDock;
+        int alpha = header.AlphaCentauri;
+        int rylos = header.Rylos;
+
+        AddPath(1, stardock);
+        AddPath(stardock, 1);
+        AddPath(alpha, stardock);
+        AddPath(stardock, alpha);
+        AddPath(rylos, stardock);
+        AddPath(stardock, rylos);
     }
 
     private void PopulateOwnershipOverlays(MapSnapshot snapshot, Core.ModDatabase db)
@@ -1789,6 +1839,15 @@ public class TacticalMapControl : Control
                 new SKColor(0x9f, 0xdd, 0xff));
         }
 
+        if (snapshot.MajorSpaceLaneSectors.Contains(sectorNumber))
+        {
+            return (
+                new SKColor(0x0e, 0x20, 0x3a, 205),
+                new SKColor(0x33, 0x99, 0xff),
+                new SKColor(0xe9, 0xf5, 0xff),
+                new SKColor(0xa8, 0xd2, 0xff));
+        }
+
         return sector?.Explored switch
         {
             Core.ExploreType.Yes => (
@@ -1860,6 +1919,7 @@ public class TacticalMapControl : Control
         public Dictionary<int, SectorOwnershipOverlay> OwnershipOverlays { get; } = [];
         public HashSet<int> HighlightedSectors { get; } = [];
         public HashSet<int> Landmarks { get; } = [];
+        public HashSet<int> MajorSpaceLaneSectors { get; } = [];
     }
 
     private readonly record struct SectorOwnershipOverlay(
