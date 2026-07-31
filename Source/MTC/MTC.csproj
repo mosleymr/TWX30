@@ -27,6 +27,7 @@
     <AvaloniaResource Include="mtc.png" />
     <AvaloniaResource Include="mtc2.png" />
     <AvaloniaResource Include="mombot/mombot.png" />
+    <EmbeddedResource Include="Python/mtc.py" LogicalName="MTC.Python.mtc.py" />
     <None Include="..\Installer\Windows\Assets\mtc2.ico" Visible="false" />
   </ItemGroup>
 

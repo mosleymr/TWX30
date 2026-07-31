@@ -143,6 +143,11 @@ internal class PreferencesDialog : Window
         var chkCreateAnsiGameLogs = BuildCheckBox("Create ANSI game logs", logPrefs.LogAnsiCompanion);
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
+        var chkPythonScripts = BuildCheckBox("Enable Python scripts in the Scripts menu", prefs.PythonScriptsEnabled);
+        var chkPythonExposeRpcToken = BuildCheckBox("Expose JSON-RPC bearer token to Python scripts", prefs.PythonExposeJsonRpcToken);
+        var txtPythonInterpreter = BuildPathTextBox(
+            AppPreferences.NormalizePythonInterpreterPath(prefs.PythonInterpreterPath),
+            "python3");
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
 
         var cboPreparedCacheLimit = BuildMemoryLimitComboBox(
@@ -233,7 +238,11 @@ internal class PreferencesDialog : Window
         var runtimeSection = BuildSection(
             "Runtime",
             "Global terminal and script runtime behavior.",
-            BuildCheckGroup(chkPreparedVm, chkVmMetrics),
+            BuildCheckGroup(chkPreparedVm, chkVmMetrics, chkPythonScripts, chkPythonExposeRpcToken),
+            BuildField(
+                "Python interpreter",
+                txtPythonInterpreter,
+                "Command or full path used when launching .py scripts from MTC."),
             BuildField(
                 "Scrollback lines",
                 txtScrollbackLines,
@@ -292,6 +301,9 @@ internal class PreferencesDialog : Window
             }
             prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
+            prefs.PythonScriptsEnabled = chkPythonScripts.IsChecked == true;
+            prefs.PythonInterpreterPath = AppPreferences.NormalizePythonInterpreterPath(txtPythonInterpreter.Text);
+            prefs.PythonExposeJsonRpcToken = chkPythonExposeRpcToken.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
             prefs.PreparedScriptCacheLimitKb = GetMemoryLimitKb(
                 cboPreparedCacheLimit,

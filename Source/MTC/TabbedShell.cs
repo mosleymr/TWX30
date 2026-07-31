@@ -83,6 +83,7 @@ public partial class MainWindow
         public bool CurrentGameConfigSaveTimerWired { get; set; }
         public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
         public MTC.mombot.mombotService Mombot { get; init; } = null!;
+        public PythonScriptRunner PythonScripts { get; init; } = null!;
         public GameAgentRuntime GameAgent { get; init; } = null!;
         public Action<byte[]>? TerminalInputHandler { get; set; }
         public List<CommEntry> CommEntries { get; } = [];
@@ -374,11 +375,19 @@ public partial class MainWindow
             SessionLog = new Core.ModLog(),
             StandaloneNativeHaggle = new Core.NativeHaggleEngine(),
             Mombot = new MTC.mombot.mombotService(runtimeContext),
+            PythonScripts = new PythonScriptRunner(),
             GameAgent = new GameAgentRuntime(),
             NotesPanelVisible = _appPrefs.ShowNotesPanel,
         };
 
         tab.GameAgent.EventRecorded += evt => _jsonRpcServer?.PublishGameAgentEvent(evt);
+        tab.PythonScripts.EventRecorded += evt =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                ExecuteInMtcTabSession(tab, () => OnPythonScriptEvent(evt));
+            }, DispatcherPriority.Background);
+        };
 
         parser.RawBytesObserved = (bytes, offset, length) =>
         {
@@ -937,6 +946,7 @@ public partial class MainWindow
         _currentGameConfigSaveAgain = tab.CurrentGameConfigSaveAgain;
         _standaloneNativeHaggle = tab.StandaloneNativeHaggle;
         _mombot = tab.Mombot;
+        _pythonScripts = tab.PythonScripts;
         _gameAgent = tab.GameAgent;
         _terminalInputHandler = tab.TerminalInputHandler;
         _proxyCts = tab.ProxyCts;
@@ -1958,6 +1968,7 @@ public partial class MainWindow
         }
 
         tab.GameAgent.Dispose();
+        tab.PythonScripts.Dispose();
     }
 
     private void RefreshActiveMtcTabUiState()
@@ -2053,6 +2064,7 @@ public partial class MainWindow
             try { _telnet.Disconnect(); } catch { }
             _proxyCts?.Cancel();
             _proxyCts = null;
+            try { await _pythonScripts.StopAllAsync(); } catch { }
             if (_gameInstance != null)
             {
                 await StopEmbeddedAsync();

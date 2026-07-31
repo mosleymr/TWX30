@@ -84,6 +84,9 @@ public class AppPreferences
     public double TerminalFontSize { get; set; } = TerminalControl.DefaultFontSize;
     public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
+    public bool PythonScriptsEnabled { get; set; } = true;
+    public string PythonInterpreterPath { get; set; } = "python3";
+    public bool PythonExposeJsonRpcToken { get; set; }
     public bool VmMetricsEnabled { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
     public int MombotHotkeyPrewarmLimitKb { get; set; } = DefaultMombotHotkeyPrewarmLimitKb;
@@ -195,6 +198,9 @@ public class AppPreferences
                 new XElement("TerminalFontSize", TerminalFontSize.ToString(CultureInfo.InvariantCulture)),
                 new XElement("ScrollbackLines", NormalizeScrollbackLines(ScrollbackLines)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
+                new XElement("PythonScriptsEnabled", PythonScriptsEnabled),
+                new XElement("PythonInterpreterPath", NormalizePythonInterpreterPath(PythonInterpreterPath)),
+                new XElement("PythonExposeJsonRpcToken", PythonExposeJsonRpcToken),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
                 new XElement("MombotHotkeyPrewarmLimitKb", MombotHotkeyPrewarmLimitKb),
@@ -344,6 +350,11 @@ public class AppPreferences
                 prefs.ScrollbackLines = NormalizeScrollbackLines(scrollbackLines);
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
+            if (bool.TryParse((string?)root.Element("PythonScriptsEnabled"), out bool pythonScriptsEnabled))
+                prefs.PythonScriptsEnabled = pythonScriptsEnabled;
+            prefs.PythonInterpreterPath = NormalizePythonInterpreterPath((string?)root.Element("PythonInterpreterPath"));
+            if (bool.TryParse((string?)root.Element("PythonExposeJsonRpcToken"), out bool pythonExposeJsonRpcToken))
+                prefs.PythonExposeJsonRpcToken = pythonExposeJsonRpcToken;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
             if (int.TryParse((string?)root.Element("PreparedScriptCacheLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int preparedCacheLimitKb))
@@ -661,6 +672,12 @@ public class AppPreferences
     {
         string normalized = (value ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(normalized) ? GenerateJsonRpcAuthToken() : normalized;
+    }
+
+    public static string NormalizePythonInterpreterPath(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? "python3" : normalized;
     }
 
     public void EnsureJsonRpcAuthToken()

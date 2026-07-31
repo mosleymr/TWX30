@@ -123,6 +123,7 @@ public partial class MainWindow : Window
     private readonly NativeMenu _nativeAppMenu = new();
     private readonly NativeMenu _nativeDockMenu = new();
     private MTC.mombot.mombotService _mombot = null!;
+    private PythonScriptRunner _pythonScripts = null!;
     private readonly Border _shellHost = new();
     private readonly Border _statusBar = new();
     private readonly Border _menuBarHost = new();

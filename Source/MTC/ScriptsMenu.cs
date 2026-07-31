@@ -34,6 +34,7 @@ public partial class MainWindow
         bool   IsDir,
         string Name,
         string RelPath,   // empty for dirs
+        string Extension,
         IReadOnlyList<ScriptNode> Children);
 
     /// <summary>
@@ -74,12 +75,27 @@ public partial class MainWindow
         _scriptsMenu.IsEnabled = canRunProxyScripts;
         var reloadItem = new MenuItem { Header = "_Reload All Scripts" };
         reloadItem.Click += (_, _) => RebuildScriptsMenu(force: true);
+        var stopPythonScriptsItem = new MenuItem
+        {
+            Header = "Stop Running _Python Scripts",
+            IsEnabled = _pythonScripts.HasRunningScripts,
+        };
+        stopPythonScriptsItem.Click += async (_, _) =>
+        {
+            await ExecuteInActiveMtcTabSessionAsync(async () =>
+            {
+                await _pythonScripts.StopAllAsync();
+                _parser.Feed("\x1b[1;36m[Stopped Python scripts]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+                RebuildScriptsMenu(force: true);
+            });
+        };
 
         if (!canRunProxyScripts)
         {
             _scriptsMenu.ItemsSource = new List<object>
             {
-                reloadItem, new Separator(),
+                reloadItem, stopPythonScriptsItem, new Separator(),
                 new MenuItem { Header = "Proxy scripts unavailable", IsEnabled = false },
             };
             RequestNativeAppMenuRefresh();
@@ -95,7 +111,7 @@ public partial class MainWindow
                 : "No scripts directory configured";
             _scriptsMenu.ItemsSource = new List<object>
             {
-                reloadItem, new Separator(),
+                reloadItem, stopPythonScriptsItem, new Separator(),
                 new MenuItem { Header = msg, IsEnabled = false },
             };
             RequestNativeAppMenuRefresh();
@@ -105,7 +121,7 @@ public partial class MainWindow
         // Show placeholder while scanning
         _scriptsMenu.ItemsSource = new List<object>
         {
-            reloadItem, new Separator(),
+            reloadItem, stopPythonScriptsItem, new Separator(),
             new MenuItem { Header = "Scanning…", IsEnabled = false },
         };
 
@@ -129,7 +145,8 @@ public partial class MainWindow
                             return;
                         }
 
-                        var items = new List<object> { reloadItem, new Separator() };
+                        stopPythonScriptsItem.IsEnabled = _pythonScripts.HasRunningScripts;
+                        var items = new List<object> { reloadItem, stopPythonScriptsItem, new Separator() };
                         if (t.Result.Count == 0)
                             items.Add(new MenuItem { Header = "(no scripts found)", IsEnabled = false });
                         else
@@ -166,7 +183,7 @@ public partial class MainWindow
                     if (children.Count == 0) continue;
                     nodes.Add(new ScriptNode(
                         IsDir: true, Name: Path.GetFileName(sub),
-                        RelPath: string.Empty, Children: children));
+                        RelPath: string.Empty, Extension: string.Empty, Children: children));
                 }
             }
             catch { /* permission denied */ }
@@ -178,6 +195,7 @@ public partial class MainWindow
             var files = Directory
                 .EnumerateFiles(dir, "*.ts",  SearchOption.TopDirectoryOnly)
                 .Concat(Directory.EnumerateFiles(dir, "*.cts", SearchOption.TopDirectoryOnly))
+                .Concat(Directory.EnumerateFiles(dir, "*.py", SearchOption.TopDirectoryOnly))
                 .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase);
 
             foreach (var fp in files)
@@ -185,6 +203,7 @@ public partial class MainWindow
                     IsDir: false, Name: Path.GetFileName(fp),
                     RelPath: StripRelativePrefix(
                                Path.GetRelativePath(baseDir, fp).Replace('\\', '/')),
+                    Extension: Path.GetExtension(fp),
                     Children: []));
         }
         catch { /* permission denied */ }
@@ -215,7 +234,10 @@ public partial class MainWindow
                 ToolTip.SetTip(item, relPath);
                 item.Click += (_, _) =>
                 {
-                    ExecuteInActiveMtcTabSession(() => SendProxyMenuCommand($"ss {relPath}"));
+                    if (IsPythonScriptPath(relPath))
+                        _ = ExecuteInActiveMtcTabSessionAsync(() => RunPythonScriptFromMenuAsync(relPath));
+                    else
+                        ExecuteInActiveMtcTabSession(() => SendProxyMenuCommand($"ss {relPath}"));
                 };
                 target.Add(item);
             }
@@ -242,13 +264,14 @@ public partial class MainWindow
     }
 
     /// <summary>Returns true if <paramref name="dir"/> (or any sub-dir within
-    /// <paramref name="remainingDepth"/> levels) contains at least one .ts or .cts file.</summary>
+    /// <paramref name="remainingDepth"/> levels) contains at least one supported script file.</summary>
     private static bool DirectoryHasScripts(string dir, int remainingDepth)
     {
         try
         {
             if (Directory.EnumerateFiles(dir, "*.ts",  SearchOption.TopDirectoryOnly).Any()) return true;
             if (Directory.EnumerateFiles(dir, "*.cts", SearchOption.TopDirectoryOnly).Any()) return true;
+            if (Directory.EnumerateFiles(dir, "*.py", SearchOption.TopDirectoryOnly).Any()) return true;
             if (remainingDepth > 0)
                 foreach (var sub in Directory.EnumerateDirectories(dir))
                     if (DirectoryHasScripts(sub, remainingDepth - 1)) return true;
@@ -256,5 +279,8 @@ public partial class MainWindow
         catch { /* ignore */ }
         return false;
     }
+
+    private static bool IsPythonScriptPath(string relPath)
+        => string.Equals(Path.GetExtension(relPath), ".py", StringComparison.OrdinalIgnoreCase);
 
 }

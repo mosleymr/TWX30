@@ -171,6 +171,7 @@ public partial class MainWindow
             _jsonRpcServer = null;
             foreach (var tab in _mtcTabs.ToArray())
             {
+                try { tab.PythonScripts.Dispose(); } catch { }
                 try { tab.GameAgent.Dispose(); } catch { }
                 try { tab.TerminalRecorder?.Dispose(); } catch { }
                 tab.TerminalRecorder = null;

@@ -84,6 +84,7 @@ namespace TWXProxy.Core
         private readonly string _serverAddress;
         private readonly int _serverPort;
         private int _listenPort;
+        private int _automationListenPort;
         private readonly string _scriptDirectory;
         private char _commandChar;
         private readonly ModInterpreter? _interpreter;
@@ -134,11 +135,13 @@ namespace TWXProxy.Core
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
+        private TcpListener? _automationListener;
         private NetworkStream? _serverStream;
         
         private CancellationTokenSource? _cancellationSource;
         private Task? _serverReadTask;
         private Task? _acceptTask;
+        private Task? _automationAcceptTask;
         private Task? _serverStaleWatchdogTask;
         
         private bool _isRunning;
@@ -245,6 +248,24 @@ namespace TWXProxy.Core
             {
                 lock (_stateLock)
                     return _localListener != null;
+            }
+        }
+
+        public bool IsAutomationListenerActive
+        {
+            get
+            {
+                lock (_stateLock)
+                    return _automationListener != null;
+            }
+        }
+
+        public int AutomationListenPort
+        {
+            get
+            {
+                lock (_stateLock)
+                    return _automationListener == null ? 0 : _automationListenPort;
             }
         }
         public char CommandChar => _commandChar;
@@ -711,6 +732,7 @@ namespace TWXProxy.Core
                 var tasks = new List<Task>();
                 if (_serverReadTask != null) tasks.Add(_serverReadTask);
                 if (_acceptTask != null) tasks.Add(_acceptTask);
+                if (_automationAcceptTask != null) tasks.Add(_automationAcceptTask);
                 tasks.AddRange(GetClientSnapshot().Select(client => client.ReadTask).Where(task => task != null)!);
 
                 await Task.WhenAll(tasks.Where(t => t != null));
@@ -768,6 +790,61 @@ namespace TWXProxy.Core
             StartLocalListener(listenPort, _cancellationSource.Token);
         }
 
+        /// <summary>
+        /// Starts a private loopback-only listener for MTC-managed automation clients.
+        /// Passing 0 requests an ephemeral port from the OS.
+        /// </summary>
+        public async Task<int> EnsureAutomationListenerAsync(int listenPort = 0)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            if (listenPort is < 0 or > ushort.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(listenPort), "Listen port must be 0 or between 1 and 65535.");
+
+            _cancellationSource ??= new CancellationTokenSource();
+            lock (_stateLock)
+            {
+                _isRunning = true;
+                if (_automationListener != null &&
+                    (listenPort == 0 || _automationListenPort == listenPort))
+                {
+                    return _automationListenPort;
+                }
+            }
+
+            await StopAutomationListenerAsync();
+            StartAutomationListener(listenPort, _cancellationSource.Token);
+            return AutomationListenPort;
+        }
+
+        public async Task StopAutomationListenerAsync()
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            Task? acceptTask;
+            lock (_stateLock)
+            {
+                acceptTask = _automationAcceptTask;
+                _automationAcceptTask = null;
+                _automationListener?.Stop();
+                _automationListener = null;
+                _automationListenPort = 0;
+            }
+
+            if (acceptTask == null)
+                return;
+
+            try
+            {
+                await acceptTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch
+            {
+                // AcceptAutomationConnectionsAsync already logs meaningful listener failures.
+            }
+        }
+
         private void StartLocalListener(int listenPort, CancellationToken token)
         {
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
@@ -779,6 +856,22 @@ namespace TWXProxy.Core
             Log($"[{_gameName}] Type $c to connect to server");
 
             _acceptTask = RunInRuntimeContextAsync(() => AcceptLocalConnectionsAsync(token), token);
+        }
+
+        private void StartAutomationListener(int listenPort, CancellationToken token)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            var listener = new TcpListener(IPAddress.Loopback, listenPort);
+            listener.Start();
+            int actualPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+            lock (_stateLock)
+            {
+                _automationListenPort = actualPort;
+                _automationListener = listener;
+            }
+            Log($"[{_gameName}] Automation listener active on 127.0.0.1:{actualPort}");
+
+            _automationAcceptTask = RunInRuntimeContextAsync(() => AcceptAutomationConnectionsAsync(token), token);
         }
 
         private async Task StopLocalListenerAsync()
@@ -1067,6 +1160,65 @@ namespace TWXProxy.Core
             catch (Exception ex)
             {
                 Log($"[{_gameName}] Error accepting connections: {ex.Message}");
+            }
+        }
+
+        private async Task AcceptAutomationConnectionsAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested && _automationListener != null)
+                {
+                    var client = await _automationListener.AcceptTcpClientAsync(token);
+                    client.NoDelay = true;
+
+                    string remoteAddress = ((IPEndPoint?)client.Client.RemoteEndPoint)?.Address.ToString() ?? "unknown";
+                    if (!IsPrivateClientAddress(remoteAddress))
+                    {
+                        try { client.Close(); } catch { }
+                        Log($"[{_gameName}] Automation connection rejected from {remoteAddress}");
+                        continue;
+                    }
+
+                    NetworkStream stream = client.GetStream();
+                    ClientSession? session = null;
+                    session = new ClientSession
+                    {
+                        TcpClient = client,
+                        WriteStream = stream,
+                        ReadStream = stream,
+                        RemoteAddress = $"automation:{remoteAddress}",
+                        Type = ClientType.Standard,
+                        MenuHandler = new MenuHandler(this, _interpreter, _scriptDirectory, () => GetClientIndex(session!))
+                    };
+
+                    AddClientSession(session);
+                    Log($"[{_gameName}] Automation client connected from {remoteAddress}");
+
+                    await stream.WriteAsync(new byte[] { 255, 251, 1 }, 0, 3, token);
+                    await stream.FlushAsync(token);
+
+                    string banner = $"\r\n{Constants.ProductDisplayName}\r\n";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(banner), token);
+                    string prompt = $"\r\nPress {_commandChar} to activate terminal menu\r\n\r\n";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(prompt), token);
+                    await stream.FlushAsync(token);
+
+                    _interpreter?.ProgramEvent("Client connected", string.Empty, false);
+                    session.ReadTask = RunInRuntimeContextAsync(() => ReadFromClientAsync(session, token), token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected during shutdown.
+            }
+            catch (Exception) when (token.IsCancellationRequested || _automationListener == null)
+            {
+                // Expected when the listener is intentionally disabled or the proxy is stopping.
+            }
+            catch (Exception ex)
+            {
+                Log($"[{_gameName}] Error accepting automation connections: {ex.Message}");
             }
         }
 
@@ -2329,10 +2481,13 @@ namespace TWXProxy.Core
             _serverStream?.Close();
             _serverClient?.Close();
             _localListener?.Stop();
+            _automationListener?.Stop();
 
             _serverStream = null;
             _serverClient = null;
             _localListener = null;
+            _automationListener = null;
+            _automationListenPort = 0;
             ClearPendingServerSends();
             ClearPendingLocalInputProbe();
 
