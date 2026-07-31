@@ -19,6 +19,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -37,6 +38,24 @@ namespace TWXProxy.Core
         Config,
     }
 
+    public sealed class NativeBotClientInputResult
+    {
+        public static NativeBotClientInputResult NotHandled { get; } = new(false, string.Empty);
+        public static NativeBotClientInputResult Handled { get; } = new(true, string.Empty);
+
+        private NativeBotClientInputResult(bool handled, string promptSeed)
+        {
+            IsHandled = handled;
+            PromptSeed = promptSeed;
+        }
+
+        public bool IsHandled { get; }
+        public string PromptSeed { get; }
+
+        public static NativeBotClientInputResult StartPrompt(string promptSeed)
+            => new(true, promptSeed ?? string.Empty);
+    }
+
     /// <summary>
     /// Represents a single game instance with server and local connections
     /// </summary>
@@ -46,6 +65,12 @@ namespace TWXProxy.Core
         {
             public byte[] Data { get; init; } = Array.Empty<byte>();
             public bool BroadcastDeaf { get; init; }
+        }
+
+        private enum ScriptPipeToggleOutputAction
+        {
+            None,
+            Suppress
         }
 
         private sealed class ClientSession
@@ -59,6 +84,10 @@ namespace TWXProxy.Core
             public bool EchoMarks { get; set; }
             public MenuHandler MenuHandler { get; init; } = null!;
             public Task? ReadTask { get; set; }
+            public bool NativeBotCommandMode { get; set; }
+            public bool NativeBotHotkeyMode { get; set; }
+            public bool SuppressNextLineFeedAfterNativeBotPrompt { get; set; }
+            public StringBuilder NativeBotCommandBuffer { get; } = new();
             public bool IsConnected => IsDirect ? WriteStream != Stream.Null : (TcpClient?.Connected ?? false);
         }
 
@@ -132,6 +161,9 @@ namespace TWXProxy.Core
         public Func<string, bool>? NativeBotStopper { get; set; }
         public Func<string, bool>? NativeBotRebooter { get; set; }
         public Func<string, string?>? NativeBotScriptRedirector { get; set; }
+        public Func<bool>? NativeBotCanAcceptLocalInput { get; set; }
+        public Func<string, Task<bool>>? NativeBotLocalInputExecutor { get; set; }
+        public Func<byte, Task<NativeBotClientInputResult>>? NativeBotHotkeyExecutor { get; set; }
         
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
@@ -158,6 +190,10 @@ namespace TWXProxy.Core
         private readonly List<DeferredLocalOutput> _deferredLocalOutput = new();
         private readonly ConcurrentQueue<byte[]> _serverSendQueue = new();
         private readonly SemaphoreSlim _serverSendSignal = new(0);
+        private readonly object _fastServerDataResponderLock = new();
+        private readonly List<Action<FastServerDataEventArgs>> _fastServerDataResponders = new();
+        private readonly object _proxyMenuCommandLock = new();
+        private readonly Dictionary<string, ProxyMenuCommand> _proxyMenuCommands = new(StringComparer.OrdinalIgnoreCase);
         private int _serverDataDispatchDepth;
         private int _serverSendPumpScheduled;
         private readonly object _serverOutputBoundaryLock = new();
@@ -166,7 +202,7 @@ namespace TWXProxy.Core
         private int _deferredLocalOutputFlushScheduled;
         private int _suppressScriptPipeToggleMessageCount;
         private int _suppressScriptPipeTogglePromptCount;
-        
+
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
         private readonly List<byte> _clientBufferDuringNegotiation = new();
@@ -226,6 +262,7 @@ namespace TWXProxy.Core
         // Events for script processing hooks
         public event EventHandler<DataReceivedEventArgs>? ServerDataReceived;
         public event EventHandler<DataReceivedEventArgs>? LocalDataReceived;
+        public event EventHandler<DataReceivedEventArgs>? ServerDataSent;
         public event EventHandler<CommandEventArgs>? CommandReceived;
         public event EventHandler? Connected;
         public event EventHandler<DisconnectEventArgs>? Disconnected;
@@ -1267,16 +1304,16 @@ namespace TWXProxy.Core
                         }
                         
                         Disconnected?.Invoke(this, new DisconnectEventArgs("Server closed connection"));
-                        // Start auto-reconnect if allowed
-                        if (_autoReconnect && !token.IsCancellationRequested)
-                            _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+                        StartReconnectIfNeeded();
                         break;
                     }
 
-                    MarkServerReceive();
+                    long receiveTimestamp = MarkServerReceive();
 
                     var data = new byte[bytesRead];
                     Array.Copy(buffer, data, bytesRead);
+
+                    DispatchFastServerDataResponders(data, receiveTimestamp, isRawReceive: true);
 
                     LogVerbose($"[{_gameName}] Server -> Local: {bytesRead} bytes");
 
@@ -1321,12 +1358,15 @@ namespace TWXProxy.Core
 
                     if (cleanData.Length > 0)
                     {
+                        DispatchFastServerDataResponders(cleanData, receiveTimestamp, isRawReceive: false);
+
                         foreach (byte[] segment in SplitServerOutputForDispatch(cleanData))
                         {
                             if (segment.Length == 0)
                                 continue;
 
-                            bool suppressLocalOutput = ShouldSuppressScriptPipeToggleOutput(segment);
+                            ScriptPipeToggleOutputAction pipeToggleAction = GetScriptPipeToggleOutputAction(segment);
+                            bool suppressLocalOutput = pipeToggleAction != ScriptPipeToggleOutputAction.None;
                             if (!suppressLocalOutput)
                             {
                                 UpdateServerOutputBoundaryState(segment);
@@ -1397,38 +1437,55 @@ namespace TWXProxy.Core
                 }
 
                 Disconnected?.Invoke(this, new DisconnectEventArgs(ex.Message));
-                // Start auto-reconnect if allowed
-                if (_autoReconnect && !token.IsCancellationRequested)
-                    _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+                StartReconnectIfNeeded();
             }
         }
 
         private async Task ReconnectLoopAsync(CancellationToken token)
         {
-            while (!token.IsCancellationRequested && _autoReconnect)
+            try
             {
-                int reconnectDelay = _reconnectDelayMs;
-                try { await Task.Delay(reconnectDelay, token); } catch (OperationCanceledException) { return; }
-                if (token.IsCancellationRequested) return;
-                if (_serverClient?.Connected == true) return; // already reconnected
+                while (!token.IsCancellationRequested && _autoReconnect)
+                {
+                    int reconnectDelay = _reconnectDelayMs;
+                    try { await Task.Delay(reconnectDelay, token); } catch (OperationCanceledException) { return; }
+                    if (token.IsCancellationRequested) return;
+                    if (_serverClient?.Connected == true) return; // already reconnected
 
-                try
-                {
-                    Log($"[{_gameName}] Auto-reconnect attempt...");
-                    GlobalModules.DebugLog($"[AutoReconnect] Connecting to {_serverAddress}:{_serverPort}\n");
-                    await ConnectToServerAsync();
-                    GlobalModules.DebugLog($"[AutoReconnect] Connected successfully\n");
-                    GlobalModules.FlushDebugLog();
-                    Log($"[{_gameName}] Auto-reconnect succeeded");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    Log($"[{_gameName}] Auto-reconnect failed: {ex.Message}, retrying in {reconnectDelay / 1000}s...");
-                    GlobalModules.DebugLog($"[AutoReconnect] Failed: {ex.Message}, retrying...\n");
+                    try
+                    {
+                        Log($"[{_gameName}] Auto-reconnect attempt...");
+                        GlobalModules.DebugLog($"[AutoReconnect] Connecting to {_serverAddress}:{_serverPort}\n");
+                        await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\nConnecting to {ServerEndpoint}...\r\n"), broadcastDeaf: true, token: token);
+                        await ConnectToServerAsync();
+                        GlobalModules.DebugLog($"[AutoReconnect] Connected successfully\n");
+                        GlobalModules.FlushDebugLog();
+                        Log($"[{_gameName}] Auto-reconnect succeeded");
+                        await SendToLocalAsync(Encoding.ASCII.GetBytes("Connected!\r\n"), broadcastDeaf: true, token: token);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[{_gameName}] Auto-reconnect failed: {ex.Message}, retrying in {reconnectDelay / 1000}s...");
+                        GlobalModules.DebugLog($"[AutoReconnect] Failed: {ex.Message}, retrying...\n");
+                        try
+                        {
+                            await SendToLocalAsync(
+                                Encoding.ASCII.GetBytes($"\r\nConnection failed: {ex.Message}; retrying in {reconnectDelay / 1000}s...\r\n"),
+                                broadcastDeaf: true,
+                                token: token);
+                        }
+                        catch
+                        {
+                            // Local clients may be gone while the proxy keeps retrying.
+                        }
+                    }
                 }
             }
-            System.Threading.Interlocked.Exchange(ref _reconnectLoopRunning, 0);
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _reconnectLoopRunning, 0);
+            }
         }
 
         /// <summary>
@@ -1482,6 +1539,13 @@ namespace TWXProxy.Core
                     TimeSpan elapsed = DateTime.UtcNow - probeUtc;
                     if (elapsed < LocalInputResponseTimeout)
                         continue;
+
+                    if (IsServerDataDispatchActive())
+                    {
+                        Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: " +
+                            $"elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
+                        continue;
+                    }
 
                     await DisconnectStaleServerAsync(probeUtc, lastReceiveTicks, elapsed, token);
                 }
@@ -1543,14 +1607,14 @@ namespace TWXProxy.Core
 
             Disconnected?.Invoke(this, new DisconnectEventArgs(reason));
 
-            if (_autoReconnect && !token.IsCancellationRequested)
-                _ = RunInRuntimeContextAsync(() => ReconnectLoopAsync(token));
+            StartReconnectIfNeeded();
         }
 
-        private void MarkServerReceive()
+        private long MarkServerReceive()
         {
             Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
             ClearPendingLocalInputProbe();
+            return Stopwatch.GetTimestamp();
         }
 
         private void ClearPendingLocalInputProbe()
@@ -1606,11 +1670,241 @@ namespace TWXProxy.Core
             return $"hex={hex}, ascii='{ascii}'";
         }
 
+        private bool CanAcceptNativeBotClientInput()
+        {
+            Func<bool>? canAccept = NativeBotCanAcceptLocalInput;
+            if (canAccept == null)
+                return false;
+
+            try
+            {
+                return canAccept();
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] accept check failed: {ex.Message}\n");
+                return false;
+            }
+        }
+
+        private async Task<bool> TryHandleNativeBotClientInputAsync(
+            ClientSession session,
+            byte value,
+            bool scriptWaitingForInput,
+            bool keypressMode,
+            CancellationToken token)
+        {
+            if (session.SuppressNextLineFeedAfterNativeBotPrompt)
+            {
+                session.SuppressNextLineFeedAfterNativeBotPrompt = false;
+                if (value == 0x0A)
+                    return true;
+            }
+
+            if (session.NativeBotCommandMode)
+                return await HandleNativeBotClientCommandInputAsync(session, value, token);
+
+            if (session.NativeBotHotkeyMode)
+                return await HandleNativeBotClientHotkeyInputAsync(session, value, token);
+
+            if (scriptWaitingForInput ||
+                keypressMode ||
+                !CanAcceptNativeBotClientInput())
+            {
+                return false;
+            }
+
+            if (value == (byte)'>')
+            {
+                await BeginNativeBotClientCommandPromptAsync(session, string.Empty, token);
+                return true;
+            }
+
+            if (value == 0x09)
+            {
+                await BeginNativeBotClientHotkeyPromptAsync(session, token);
+                return true;
+            }
+
+            return false;
+        }
+
+        private async Task BeginNativeBotClientCommandPromptAsync(ClientSession session, string initialValue, CancellationToken token)
+        {
+            session.NativeBotHotkeyMode = false;
+            session.NativeBotCommandMode = true;
+            session.NativeBotCommandBuffer.Clear();
+            if (!string.IsNullOrEmpty(initialValue))
+                session.NativeBotCommandBuffer.Append(initialValue);
+
+            await WriteNativeBotClientPromptAsync(session, "\r\nmombot> " + initialValue, token);
+        }
+
+        private async Task BeginNativeBotClientHotkeyPromptAsync(ClientSession session, CancellationToken token)
+        {
+            session.NativeBotCommandMode = false;
+            session.NativeBotCommandBuffer.Clear();
+            session.NativeBotHotkeyMode = true;
+
+            await WriteNativeBotClientPromptAsync(session, "\r\nmombot hotkey> ", token);
+        }
+
+        private async Task<bool> HandleNativeBotClientCommandInputAsync(ClientSession session, byte value, CancellationToken token)
+        {
+            if (!CanAcceptNativeBotClientInput())
+            {
+                ResetNativeBotClientInputState(session);
+                return false;
+            }
+
+            switch (value)
+            {
+                case 0x1B:
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+
+                case 0x0D:
+                    session.SuppressNextLineFeedAfterNativeBotPrompt = true;
+                    await SubmitNativeBotClientCommandAsync(session, token);
+                    return true;
+
+                case 0x0A:
+                    await SubmitNativeBotClientCommandAsync(session, token);
+                    return true;
+
+                case 0x08:
+                case 0x7F:
+                    if (session.NativeBotCommandBuffer.Length > 0)
+                    {
+                        session.NativeBotCommandBuffer.Length--;
+                        await WriteNativeBotClientPromptAsync(session, "\b \b", token);
+                    }
+                    return true;
+
+                case 0x09:
+                    session.NativeBotCommandMode = false;
+                    session.NativeBotCommandBuffer.Clear();
+                    await BeginNativeBotClientHotkeyPromptAsync(session, token);
+                    return true;
+
+                default:
+                    if (value >= 0x20)
+                    {
+                        session.NativeBotCommandBuffer.Append((char)value);
+                        await WriteNativeBotClientPromptAsync(session, Encoding.Latin1.GetString(new[] { value }), token);
+                    }
+                    return true;
+            }
+        }
+
+        private async Task<bool> HandleNativeBotClientHotkeyInputAsync(ClientSession session, byte value, CancellationToken token)
+        {
+            if (!CanAcceptNativeBotClientInput())
+            {
+                ResetNativeBotClientInputState(session);
+                return false;
+            }
+
+            switch (value)
+            {
+                case 0x1B:
+                case 0x0D:
+                    session.SuppressNextLineFeedAfterNativeBotPrompt = value == 0x0D;
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+
+                case 0x0A:
+                    ResetNativeBotClientInputState(session);
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+                    return true;
+            }
+
+            session.NativeBotHotkeyMode = false;
+
+            Func<byte, Task<NativeBotClientInputResult>>? executor = NativeBotHotkeyExecutor;
+            if (executor == null)
+            {
+                await WriteNativeBotClientPromptAsync(session, "\r\nmombot: hotkeys are unavailable.\r\n", token);
+                return true;
+            }
+
+            try
+            {
+                NativeBotClientInputResult result = await executor(value);
+                if (!string.IsNullOrEmpty(result.PromptSeed))
+                {
+                    await BeginNativeBotClientCommandPromptAsync(session, result.PromptSeed, token);
+                    return true;
+                }
+
+                if (!result.IsHandled)
+                    await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] hotkey failed for {value}: {ex}\n");
+                GlobalModules.FlushDebugLog();
+                await WriteNativeBotClientPromptAsync(session, $"\r\nmombot: hotkey failed: {ex.Message}\r\n", token);
+            }
+
+            return true;
+        }
+
+        private async Task SubmitNativeBotClientCommandAsync(ClientSession session, CancellationToken token)
+        {
+            string input = session.NativeBotCommandBuffer.ToString().Trim();
+            ResetNativeBotClientInputState(session);
+            await WriteNativeBotClientPromptAsync(session, "\r\n", token);
+
+            if (string.IsNullOrWhiteSpace(input))
+                return;
+
+            Func<string, Task<bool>>? executor = NativeBotLocalInputExecutor;
+            if (executor == null)
+            {
+                await WriteNativeBotClientPromptAsync(session, "mombot: local commands are unavailable.\r\n", token);
+                return;
+            }
+
+            try
+            {
+                bool handled = await executor(input);
+                if (!handled)
+                    await WriteNativeBotClientPromptAsync(session, "mombot: command was not handled.\r\n", token);
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[NativeBot.RemoteInput] command failed for '{input}': {ex}\n");
+                GlobalModules.FlushDebugLog();
+                await WriteNativeBotClientPromptAsync(session, $"mombot: command failed: {ex.Message}\r\n", token);
+            }
+        }
+
+        private static void ResetNativeBotClientInputState(ClientSession session)
+        {
+            session.NativeBotCommandMode = false;
+            session.NativeBotHotkeyMode = false;
+            session.NativeBotCommandBuffer.Clear();
+        }
+
+        private static async Task WriteNativeBotClientPromptAsync(ClientSession session, string text, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            byte[] bytes = Encoding.Latin1.GetBytes(text);
+            await session.WriteStream.WriteAsync(bytes, 0, bytes.Length, token);
+            await session.WriteStream.FlushAsync(token);
+        }
+
         private async Task ReadFromClientAsync(ClientSession session, CancellationToken token)
         {
             var buffer = new byte[8192];
             var commandBuffer = new StringBuilder();
             bool inCommandMode = false;
+            int scriptFullLineInputEchoLength = 0;
 
             try
             {
@@ -1683,6 +1977,9 @@ namespace TWXProxy.Core
                                 else if (!handled)
                                 {
                                     bool keypressMode = scriptWaitingForInput && (_interpreter?.HasKeypressInputWaiting ?? false);
+                                    if (await TryHandleNativeBotClientInputAsync(session, b, scriptWaitingForInput, keypressMode, token))
+                                        continue;
+
                                     bool echoKeypressInput = keypressMode && (_interpreter?.HasEchoingKeypressInputWaiting ?? false);
                                     bool textOutConsumed = false;
                                     bool enteredInputWait = false;
@@ -1696,6 +1993,8 @@ namespace TWXProxy.Core
                                     // GETINPUT/GETCONSOLEINPUT wait, do not also forward that same
                                     // character to the server or reuse it as the pending reply.
                                     bool suppressCurrentCharForNewInputWait = !scriptWaitingForInput && enteredInputWait;
+                                    if (!scriptWaitingForInput)
+                                        scriptFullLineInputEchoLength = 0;
 
                                     bool sendToServer = !textOutConsumed &&
                                                         !scriptWaitingForInput &&
@@ -1717,7 +2016,9 @@ namespace TWXProxy.Core
                                         else
                                         {
                                             byte[] forwarded = new byte[] { b };
-                                            await SendToServerAsync(forwarded);
+                                            FastServerSendResult immediate = TrySendToServerImmediate(forwarded);
+                                            if (!immediate.Success)
+                                                await SendToServerAsync(forwarded);
                                             MarkLocalInputProbe(forwarded);
                                         }
                                     }
@@ -1735,21 +2036,30 @@ namespace TWXProxy.Core
                                         {
                                             await session.WriteStream.WriteAsync(new byte[] { 8, 32, 8 }, 0, 3, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            if (scriptFullLineInputEchoLength > 0)
+                                                scriptFullLineInputEchoLength--;
                                         }
                                         else if (b != 13 && b != 10)
                                         {
+                                            if (scriptFullLineInputEchoLength == 0 && (b >= 32 || b == 9))
+                                                await session.WriteStream.WriteAsync(new byte[] { 32 }, 0, 1, token);
                                             await session.WriteStream.WriteAsync(new byte[] { b }, 0, 1, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            if (b >= 32 || b == 9)
+                                                scriptFullLineInputEchoLength++;
                                         }
                                         else if (b == 13)
                                         {
                                             await session.WriteStream.WriteAsync(new byte[] { 13, 10 }, 0, 2, token);
                                             await session.WriteStream.FlushAsync(token);
+                                            scriptFullLineInputEchoLength = 0;
                                         }
                                     }
 
                                     if (!textOutConsumed && !suppressCurrentCharForNewInputWait)
+                                    {
                                         LocalDataReceived?.Invoke(this, new DataReceivedEventArgs(new byte[] { b }));
+                                    }
                                     else if (suppressCurrentCharForNewInputWait)
                                         GlobalModules.DebugLog($"[INPUT] Suppressed trigger character {b} ('{c}') after text-out handler opened input wait\n");
                                 }
@@ -1951,10 +2261,181 @@ namespace TWXProxy.Core
 
             byte[] copy = new byte[data.Length];
             Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+            DispatchServerDataSent(copy);
             _serverSendQueue.Enqueue(copy);
             _serverSendSignal.Release();
             ScheduleServerSendPump();
             return Task.CompletedTask;
+        }
+
+        public FastServerSendResult TrySendToServerImmediate(byte[] data)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            long startTimestamp = Stopwatch.GetTimestamp();
+
+            if (data.Length == 0)
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "No data to send.");
+
+            NetworkStream? stream = _serverStream;
+            if (stream == null || _serverClient?.Connected != true)
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "Server is not connected.");
+
+            if (!_serverSendLock.Wait(0))
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), "Server send lock is busy.");
+
+            try
+            {
+                stream.Write(data, 0, data.Length);
+                stream.Flush();
+                DispatchServerDataSent(data);
+                return FastServerSendResult.Succeeded(startTimestamp, Stopwatch.GetTimestamp(), data.Length);
+            }
+            catch (Exception ex)
+            {
+                return FastServerSendResult.Failed(startTimestamp, Stopwatch.GetTimestamp(), ex.Message);
+            }
+            finally
+            {
+                _serverSendLock.Release();
+            }
+        }
+
+        public IDisposable RegisterFastServerDataResponder(Action<FastServerDataEventArgs> responder)
+        {
+            ArgumentNullException.ThrowIfNull(responder);
+
+            lock (_fastServerDataResponderLock)
+                _fastServerDataResponders.Add(responder);
+
+            return new FastServerDataResponderRegistration(this, responder);
+        }
+
+        public IDisposable RegisterProxyMenuCommand(ProxyMenuCommand command)
+        {
+            ArgumentNullException.ThrowIfNull(command);
+
+            string path = NormalizeProxyMenuPath(command.Path);
+            if (path.Length == 0)
+                throw new ArgumentException("Proxy menu command path cannot be empty.", nameof(command));
+
+            var registered = command with { Path = path };
+            lock (_proxyMenuCommandLock)
+                _proxyMenuCommands[path] = registered;
+
+            return new ProxyMenuCommandRegistration(this, path, registered);
+        }
+
+        internal bool HasProxyMenuPath(string path)
+        {
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands.ContainsKey(normalized) ||
+                       _proxyMenuCommands.Keys.Any(key => key.StartsWith(normalized, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        internal IReadOnlyList<ProxyMenuCommand> GetProxyMenuChildCommands(string parentPath)
+        {
+            string normalized = NormalizeProxyMenuPath(parentPath);
+            int childLength = normalized.Length + 1;
+
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands
+                    .Where(pair =>
+                        pair.Key.Length == childLength &&
+                        (normalized.Length == 0 || pair.Key.StartsWith(normalized, StringComparison.OrdinalIgnoreCase)))
+                    .Select(pair => pair.Value)
+                    .OrderBy(command => command.Path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        internal bool HasProxyMenuChildren(string parentPath)
+            => GetProxyMenuChildCommands(parentPath).Count > 0;
+
+        internal string GetProxyMenuCommandDescription(string path)
+        {
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+            {
+                return _proxyMenuCommands.TryGetValue(normalized, out ProxyMenuCommand? command)
+                    ? command.Description
+                    : string.Empty;
+            }
+        }
+
+        internal async Task<ProxyMenuCommandResult?> ExecuteProxyMenuCommandAsync(string path)
+        {
+            ProxyMenuCommand? command;
+            string normalized = NormalizeProxyMenuPath(path);
+            lock (_proxyMenuCommandLock)
+                _proxyMenuCommands.TryGetValue(normalized, out command);
+
+            if (command?.ExecuteAsync == null)
+                return null;
+
+            var context = new ProxyMenuCommandContext(this, normalized);
+            return await command.ExecuteAsync(context).ConfigureAwait(false);
+        }
+
+        internal void UnregisterProxyMenuCommand(string path, ProxyMenuCommand command)
+        {
+            lock (_proxyMenuCommandLock)
+            {
+                if (_proxyMenuCommands.TryGetValue(path, out ProxyMenuCommand? current) &&
+                    ReferenceEquals(current, command))
+                {
+                    _proxyMenuCommands.Remove(path);
+                }
+            }
+        }
+
+        internal void UnregisterFastServerDataResponder(Action<FastServerDataEventArgs> responder)
+        {
+            lock (_fastServerDataResponderLock)
+                _fastServerDataResponders.Remove(responder);
+        }
+
+        private static string NormalizeProxyMenuPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return string.Empty;
+
+            var normalized = new StringBuilder(path.Length);
+            foreach (char c in path)
+            {
+                if (!char.IsWhiteSpace(c) && c != '>' && c != '/')
+                    normalized.Append(char.ToUpperInvariant(c));
+            }
+
+            return normalized.ToString();
+        }
+
+        private void DispatchFastServerDataResponders(byte[] data, long receiveTimestamp, bool isRawReceive)
+        {
+            Action<FastServerDataEventArgs>[] responders;
+            lock (_fastServerDataResponderLock)
+            {
+                if (_fastServerDataResponders.Count == 0)
+                    return;
+
+                responders = _fastServerDataResponders.ToArray();
+            }
+
+            var args = new FastServerDataEventArgs(this, data, receiveTimestamp, Stopwatch.GetTimestamp(), isRawReceive);
+            foreach (Action<FastServerDataEventArgs> responder in responders)
+            {
+                try
+                {
+                    responder(args);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[{_gameName}] Fast server data responder failed: {ex.Message}");
+                }
+            }
         }
 
         private void ScheduleServerSendPump()
@@ -2318,12 +2799,31 @@ namespace TWXProxy.Core
             }
         }
 
-        private bool ShouldSuppressScriptPipeToggleOutput(byte[] cleanData)
+        private void DispatchServerDataSent(byte[] data)
+        {
+            EventHandler<DataReceivedEventArgs>? handler = ServerDataSent;
+            if (handler == null || data.Length == 0)
+                return;
+
+            byte[] copy = new byte[data.Length];
+            Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+
+            try
+            {
+                handler(this, new DataReceivedEventArgs(copy));
+            }
+            catch (Exception ex)
+            {
+                GlobalModules.DebugLog($"[Network] ServerDataSent observer failed: {ex}\n");
+            }
+        }
+
+        private ScriptPipeToggleOutputAction GetScriptPipeToggleOutputAction(byte[] cleanData)
         {
             if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0 &&
                 Volatile.Read(ref _suppressScriptPipeTogglePromptCount) <= 0)
             {
-                return false;
+                return ScriptPipeToggleOutputAction.None;
             }
 
             string text = Encoding.Latin1.GetString(cleanData);
@@ -2342,17 +2842,17 @@ namespace TWXProxy.Core
                     Interlocked.Increment(ref _suppressScriptPipeTogglePromptCount);
 
                 GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of script-triggered message toggle response\n");
-                return true;
+                return ScriptPipeToggleOutputAction.Suppress;
             }
 
             if (containsPrompt && Volatile.Read(ref _suppressScriptPipeTogglePromptCount) > 0)
             {
                 Interlocked.Decrement(ref _suppressScriptPipeTogglePromptCount);
                 GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of follow-up prompt after script-triggered message toggle\n");
-                return true;
+                return ScriptPipeToggleOutputAction.Suppress;
             }
 
-            return false;
+            return ScriptPipeToggleOutputAction.None;
         }
 
         private static IEnumerable<byte[]> SplitServerOutputForDispatch(byte[] data)
@@ -2435,6 +2935,16 @@ namespace TWXProxy.Core
 
             var result = new byte[length];
             Buffer.BlockCopy(data, offset, result, 0, length);
+            return result;
+        }
+
+        private static byte[] CopyBytes(byte[] data)
+        {
+            if (data.Length == 0)
+                return Array.Empty<byte>();
+
+            var result = new byte[data.Length];
+            Buffer.BlockCopy(data, 0, result, 0, data.Length);
             return result;
         }
 
@@ -2523,7 +3033,7 @@ namespace TWXProxy.Core
             using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
             byte[] data = Encoding.Latin1.GetBytes(ApplyQuickText(message));
             // ECHO/ECHOEX and script prompts use broadcastDeaf so menu/status
-            // messages remain visible while scripts mute server output.  Do not
+            // messages remain visible while scripts mute server output. Do not
             // defer those behind server dispatch, or a deafing script can appear
             // to hang without showing its own progress message.
             if (!broadcastDeaf && TryQueueDeferredLocalOutput(data, broadcastDeaf: false))
@@ -2668,6 +3178,12 @@ namespace TWXProxy.Core
                 if (_serverDataDispatchDepth > 0)
                     _serverDataDispatchDepth--;
             }
+        }
+
+        private bool IsServerDataDispatchActive()
+        {
+            lock (_deferredLocalOutputLock)
+                return _serverDataDispatchDepth > 0;
         }
 
         private bool TryQueueDeferredLocalOutput(byte[] data, bool broadcastDeaf)
@@ -2923,6 +3439,131 @@ namespace TWXProxy.Core
         public DataReceivedEventArgs(byte[] data)
         {
             Data = data;
+        }
+    }
+
+    public sealed class FastServerDataEventArgs : EventArgs
+    {
+        private readonly GameInstance _gameInstance;
+        private string? _text;
+
+        internal FastServerDataEventArgs(
+            GameInstance gameInstance,
+            byte[] data,
+            long receiveTimestamp,
+            long dispatchTimestamp,
+            bool isRawReceive)
+        {
+            _gameInstance = gameInstance;
+            Data = data;
+            ReceiveTimestamp = receiveTimestamp;
+            DispatchTimestamp = dispatchTimestamp;
+            IsRawReceive = isRawReceive;
+        }
+
+        public byte[] Data { get; }
+        public long ReceiveTimestamp { get; }
+        public long DispatchTimestamp { get; }
+        public bool IsRawReceive { get; }
+        public string Text => _text ??= Encoding.Latin1.GetString(Data);
+
+        public FastServerSendResult TrySendToServerImmediate(byte[] data)
+            => _gameInstance.TrySendToServerImmediate(data);
+
+        public Task SendToServerAsync(byte[] data)
+            => _gameInstance.SendToServerAsync(data);
+    }
+
+    public readonly record struct FastServerSendResult(
+        bool Success,
+        int BytesSent,
+        long StartTimestamp,
+        long EndTimestamp,
+        string Error)
+    {
+        public static FastServerSendResult Succeeded(long startTimestamp, long endTimestamp, int bytesSent)
+            => new(true, bytesSent, startTimestamp, endTimestamp, string.Empty);
+
+        public static FastServerSendResult Failed(long startTimestamp, long endTimestamp, string error)
+            => new(false, 0, startTimestamp, endTimestamp, error);
+    }
+
+    internal sealed class FastServerDataResponderRegistration : IDisposable
+    {
+        private GameInstance? _gameInstance;
+        private Action<FastServerDataEventArgs>? _responder;
+
+        public FastServerDataResponderRegistration(
+            GameInstance gameInstance,
+            Action<FastServerDataEventArgs> responder)
+        {
+            _gameInstance = gameInstance;
+            _responder = responder;
+        }
+
+        public void Dispose()
+        {
+            GameInstance? gameInstance = Interlocked.Exchange(ref _gameInstance, null);
+            Action<FastServerDataEventArgs>? responder = Interlocked.Exchange(ref _responder, null);
+            if (gameInstance != null && responder != null)
+                gameInstance.UnregisterFastServerDataResponder(responder);
+        }
+    }
+
+    public enum ProxyMenuCommandResult
+    {
+        StayInMenu,
+        ExitMenu,
+    }
+
+    public sealed record ProxyMenuCommand
+    {
+        public required string Path { get; init; }
+        public required string Description { get; init; }
+        public Func<ProxyMenuCommandContext, Task<ProxyMenuCommandResult>>? ExecuteAsync { get; init; }
+    }
+
+    public sealed class ProxyMenuCommandContext
+    {
+        internal ProxyMenuCommandContext(GameInstance gameInstance, string path)
+        {
+            GameInstance = gameInstance;
+            Path = path;
+        }
+
+        public GameInstance GameInstance { get; }
+        public string Path { get; }
+        public char Key => Path.Length == 0 ? '\0' : Path[^1];
+
+        public Task SendMessageAsync(string message)
+            => GameInstance.SendMessageAsync(message);
+
+        public Task SendToServerAsync(string text)
+            => GameInstance.SendToServerAsync(Encoding.ASCII.GetBytes(text));
+    }
+
+    internal sealed class ProxyMenuCommandRegistration : IDisposable
+    {
+        private GameInstance? _gameInstance;
+        private ProxyMenuCommand? _command;
+        private readonly string _path;
+
+        public ProxyMenuCommandRegistration(
+            GameInstance gameInstance,
+            string path,
+            ProxyMenuCommand command)
+        {
+            _gameInstance = gameInstance;
+            _path = path;
+            _command = command;
+        }
+
+        public void Dispose()
+        {
+            GameInstance? gameInstance = Interlocked.Exchange(ref _gameInstance, null);
+            ProxyMenuCommand? command = Interlocked.Exchange(ref _command, null);
+            if (gameInstance != null && command != null)
+                gameInstance.UnregisterProxyMenuCommand(_path, command);
         }
     }
 

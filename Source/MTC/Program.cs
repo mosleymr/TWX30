@@ -21,7 +21,8 @@ GlobalModules.ConfigureDebugLogging(
     defaultDebug.VerboseDebugLogging,
     defaultDebug.TriggerDebugLogging,
     defaultDebug.ScriptTraceDebugLogging,
-    defaultDebug.AutoRecorderDebugLogging);
+    defaultDebug.AutoRecorderDebugLogging,
+    defaultDebug.VariablePersistenceDebugLogging);
 GlobalModules.ConfigureHaggleDebugLogging(
     MTC.AppPaths.GetPortHaggleDebugLogPath(),
     defaultDebug.DebugPortHaggleEnabled,

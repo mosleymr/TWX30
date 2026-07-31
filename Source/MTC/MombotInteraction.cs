@@ -413,6 +413,9 @@ public partial class MainWindow
                         // byte proves it was the start of a real ANSI sequence.
                         filtered.Add(0x1B);
                         filtered.Add(value);
+                        ConsumePendingNativeMombotEscapeEchoSuppression(
+                            ref pendingNativeMombotEscapeEchoSuppressions,
+                            ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
                         continue;
                     }
 
@@ -430,7 +433,13 @@ public partial class MainWindow
                 {
                     if (index + 1 < chunk.Length)
                     {
-                        if (!IsAnsiEscapeIntroducer(chunk[index + 1]))
+                        if (IsAnsiEscapeIntroducer(chunk[index + 1]))
+                        {
+                            ConsumePendingNativeMombotEscapeEchoSuppression(
+                                ref pendingNativeMombotEscapeEchoSuppressions,
+                                ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
+                        }
+                        else
                         {
                             filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
                             ConsumePendingNativeMombotEscapeEchoSuppression(
@@ -1396,24 +1405,13 @@ public partial class MainWindow
         ShowMacroNotice($"temporary macro recorder stopped at {TemporaryMacroMaxCharacters} characters");
     }
 
-    private Task PlayTemporaryMacroAsync()
+    private Task OpenQuickMacroWindowAsync()
     {
         var owner = ActiveMtcTab;
         if (_temporaryMacroRecording)
             return Task.CompletedTask;
 
-        if (!HasActiveMacroConnection())
-        {
-            ShowMacroNotice("temporary macro playback requires an active connection");
-            return Task.CompletedTask;
-        }
-
         string macroText = GetTemporaryMacroText();
-        if (string.IsNullOrWhiteSpace(macroText))
-        {
-            ShowMacroNotice("temporary macro is empty");
-            return Task.CompletedTask;
-        }
 
         if (owner?.QuickMacroPlayWindow is { IsVisible: true } existing)
         {
@@ -1426,7 +1424,8 @@ public partial class MainWindow
             ValidateTemporaryMacroText,
             allowHotkeyAssignment: true,
             existingBindings: _appPrefs.MacroBindings,
-            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)));
+            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)),
+            saveAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => SaveQuickMacroFromDialogAsync(playDialog)));
 
         dialog.Closed += (_, _) =>
         {
@@ -1444,22 +1443,50 @@ public partial class MainWindow
 
         async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
         {
-            if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
-                return parseError ?? "temporary macro is invalid";
-
-            _temporaryMacroChunks.Clear();
-            if (updatedMacroBytes.Length > 0)
-                _temporaryMacroChunks.Add(updatedMacroBytes);
-            UpdateTemporaryMacroControls();
-
-            if (playDialog.AssignToHotkey)
-            {
-                UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
-                ShowMacroNotice($"saved quick macro to {playDialog.AssignedHotkey}");
-            }
+            string? saveError = await SaveQuickMacroFromDialogAsync(playDialog);
+            if (!string.IsNullOrWhiteSpace(saveError))
+                return saveError;
 
             return await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, playDialog.PlayCount);
         }
+    }
+
+    private Task<string?> SaveQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
+    {
+        if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
+            return Task.FromResult<string?>(parseError ?? "temporary macro is invalid");
+
+        _temporaryMacroChunks.Clear();
+        if (updatedMacroBytes.Length > 0)
+            _temporaryMacroChunks.Add(updatedMacroBytes);
+        UpdateTemporaryMacroControls();
+
+        if (playDialog.AssignToHotkey)
+            UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
+
+        return Task.FromResult<string?>(null);
+    }
+
+    private async Task PlaySavedQuickMacroOnceAsync()
+    {
+        if (_temporaryMacroRecording)
+            return;
+
+        if (!HasActiveMacroConnection())
+        {
+            ShowMacroNotice("quick macro playback requires an active connection");
+            return;
+        }
+
+        if (_temporaryMacroChunks.Count == 0 || _temporaryMacroChunks.All(chunk => chunk.Length == 0))
+        {
+            ShowMacroNotice("quick macro is empty");
+            return;
+        }
+
+        string? error = await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, 1);
+        if (!string.IsNullOrWhiteSpace(error))
+            ShowMacroNotice(error);
     }
 
     private void UpdateOpenQuickMacroPlayWindow(string macroText, string statusMessage)
@@ -1628,25 +1655,12 @@ public partial class MainWindow
         }
         else
         {
-            RedrawLastObservedGamePrompt();
+            // Server prompts are stateful. Do not replay cached prompts locally;
+            // any real prompt redraw must come from the server.
             FocusActiveTerminal();
         }
 
         _buffer.Dirty = true;
-    }
-
-    private void RedrawLastObservedGamePrompt()
-    {
-        string prompt = !string.IsNullOrWhiteSpace(_mombotLastObservedGamePromptAnsi)
-            ? _mombotLastObservedGamePromptAnsi
-            : _mombotLastObservedGamePromptPlain;
-
-        prompt = SanitizeObservedPromptForDisplay(prompt)
-            .Replace("\r", string.Empty, StringComparison.Ordinal)
-            .Replace("\n", string.Empty, StringComparison.Ordinal);
-
-        if (!string.IsNullOrWhiteSpace(prompt))
-            _parser.Feed(prompt);
     }
 
     private bool TryHandleConfiguredMacroHotkey(byte[] bytes)
@@ -4833,6 +4847,142 @@ public partial class MainWindow
         }
 
         await ExecuteMombotHotkeyInternalActionAsync(actionRef);
+    }
+
+    private async Task<bool> ExecuteMombotRemoteInputAsync(string input)
+    {
+        if (!_mombot.Enabled)
+            return false;
+
+        await ExecuteMombotUiCommandAsync(input);
+        return true;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeyAsync(byte keyByte)
+    {
+        if (!_mombot.Enabled)
+            return Core.NativeBotClientInputResult.NotHandled;
+
+        if (keyByte == (byte)'?')
+        {
+            await ExecuteMombotUiCommandAsync("help");
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (keyByte >= (byte)'0' && keyByte <= (byte)'9')
+        {
+            await ExecuteMombotHotkeyScriptAsync(keyByte == (byte)'0' ? 10 : keyByte - (byte)'0');
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (keyByte == 0x09)
+        {
+            if (TryResolveMombotHotkeyCommand(0x09, out string? tabCommandOrAction) &&
+                !string.IsNullOrWhiteSpace(tabCommandOrAction))
+            {
+                return await ExecuteMombotRemoteHotkeySelectionAsync(tabCommandOrAction);
+            }
+
+            await ExecuteMombotUiCommandAsync("stopmodules");
+            return Core.NativeBotClientInputResult.Handled;
+        }
+
+        if (TryResolveMombotHotkeyCommand(keyByte, out string? commandOrAction) &&
+            !string.IsNullOrWhiteSpace(commandOrAction))
+        {
+            return await ExecuteMombotRemoteHotkeySelectionAsync(commandOrAction);
+        }
+
+        return Core.NativeBotClientInputResult.Handled;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeySelectionAsync(string commandOrAction)
+    {
+        if (string.IsNullOrWhiteSpace(commandOrAction))
+            return Core.NativeBotClientInputResult.Handled;
+
+        if (commandOrAction.StartsWith(":", StringComparison.Ordinal))
+            return await ExecuteMombotRemoteHotkeyActionAsync(commandOrAction);
+
+        await ExecuteMombotUiCommandAsync(commandOrAction);
+        return Core.NativeBotClientInputResult.Handled;
+    }
+
+    private async Task<Core.NativeBotClientInputResult> ExecuteMombotRemoteHotkeyActionAsync(string actionRef)
+    {
+        string normalized = actionRef.Trim().ToLowerInvariant();
+        switch (normalized)
+        {
+            case ":internal_commands~twarpswitch":
+                return Core.NativeBotClientInputResult.StartPrompt("twarp ");
+
+            case ":internal_commands~mowswitch":
+                return Core.NativeBotClientInputResult.StartPrompt("mow ");
+
+            case ":internal_commands~stopmodules":
+                await ExecuteMombotUiCommandAsync("stopmodules");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autocap":
+            case ":internal_commands~autocapture":
+                await ExecuteMombotUiCommandAsync("cap");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autokill":
+                await ExecuteMombotUiCommandAsync("kill furb silent");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~autorefurb":
+                await ExecuteMombotUiCommandAsync("refurb");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~hkill":
+            case ":holo_kill":
+                await ExecuteMombotUiCommandAsync("hkill");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~htorp":
+            case ":holotorp":
+                await ExecuteMombotUiCommandAsync("htorp");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~surround":
+                await ExecuteMombotUiCommandAsync("surround");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~xenter":
+            case ":internal_commands~exit":
+                await ExecuteMombotUiCommandAsync("xenter");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~clear":
+                await ExecuteMombotUiCommandAsync("clear");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~kit":
+                await ExecuteMombotUiCommandAsync("macro_kit");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~dock_shopper":
+                await ExecuteMombotUiCommandAsync("dock_shopper");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":internal_commands~fotonswitch":
+                await ExecuteMombotUiCommandAsync(ResolveMombotPhotonHotkeyCommand());
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":user_interface~script_access":
+                PublishMombotLocalMessage("Remote Mombot script access uses TAB-1 through TAB-0 for configured hotkey scripts.");
+                return Core.NativeBotClientInputResult.Handled;
+
+            case ":menus~preferencesmenu":
+                PublishMombotLocalMessage("Mombot preferences are available in the host MTC window.");
+                return Core.NativeBotClientInputResult.Handled;
+        }
+
+        PublishMombotLocalMessage($"Mombot could not execute remote hotkey action {actionRef}: no native mapping is defined for this action.");
+        ApplyMombotExecutionRefresh();
+        return Core.NativeBotClientInputResult.Handled;
     }
 
     private string ResolveMombotPhotonHotkeyCommand()

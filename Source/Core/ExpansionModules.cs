@@ -122,10 +122,13 @@ public sealed class ExpansionModuleHost : IAsyncDisposable, IDisposable
         private readonly AssemblyDependencyResolver _resolver;
         private readonly string _sharedAssemblyName;
 
-        public ExpansionModuleLoadContext(string assemblyPath, string sharedAssemblyName)
-            : base($"TWXModule:{Path.GetFileNameWithoutExtension(assemblyPath)}", isCollectible: true)
+        public ExpansionModuleLoadContext(
+            string loadAssemblyPath,
+            string dependencyResolverAssemblyPath,
+            string sharedAssemblyName)
+            : base($"TWXModule:{Path.GetFileNameWithoutExtension(loadAssemblyPath)}", isCollectible: true)
         {
-            _resolver = new AssemblyDependencyResolver(assemblyPath);
+            _resolver = new AssemblyDependencyResolver(dependencyResolverAssemblyPath);
             _sharedAssemblyName = sharedAssemblyName;
         }
 
@@ -234,11 +237,13 @@ public sealed class ExpansionModuleHost : IAsyncDisposable, IDisposable
 
             try
             {
+                string loadAssemblyPath = CreateShadowCopy(assemblyPath);
                 loadContext = new ExpansionModuleLoadContext(
+                    loadAssemblyPath,
                     assemblyPath,
                     typeof(ExpansionModuleHost).Assembly.GetName().Name ?? "TWXProxy");
 
-                Assembly assembly = loadContext.LoadFromAssemblyPath(assemblyPath);
+                Assembly assembly = loadContext.LoadFromAssemblyPath(loadAssemblyPath);
                 foreach (Type type in GetModuleTypes(assembly))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -298,6 +303,40 @@ public sealed class ExpansionModuleHost : IAsyncDisposable, IDisposable
                 if (!loadedAny && loadContext != null)
                     loadContext.Unload();
             }
+        }
+    }
+
+    private string CreateShadowCopy(string assemblyPath)
+    {
+        string shadowRoot = Path.Combine(_options.ModuleDataRootDirectory, ".shadow");
+        Directory.CreateDirectory(shadowRoot);
+        TryPruneShadowCopies(shadowRoot);
+
+        string fileName = Path.GetFileNameWithoutExtension(assemblyPath);
+        string extension = Path.GetExtension(assemblyPath);
+        string stamp = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff", System.Globalization.CultureInfo.InvariantCulture);
+        string shadowPath = Path.Combine(shadowRoot, $"{fileName}.{stamp}.{Guid.NewGuid():N}{extension}");
+        File.Copy(assemblyPath, shadowPath, overwrite: false);
+        return shadowPath;
+    }
+
+    private static void TryPruneShadowCopies(string shadowRoot)
+    {
+        try
+        {
+            var directory = new DirectoryInfo(shadowRoot);
+            FileInfo[] files = directory.GetFiles("*.dll")
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .ToArray();
+
+            foreach (FileInfo file in files.Skip(64))
+            {
+                try { file.Delete(); } catch { }
+            }
+        }
+        catch
+        {
+            // Shadow copies are disposable cache files; failing to prune is harmless.
         }
     }
 

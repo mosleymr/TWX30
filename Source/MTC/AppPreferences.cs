@@ -12,10 +12,19 @@ namespace MTC;
 public class AppPreferences
 {
     public const int MaxRecentFiles = 10;
-    public const int CurrentCommandDeckLayoutVersion = 4;
+    public const int CurrentCommandDeckLayoutVersion = 6;
+    public const int CurrentMainWindowGeometryVersion = 1;
     public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
+    public const string UpdateLaneStable = "stable";
+    public const string UpdateLaneBeta = "beta";
+    public const string UpdateLaneDev = "dev";
+    public const string UpdateCadenceManual = "manual";
+    public const string UpdateCadenceStartup = "startup";
+    public const string UpdateCadenceDaily = "daily";
+    public const string UpdateCadenceWeekly = "weekly";
+    public const string DefaultUpdateManifestUrl = "https://sourceforge.net/projects/twx30/files/mtc-updates.json/download";
 
     public sealed class MacroBinding
     {
@@ -85,15 +94,22 @@ public class AppPreferences
     public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
     public bool PythonScriptsEnabled { get; set; } = true;
-    public string PythonInterpreterPath { get; set; } = "python3";
+    public string PythonInterpreterPath { get; set; } = "auto";
     public bool PythonExposeJsonRpcToken { get; set; }
     public bool VmMetricsEnabled { get; set; }
+    public bool PerformanceMonitoringEnabled { get; set; }
+    public bool UpdateChecksEnabled { get; set; } = true;
+    public string UpdateLane { get; set; } = UpdateLaneBeta;
+    public string UpdateCadence { get; set; } = UpdateCadenceDaily;
+    public string UpdateManifestUrl { get; set; } = DefaultUpdateManifestUrl;
+    public DateTimeOffset? UpdateLastCheckUtc { get; set; }
     public int PreparedScriptCacheLimitKb { get; set; } = DefaultPreparedScriptCacheLimitKb;
     public int MombotHotkeyPrewarmLimitKb { get; set; } = DefaultMombotHotkeyPrewarmLimitKb;
     public string PortHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.Default;
     public string PlanetHaggleMode { get; set; } = TWXProxy.Core.NativeHaggleModes.DefaultPlanet;
     public bool CommandDeckSkinEnabled { get; set; }
     public int CommandDeckLayoutVersion { get; set; }
+    public int MainWindowGeometryVersion { get; set; }
     public string LastNativeMombotBotName { get; set; } = string.Empty;
     public bool HasMainWindowPosition { get; private set; }
     public int MainWindowX { get; private set; }
@@ -202,12 +218,22 @@ public class AppPreferences
                 new XElement("PythonInterpreterPath", NormalizePythonInterpreterPath(PythonInterpreterPath)),
                 new XElement("PythonExposeJsonRpcToken", PythonExposeJsonRpcToken),
                 new XElement("VmMetricsEnabled", VmMetricsEnabled),
+                new XElement("PerformanceMonitoringEnabled", PerformanceMonitoringEnabled),
+                new XElement("Updates",
+                    new XElement("Enabled", UpdateChecksEnabled),
+                    new XElement("Lane", NormalizeUpdateLane(UpdateLane)),
+                    new XElement("Cadence", NormalizeUpdateCadence(UpdateCadence)),
+                    new XElement("ManifestUrl", NormalizeUpdateManifestUrl(UpdateManifestUrl)),
+                    UpdateLastCheckUtc.HasValue
+                        ? new XElement("LastCheckUtc", UpdateLastCheckUtc.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))
+                        : null),
                 new XElement("PreparedScriptCacheLimitKb", PreparedScriptCacheLimitKb),
                 new XElement("MombotHotkeyPrewarmLimitKb", MombotHotkeyPrewarmLimitKb),
                 new XElement("PortHaggleMode", PortHaggleMode),
                 new XElement("PlanetHaggleMode", PlanetHaggleMode),
                 new XElement("CommandDeckSkinEnabled", CommandDeckSkinEnabled),
                 new XElement("CommandDeckLayoutVersion", CommandDeckLayoutVersion),
+                new XElement("MainWindowGeometryVersion", MainWindowGeometryVersion),
                 new XElement("LastNativeMombotBotName", LastNativeMombotBotName),
                 HasMainWindowPosition || HasMainWindowSize
                     ? new XElement("MainWindowPosition",
@@ -240,12 +266,6 @@ public class AppPreferences
                             .Select(pair => new XElement("Model",
                                 new XAttribute("Provider", NormalizeGameAgentProvider(pair.Key)),
                                 pair.Value.Trim())))),
-                new XElement("JsonRpc",
-                    new XElement("Enabled", JsonRpcEnabled),
-                    new XElement("BindAddress", NormalizeJsonRpcBindAddress(JsonRpcBindAddress)),
-                    new XElement("Port", NormalizeJsonRpcPort(JsonRpcPort)),
-                    new XElement("AuthToken", NormalizeJsonRpcAuthToken(JsonRpcAuthToken)),
-                    new XElement("ApprovalLevel", MtcRpcApprovalLevels.Normalize(JsonRpcApprovalLevel))),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
                 new XElement("Macros",
                     MacroBindings
@@ -357,6 +377,18 @@ public class AppPreferences
                 prefs.PythonExposeJsonRpcToken = pythonExposeJsonRpcToken;
             if (bool.TryParse((string?)root.Element("VmMetricsEnabled"), out bool vmMetricsEnabled))
                 prefs.VmMetricsEnabled = vmMetricsEnabled;
+            if (bool.TryParse((string?)root.Element("PerformanceMonitoringEnabled"), out bool performanceMonitoringEnabled))
+                prefs.PerformanceMonitoringEnabled = performanceMonitoringEnabled;
+            XElement? updates = root.Element("Updates");
+            if (updates != null)
+            {
+                if (bool.TryParse((string?)updates.Element("Enabled"), out bool updatesEnabled))
+                    prefs.UpdateChecksEnabled = updatesEnabled;
+                prefs.UpdateLane = NormalizeUpdateLane((string?)updates.Element("Lane"));
+                prefs.UpdateCadence = NormalizeUpdateCadence((string?)updates.Element("Cadence"));
+                prefs.UpdateManifestUrl = NormalizeUpdateManifestUrl((string?)updates.Element("ManifestUrl"));
+                prefs.UpdateLastCheckUtc = ParseUpdateLastCheckUtc((string?)updates.Element("LastCheckUtc"));
+            }
             if (int.TryParse((string?)root.Element("PreparedScriptCacheLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int preparedCacheLimitKb))
                 prefs.PreparedScriptCacheLimitKb = NormalizeMemoryLimitKb(preparedCacheLimitKb, DefaultPreparedScriptCacheLimitKb);
             if (int.TryParse((string?)root.Element("MombotHotkeyPrewarmLimitKb"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int hotkeyPrewarmLimitKb))
@@ -365,6 +397,8 @@ public class AppPreferences
                 prefs.CommandDeckSkinEnabled = commandDeckEnabled;
             if (int.TryParse((string?)root.Element("CommandDeckLayoutVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int commandDeckLayoutVersion))
                 prefs.CommandDeckLayoutVersion = commandDeckLayoutVersion;
+            if (int.TryParse((string?)root.Element("MainWindowGeometryVersion"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int mainWindowGeometryVersion))
+                prefs.MainWindowGeometryVersion = mainWindowGeometryVersion;
             prefs.LastNativeMombotBotName = ((string?)root.Element("LastNativeMombotBotName") ?? string.Empty).Trim();
             XElement? mainWindowPosition = root.Element("MainWindowPosition");
             if (mainWindowPosition != null)
@@ -404,19 +438,6 @@ public class AppPreferences
                         prefs.GameAgentProviderModels[provider] = value;
                 }
             }
-
-            XElement? jsonRpc = root.Element("JsonRpc");
-            if (jsonRpc != null)
-            {
-                if (bool.TryParse((string?)jsonRpc.Element("Enabled"), out bool jsonRpcEnabled))
-                    prefs.JsonRpcEnabled = jsonRpcEnabled;
-                prefs.JsonRpcBindAddress = NormalizeJsonRpcBindAddress((string?)jsonRpc.Element("BindAddress"));
-                if (int.TryParse((string?)jsonRpc.Element("Port"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int jsonRpcPort))
-                    prefs.JsonRpcPort = NormalizeJsonRpcPort(jsonRpcPort);
-                prefs.JsonRpcAuthToken = NormalizeJsonRpcAuthToken((string?)jsonRpc.Element("AuthToken"));
-                prefs.JsonRpcApprovalLevel = MtcRpcApprovalLevels.Normalize((string?)jsonRpc.Element("ApprovalLevel"));
-            }
-            prefs.EnsureJsonRpcAuthToken();
 
             string? portHaggleMode = (string?)root.Element("PortHaggleMode");
             string? planetHaggleMode = (string?)root.Element("PlanetHaggleMode");
@@ -677,7 +698,58 @@ public class AppPreferences
     public static string NormalizePythonInterpreterPath(string? value)
     {
         string normalized = (value ?? string.Empty).Trim();
-        return string.IsNullOrWhiteSpace(normalized) ? "python3" : normalized;
+        return string.IsNullOrWhiteSpace(normalized) ? "auto" : normalized;
+    }
+
+    public static string NormalizeUpdateLane(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            UpdateLaneStable => UpdateLaneStable,
+            UpdateLaneBeta => UpdateLaneBeta,
+            UpdateLaneDev => UpdateLaneDev,
+            _ => UpdateLaneBeta,
+        };
+    }
+
+    public static string NormalizeUpdateCadence(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            UpdateCadenceManual => UpdateCadenceManual,
+            UpdateCadenceStartup => UpdateCadenceStartup,
+            UpdateCadenceDaily => UpdateCadenceDaily,
+            UpdateCadenceWeekly => UpdateCadenceWeekly,
+            _ => UpdateCadenceDaily,
+        };
+    }
+
+    public static string NormalizeUpdateManifestUrl(string? value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return DefaultUpdateManifestUrl;
+
+        return normalized.Replace(
+            "sourceforge.net/projects/TWX30/",
+            "sourceforge.net/projects/twx30/",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static DateTimeOffset? ParseUpdateLastCheckUtc(string? value)
+    {
+        if (DateTimeOffset.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out DateTimeOffset parsed))
+        {
+            return parsed.ToUniversalTime();
+        }
+
+        return null;
     }
 
     public void EnsureJsonRpcAuthToken()

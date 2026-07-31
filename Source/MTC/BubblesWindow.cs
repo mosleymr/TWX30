@@ -545,7 +545,7 @@ public class BubblesWindow : Window
             state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 2, state, FinderSortMode.Sectors);
             state.SortDepthButton = null;
             state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
-            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
+            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Terra", 4, state, FinderSortMode.DistToSol);
         }
         else
         {
@@ -553,7 +553,7 @@ public class BubblesWindow : Window
             state.SortSectorsButton = AddSortHeaderCell(grid, "Sectors", 1, state, FinderSortMode.Sectors);
             state.SortDepthButton = AddSortHeaderCell(grid, "Depth", 2, state, FinderSortMode.Depth);
             state.SortDistToSdButton = AddSortHeaderCell(grid, "Dist to SD", 3, state, FinderSortMode.DistToSd);
-            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Sol", 4, state, FinderSortMode.DistToSol);
+            state.SortDistToSolButton = AddSortHeaderCell(grid, "Dist to Terra", 4, state, FinderSortMode.DistToSol);
         }
         AddHeaderCell(grid, "Sector List", 5);
         AddHeaderCell(grid, string.Empty, 6);
@@ -639,7 +639,7 @@ public class BubblesWindow : Window
             state.SortDistToSdButton.Content = BuildSortLabel("Dist to SD", state, FinderSortMode.DistToSd);
 
         if (state.SortDistToSolButton != null)
-            state.SortDistToSolButton.Content = BuildSortLabel("Dist to Sol", state, FinderSortMode.DistToSol);
+            state.SortDistToSolButton.Content = BuildSortLabel("Dist to Terra", state, FinderSortMode.DistToSol);
     }
 
     private static Control BuildSortLabel(string label, FinderTabState state, FinderSortMode mode)
@@ -647,7 +647,7 @@ public class BubblesWindow : Window
         string displayLabel = mode switch
         {
             FinderSortMode.DistToSd => "Dist to\nSD",
-            FinderSortMode.DistToSol => "Dist to\nSol",
+            FinderSortMode.DistToSol => "Dist to\nTerra",
             _ => label,
         };
 

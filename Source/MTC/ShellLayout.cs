@@ -7,10 +7,12 @@ using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using System.Threading;
 using SkiaSharp;
 using Core = TWXProxy.Core;
 
@@ -18,6 +20,13 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private const int DeckConsoleDefaultColumns = 80;
+    private const int DeckConsoleDefaultRows = 24;
+    private const double DeckConsolePanelHorizontalChrome = 66;
+    private const double DeckConsolePanelVerticalChrome = 62;
+    private const double DeckWorkspaceBaseWidth = 1280;
+    private const double DeckWorkspaceBaseHeight = 820;
+
     private TerminalControl CreateTerminalControl()
     {
         var control = new TerminalControl(_buffer);
@@ -31,6 +40,35 @@ public partial class MainWindow
         return control;
     }
 
+    private TerminalControl CreateTerminalControl(MtcTabPrototype tab)
+    {
+        var control = new TerminalControl(tab.Buffer)
+        {
+            Diagnostics = name => RecordMtcPerf(tab, name),
+            IsConnected = tab.State.Connected || tab.Telnet.IsConnected || tab.GameInstance?.IsRunning == true,
+        };
+        control.SendInput = bytes =>
+        {
+            if (tab.Id != _activeMtcTabId)
+                ActivateMtcTab(tab.Id);
+            tab.TerminalInputHandler?.Invoke(bytes);
+        };
+        control.SetFontSize(_terminalFontSize);
+        if (!string.IsNullOrWhiteSpace(_terminalFontFamilyName))
+            control.SetFont(_terminalFontFamilyName);
+        control.ViewportSizeChanged += (_, columns, rows) =>
+            ExecuteInOptionalMtcTabSession(tab, () => RecordTerminalResizeForRecording(columns, rows));
+        control.AddHandler(
+            InputElement.PointerPressedEvent,
+            (_, _) =>
+            {
+                if (tab.Id != _activeMtcTabId)
+                    ActivateMtcTab(tab.Id);
+            },
+            RoutingStrategies.Tunnel);
+        return control;
+    }
+
     private MtcTabPrototype? ResolveMtcTabForTerminalBuffer(TerminalBuffer buffer)
     {
         ArgumentNullException.ThrowIfNull(buffer);
@@ -41,7 +79,8 @@ public partial class MainWindow
     private void NotifyTerminalWindowMove()
     {
         _termCtrl.NotifyHostWindowPositionChanged();
-        _deckTermCtrl.NotifyHostWindowPositionChanged();
+        foreach (TerminalControl terminal in _deckTerminalControls.Values)
+            terminal.NotifyHostWindowPositionChanged();
     }
 
     private void RecreateClassicShellControls()
@@ -52,12 +91,15 @@ public partial class MainWindow
         _commFedTabButton = null;
         _commSubspaceTabButton = null;
         _commPrivateTabButton = null;
+        _commEventsTabButton = null;
         _commFedTextBlock = null;
         _commSubspaceTextBlock = null;
         _commPrivateTextBlock = null;
+        _commEventsTextBlock = null;
         _commFedScrollViewer = null;
         _commSubspaceScrollViewer = null;
         _commPrivateScrollViewer = null;
+        _commEventsScrollViewer = null;
         _commComposeTextBox = null;
         _commPrivateTargetTextBox = null;
         _commPrivateTargetLabel = null;
@@ -113,6 +155,8 @@ public partial class MainWindow
     {
         _deckTermCtrl = CreateTerminalControl();
         _deckTermCtrl.ViewportSizeChanged += OnDeckTerminalViewportSizeChanged;
+        _deckTerminalControls.Clear();
+        _deckOnlinePlayersHost = new StackPanel { Spacing = 3 };
         _deckMacroRecordButton = null;
         _deckMacroStopButton = null;
         _deckMacroPlayButton = null;
@@ -120,12 +164,15 @@ public partial class MainWindow
         _deckCommFedTabButton = null;
         _deckCommSubspaceTabButton = null;
         _deckCommPrivateTabButton = null;
+        _deckCommEventsTabButton = null;
         _deckCommFedTextBlock = null;
         _deckCommSubspaceTextBlock = null;
         _deckCommPrivateTextBlock = null;
+        _deckCommEventsTextBlock = null;
         _deckCommFedScrollViewer = null;
         _deckCommSubspaceScrollViewer = null;
         _deckCommPrivateScrollViewer = null;
+        _deckCommEventsScrollViewer = null;
         _deckCommComposeTextBox = null;
         _deckCommPrivateTargetTextBox = null;
         _deckCommPrivateTargetLabel = null;
@@ -193,6 +240,10 @@ public partial class MainWindow
         _menuBarHost.Child = BuildMenuBarHost();
         DockPanel.SetDock(_menuBarHost, Dock.Top);
         dock.Children.Add(_menuBarHost);
+
+        _updateBanner = BuildUpdateBanner();
+        DockPanel.SetDock(_updateBanner, Dock.Top);
+        dock.Children.Add(_updateBanner);
 
         // ── Status bar ────────────────────────────────────────────────────
         _statusText.Text              = "[ disconnected ]";
@@ -306,14 +357,22 @@ public partial class MainWindow
 
     private Control BuildCommandDeckShell()
     {
+        foreach (MtcTabPrototype tab in _mtcTabs)
+            Interlocked.Exchange(ref tab.DeckConsoleVisible, 0);
         RecreateDeckShellControls();
         _deckPanels.Clear();
         _deckPanelsInitialized = false;
         _suppressDeckPanelStateSync = false;
+        _deckWorkspaceMinimumWidth = DeckWorkspaceBaseWidth;
+        _deckWorkspaceMinimumHeight = DeckWorkspaceBaseHeight;
         _tacticalMap = new TacticalMapControl(
-            () => _state.Sector,
-            () => _sessionDb,
-            () => _state)
+            () => ActiveMtcTab?.State.Sector ?? 0,
+            () =>
+            {
+                MtcTabPrototype? focusedTab = ActiveMtcTab;
+                return focusedTab?.RuntimeContext.ActiveDatabase ?? focusedTab?.SessionDb;
+            },
+            () => ActiveMtcTab?.State)
         {
             MinHeight = UiSize(220),
         };
@@ -343,20 +402,25 @@ public partial class MainWindow
         });
         surfaceRoot.Children.Add(_deckSurface);
 
-        CreateDeckPanel("map", "TACTICAL OVERLAY", "LIVE", BuildDeckMapBody(), canClose: true);
-        CreateDeckPanel("console", "GAMEPLAY CONSOLE", "ANSI", BuildDeckTerminalBody(), canClose: false);
-        CreateDeckPanel("ship", "SHIP BAY", "SYSTEMS", BuildDeckShipPanel(), canClose: true);
-        CreateDeckPanel("intel", "COMMAND MATRIX", "INTEL", BuildDeckCenterPanels(), canClose: true);
-        CreateDeckPanel("logo", "AUXILIARY PANEL", "STANDBY", BuildLogoPanel(), canClose: true);
+        foreach (MtcTabPrototype tab in _mtcTabs.Where(candidate => candidate.IsLiveSession))
+            CreateDeckConsolePanel(tab);
+        CreateDeckPanel("trader", "TRADER", "FOCUSED GAME", BuildDeckTraderPanel(), canClose: true);
+        CreateDeckPanel("online", "ONLINE", "FOCUSED GAME", BuildDeckOnlinePanel(), canClose: true);
+        CreateDeckPanel("ship", "SHIP INFO", "FOCUSED GAME", BuildDeckShipPanel(), canClose: true);
+        CreateDeckPanel("map", "TACTICAL OVERLAY", "FOCUSED GAME", BuildDeckMapBody(), canClose: true);
         if (ShouldShowNotesPanel())
             CreateDeckPanel("notes", "NOTES", "GAME", BuildNotesPanel(), canClose: false);
+        UpdateCommandDeckActiveConsole();
+        ExpandDeckWorkspaceMinimumToFitPanels();
         Dispatcher.UIThread.Post(EnsureDeckPanelsInitialized, DispatcherPriority.Loaded);
 
         Grid.SetRow(surfaceRoot, 1);
         rootGrid.Children.Add(surfaceRoot);
 
-        return new Border
+        _deckWorkspace = new Border
         {
+            Width = _deckWorkspaceMinimumWidth,
+            Height = _deckWorkspaceMinimumHeight,
             Background = HudShell,
             BorderBrush = HudEdge,
             BorderThickness = new Thickness(1.5),
@@ -364,9 +428,107 @@ public partial class MainWindow
             Padding = UiThickness(16),
             Child = rootGrid,
         };
+        _deckWorkspaceScaler = new Viewbox
+        {
+            Stretch = Stretch.Uniform,
+            StretchDirection = StretchDirection.DownOnly,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Child = _deckWorkspace,
+        };
+        _deckWorkspaceHost = new Grid
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Children =
+            {
+                _deckWorkspaceScaler,
+            },
+        };
+        _deckWorkspaceHost.SizeChanged += (_, _) => UpdateDeckWorkspaceSize();
+        Dispatcher.UIThread.Post(UpdateDeckWorkspaceSize, DispatcherPriority.Loaded);
+        return _deckWorkspaceHost;
     }
 
-    private void CreateDeckPanel(string panelId, string title, string tag, Control body, bool canClose)
+    private void CreateDeckConsolePanel(MtcTabPrototype tab)
+    {
+        RenderPendingDisplaySnapshotOnActivation(tab);
+        TerminalControl terminal = tab.Id == _activeMtcTabId
+            ? _deckTermCtrl
+            : CreateTerminalControl(tab);
+        terminal.SetBuffer(tab.Buffer);
+        terminal.SetMinimumGridSize(DeckConsoleDefaultColumns, DeckConsoleDefaultRows);
+        terminal.SendInput = bytes =>
+        {
+            if (tab.Id != _activeMtcTabId)
+                ActivateMtcTab(tab.Id);
+            tab.TerminalInputHandler?.Invoke(bytes);
+        };
+        terminal.IsConnected = tab.State.Connected || tab.Telnet.IsConnected || tab.GameInstance?.IsRunning == true;
+        _deckTerminalControls[tab.Id] = terminal;
+        Interlocked.Exchange(ref tab.DeckConsoleVisible, 1);
+        if (tab.Id == _activeMtcTabId)
+            _deckTermCtrl = terminal;
+
+        string panelId = GetDeckConsolePanelId(tab);
+        CreateDeckPanel(
+            panelId,
+            tab.Title,
+            $"GAME {tab.Id}",
+            BuildDeckGameConsoleBody(terminal),
+            canClose: false,
+            activated: () => ActivateMtcTab(tab.Id));
+        if (_deckPanels.TryGetValue(panelId, out FloatingDeckPanel? panel))
+        {
+            (double panelWidth, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tab.Id);
+            panel.SetMinimumPanelSize(panelWidth, bodyHeight);
+        }
+    }
+
+    private (double Width, double BodyHeight) GetDeckConsoleDefaultPanelSize(int tabId)
+    {
+        if (!_deckTerminalControls.TryGetValue(tabId, out TerminalControl? terminal))
+            return (760, 430);
+
+        return (
+            Math.Ceiling(terminal.MinimumPixelWidth + DeckConsolePanelHorizontalChrome),
+            Math.Ceiling(terminal.MinimumPixelHeight + DeckConsolePanelVerticalChrome));
+    }
+
+    private void ExpandDeckWorkspaceMinimumToFitPanels()
+    {
+        double right = 0;
+        double bottom = 0;
+        foreach (DeckPanelState state in _deckPanelStates.Values.Where(state => !state.Closed))
+        {
+            right = Math.Max(right, state.Left + state.Width + DeckPanelGridSize);
+            bottom = Math.Max(bottom, state.Top + state.BodyHeight + 56 + DeckPanelGridSize);
+        }
+
+        _deckWorkspaceMinimumWidth = Math.Max(DeckWorkspaceBaseWidth, right + 32);
+        _deckWorkspaceMinimumHeight = Math.Max(DeckWorkspaceBaseHeight, bottom + 190);
+    }
+
+    private void UpdateDeckWorkspaceSize()
+    {
+        if (_deckWorkspaceHost is null || _deckWorkspace is null)
+            return;
+
+        Rect bounds = _deckWorkspaceHost.Bounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+            return;
+
+        _deckWorkspace.Width = Math.Max(_deckWorkspaceMinimumWidth, bounds.Width);
+        _deckWorkspace.Height = Math.Max(_deckWorkspaceMinimumHeight, bounds.Height);
+    }
+
+    private void CreateDeckPanel(
+        string panelId,
+        string title,
+        string tag,
+        Control body,
+        bool canClose,
+        Action? activated = null)
     {
         if (_deckSurface == null)
             return;
@@ -390,13 +552,45 @@ public partial class MainWindow
             HudMuted,
             HudTitleFont);
 
-        panel.Activated += BringDeckPanelToFront;
+        panel.Activated += deckPanel =>
+        {
+            BringDeckPanelToFront(deckPanel);
+            activated?.Invoke();
+        };
         panel.StateChanged += OnDeckPanelStateChanged;
         panel.DragSnapHandler = GetSnappedDeckPanelPosition;
         panel.IsVisible = false;
 
         _deckSurface.Children.Add(panel);
         _deckPanels[panelId] = panel;
+    }
+
+    private static string GetDeckConsolePanelId(MtcTabPrototype tab) => $"console:{tab.Id}";
+
+    private bool IsMtcTabDeckConsoleVisible(MtcTabPrototype tab)
+        => _useCommandDeckSkin &&
+           _deckTerminalControls.ContainsKey(tab.Id) &&
+           _deckPanels.TryGetValue(GetDeckConsolePanelId(tab), out FloatingDeckPanel? panel) &&
+           panel.IsVisible;
+
+    private bool ShouldRenderMtcTabTerminal(MtcTabPrototype tab)
+        => tab.Id == Volatile.Read(ref _activeMtcTabId) ||
+           Volatile.Read(ref tab.DeckConsoleVisible) != 0;
+
+    private void UpdateCommandDeckActiveConsole()
+    {
+        foreach (MtcTabPrototype tab in _mtcTabs)
+        {
+            bool active = tab.Id == _activeMtcTabId;
+            if (_deckPanels.TryGetValue(GetDeckConsolePanelId(tab), out FloatingDeckPanel? panel))
+            {
+                panel.SetTitle(active ? $"{tab.Title}  •  ACTIVE" : tab.Title);
+                panel.SetActive(active);
+            }
+        }
+
+        if (_deckTerminalControls.TryGetValue(_activeMtcTabId, out TerminalControl? terminal))
+            _deckTermCtrl = terminal;
     }
 
     private DeckPanelState GetOrCreateDeckPanelState(string panelId)
@@ -424,45 +618,71 @@ public partial class MainWindow
 
     private DeckPanelState CreateDefaultDeckPanelState(string panelId)
     {
-        double surfaceWidth = Math.Max(860, (Bounds.Width > 100 ? Bounds.Width : Width) - 64);
-        double surfaceHeight = Math.Max(460, (Bounds.Height > 100 ? Bounds.Height : Height) - 170);
+        double surfaceWidth = DeckWorkspaceBaseWidth - 64;
+        double surfaceHeight = DeckWorkspaceBaseHeight - 170;
         double horizontalMargin = 18;
         double panelGap = 18;
         double availableWidth = Math.Max(680, surfaceWidth - (horizontalMargin * 2) - panelGap);
         double fullBodyHeight = Math.Max(300, surfaceHeight - 94);
         double mapWidth = Math.Clamp(availableWidth * 0.38, 300, 560);
-        double consoleLeft = horizontalMargin + mapWidth + panelGap;
-        double consoleWidth = Math.Max(420, surfaceWidth - consoleLeft - horizontalMargin);
+
+        if (panelId.StartsWith("console:", StringComparison.OrdinalIgnoreCase))
+        {
+            int tabId = int.TryParse(panelId.AsSpan("console:".Length), out int parsedId) ? parsedId : 1;
+            int slot = Math.Max(0, _mtcTabs.FindIndex(tab => tab.Id == tabId));
+            (double width, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tabId);
+            double sharedPanelWidth = Math.Clamp(surfaceWidth * 0.24, 280, 340);
+            double consoleAreaWidth = Math.Max(width, surfaceWidth - sharedPanelWidth - (horizontalMargin * 3));
+            int columns = Math.Max(1, (int)Math.Floor((consoleAreaWidth + panelGap) / (width + panelGap)));
+            return new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = horizontalMargin + (slot % columns) * (width + panelGap),
+                Top = 18 + (slot / columns) * (bodyHeight + 56 + panelGap),
+                Width = width,
+                BodyHeight = bodyHeight,
+                ZIndex = 110 + slot,
+            };
+        }
 
         return panelId switch
         {
             "map" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = horizontalMargin,
-                Top = 18,
+                Left = 36,
+                Top = 72,
                 Width = mapWidth,
-                BodyHeight = fullBodyHeight,
-                ZIndex = 110,
+                BodyHeight = Math.Min(400, fullBodyHeight),
+                ZIndex = 150,
+                Closed = true,
             },
-            "console" => new DeckPanelState
+            "trader" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = consoleLeft,
+                Left = Math.Max(20, surfaceWidth - 330),
                 Top = 18,
-                Width = consoleWidth,
-                BodyHeight = fullBodyHeight,
-                ZIndex = 120,
+                Width = 310,
+                BodyHeight = 180,
+                ZIndex = 140,
+            },
+            "online" => new DeckPanelState
+            {
+                PanelId = panelId,
+                Left = Math.Max(20, surfaceWidth - 330),
+                Top = 272,
+                Width = 310,
+                BodyHeight = 150,
+                ZIndex = 141,
             },
             "ship" => new DeckPanelState
             {
                 PanelId = panelId,
-                Left = 24,
-                Top = 120,
-                Width = 340,
-                BodyHeight = Math.Min(290, Math.Max(230, surfaceHeight * 0.42)),
-                ZIndex = 130,
-                Closed = true,
+                Left = Math.Max(20, surfaceWidth - 350),
+                Top = 496,
+                Width = 330,
+                BodyHeight = Math.Min(360, Math.Max(260, surfaceHeight * 0.42)),
+                ZIndex = 142,
             },
             "intel" => new DeckPanelState
             {
@@ -553,6 +773,63 @@ public partial class MainWindow
         _appPrefs.Save();
         if (_useCommandDeckSkin)
             ApplySelectedSkin();
+    }
+
+    private void TileDeckConsoles()
+    {
+        EnsureDeckPanelsInitialized();
+        if (_deckSurface is null)
+            return;
+
+        MtcTabPrototype[] tabs = _mtcTabs.Where(tab => tab.IsLiveSession).ToArray();
+        if (tabs.Length == 0)
+            return;
+
+        double margin = DeckPanelGridSize;
+        double sharedWidth = Math.Clamp(_deckSurface.Bounds.Width * 0.24, 280, 340);
+        double availableWidth = Math.Max(420, _deckSurface.Bounds.Width - sharedWidth - (margin * 3));
+        double defaultPanelWidth = tabs.Max(tab => GetDeckConsoleDefaultPanelSize(tab.Id).Width);
+        double defaultBodyHeight = tabs.Max(tab => GetDeckConsoleDefaultPanelSize(tab.Id).BodyHeight);
+        double defaultPanelHeight = defaultBodyHeight + 56;
+        int columns = Math.Max(1, (int)Math.Floor((availableWidth + margin) / (defaultPanelWidth + margin)));
+        columns = Math.Min(columns, tabs.Length);
+        int rows = (int)Math.Ceiling(tabs.Length / (double)columns);
+
+        _suppressDeckPanelStateSync = true;
+        try
+        {
+            for (int index = 0; index < tabs.Length; index++)
+            {
+                string panelId = GetDeckConsolePanelId(tabs[index]);
+                if (!_deckPanels.TryGetValue(panelId, out FloatingDeckPanel? panel))
+                    continue;
+
+                (double panelWidth, double bodyHeight) = GetDeckConsoleDefaultPanelSize(tabs[index].Id);
+                double left = margin + (index % columns) * (defaultPanelWidth + margin);
+                double top = margin + (index / columns) * (defaultPanelHeight + margin);
+                panel.SetPanelSize(panelWidth, bodyHeight);
+                panel.MoveTo(left, top, clampToHost: false);
+                panel.SetMinimized(false);
+            }
+        }
+        finally
+        {
+            _suppressDeckPanelStateSync = false;
+        }
+
+        foreach (MtcTabPrototype tab in tabs)
+        {
+            if (_deckPanels.TryGetValue(GetDeckConsolePanelId(tab), out FloatingDeckPanel? panel))
+                OnDeckPanelStateChanged(panel);
+        }
+        _deckWorkspaceMinimumHeight = Math.Max(
+            DeckWorkspaceBaseHeight,
+            190 + (margin * 2) + (rows * defaultPanelHeight) + ((rows - 1) * margin));
+        _deckWorkspaceMinimumWidth = Math.Max(
+            DeckWorkspaceBaseWidth,
+            defaultPanelWidth + sharedWidth + (margin * 4) + 32);
+        UpdateDeckWorkspaceSize();
+        _appPrefs.Save();
     }
 
     private (double Left, double Top) GetSnappedDeckPanelPosition(FloatingDeckPanel panel, double proposedLeft, double proposedTop)
@@ -699,7 +976,7 @@ public partial class MainWindow
             {
                 new TextBlock
                 {
-                    Text = "Mayhem Tradewars Console",
+                    Text = "MTC Multi-Game Command Deck",
                     FontFamily = HudTitleFont,
                     FontSize = 28,
                     FontWeight = FontWeight.Bold,
@@ -707,7 +984,7 @@ public partial class MainWindow
                 },
                 new TextBlock
                 {
-                    Text = "Drag, minimize, or close the internal windows. Gameplay console stays anchored to the deck.",
+                    Text = "Every open game remains live. Select a console to bind the shared Trader, Online, Ship Info, and map panels.",
                     Foreground = HudMuted,
                     FontSize = 13,
                 },
@@ -734,11 +1011,18 @@ public partial class MainWindow
             ItemSpacing = 8,
             Margin = new Thickness(0, 12, 0, 0),
         };
+        foreach (MtcTabPrototype tab in _mtcTabs.Where(candidate => candidate.IsLiveSession))
+        {
+            MtcTabPrototype consoleTab = tab;
+            launchBar.Children.Add(BuildDeckLauncherButton(
+                consoleTab.Title,
+                () => ShowDeckPanel(GetDeckConsolePanelId(consoleTab))));
+        }
+        launchBar.Children.Add(BuildDeckLauncherButton("Trader", () => ShowDeckPanel("trader")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Online", () => ShowDeckPanel("online")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Ship Info", () => ShowDeckPanel("ship")));
         launchBar.Children.Add(BuildDeckLauncherButton("Map", () => ShowDeckPanel("map")));
-        launchBar.Children.Add(BuildDeckLauncherButton("Console", () => ShowDeckPanel("console")));
-        launchBar.Children.Add(BuildDeckLauncherButton("Ship", () => ShowDeckPanel("ship")));
-        launchBar.Children.Add(BuildDeckLauncherButton("Intel", () => ShowDeckPanel("intel")));
-        launchBar.Children.Add(BuildDeckLauncherButton("Logo", () => ShowDeckPanel("logo")));
+        launchBar.Children.Add(BuildDeckLauncherButton("Tile Consoles", TileDeckConsoles));
         launchBar.Children.Add(BuildDeckLauncherButton("Reset Layout", RestoreDeckLayout));
         Grid.SetRow(launchBar, 1);
         Grid.SetColumnSpan(launchBar, 2);
@@ -879,6 +1163,72 @@ public partial class MainWindow
         grid.Children.Add(mapBorder);
 
         return grid;
+    }
+
+    private Control BuildDeckGameConsoleBody(TerminalControl terminal)
+    {
+        var sizeText = new TextBlock
+        {
+            Text = $"{terminal.Columns}×{terminal.Rows}",
+            Foreground = HudMuted,
+            FontFamily = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace"),
+            FontSize = 10,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextAlignment = TextAlignment.Right,
+            Margin = new Thickness(0, 4, 2, 0),
+        };
+        terminal.ViewportSizeChanged += (_, columns, rows) =>
+            sizeText.Text = $"{columns}×{rows}";
+
+        var body = new Grid
+        {
+            RowDefinitions =
+            {
+                new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                new RowDefinition { Height = GridLength.Auto },
+            },
+        };
+        var terminalFrame = new Border
+        {
+            Background = Brushes.Black,
+            BorderBrush = HudInnerEdge,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(5),
+            Child = terminal,
+        };
+        Grid.SetRow(terminalFrame, 0);
+        Grid.SetRow(sizeText, 1);
+        body.Children.Add(terminalFrame);
+        body.Children.Add(sizeText);
+        return body;
+    }
+
+    private Control BuildDeckTraderPanel()
+    {
+        return new StackPanel
+        {
+            Spacing = 7,
+            Children =
+            {
+                BuildDeckMetricStretchRow("Trader", _deckValName),
+                BuildDeckMetricRow("Sector", _deckValSector),
+                BuildDeckMetricRow("Turns", _deckValTurns),
+                BuildDeckMetricRow("Experience", _deckValExper),
+                BuildDeckMetricRow("Alignment", _deckValAlignm),
+                BuildDeckMetricRow("Credits", _deckValCred),
+            },
+        };
+    }
+
+    private Control BuildDeckOnlinePanel()
+    {
+        return new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Content = _deckOnlinePlayersHost,
+        };
     }
 
     private Control BuildDeckTerminalBody()
@@ -1820,6 +2170,12 @@ public partial class MainWindow
         UpdateTerminalLiveSelector();
         _shellHost.Padding = new Thickness(10, 8, 10, 10);
         _shellHost.Child = null;
+        if (!_useCommandDeckSkin)
+        {
+            foreach (MtcTabPrototype tab in _mtcTabs)
+                Interlocked.Exchange(ref tab.DeckConsoleVisible, 0);
+            _deckTerminalControls.Clear();
+        }
         _shellHost.Child = _useCommandDeckSkin
             ? BuildCommandDeckShell()
             : BuildClassicShell();
@@ -1875,7 +2231,7 @@ public partial class MainWindow
             return;
 
         _useCommandDeckSkin = useCommandDeckSkin;
-        _appPrefs.CommandDeckSkinEnabled = useCommandDeckSkin;
+        _appPrefs.CommandDeckSkinEnabled = false;
         _appPrefs.Save();
         ApplySelectedSkinSafe();
     }
@@ -1896,26 +2252,39 @@ public partial class MainWindow
     {
         if (_termCtrl is not null)
             _termCtrl.SendInput = handler;
-        if (_deckTermCtrl is not null)
-            _deckTermCtrl.SendInput = handler;
+        if (_deckTerminalControls.TryGetValue(_activeMtcTabId, out TerminalControl? activeDeckTerminal))
+        {
+            activeDeckTerminal.SendInput = handler;
+            _deckTermCtrl = activeDeckTerminal;
+        }
         UpdateTemporaryMacroControls();
     }
 
     private void SetTerminalConnected(bool connected)
+        => SetTerminalConnected(ResolveCurrentMtcTabContext(), connected);
+
+    private void SetTerminalConnected(MtcTabPrototype? owner, bool connected)
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            PostToCurrentMtcTabSession(() => SetTerminalConnected(connected), DispatcherPriority.Background);
+            PostToMtcTabSession(owner, () => SetTerminalConnected(owner, connected), DispatcherPriority.Background);
             return;
         }
+
+        owner ??= ResolveCurrentMtcTabContext();
+        if (owner is not null &&
+            _deckTerminalControls.TryGetValue(owner.Id, out TerminalControl? ownerDeckTerminal))
+            ownerDeckTerminal.IsConnected = connected;
+        if (owner is not null && owner.Id != _activeMtcTabId)
+            return;
 
         if (!PrepareMtcTabVisualRefresh())
             return;
 
         if (_termCtrl is not null)
             _termCtrl.IsConnected = connected;
-        if (_deckTermCtrl is not null)
-            _deckTermCtrl.IsConnected = connected;
+        if (_deckTerminalControls.TryGetValue(_activeMtcTabId, out TerminalControl? activeDeckTerminal))
+            activeDeckTerminal.IsConnected = connected;
         if (!connected)
             ResetTemporaryMacroSession();
         else
@@ -1926,7 +2295,8 @@ public partial class MainWindow
     {
         _terminalFontFamilyName = familyName;
         _termCtrl.SetFont(familyName);
-        _deckTermCtrl.SetFont(familyName);
+        foreach (TerminalControl terminal in _deckTerminalControls.Values)
+            terminal.SetFont(familyName);
         FocusActiveTerminal();
     }
 
@@ -2153,7 +2523,11 @@ public partial class MainWindow
             return;
         }
 
-        (_useCommandDeckSkin ? _deckTermCtrl : _termCtrl).Focus();
+        if (_useCommandDeckSkin &&
+            _deckTerminalControls.TryGetValue(_activeMtcTabId, out TerminalControl? activeDeckTerminal))
+            activeDeckTerminal.Focus();
+        else
+            _termCtrl.Focus();
     }
 
     private void RefreshSkinMenuState()
@@ -2273,7 +2647,7 @@ public partial class MainWindow
         fileQuit.Click += (_, _) => Close();
 
         var filePrefs    = new MenuItem { Header = "_Preferences…" };
-        filePrefs.Click += (_, _) => _ = OnPreferencesAsync();
+        filePrefs.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnPreferencesAsync);
 
         var fileMacros = new MenuItem { Header = "_Macros…" };
         fileMacros.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnMacrosAsync);
@@ -2341,11 +2715,13 @@ public partial class MainWindow
         viewGameInfoItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewGameInfo);
         var viewAliensItem = new MenuItem { Header = "_Aliens..." };
         viewAliensItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewAliens);
+        var viewMajorSpaceLanesItem = new MenuItem { Header = "Show _MSL's..." };
+        viewMajorSpaceLanesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewMajorSpaceLanes);
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
         _viewCommandDeckSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: true);
-        _viewCommWindow.Click += (_, _) => ToggleCommWindow();
+        _viewCommWindow.Click += (_, _) => ExecuteInActiveMtcTabSession(ToggleCommWindow);
         _viewNotes.Click += (_, _) => ToggleNotesPanel();
         _viewShowHaggleDetails.Click += async (_, _) => await ToggleShowHaggleDetailsAsync();
         _viewBottomBar.Click += (_, _) => ToggleBottomBar();
@@ -2358,16 +2734,19 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewMajorSpaceLanesItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
-        var helpAbout    = new MenuItem { Header = "_About" };
+        var helpUpdates = new MenuItem { Header = "_Update MTC..." };
+        helpUpdates.Click += (_, _) => _ = OnCheckForMtcUpdatesAsync(force: true);
+
+        var helpAbout    = new MenuItem { Header = "_About MTC" };
         helpAbout.Click += (_, _) => _ = ShowAboutAsync();
 
         var helpMenu = new MenuItem
         {
-            Header = "_Help",
-            Items  = { helpAbout },
+            Header = "_About",
+            Items  = { helpUpdates, new Separator(), helpAbout },
         };
 
         var mapViewItem = new MenuItem { Header = "_View Map" };
@@ -2381,6 +2760,8 @@ public partial class MainWindow
 
         var toolsFindItem = new MenuItem { Header = "_Find..." };
         toolsFindItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFind);
+        var toolsQuickMacroItem = new MenuItem { Header = "_Quick Macro..." };
+        toolsQuickMacroItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OpenQuickMacroWindowAsync);
         var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
         toolsFindRouteItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFindRoute);
         var toolsQCannonCalculatorItem = new MenuItem { Header = "_QCannon Calculator..." };
@@ -2391,7 +2772,7 @@ public partial class MainWindow
         toolsConfigureStatusBarItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConfigureStatusBarAsync);
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewScriptDebugger);
-        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsQuickMacroItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 
         TrackSharedMenuOpenState(fileMenu);
@@ -2451,6 +2832,8 @@ public partial class MainWindow
         _statusCommFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusBotFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusBotFrame.VerticalAlignment = VerticalAlignment.Center;
+        _statusDockShopperFrame.Margin = new Thickness(0, 4, 0, 4);
+        _statusDockShopperFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusHaggleFrame.Margin = new Thickness(0, 4, 0, 4);
         _statusHaggleFrame.VerticalAlignment = VerticalAlignment.Center;
         _statusLivePausedFrame.Margin = new Thickness(0, 4, 0, 4);
@@ -2468,6 +2851,7 @@ public partial class MainWindow
             Children =
             {
                 recordButton,
+                _statusDockShopperFrame,
                 _statusMapFrame,
                 _statusBotFrame,
                 _statusHaggleFrame,
@@ -2531,6 +2915,27 @@ public partial class MainWindow
         };
         if (owner != null)
             owner.RouteWindow = win;
+        ShowMtcTabOwnedWindow(owner, win);
+    }
+
+    private void OnViewMajorSpaceLanes()
+    {
+        var owner = ActiveMtcTab;
+        if (owner?.MajorSpaceLanesWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var win = new MajorSpaceLanesWindow(
+            () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb));
+        win.Closed += (_, _) =>
+        {
+            if (owner != null && ReferenceEquals(owner.MajorSpaceLanesWindow, win))
+                owner.MajorSpaceLanesWindow = null;
+        };
+        if (owner != null)
+            owner.MajorSpaceLanesWindow = win;
         ShowMtcTabOwnedWindow(owner, win);
     }
 

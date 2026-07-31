@@ -80,10 +80,12 @@ internal class EmbeddedMtcConfig
     public bool LocalTwxProxy { get; set; } = true;
     public string TwxProxyDbPath { get; set; } = string.Empty;
     public bool EmbeddedProxy { get; set; } = true;
+    public string EditId { get; set; } = string.Empty;
     public bool ListenForConnections { get; set; }
     public int ScrollbackLines { get; set; } = TerminalBuffer.DefaultScrollbackLines;
     public EmbeddedMtcStatusBarConfig StatusBar { get; set; } = new();
     public EmbeddedMtcDebugConfig Debug { get; set; } = new();
+    public EmbeddedMtcJsonRpcConfig JsonRpc { get; set; } = new();
     [JsonIgnore]
     public MTC.mombot.mombotConfig mombot { get; set; } = new();
     [JsonPropertyName("mombot")]
@@ -116,11 +118,21 @@ internal class EmbeddedMtcDebugConfig
     public bool DebugLoggingEnabled { get; set; } = true;
     public bool VerboseDebugLogging { get; set; }
     public bool ScriptTraceDebugLogging { get; set; }
+    public bool VariablePersistenceDebugLogging { get; set; }
     public bool AutoRecorderDebugLogging { get; set; }
     public bool TriggerDebugLogging { get; set; }
     public bool DebugDatabaseChanges { get; set; }
     public bool DebugPortHaggleEnabled { get; set; }
     public bool DebugPlanetHaggleEnabled { get; set; }
+}
+
+internal class EmbeddedMtcJsonRpcConfig
+{
+    public bool Enabled { get; set; }
+    public string BindAddress { get; set; } = "127.0.0.1";
+    public int Port { get; set; } = 7623;
+    public string AuthToken { get; set; } = string.Empty;
+    public string ApprovalLevel { get; set; } = MtcRpcApprovalLevels.ApproveActions;
 }
 
 internal class EmbeddedMtcStatusBarConfig

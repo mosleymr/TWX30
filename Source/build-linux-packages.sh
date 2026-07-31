@@ -402,7 +402,7 @@ Priority: optional
 Architecture: ${DEB_ARCH}
 Maintainer: TWX30 <noreply@twx30.local>
 Installed-Size: ${installed_size}
-Homepage: https://sourceforge.net/projects/TWX30/
+Homepage: https://sourceforge.net/projects/twx30/
 Description: ${summary}
 EOF
 
@@ -497,7 +497,7 @@ build_rpm_package() {
       -a "$RPM_ARCH" \
       --rpm-os linux \
       --license "Proprietary" \
-      --url "https://sourceforge.net/projects/TWX30/" \
+      --url "https://sourceforge.net/projects/twx30/" \
       --maintainer "TWX30 <noreply@twx30.local>" \
       --description "$summary" \
       --category "Applications/Games" \

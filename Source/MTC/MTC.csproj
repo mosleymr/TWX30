@@ -7,10 +7,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>MTC</RootNamespace>
     <AssemblyName>MTC</AssemblyName>
-    <Version>1.0.0-beta2</Version>
+    <Version>1.0.0-beta3</Version>
     <Authors>Matt Mosley (reaper)</Authors>
     <Company>TWXProxy</Company>
-    <Product>Mayhem Tradewars Client 1.0 beta2</Product>
+    <Product>Mayhem Tradewars Client 1.0 beta3</Product>
     <Description>Cross-platform terminal emulation client for Trade Wars 2002</Description>
     <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
     <!-- Avalonia requires this to suppress WinExe warning on non-Windows -->
@@ -28,6 +28,8 @@
     <AvaloniaResource Include="mtc2.png" />
     <AvaloniaResource Include="mombot/mombot.png" />
     <EmbeddedResource Include="Python/mtc.py" LogicalName="MTC.Python.mtc.py" />
+    <EmbeddedResource Include="Data/tw2002-edits.json" LogicalName="MTC.Data.tw2002-edits.json" />
+    <None Include="Data/tw2002-edits.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\Installer\Windows\Assets\mtc2.ico" Visible="false" />
   </ItemGroup>
 

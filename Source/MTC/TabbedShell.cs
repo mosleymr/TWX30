@@ -34,7 +34,9 @@ public partial class MainWindow
         public Core.ModLog SessionLog { get; init; } = null!;
         public Core.ModDatabase? SessionDb { get; set; }
         public Core.GameInstance? GameInstance { get; set; }
+        public int EmbeddedServerConnectedState;
         public Core.ExpansionModuleHost? ModuleHost { get; set; }
+        public List<IDisposable> ModuleMenuRegistrations { get; set; } = [];
         public Core.GameFileLock? GameFileLock { get; set; }
         public Action<bool, Core.NativeHaggleChangeSource>? EmbeddedNativeHaggleChangedHandler { get; set; }
         public Action? EmbeddedNativeHaggleStatsChangedHandler { get; set; }
@@ -42,18 +44,23 @@ public partial class MainWindow
         public ConcurrentQueue<PendingDisplayChunk> PendingDisplayChunks { get; } = new();
         public int PendingDisplayChunkCount;
         public long PendingDisplayByteCount;
+        public object InactiveDisplaySnapshotSync { get; } = new();
+        public byte[] InactiveDisplaySnapshotBuffer { get; set; } = Array.Empty<byte>();
+        public int InactiveDisplaySnapshotStart;
+        public int InactiveDisplaySnapshotLength;
         public ConcurrentQueue<byte[]> PendingSessionLogChunks { get; } = new();
         public int PendingSessionLogChunkCount;
         public long PendingSessionLogByteCount;
         public object TerminalDisplayArtifactSync { get; } = new();
-        public bool SuppressNextTradeWarsPromptAfterScriptInput { get; set; }
-        public long ScriptInputPromptDisplaySuppressUntilUtcTicks { get; set; }
-        public bool ScriptInputPromptVisible { get; set; }
         public object TerminalBufferSync { get; } = new();
         public List<byte[]> PausedTerminalChunks { get; } = [];
         public int PausedTerminalChunkCount;
         public long PausedTerminalByteCount;
         public int DisplayDrainScheduled;
+        public int InactiveDisplayDrainScheduled;
+        public long LastDisplayDrainTicks;
+        public DispatcherTimer? DisplayDrainTimer { get; set; }
+        public bool DisplayDrainTimerWired { get; set; }
         public int SessionLogDrainScheduled;
         public int ShipStatusRefreshPostScheduled;
         public long LastShipStatusRefreshPostTicks;
@@ -81,6 +88,8 @@ public partial class MainWindow
         public bool CurrentGameConfigSaveRunning { get; set; }
         public bool CurrentGameConfigSaveAgain { get; set; }
         public bool CurrentGameConfigSaveTimerWired { get; set; }
+        public int Closed;
+        public int DeckConsoleVisible;
         public Core.NativeHaggleEngine StandaloneNativeHaggle { get; init; } = null!;
         public MTC.mombot.mombotService Mombot { get; init; } = null!;
         public PythonScriptRunner PythonScripts { get; init; } = null!;
@@ -167,6 +176,7 @@ public partial class MainWindow
         public QCannonCalculatorWindow? QCannonCalculatorWindow { get; set; }
         public DataMiningWindow? DataMiningWindow { get; set; }
         public RouteWindow? RouteWindow { get; set; }
+        public MajorSpaceLanesWindow? MajorSpaceLanesWindow { get; set; }
         public BubblesWindow? BubblesWindow { get; set; }
         public SectorInfoWindow? SectorInfoWindow { get; set; }
         public GameInfoWindow? GameInfoWindow { get; set; }
@@ -274,10 +284,10 @@ public partial class MainWindow
                 return;
             }
 
-            _window.RecordMtcUiPost(_tab, "syncctx.post", DispatcherPriority.Background);
+            long postedTicks = _window.RecordMtcUiPostStart(_tab, "syncctx.post", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
-                _window.RecordMtcUiRun(_tab, "syncctx.post");
+                _window.RecordMtcUiRun(_tab, "syncctx.post", postedTicks);
                 Invoke(state);
             }, DispatcherPriority.Background);
         }
@@ -504,6 +514,8 @@ public partial class MainWindow
                 RecordMtcPerf(tab, "telnet.ansi.lines.inactive");
                 ExecuteInMtcTabBackgroundContext(tab, () =>
                 {
+                    if (ShouldDispatchOnlinePlayersLine(safeStrippedLine))
+                        ObserveOnlinePlayersLine(safeStrippedLine);
                     Core.GlobalModules.GlobalAutoRecorder.RecordLine(safeStrippedLine, safeAnsiLine);
                     ProcessStandaloneNativeHaggleLine(tab, safeStrippedLine);
                 });
@@ -518,7 +530,8 @@ public partial class MainWindow
                 else
                     ObserveGameAgentServerLine(safeStrippedLine, safeAnsiLine, isPrompt: LooksLikeAgentPrompt(safeStrippedLine));
                 ObserveOnlinePlayersLine(safeStrippedLine);
-                HandlePotentialCommLine(safeAnsiLine);
+                if (!HandlePotentialCommLine(safeAnsiLine))
+                    HandlePotentialGameEventLine(safeStrippedLine, safeAnsiLine);
                 ProcessStandaloneNativeHaggleLine(safeStrippedLine);
             });
         };
@@ -689,6 +702,20 @@ public partial class MainWindow
         bool delayed)
     {
         string postSource = delayed ? $"{source}.delayed" : source;
+        if (tab.Id != Volatile.Read(ref _activeMtcTabId))
+        {
+            Core.ShipStatus latestStatus = tab.PendingShipStatus ?? fallbackStatus;
+            tab.PendingShipStatus = null;
+            Interlocked.Exchange(ref tab.ShipStatusRefreshPostScheduled, 0);
+            ExecuteInMtcTabBackgroundContext(tab, () =>
+            {
+                ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: false);
+                MarkMtcTabVisualStateDirty(tab, infoPanels: true, statusBar: true);
+            });
+            RecordMtcPerf(tab, $"{postSource}.inactive_background");
+            return;
+        }
+
         RecordMtcUiPost(tab, postSource, DispatcherPriority.Background);
         Dispatcher.UIThread.Post(() =>
         {
@@ -712,10 +739,6 @@ public partial class MainWindow
             {
                 ApplyShipStatusToTabState(tab, latestStatus, notifyChanged: false, observeAgent: true);
                 RequestInfoPanelsRefresh();
-
-                // Ship status can update many times per macro burst; persist it after the burst quiets.
-                if (_currentProfilePath != null)
-                    RequestCurrentGameConfigSave();
             });
         }, DispatcherPriority.Background);
     }
@@ -818,6 +841,7 @@ public partial class MainWindow
         tab.SessionDb = _sessionDb;
         tab.GameInstance = _gameInstance;
         tab.ModuleHost = _moduleHost;
+        tab.ModuleMenuRegistrations = _moduleMenuRegistrations;
         tab.GameFileLock = _gameFileLock;
         tab.TerminalLivePaused = _terminalLivePaused;
         tab.DeferredInfoPanelsRefresh = _deferredInfoPanelsRefresh;
@@ -834,13 +858,13 @@ public partial class MainWindow
         tab.RedAlertEnabled = _redAlertEnabled;
         tab.CurrentGameConfigSaveRunning = _currentGameConfigSaveRunning;
         tab.CurrentGameConfigSaveAgain = _currentGameConfigSaveAgain;
-        tab.TerminalInputHandler = _terminalInputHandler ?? tab.TerminalInputHandler;
         tab.ProxyCts = _proxyCts;
         tab.PendingEmbeddedStop = _pendingEmbeddedStop;
         tab.EmbeddedGameConfig = _embeddedGameConfig;
         tab.EmbeddedGameName = _embeddedGameName;
         tab.CurrentProfilePath = _currentProfilePath;
-        tab.CommWindowVisible = _commWindowVisible;
+        if (tab.Id == _activeMtcTabId)
+            tab.CommWindowVisible = _commWindowVisible;
         tab.CommSelectedChannel = _commSelectedChannel;
         tab.CommPrivateTarget = _commPrivateTarget;
         tab.TemporaryMacroRecording = _temporaryMacroRecording;
@@ -926,6 +950,7 @@ public partial class MainWindow
         _sessionDb = tab.SessionDb;
         _gameInstance = tab.GameInstance;
         _moduleHost = tab.ModuleHost;
+        _moduleMenuRegistrations = tab.ModuleMenuRegistrations;
         _gameFileLock = tab.GameFileLock;
         _terminalLivePaused = tab.TerminalLivePaused;
         _deferredInfoPanelsRefresh = tab.DeferredInfoPanelsRefresh;
@@ -1291,7 +1316,11 @@ public partial class MainWindow
                 return;
 
             _termCtrl?.SetBuffer(tab.Buffer);
-            _deckTermCtrl?.SetBuffer(tab.Buffer);
+            if (_deckTerminalControls.TryGetValue(tab.Id, out TerminalControl? deckTerminal))
+            {
+                deckTerminal.SetBuffer(tab.Buffer);
+                _deckTermCtrl = deckTerminal;
+            }
             SetTerminalConnected(_state.Connected || _telnet.IsConnected || (_gameInstance?.IsRunning == true));
             UpdateTerminalLiveSelector();
             UpdateClassicTerminalSizeStatus();
@@ -1310,10 +1339,10 @@ public partial class MainWindow
     {
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            RecordMtcUiPost(tab, "execute.session.cross-thread", DispatcherPriority.Background);
+            long postedTicks = RecordMtcUiPostStart(tab, "execute.session.cross-thread", DispatcherPriority.Background);
             Dispatcher.UIThread.Post(() =>
             {
-                RecordMtcUiRun(tab, "execute.session.cross-thread");
+                RecordMtcUiRun(tab, "execute.session.cross-thread", postedTicks);
                 ExecuteInMtcTabSession(tab, action);
             }, DispatcherPriority.Background);
             return;
@@ -1453,11 +1482,11 @@ public partial class MainWindow
         }
 
         var resolvedPriority = priority ?? DispatcherPriority.Background;
-        RecordMtcUiPost(owner, "post.tab", resolvedPriority);
+        long postedTicks = RecordMtcUiPostStart(owner, "post.tab", resolvedPriority);
         Dispatcher.UIThread.Post(
             () =>
             {
-                RecordMtcUiRun(owner, "post.tab");
+                RecordMtcUiRun(owner, "post.tab", postedTicks);
                 ExecuteInOptionalMtcTabSession(owner, action);
             },
             resolvedPriority);
@@ -1480,11 +1509,11 @@ public partial class MainWindow
         }
 
         var resolvedPriority = priority ?? DispatcherPriority.Background;
-        RecordMtcUiPost(owner, "post.tab.async", resolvedPriority);
+        long postedTicks = RecordMtcUiPostStart(owner, "post.tab.async", resolvedPriority);
         Dispatcher.UIThread.Post(
             async () =>
             {
-                RecordMtcUiRun(owner, "post.tab.async");
+                RecordMtcUiRun(owner, "post.tab.async", postedTicks);
                 await ExecuteInOptionalMtcTabSessionAsync(owner, action);
             },
             resolvedPriority);
@@ -1692,6 +1721,7 @@ public partial class MainWindow
         {
             RefreshMtcTabStrip();
             RefreshMtcTabOwnedWindowTitles(owner);
+            UpdateCommandDeckActiveConsole();
         }
     }
 
@@ -1720,7 +1750,11 @@ public partial class MainWindow
         if (_activeMtcTabId == tabId)
             return;
 
+        var previousTab = ActiveMtcTab;
         CaptureLiveMtcTabShell();
+        if (previousTab is not null && !IsMtcTabDeckConsoleVisible(previousTab))
+            CondensePendingDisplayChunksForInactiveTab(previousTab, "display.tab_deactivate_condense");
+
         _activeMtcTabId = tabId;
         BindActiveMtcTabSession();
         RestoreActiveMtcTabContent();
@@ -1753,6 +1787,9 @@ public partial class MainWindow
 
         var index = _mtcTabs.IndexOf(tab);
         CloseMtcTabOwnedWindows(tab);
+        Interlocked.Exchange(ref tab.Closed, 1);
+        Interlocked.Exchange(ref tab.DeckConsoleVisible, 0);
+        tab.DisplayDrainTimer?.Stop();
         tab.InfoPanelsRefreshTimer?.Stop();
         tab.StatusRefreshTimer?.Stop();
         tab.RedAlertTimer?.Stop();
@@ -1768,6 +1805,9 @@ public partial class MainWindow
             RestoreActiveMtcTabContent();
         }
 
+        if (_useCommandDeckSkin)
+            ApplySelectedSkinSafe();
+
         RefreshMtcTabStrip();
         ApplyJsonRpcPreferences();
     }
@@ -1779,16 +1819,29 @@ public partial class MainWindow
         {
             if (active is not null)
             {
-                FlushPendingDisplayChunksToBuffer(active);
+                RenderPendingDisplaySnapshotOnActivation(active);
             }
 
             BindActiveMtcTabSession();
-            ApplySelectedSkinSafe();
+            bool commandDeckAlreadyHostsEveryGame =
+                _useCommandDeckSkin &&
+                _deckSurface is not null &&
+                _mtcTabs.Where(tab => tab.IsLiveSession)
+                    .All(tab => _deckTerminalControls.ContainsKey(tab.Id));
+            if (commandDeckAlreadyHostsEveryGame)
+            {
+                UpdateCommandDeckActiveConsole();
+                _shellHost.Child = _liveTabShell;
+            }
+            else
+            {
+                ApplySelectedSkinSafe();
+            }
 
             RestoreLiveMtcTabStatusBar();
             RefreshActiveMtcTabUiStateScoped();
-            RequestInfoPanelsRefresh(force: true);
-            RequestStatusBarRefresh();
+            RefreshInfoPanelsOnTabActivation();
+            RefreshStatusBar();
             UpdateWindowTitle();
             PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
             return;
@@ -1944,6 +1997,7 @@ public partial class MainWindow
         tab.QCannonCalculatorWindow = null;
         tab.DataMiningWindow = null;
         tab.RouteWindow = null;
+        tab.MajorSpaceLanesWindow = null;
         tab.BubblesWindow = null;
         tab.SectorInfoWindow = null;
         tab.GameInfoWindow = null;
@@ -2059,6 +2113,8 @@ public partial class MainWindow
 
     private async Task StopMtcTabSessionAsync(MtcTabPrototype tab)
     {
+        Interlocked.Exchange(ref tab.EmbeddedServerConnectedState, 0);
+        tab.State.Connected = false;
         await ExecuteInOptionalMtcTabSessionAsync(tab, async () =>
         {
             try { _telnet.Disconnect(); } catch { }
@@ -2091,12 +2147,23 @@ public partial class MainWindow
     private Control BuildMtcTabButton(MtcTabPrototype tab)
     {
         var active = tab.Id == _activeMtcTabId;
-        var tabBackground = active ? HudAccent : HudHeaderAlt;
-        var tabBorder = active
-            ? HudAccentOk
-            : (tab.IsLiveSession ? HudEdge : HudAccentHot);
-        var tabForeground = active ? HudAccentInk : HudText;
-        var tabMutedForeground = active ? HudAccentInk : HudMuted;
+        bool redAlert = _appPrefs.EnableRedAlertMode && tab.RedAlertEnabled;
+        IBrush tabBackground = redAlert
+            ? (active
+                ? new SolidColorBrush(Color.FromRgb(196, 28, 36))
+                : new SolidColorBrush(Color.FromRgb(76, 22, 28)))
+            : (active ? HudAccent : HudHeaderAlt);
+        IBrush tabBorder = redAlert
+            ? new SolidColorBrush(Color.FromRgb(255, 208, 208))
+            : active
+                ? HudAccentOk
+                : (tab.IsLiveSession ? HudEdge : HudAccentHot);
+        IBrush tabForeground = redAlert
+            ? Brushes.White
+            : (active ? HudAccentInk : HudText);
+        IBrush tabMutedForeground = redAlert
+            ? new SolidColorBrush(Color.FromRgb(255, 214, 214))
+            : (active ? HudAccentInk : HudMuted);
         var frame = new Border
         {
             Background = tabBackground,
@@ -2131,10 +2198,12 @@ public partial class MainWindow
             Width = UiSize(8),
             Height = UiSize(8),
             CornerRadius = UiCornerRadius(4),
-            Background = tab.IsLiveSession
-                ? (active ? HudAccentInk : HudAccent)
-                : HudAccentHot,
-            Opacity = active ? 1.0 : 0.65,
+            Background = redAlert
+                ? new SolidColorBrush(Color.FromRgb(255, 74, 84))
+                : tab.IsLiveSession
+                    ? (active ? HudAccentInk : HudAccent)
+                    : HudAccentHot,
+            Opacity = active || redAlert ? 1.0 : 0.65,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = UiThickness(6, 0, 0, 0),
         });

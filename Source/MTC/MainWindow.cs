@@ -43,7 +43,9 @@ public partial class MainWindow : Window
         int TunnelMaxSize,
         bool AllowSeparatedByGates);
 
-    private const string BaseWindowTitle = "Mayhem Tradewars Client 1.0 beta2";
+    private const string BaseWindowTitle = MtcVersion.WindowTitle;
+    private const double DefaultMainWindowWidth = 1100;
+    private const double DefaultMainWindowHeight = 650;
     private const int MaxCommEntries = 500;
     private const double ClassicCommWindowDefaultHeight = 140;
     private const double DeckCommWindowDefaultHeight = 150;
@@ -73,9 +75,16 @@ public partial class MainWindow : Window
     // ── Current saved profile path (null = not yet saved) ──────────────────
     private string?         _currentProfilePath;
     private AppPreferences  _appPrefs = new();
+    private Border?         _updateBanner;
+    private TextBlock?      _updateBannerText;
+    private Button?         _updateBannerDownloadButton;
+    private MtcUpdateCheckResult? _pendingMtcUpdate;
+    private bool            _mtcUpdateDialogOpen;
+    private CancellationTokenSource? _updateCheckCts;
     private Core.ModDatabase?              _sessionDb;
     private Core.GameInstance?             _gameInstance;   // non-null only in embedded proxy mode
     private Core.ExpansionModuleHost?      _moduleHost;     // embedded proxy expansion modules
+    private List<IDisposable>              _moduleMenuRegistrations = [];
     private Core.GameFileLock?             _gameFileLock;
     private Core.NativeHaggleEngine _standaloneNativeHaggle = null!;
     private GameAgentRuntime                 _gameAgent = null!;
@@ -141,8 +150,15 @@ public partial class MainWindow : Window
     };
     private DockPanel? _rootDock;
     private Canvas? _deckSurface;
+    private Grid? _deckWorkspaceHost;
+    private Viewbox? _deckWorkspaceScaler;
+    private Control? _deckWorkspace;
+    private double _deckWorkspaceMinimumWidth;
+    private double _deckWorkspaceMinimumHeight;
     private readonly Dictionary<string, FloatingDeckPanel> _deckPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DeckPanelState> _deckPanelStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, TerminalControl> _deckTerminalControls = [];
+    private StackPanel _deckOnlinePlayersHost = new() { Spacing = 3 };
     private int _deckNextZIndex = 100;
     private bool _deckPanelsInitialized;
     private bool _suppressDeckPanelStateSync;
@@ -162,6 +178,9 @@ public partial class MainWindow : Window
     private Button? _deckMacroRecordButton;
     private Button? _deckMacroStopButton;
     private Button? _deckMacroPlayButton;
+    private static readonly TimeSpan QuickMacroPlayHoldThreshold = TimeSpan.FromMilliseconds(500);
+    private CancellationTokenSource? _quickMacroPlayHoldCancellation;
+    private bool _quickMacroPlayHoldTriggered;
     private List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
@@ -172,6 +191,7 @@ public partial class MainWindow : Window
     private readonly Button _statusCommButton = new();
     private readonly Button _statusBotButton = new();
     private readonly Button _statusMapButton = new();
+    private readonly Button _statusDockShopperButton = new();
     private readonly Button _statusHaggleButton = new() { Content = "HAGGLE" };
     private readonly Button _statusLivePausedButton = new() { Content = "LIVE" };
     private readonly Button _statusRedAlertButton = new() { Content = "RED ALERT" };
@@ -180,6 +200,7 @@ public partial class MainWindow : Window
     private readonly Border _statusCommFrame = new();
     private readonly Border _statusBotFrame = new();
     private readonly Border _statusMapFrame = new();
+    private readonly Border _statusDockShopperFrame = new();
     private readonly Border _statusHaggleFrame = new();
     private readonly Border _statusLivePausedFrame = new();
     private readonly Border _statusRedAlertFrame = new();
@@ -213,6 +234,7 @@ public partial class MainWindow : Window
     private bool _statusCommHovered;
     private bool _statusBotHovered;
     private bool _statusMapHovered;
+    private bool _statusDockShopperHovered;
     private bool _statusHaggleHovered;
     private bool _statusLivePausedHovered;
     private bool _redAlertEnabled;
@@ -250,12 +272,15 @@ public partial class MainWindow : Window
     private Button? _commFedTabButton;
     private Button? _commSubspaceTabButton;
     private Button? _commPrivateTabButton;
+    private Button? _commEventsTabButton;
     private TextBlock? _commFedTextBlock;
     private TextBlock? _commSubspaceTextBlock;
     private TextBlock? _commPrivateTextBlock;
+    private TextBlock? _commEventsTextBlock;
     private ScrollViewer? _commFedScrollViewer;
     private ScrollViewer? _commSubspaceScrollViewer;
     private ScrollViewer? _commPrivateScrollViewer;
+    private ScrollViewer? _commEventsScrollViewer;
     private TextBox? _commComposeTextBox;
     private TextBox? _commPrivateTargetTextBox;
     private TextBlock? _commPrivateTargetLabel;
@@ -266,12 +291,15 @@ public partial class MainWindow : Window
     private Button? _deckCommFedTabButton;
     private Button? _deckCommSubspaceTabButton;
     private Button? _deckCommPrivateTabButton;
+    private Button? _deckCommEventsTabButton;
     private TextBlock? _deckCommFedTextBlock;
     private TextBlock? _deckCommSubspaceTextBlock;
     private TextBlock? _deckCommPrivateTextBlock;
+    private TextBlock? _deckCommEventsTextBlock;
     private ScrollViewer? _deckCommFedScrollViewer;
     private ScrollViewer? _deckCommSubspaceScrollViewer;
     private ScrollViewer? _deckCommPrivateScrollViewer;
+    private ScrollViewer? _deckCommEventsScrollViewer;
     private TextBox? _deckCommComposeTextBox;
     private TextBox? _deckCommPrivateTargetTextBox;
     private TextBlock? _deckCommPrivateTargetLabel;
@@ -327,9 +355,6 @@ public partial class MainWindow : Window
     private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;
     private bool _pendingTerminalSyncMarkerUtf8LeadByte;
-    private bool _suppressNextTradeWarsPromptAfterScriptInput;
-    private long _scriptInputPromptDisplaySuppressUntilUtcTicks;
-    private bool _scriptInputPromptVisible;
     private bool _mombotKeepaliveTickRunning;
     private bool _mombotStartupDataGatherPending;
     private bool _mombotStartupDataGatherRunning;

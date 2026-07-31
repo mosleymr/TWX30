@@ -1203,6 +1203,8 @@ namespace TWXProxy.Core
                 }
 
                 _activeGameInstance.ObserveScriptSend(output);
+                if (script is Script activeScript)
+                    activeScript.MarkExecutionWatchdogActivity();
 
                 // SendToServerAsync preserves order through the shared async socket pump.
                 _activeGameInstance.SendToServerAsync(data).GetAwaiter().GetResult();
@@ -1623,16 +1625,16 @@ namespace TWXProxy.Core
                     // Clear any accumulated input before prompting
                     _activeGameInstance.ClearInputBuffer();
 
-                    // Match the classic TWX script-input menu: prompt text above a
-                    // visible input marker, rather than leaving the line hanging.
-                    QueueScriptInputPrompt(prompt);
-
                     // Empty prompt = keypress mode: no Enter needed, fire on the next single character.
                     bool keypressMode = string.IsNullOrEmpty(prompt);
                     
                     // Set script to wait for input from client
                     scriptObj.SetWaitingForInput(parameters[0], keypressMode);
                     scriptObj.PausedReason = PauseReason.Input;
+
+                    // Match the classic TWX script-input menu: prompt text above a
+                    // visible input marker, rather than leaving the line hanging.
+                    QueueScriptInputPrompt(prompt);
                     return CmdAction.Pause; // Pause until input received from client
                 }
                 else if (GlobalModules.TWXMenu != null)
@@ -1682,12 +1684,14 @@ namespace TWXProxy.Core
 
                 if (_activeGameInstance != null)
                 {
-                    // Network proxy mode: reuse the getInput pipeline.
-                    // singleKey → keypress mode (char fires immediately, no Enter).
+                    // Network proxy mode: TWX27 routes GETCONSOLEINPUT through
+                    // the internal script-input menu, not the GETINPUT prompt
+                    // broadcast path. The local input pipeline already captures
+                    // the next key/line here; scripts like ProEZcolonizer draw
+                    // their own screen before entering this wait.
                     GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
                     _activeGameInstance.ClearInputBuffer();
-                    QueueScriptInputPrompt();
-                    scriptObj.SetWaitingForInput(parameters[0], singleKey, echoKeypressInput: singleKey);
+                    scriptObj.SetWaitingForInput(parameters[0], singleKey, echoKeypressInput: false);
                     scriptObj.PausedReason = PauseReason.Input;
                     return CmdAction.Pause;
                 }
@@ -1695,7 +1699,6 @@ namespace TWXProxy.Core
                 // Fallback: UI / console mode (original desktop TWX behaviour)
                 scriptObj.Locked = true;
                 GlobalModules.TWXMenu?.SuspendMenuForInput(clearDisplay: false);
-                QueueScriptInputPrompt();
 
                 if (GlobalModules.TWXMenu != null)
                 {

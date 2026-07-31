@@ -37,6 +37,13 @@ internal sealed record PythonScriptStartResult(bool Success, string Message);
 
 internal sealed class PythonScriptRunner : IDisposable
 {
+    private sealed record PythonInterpreterCommand(string FileName, string[] Arguments, string DisplayName);
+
+    private sealed record PythonInterpreterResolveResult(
+        bool Success,
+        PythonInterpreterCommand? Command,
+        string Message);
+
     private sealed class RunningPythonScript
     {
         public required int Id { get; init; }
@@ -66,7 +73,11 @@ internal sealed class PythonScriptRunner : IDisposable
         if (_disposed)
             return new PythonScriptStartResult(false, "Python script runner is disposed.");
 
-        string interpreter = NormalizeInterpreterPath(options.InterpreterPath);
+        PythonInterpreterResolveResult interpreterResult = ResolveInterpreter(options.InterpreterPath);
+        if (!interpreterResult.Success || interpreterResult.Command == null)
+            return new PythonScriptStartResult(false, interpreterResult.Message);
+
+        PythonInterpreterCommand interpreter = interpreterResult.Command;
         string fullPath = options.FullScriptPath.Trim();
         string scriptName = Path.GetFileName(fullPath);
         if (!File.Exists(fullPath))
@@ -91,7 +102,7 @@ internal sealed class PythonScriptRunner : IDisposable
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = interpreter,
+            FileName = interpreter.FileName,
             WorkingDirectory = string.IsNullOrWhiteSpace(options.ScriptDirectory)
                 ? Path.GetDirectoryName(fullPath) ?? Environment.CurrentDirectory
                 : options.ScriptDirectory,
@@ -100,6 +111,8 @@ internal sealed class PythonScriptRunner : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (string arg in interpreter.Arguments)
+            startInfo.ArgumentList.Add(arg);
         startInfo.ArgumentList.Add(fullPath);
         AddEnvironment(startInfo, options, port);
 
@@ -310,8 +323,152 @@ internal sealed class PythonScriptRunner : IDisposable
         return helperPath;
     }
 
+    private static PythonInterpreterResolveResult ResolveInterpreter(string value)
+    {
+        string normalized = NormalizeInterpreterPath(value);
+        if (IsAutoInterpreter(normalized))
+            return ResolveAutoInterpreter();
+
+        PythonInterpreterCommand command = BuildInterpreterCommand(normalized);
+        PythonInterpreterResolveResult probe = ProbeInterpreter(command);
+        return probe.Success
+            ? probe
+            : new PythonInterpreterResolveResult(
+                false,
+                null,
+                $"Python interpreter did not run: {command.DisplayName}. {probe.Message}");
+    }
+
+    private static PythonInterpreterResolveResult ResolveAutoInterpreter()
+    {
+        PythonInterpreterCommand[] candidates = OperatingSystem.IsWindows()
+            ? [
+                new PythonInterpreterCommand("py", ["-3"], "py -3"),
+                new PythonInterpreterCommand("python", [], "python"),
+                new PythonInterpreterCommand("python3", [], "python3"),
+            ]
+            : [
+                new PythonInterpreterCommand("python3", [], "python3"),
+                new PythonInterpreterCommand("python", [], "python"),
+            ];
+
+        List<string> failures = [];
+        foreach (PythonInterpreterCommand candidate in candidates)
+        {
+            PythonInterpreterResolveResult result = ProbeInterpreter(candidate);
+            if (result.Success)
+                return result;
+            if (!string.IsNullOrWhiteSpace(result.Message))
+                failures.Add($"{candidate.DisplayName}: {result.Message}");
+        }
+
+        string detail = failures.Count == 0 ? string.Empty : " " + string.Join(" ", failures);
+        return new PythonInterpreterResolveResult(
+            false,
+            null,
+            "Python interpreter was not found. Set Preferences > Runtime > Python interpreter to a full python.exe path or a command such as py -3." + detail);
+    }
+
+    private static PythonInterpreterResolveResult ProbeInterpreter(PythonInterpreterCommand command)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = command.FileName,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (string arg in command.Arguments)
+            startInfo.ArgumentList.Add(arg);
+        startInfo.ArgumentList.Add("--version");
+
+        try
+        {
+            using var process = Process.Start(startInfo);
+            if (process == null)
+                return new PythonInterpreterResolveResult(false, null, "process did not start.");
+
+            if (!process.WaitForExit(3000))
+            {
+                TryKill(process);
+                return new PythonInterpreterResolveResult(false, null, "version check timed out.");
+            }
+
+            string stdout = process.StandardOutput.ReadToEnd().Trim();
+            string stderr = process.StandardError.ReadToEnd().Trim();
+            string output = string.IsNullOrWhiteSpace(stdout) ? stderr : stdout;
+            if (process.ExitCode == 0 && output.Contains("Python", StringComparison.OrdinalIgnoreCase))
+                return new PythonInterpreterResolveResult(true, command, command.DisplayName);
+
+            string message = string.IsNullOrWhiteSpace(output)
+                ? $"version check exited with code {process.ExitCode.ToString(CultureInfo.InvariantCulture)}."
+                : output;
+            return new PythonInterpreterResolveResult(false, null, message);
+        }
+        catch (Exception ex)
+        {
+            return new PythonInterpreterResolveResult(false, null, ex.Message);
+        }
+    }
+
+    private static PythonInterpreterCommand BuildInterpreterCommand(string value)
+    {
+        string normalized = value.Trim();
+        if (File.Exists(normalized))
+            return new PythonInterpreterCommand(normalized, [], normalized);
+
+        string[] parts = SplitCommandLine(normalized);
+        if (parts.Length == 0)
+            return new PythonInterpreterCommand(OperatingSystem.IsWindows() ? "py" : "python3", OperatingSystem.IsWindows() ? ["-3"] : [], "auto");
+
+        string fileName = parts[0];
+        string[] args = parts.Skip(1).ToArray();
+        return new PythonInterpreterCommand(fileName, args, string.Join(" ", parts));
+    }
+
+    private static string[] SplitCommandLine(string value)
+    {
+        var parts = new List<string>();
+        var current = new System.Text.StringBuilder();
+        bool inQuotes = false;
+
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(c) && !inQuotes)
+            {
+                if (current.Length > 0)
+                {
+                    parts.Add(current.ToString());
+                    current.Clear();
+                }
+                continue;
+            }
+
+            current.Append(c);
+        }
+
+        if (current.Length > 0)
+            parts.Add(current.ToString());
+
+        return parts.ToArray();
+    }
+
+    private static bool IsAutoInterpreter(string value)
+        => string.IsNullOrWhiteSpace(value) ||
+           value.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+           value.Equals("default", StringComparison.OrdinalIgnoreCase) ||
+           (OperatingSystem.IsWindows() && value.Equals("python3", StringComparison.OrdinalIgnoreCase));
+
     private static string NormalizeInterpreterPath(string value)
-        => string.IsNullOrWhiteSpace(value) ? "python3" : value.Trim();
+        => string.IsNullOrWhiteSpace(value) ? "auto" : value.Trim();
 
     private static void TryKill(Process process)
     {

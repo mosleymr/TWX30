@@ -190,6 +190,7 @@ namespace TWXProxy.Core
         void CloseMenu(bool force);
         void RemoveScriptMenus(object script);
         MenuItem? GetMenuByName(string menuName);
+        bool TryGetCurrentPrompt(out string prompt);
         void BeginScriptInput(Script script, CmdParam varParam, bool singleKey);
         void SuspendMenuForInput(bool clearDisplay = true);
         bool HasSuspendedMenu { get; }
@@ -238,7 +239,7 @@ namespace TWXProxy.Core
             };
 
             _menuItems.Add(menuItem);
-            if (!_menus.ContainsKey(menuItem.Name))
+            if (IsNamedMenu(menuItem.Name) && !_menus.ContainsKey(menuItem.Name))
                 _menus[menuItem.Name] = menuItem;
             return menuItem;
         }
@@ -247,6 +248,9 @@ namespace TWXProxy.Core
         {
             using var runtimeScope = BindRuntimeContext();
             menuName = menuName.ToUpper();
+
+            if (!IsNamedMenu(menuName))
+                throw new Exception("Menu name cannot be blank");
 
             if (!_menus.TryGetValue(menuName, out var menu))
                 throw new Exception($"Menu '{menuName}' not found");
@@ -326,7 +330,7 @@ namespace TWXProxy.Core
             _menus.Clear();
             foreach (MenuItem menuItem in _menuItems)
             {
-                if (!_menus.ContainsKey(menuItem.Name))
+                if (IsNamedMenu(menuItem.Name) && !_menus.ContainsKey(menuItem.Name))
                     _menus[menuItem.Name] = menuItem;
             }
 
@@ -427,6 +431,19 @@ namespace TWXProxy.Core
         {
             using var runtimeScope = BindRuntimeContext();
             return _menuStack.Count > 0;
+        }
+
+        public bool TryGetCurrentPrompt(out string prompt)
+        {
+            using var runtimeScope = BindRuntimeContext();
+            prompt = string.Empty;
+            if (_menuStack.Count == 0)
+                return false;
+
+            MenuItem menu = _menuStack.Peek();
+            string promptText = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
+            prompt = $"{promptText}> ";
+            return true;
         }
 
         public bool IsMenuOnStack(string menuName)
@@ -620,8 +637,7 @@ namespace TWXProxy.Core
                 {
                     try
                     {
-                        bool hasChildMenu = _menuItems.Any(m =>
-                            string.Equals(m.Parent, matchingItem.Name, StringComparison.OrdinalIgnoreCase));
+                        bool hasChildMenu = HasNamedChildMenu(matchingItem);
                         EchoMenuKey(upperKey);
 
                         // Get the label reference and strip leading ':' if present
@@ -632,7 +648,7 @@ namespace TWXProxy.Core
                         // If reference is empty, this is a submenu - open it
                         if (string.IsNullOrEmpty(labelName))
                         {
-                            if (_menus.ContainsKey(matchingItem.Name))
+                            if (hasChildMenu)
                             {
                                 if (matchingItem.CloseMenu)
                                 {
@@ -776,7 +792,10 @@ namespace TWXProxy.Core
         private void EnsureScriptMenuDeafening(MenuItem menu)
         {
             using var runtimeScope = BindRuntimeContext();
-            if (_scriptMenuAutoDeafActive || menu.Script is null || GlobalModules.TWXServer == null)
+            if (_scriptMenuAutoDeafActive ||
+                menu.Script is null ||
+                !IsNamedMenu(menu.Name) ||
+                GlobalModules.TWXServer == null)
                 return;
 
             int clientCount = GlobalModules.TWXServer.ClientCount;
@@ -814,6 +833,18 @@ namespace TWXProxy.Core
             GlobalModules.DebugLog($"[Menu] Restored {_autoDeafClientIndices.Count} auto-deafened client(s)\n");
             _autoDeafClientIndices.Clear();
             _scriptMenuAutoDeafActive = false;
+        }
+
+        private static bool IsNamedMenu(string? menuName)
+            => !string.IsNullOrWhiteSpace(menuName);
+
+        private bool HasNamedChildMenu(MenuItem menuItem)
+        {
+            if (!IsNamedMenu(menuItem.Name) || !_menus.ContainsKey(menuItem.Name))
+                return false;
+
+            return _menuItems.Any(m =>
+                string.Equals(m.Parent, menuItem.Name, StringComparison.OrdinalIgnoreCase));
         }
     }
 }

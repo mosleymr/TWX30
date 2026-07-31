@@ -139,6 +139,15 @@ namespace TWXProxy.Core
         public string CurrentLine { get; set; } = string.Empty;
         public string CurrentAnsiLine { get; set; } = string.Empty;
         public string RawPacket { get; set; } = string.Empty;
+        public bool DebugMode { get; set; } = true;
+        public bool VerboseDebugMode { get; set; } = false;
+        public bool ScriptTraceDebugMode { get; set; } = false;
+        public bool VariablePersistenceDebugMode { get; set; } = false;
+        public bool AutoRecorderDebugMode { get; set; } = true;
+        public bool TriggerDebugMode { get; set; } = false;
+        public string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
+        public string DatabaseCorrectionLogPath { get; set; } = "/tmp/twxp_db_errors.log";
+        public bool DatabaseCorrectionLoggingEnabled { get; set; } = false;
         public Dictionary<string, string> CurrentGameVars { get; } =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public List<GlobalVarItem> TWXGlobalVars { get; set; } = new List<GlobalVarItem>();
@@ -271,26 +280,55 @@ namespace TWXProxy.Core
         }
 
         // Debug configuration
-        public static bool DebugMode { get; set; } = true;
+        public static bool DebugMode
+        {
+            get => CurrentContext.DebugMode;
+            set => CurrentContext.DebugMode = value;
+        }
 
         /// <summary>
         /// When false (default), suppresses very high-frequency per-parameter
         /// evaluation logs ([PreEval], [PostEval], [EvaluateArrayIndexes]).
         /// Set to true only when diagnosing deep variable-evaluation bugs.
         /// </summary>
-        public static bool VerboseDebugMode { get; set; } = false;
+        public static bool VerboseDebugMode
+        {
+            get => CurrentContext.VerboseDebugMode;
+            set => CurrentContext.VerboseDebugMode = value;
+        }
         /// <summary>
         /// Enables extremely high-volume script VM instruction tracing such as
         /// [BRANCH], [CMP], [ADD], and detailed command helper diagnostics.
         /// Keep this off unless chasing a VM/runtime execution bug.
         /// </summary>
-        public static bool ScriptTraceDebugMode { get; set; } = false;
+        public static bool ScriptTraceDebugMode
+        {
+            get => CurrentContext.ScriptTraceDebugMode;
+            set => CurrentContext.ScriptTraceDebugMode = value;
+        }
+        /// <summary>
+        /// Enables high-volume SAVEVAR/LOADVAR persistence tracing separately from
+        /// general debug and VM trace logging.
+        /// </summary>
+        public static bool VariablePersistenceDebugMode
+        {
+            get => CurrentContext.VariablePersistenceDebugMode;
+            set => CurrentContext.VariablePersistenceDebugMode = value;
+        }
         /// <summary>
         /// Enables AutoRecorder parser/database chatter. This is useful when
         /// validating sector parsing, but is separate from general runtime logs.
         /// </summary>
-        public static bool AutoRecorderDebugMode { get; set; } = true;
-        public static bool TriggerDebugMode { get; set; } = false;
+        public static bool AutoRecorderDebugMode
+        {
+            get => CurrentContext.AutoRecorderDebugMode;
+            set => CurrentContext.AutoRecorderDebugMode = value;
+        }
+        public static bool TriggerDebugMode
+        {
+            get => CurrentContext.TriggerDebugMode;
+            set => CurrentContext.TriggerDebugMode = value;
+        }
         public static bool PortHaggleDebugMode { get; set; } = false;
         public static bool PlanetHaggleDebugMode { get; set; } = false;
 
@@ -325,15 +363,39 @@ namespace TWXProxy.Core
         public static long PreparedScriptCacheLimitBytes { get; set; } = DefaultPreparedScriptCacheLimitBytes;
         public static long MombotHotkeyPrewarmLimitBytes { get; set; } = DefaultMombotHotkeyPrewarmLimitBytes;
 
-        public static string DebugLogPath { get; set; } = "/tmp/twxp_debug.log";
+        public static string DebugLogPath
+        {
+            get => CurrentContext.DebugLogPath;
+            set => CurrentContext.DebugLogPath = value;
+        }
         public static string PortHaggleDebugLogPath { get; set; } = "/tmp/twxp_haggle_debug.log";
         public static string PlanetHaggleDebugLogPath { get; set; } = "/tmp/twxp_neg_debug.log";
-        public static string DatabaseCorrectionLogPath { get; set; } = "/tmp/twxp_db_errors.log";
-        public static bool DatabaseCorrectionLoggingEnabled { get; set; } = false;
+        public static string DatabaseCorrectionLogPath
+        {
+            get => CurrentContext.DatabaseCorrectionLogPath;
+            set => CurrentContext.DatabaseCorrectionLogPath = value;
+        }
+        public static bool DatabaseCorrectionLoggingEnabled
+        {
+            get => CurrentContext.DatabaseCorrectionLoggingEnabled;
+            set => CurrentContext.DatabaseCorrectionLoggingEnabled = value;
+        }
         private static readonly object _debugLock = new object();
         private static readonly object _databaseCorrectionLogLock = new object();
         private static readonly object _debugWorkerLock = new object();
-        private static readonly ConcurrentQueue<string> _pendingDebugMessages = new();
+        private readonly struct DebugLogEntry
+        {
+            public DebugLogEntry(string path, string text)
+            {
+                Path = path;
+                Text = text;
+            }
+
+            public string Path { get; }
+            public string Text { get; }
+        }
+
+        private static readonly ConcurrentQueue<DebugLogEntry> _pendingDebugMessages = new();
         private static readonly AutoResetEvent _debugQueueSignal = new AutoResetEvent(false);
         private static Thread? _debugWorkerThread = null;
         private static long _pendingDebugMessageCount = 0;
@@ -346,8 +408,6 @@ namespace TWXProxy.Core
         private static StreamWriter? _portHaggleWriter = null;
         private static StreamWriter? _planetHaggleWriter = null;
 
-        private static bool LogWriterEnabled => DebugMode || EnableVmMetrics;
-
         private static void CloseDebugWriterUnsafe()
         {
             _debugWriter?.Dispose();
@@ -355,15 +415,15 @@ namespace TWXProxy.Core
             _debugWriterPath = null;
         }
 
-        private static void RotateOversizedDebugLogUnsafe()
+        private static void RotateOversizedDebugLogUnsafe(string path)
         {
-            if (!File.Exists(DebugLogPath))
+            if (!File.Exists(path))
                 return;
 
             long existingLength;
             try
             {
-                existingLength = new FileInfo(DebugLogPath).Length;
+                existingLength = new FileInfo(path).Length;
             }
             catch
             {
@@ -373,15 +433,15 @@ namespace TWXProxy.Core
             if (existingLength < MaxDebugLogBytes)
                 return;
 
-            string directory = Path.GetDirectoryName(DebugLogPath) ?? string.Empty;
-            string fileName = Path.GetFileName(DebugLogPath);
+            string directory = Path.GetDirectoryName(path) ?? string.Empty;
+            string fileName = Path.GetFileName(path);
             string rotatedPath = Path.Combine(
                 directory,
                 $"{fileName}.{DateTime.Now:yyyyMMdd-HHmmss}.old");
 
             try
             {
-                File.Move(DebugLogPath, rotatedPath, overwrite: true);
+                File.Move(path, rotatedPath, overwrite: true);
             }
             catch
             {
@@ -390,17 +450,17 @@ namespace TWXProxy.Core
             }
         }
 
-        private static void EnsureLogWriter(bool resetFile)
+        private static void EnsureLogWriter(bool resetFile, string path)
         {
-            if (!LogWriterEnabled)
+            if (string.IsNullOrWhiteSpace(path))
                 return;
 
-            string? directory = Path.GetDirectoryName(DebugLogPath);
+            string? directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
 
             if (_debugWriter != null &&
-                !string.Equals(_debugWriterPath, DebugLogPath, StringComparison.Ordinal))
+                !string.Equals(_debugWriterPath, path, StringComparison.Ordinal))
             {
                 CloseDebugWriterUnsafe();
             }
@@ -410,7 +470,7 @@ namespace TWXProxy.Core
                 bool logFileStillVisible = true;
                 try
                 {
-                    logFileStillVisible = File.Exists(DebugLogPath);
+                    logFileStillVisible = File.Exists(path);
                 }
                 catch
                 {
@@ -425,15 +485,15 @@ namespace TWXProxy.Core
             }
 
             if (!resetFile)
-                RotateOversizedDebugLogUnsafe();
+                RotateOversizedDebugLogUnsafe(path);
 
-            bool fileExists = File.Exists(DebugLogPath);
+            bool fileExists = File.Exists(path);
             long existingLength = 0;
             if (fileExists)
             {
                 try
                 {
-                    existingLength = new FileInfo(DebugLogPath).Length;
+                    existingLength = new FileInfo(path).Length;
                 }
                 catch
                 {
@@ -442,11 +502,11 @@ namespace TWXProxy.Core
             }
 
             _debugWriter?.Dispose();
-            _debugWriter = new StreamWriter(DebugLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
+            _debugWriter = new StreamWriter(path, append: true, System.Text.Encoding.UTF8, bufferSize: 4096)
             {
                 AutoFlush = false
             };
-            _debugWriterPath = DebugLogPath;
+            _debugWriterPath = path;
 
             if (resetFile || !fileExists || existingLength == 0)
             {
@@ -502,13 +562,13 @@ namespace TWXProxy.Core
             Interlocked.Exchange(ref _droppedDebugMessageCount, 0);
         }
 
-        private static void EmitDroppedDebugMessageSummaryUnsafe()
+        private static void EmitDroppedDebugMessageSummaryUnsafe(string path)
         {
             int dropped = Interlocked.Exchange(ref _droppedDebugMessageCount, 0);
             if (dropped <= 0)
                 return;
 
-            EnsureLogWriter(resetFile: false);
+            EnsureLogWriter(resetFile: false, path);
             _debugWriter?.Write(
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [DEBUG LOG] Dropped {dropped} messages because the async debug queue hit its backlog limit.\n");
         }
@@ -517,32 +577,32 @@ namespace TWXProxy.Core
         {
             lock (_debugLock)
             {
-                if (!LogWriterEnabled)
-                {
-                    ClearQueuedDebugMessages();
-                    CloseDebugWriterUnsafe();
-                    return;
-                }
-
-                if ((_debugWriter != null || LogWriterEnabled) &&
-                    (! _pendingDebugMessages.IsEmpty || Volatile.Read(ref _droppedDebugMessageCount) > 0))
-                {
-                    EnsureLogWriter(resetFile: false);
-                    EmitDroppedDebugMessageSummaryUnsafe();
-                }
-                else if (!LogWriterEnabled)
-                {
-                    ClearQueuedDebugMessages();
-                }
-
                 bool wrote = false;
-                while (_pendingDebugMessages.TryDequeue(out string? entry))
+                string? lastPath = null;
+                while (_pendingDebugMessages.TryDequeue(out DebugLogEntry entry))
                 {
                     Interlocked.Decrement(ref _pendingDebugMessageCount);
+                    if (string.IsNullOrWhiteSpace(entry.Path))
+                        continue;
+
+                    if (!string.Equals(lastPath, entry.Path, StringComparison.Ordinal))
+                    {
+                        EnsureLogWriter(resetFile: false, entry.Path);
+                        lastPath = entry.Path;
+                    }
+
                     if (_debugWriter == null)
                         continue;
 
-                    _debugWriter.Write(entry);
+                    _debugWriter.Write(entry.Text);
+                    wrote = true;
+                }
+
+                int dropped = Volatile.Read(ref _droppedDebugMessageCount);
+                if (dropped > 0)
+                {
+                    string summaryPath = lastPath ?? _debugWriterPath ?? DebugLogPath;
+                    EmitDroppedDebugMessageSummaryUnsafe(summaryPath);
                     wrote = true;
                 }
 
@@ -560,7 +620,8 @@ namespace TWXProxy.Core
 
         private static void WriteLogMessage(string message)
         {
-            if (!LogWriterEnabled)
+            string path = DebugLogPath;
+            if (string.IsNullOrWhiteSpace(path))
                 return;
 
             EnsureDebugWorker();
@@ -574,7 +635,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            _pendingDebugMessages.Enqueue($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+            _pendingDebugMessages.Enqueue(new DebugLogEntry(path, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}"));
             _debugQueueSignal.Set();
         }
 
@@ -623,39 +684,37 @@ namespace TWXProxy.Core
             bool verboseEnabled,
             bool triggerEnabled,
             bool scriptTraceEnabled = false,
-            bool autoRecorderEnabled = true)
+            bool autoRecorderEnabled = true,
+            bool variablePersistenceEnabled = false)
         {
             bool signalWriter = false;
+            TwxRuntimeContext context = CurrentContext;
             lock (_debugLock)
             {
                 string resolvedPath = string.IsNullOrWhiteSpace(debugLogPath)
-                    ? DebugLogPath
+                    ? context.DebugLogPath
                     : debugLogPath;
-                bool pathChanged = !string.Equals(DebugLogPath, resolvedPath, StringComparison.Ordinal);
-                bool enabledChanged = DebugMode != enabled;
-                bool verboseChanged = VerboseDebugMode != verboseEnabled;
-                bool triggerChanged = TriggerDebugMode != triggerEnabled;
-                bool scriptTraceChanged = ScriptTraceDebugMode != scriptTraceEnabled;
-                bool autoRecorderChanged = AutoRecorderDebugMode != autoRecorderEnabled;
-                bool writerStateMatches = (_debugWriter != null) == (enabled || EnableVmMetrics);
+                bool pathChanged = !string.Equals(context.DebugLogPath, resolvedPath, StringComparison.Ordinal);
+                bool enabledChanged = context.DebugMode != enabled;
+                bool verboseChanged = context.VerboseDebugMode != verboseEnabled;
+                bool triggerChanged = context.TriggerDebugMode != triggerEnabled;
+                bool scriptTraceChanged = context.ScriptTraceDebugMode != scriptTraceEnabled;
+                bool autoRecorderChanged = context.AutoRecorderDebugMode != autoRecorderEnabled;
+                bool variablePersistenceChanged = context.VariablePersistenceDebugMode != variablePersistenceEnabled;
 
                 if (!pathChanged && !enabledChanged && !verboseChanged && !triggerChanged &&
-                    !scriptTraceChanged && !autoRecorderChanged && writerStateMatches)
+                    !scriptTraceChanged && !autoRecorderChanged && !variablePersistenceChanged)
                     return;
 
-                DebugLogPath = resolvedPath;
-                DebugMode = enabled;
-                VerboseDebugMode = verboseEnabled;
-                TriggerDebugMode = triggerEnabled;
-                ScriptTraceDebugMode = scriptTraceEnabled;
-                AutoRecorderDebugMode = autoRecorderEnabled;
+                context.DebugLogPath = resolvedPath;
+                context.DebugMode = enabled;
+                context.VerboseDebugMode = verboseEnabled;
+                context.TriggerDebugMode = triggerEnabled;
+                context.ScriptTraceDebugMode = scriptTraceEnabled;
+                context.AutoRecorderDebugMode = autoRecorderEnabled;
+                context.VariablePersistenceDebugMode = variablePersistenceEnabled;
 
-                if (!LogWriterEnabled)
-                {
-                    ClearQueuedDebugMessages();
-                }
-
-                signalWriter = true;
+                signalWriter = enabled || EnableVmMetrics || Volatile.Read(ref _pendingDebugMessageCount) > 0;
             }
 
             if (signalWriter)
@@ -714,18 +773,19 @@ namespace TWXProxy.Core
 
         public static void ConfigureDatabaseCorrectionLogging(string? databaseCorrectionLogPath, bool? enabled = null)
         {
+            TwxRuntimeContext context = CurrentContext;
             if (enabled.HasValue)
-                DatabaseCorrectionLoggingEnabled = enabled.Value;
+                context.DatabaseCorrectionLoggingEnabled = enabled.Value;
 
             if (string.IsNullOrWhiteSpace(databaseCorrectionLogPath))
                 return;
 
             lock (_databaseCorrectionLogLock)
             {
-                DatabaseCorrectionLogPath = databaseCorrectionLogPath;
+                context.DatabaseCorrectionLogPath = databaseCorrectionLogPath;
                 try
                 {
-                    string? directory = Path.GetDirectoryName(DatabaseCorrectionLogPath);
+                    string? directory = Path.GetDirectoryName(context.DatabaseCorrectionLogPath);
                     if (!string.IsNullOrWhiteSpace(directory))
                         Directory.CreateDirectory(directory);
                 }
@@ -741,7 +801,7 @@ namespace TWXProxy.Core
         /// </summary>
         public static void InitializeDebugLog()
         {
-            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode, ScriptTraceDebugMode, AutoRecorderDebugMode);
+            ConfigureDebugLogging(DebugLogPath, DebugMode, VerboseDebugMode, TriggerDebugMode, ScriptTraceDebugMode, AutoRecorderDebugMode, VariablePersistenceDebugMode);
             ConfigureHaggleDebugLogging(PortHaggleDebugLogPath, PortHaggleDebugMode, PlanetHaggleDebugLogPath, PlanetHaggleDebugMode);
         }
 
@@ -752,13 +812,12 @@ namespace TWXProxy.Core
         /// </summary>
         public static void FlushDebugLog()
         {
-            if (!LogWriterEnabled &&
-                Volatile.Read(ref _pendingDebugMessageCount) == 0 &&
+            if (Volatile.Read(ref _pendingDebugMessageCount) == 0 &&
                 !PortHaggleDebugMode &&
                 !PlanetHaggleDebugMode) return;
             try
             {
-                if (LogWriterEnabled || Volatile.Read(ref _pendingDebugMessageCount) > 0)
+                if (Volatile.Read(ref _pendingDebugMessageCount) > 0)
                     RequestDebugWriterFlush();
             }
             catch { /* ignore */ }
@@ -770,7 +829,9 @@ namespace TWXProxy.Core
         /// </summary>
         public static void DebugLog(string message)
         {
+            if (IsNativeHaggleDebugMessage(message)) return;
             if (!DebugMode) return;
+            if (IsVerboseRuntimeDebugMessage(message) && !VerboseDebugMode) return;
 
             try
             {
@@ -780,6 +841,39 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[DEBUG LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        private static bool IsNativeHaggleDebugMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return false;
+
+            return message.StartsWith("[NativeHaggle]", StringComparison.Ordinal) ||
+                   message.StartsWith("[MTC.NativeHaggle]", StringComparison.Ordinal);
+        }
+
+        private static bool IsVerboseRuntimeDebugMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return false;
+
+            if (message.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                message.IndexOf("exception", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
+
+            return message.StartsWith("[FORCEVAR]", StringComparison.Ordinal) ||
+                   message.StartsWith("[FILEEXISTS]", StringComparison.Ordinal) ||
+                   message.StartsWith("[LIE]", StringComparison.Ordinal) ||
+                   message.StartsWith("[VARCACHE]", StringComparison.Ordinal) ||
+                   message.StartsWith("[DEBUG]", StringComparison.Ordinal) ||
+                   message.StartsWith("[ModInterpreter.Load]", StringComparison.Ordinal) ||
+                   message.StartsWith("[ScriptCmp.LoadFromFile]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.ProgramEvent]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.Dispose]", StringComparison.Ordinal) ||
+                   message.StartsWith("[Script.Stop]", StringComparison.Ordinal);
         }
 
         /// <summary>
@@ -815,6 +909,20 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void VariablePersistenceDebugLog(string message)
+        {
+            if (!DebugMode || !VariablePersistenceDebugMode) return;
+
+            try
+            {
+                WriteLogMessage(message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[VARIABLE PERSISTENCE LOG ERROR] {ex.Message}: {message}");
+            }
+        }
+
         public static void AutoRecorderDebugLog(string message)
         {
             if (!DebugMode || !AutoRecorderDebugMode) return;
@@ -831,19 +939,21 @@ namespace TWXProxy.Core
 
         public static void DatabaseCorrectionLog(string source, string message)
         {
-            if (!DatabaseCorrectionLoggingEnabled)
+            bool enabled = DatabaseCorrectionLoggingEnabled;
+            string path = DatabaseCorrectionLogPath;
+            if (!enabled || string.IsNullOrWhiteSpace(path))
                 return;
 
             try
             {
                 lock (_databaseCorrectionLogLock)
                 {
-                    string? directory = Path.GetDirectoryName(DatabaseCorrectionLogPath);
+                    string? directory = Path.GetDirectoryName(path);
                     if (!string.IsNullOrWhiteSpace(directory))
                         Directory.CreateDirectory(directory);
 
-                    bool writeHeader = !File.Exists(DatabaseCorrectionLogPath);
-                    using var writer = new StreamWriter(DatabaseCorrectionLogPath, append: true, System.Text.Encoding.UTF8, bufferSize: 4096);
+                    bool writeHeader = !File.Exists(path);
+                    using var writer = new StreamWriter(path, append: true, System.Text.Encoding.UTF8, bufferSize: 4096);
                     if (writeHeader)
                         writer.WriteLine($"=== TWX Database Correction Log Started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
 

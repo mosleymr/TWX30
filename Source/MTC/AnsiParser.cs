@@ -94,8 +94,35 @@ public class AnsiParser
     // ── Public feed API ────────────────────────────────────────────────────
 
     public void Feed(byte[] data, int length)
+        => Feed(data, length, observeRawBytes: true);
+
+    public void FeedVisualSnapshot(byte[] data, int length)
+        => Feed(data, length, observeRawBytes: false);
+
+    public void ResetState()
     {
-        RawBytesObserved?.Invoke(data, 0, length);
+        _state = State.Ground;
+        _csiParam = string.Empty;
+        _csiIntermediate = '\0';
+        _pendingUtf8Latin1Lead = null;
+        _pendingPromptProbeByte = false;
+        _legacyPromptClearState = LegacyPromptClearState.None;
+        ResetPromptScrub();
+        _clearPromptLineOnNextPrintable = false;
+        ResetLegacyInlineToken();
+        _legacyInlineRecoveryBudget = 0;
+        _pendingLegacyTextMarker = false;
+        _suppressNextLegacyTextMarker = false;
+        _savedRow = 0;
+        _savedCol = 0;
+        _colorStage = 0;
+        ResetAttributes();
+    }
+
+    private void Feed(byte[] data, int length, bool observeRawBytes)
+    {
+        if (observeRawBytes)
+            RawBytesObserved?.Invoke(data, 0, length);
 
         for (int i = 0; i < length; i++)
         {

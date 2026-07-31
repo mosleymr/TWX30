@@ -48,6 +48,8 @@ public class ConnectionProfile
     public string     LoginName       { get; set; } = string.Empty;
     public string     Password        { get; set; } = string.Empty;
     public string     GameLetter      { get; set; } = string.Empty;
+    /// <summary>Optional known TW2002 edit used to seed Mombot ship and planet catalogs.</summary>
+    public string     EditId          { get; set; } = string.Empty;
     /// <summary>True once the profile has explicitly stored embedded login automation settings.</summary>
     public bool       LoginSettingsConfigured { get; set; } = false;
     /// <summary>Transient value used by Auto Setup to configure native MomBot during first login.</summary>
@@ -127,6 +129,7 @@ public class ConnectionProfile
                 new XElement("LoginName",       LoginName),
                 new XElement("Password",        Password),
                 new XElement("GameLetter",      GameLetter),
+                new XElement("EditId",          EditId),
                 new XElement("LoginSettingsConfigured", LoginSettingsConfigured),
                 new XElement("ScrollbackLines", ScrollbackLines),
                 // Trader info
@@ -201,6 +204,7 @@ public class ConnectionProfile
         p.LoginName       = S("LoginName");
         p.Password        = S("Password");
         p.GameLetter      = S("GameLetter");
+        p.EditId          = S("EditId");
         p.LoginSettingsConfigured = B("LoginSettingsConfigured", false);
         p.ScrollbackLines = I("ScrollbackLines", 2000);
         // Trader

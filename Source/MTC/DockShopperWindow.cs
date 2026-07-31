@@ -48,7 +48,7 @@ internal sealed class DockShopperWindow : Window
     private readonly ComboBox _twarpChoice = BuildCombo(["None", "Yes"]);
     private readonly TextBox _towShipNumber = BuildSmallTextBox("0", 80);
     private readonly ComboBox _shipChoice;
-    private readonly ComboBox _shipCount = BuildShipCountCombo();
+    private readonly TextBox _shipCount = BuildSmallTextBox("1", 64);
     private readonly TextBox _shipName = BuildSmallTextBox("LSD Ship", 170);
     private readonly TextBlock _encodedPreview = new();
     private readonly TextBlock _validationText = new();
@@ -89,10 +89,16 @@ internal sealed class DockShopperWindow : Window
             {
                 new TextBlock
                 {
-                    Text = "MTC Dock Shopper",
+                    Text = "LoneStar's StarDock Shopper",
                     FontSize = 20,
                     FontWeight = FontWeight.Bold,
                     Foreground = AccentHot,
+                },
+                new TextBlock
+                {
+                    Text = "Emporium Daily Specials",
+                    FontSize = 13,
+                    Foreground = Accent,
                 },
             },
         };
@@ -160,7 +166,7 @@ internal sealed class DockShopperWindow : Window
     private Control BuildShipPurchasePanel()
     {
         _shipChoice.SelectionChanged += (_, _) => RefreshPreview();
-        _shipCount.SelectionChanged += (_, _) => RefreshPreview();
+        _shipCount.TextChanged += (_, _) => RefreshPreview();
         _shipName.TextChanged += (_, _) => RefreshPreview();
 
         var viewButton = BuildActionButton("View", primary: false);
@@ -174,7 +180,7 @@ internal sealed class DockShopperWindow : Window
         clearButton.Click += (_, _) =>
         {
             _shipChoice.SelectedIndex = 0;
-            _shipCount.SelectedIndex = 0;
+            _shipCount.Text = "1";
             _shipName.Text = "LSD Ship";
         };
 
@@ -183,9 +189,8 @@ internal sealed class DockShopperWindow : Window
             ColumnDefinitions =
             {
                 new ColumnDefinition { Width = new GridLength(120) },
-                new ColumnDefinition { Width = new GridLength(240) },
-                new ColumnDefinition { Width = GridLength.Auto },
                 new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto },
             },
             RowDefinitions =
             {
@@ -198,8 +203,6 @@ internal sealed class DockShopperWindow : Window
         };
 
         AddCell(grid, "Buy Ship", 0, 0, FgText);
-        _shipChoice.HorizontalAlignment = HorizontalAlignment.Left;
-        _shipChoice.Width = 232;
         grid.Children.Add(_shipChoice);
         Grid.SetRow(_shipChoice, 0);
         Grid.SetColumn(_shipChoice, 1);
@@ -217,14 +220,13 @@ internal sealed class DockShopperWindow : Window
         grid.Children.Add(_shipCount);
         Grid.SetRow(_shipCount, 1);
         Grid.SetColumn(_shipCount, 1);
-        AddCell(grid, "0 means no ship purchase.", 1, 3, FgMuted);
+        AddCell(grid, "0 means no ship purchase.", 1, 2, FgMuted);
 
         AddCell(grid, "Ship Name", 2, 0, FgText);
-        _shipName.HorizontalAlignment = HorizontalAlignment.Left;
-        _shipName.Width = 232;
         grid.Children.Add(_shipName);
         Grid.SetRow(_shipName, 2);
         Grid.SetColumn(_shipName, 1);
+        Grid.SetColumnSpan(_shipName, 2);
 
         return BuildPanel("Ship Purchase", grid);
     }
@@ -409,22 +411,6 @@ internal sealed class DockShopperWindow : Window
     private static ComboBox BuildCombo(IEnumerable<string> items)
         => BuildCombo(items.Cast<object>());
 
-    private static ComboBox BuildShipCountCombo()
-        => new()
-        {
-            ItemsSource = Enumerable.Range(1, 25)
-                .Select(value => value.ToString(CultureInfo.InvariantCulture))
-                .ToArray(),
-            SelectedIndex = 0,
-            Width = 84,
-            MinWidth = 84,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Background = BgInput,
-            BorderBrush = Border,
-            Foreground = FgText,
-            Padding = new Thickness(8, 2),
-        };
-
     private static TextBox BuildSmallTextBox(string text, double width)
         => new()
         {
@@ -573,10 +559,10 @@ internal sealed class DockShopperWindow : Window
         if (string.Equals(EncodeShipToken(), "0", StringComparison.Ordinal))
             return "0";
 
-        string value = (_shipCount.SelectedItem as string ?? "1").Trim();
-        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int count) || count < 1 || count > 25)
+        string value = (_shipCount.Text ?? string.Empty).Trim();
+        if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int count) || count < 1)
         {
-            error = "Ship quantity must be between 1 and 25.";
+            error = "Ship quantity must be 1 or higher.";
             return "0";
         }
 

@@ -12,8 +12,9 @@ public partial class MainWindow
     {
         try
         {
-            _appPrefs.EnsureJsonRpcAuthToken();
-            bool shouldEnable = _appPrefs.JsonRpcEnabled && HasMtcJsonRpcGameContext();
+            EmbeddedMtcJsonRpcConfig jsonRpcPrefs = GetCurrentJsonRpcConfig();
+            bool shouldEnable = jsonRpcPrefs.Enabled &&
+                                HasMtcJsonRpcGameContext(_embeddedGameConfig, _embeddedGameName, _sessionDb, _gameInstance);
             if (!shouldEnable && _jsonRpcServer == null)
                 return;
 
@@ -21,10 +22,10 @@ public partial class MainWindow
             _jsonRpcServer.ApplyOptions(new MtcJsonRpcServerOptions
             {
                 Enabled = shouldEnable,
-                BindAddress = AppPreferences.NormalizeJsonRpcBindAddress(_appPrefs.JsonRpcBindAddress),
-                Port = AppPreferences.NormalizeJsonRpcPort(_appPrefs.JsonRpcPort),
-                AuthToken = AppPreferences.NormalizeJsonRpcAuthToken(_appPrefs.JsonRpcAuthToken),
-                ApprovalLevel = MtcRpcApprovalLevels.Parse(_appPrefs.JsonRpcApprovalLevel),
+                BindAddress = AppPreferences.NormalizeJsonRpcBindAddress(jsonRpcPrefs.BindAddress),
+                Port = AppPreferences.NormalizeJsonRpcPort(jsonRpcPrefs.Port),
+                AuthToken = AppPreferences.NormalizeJsonRpcAuthToken(jsonRpcPrefs.AuthToken),
+                ApprovalLevel = MtcRpcApprovalLevels.Parse(jsonRpcPrefs.ApprovalLevel),
             });
         }
         catch (Exception ex)
@@ -35,21 +36,14 @@ public partial class MainWindow
         }
     }
 
-    private bool HasMtcJsonRpcGameContext()
+    private EmbeddedMtcJsonRpcConfig GetCurrentJsonRpcConfig()
     {
-        if (HasMtcJsonRpcGameContext(_embeddedGameConfig, _embeddedGameName, _sessionDb, _gameInstance))
-            return true;
+        if (_embeddedGameConfig == null)
+            return new EmbeddedMtcJsonRpcConfig();
 
-        foreach (MtcTabPrototype tab in _mtcTabs)
-        {
-            if (!tab.IsLiveSession)
-                continue;
-
-            if (HasMtcJsonRpcGameContext(tab.EmbeddedGameConfig, tab.EmbeddedGameName, tab.SessionDb, tab.GameInstance))
-                return true;
-        }
-
-        return false;
+        _embeddedGameConfig.Mtc ??= new EmbeddedMtcConfig();
+        _embeddedGameConfig.Mtc.JsonRpc ??= new EmbeddedMtcJsonRpcConfig();
+        return _embeddedGameConfig.Mtc.JsonRpc;
     }
 
     private static bool HasMtcJsonRpcGameContext(

@@ -195,8 +195,8 @@ internal sealed class AliensWindow : Window
         if (groups.Count == 0)
         {
             _groupsHost.Children.Add(BuildEmptyCard(
-                "No explored alien space found",
-                "Only explored sectors whose constellation contains 'Space' and not 'uncharted' are included."));
+                "No alien space found",
+                "Sectors whose constellation contains 'Space' and not 'uncharted' are included, whether explored or unexplored."));
             return;
         }
 
@@ -210,7 +210,7 @@ internal sealed class AliensWindow : Window
         for (int sectorNumber = 11; sectorNumber <= totalSectors; sectorNumber++)
         {
             Core.SectorData? sector = db.GetSector(sectorNumber);
-            if (sector?.Explored != Core.ExploreType.Yes)
+            if (sector == null)
                 continue;
 
             if (!TryNormalizeAlienConstellation(sector.Constellation, out string constellation))

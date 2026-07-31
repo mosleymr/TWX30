@@ -73,6 +73,9 @@ public class TacticalMapControl : Control
     private bool _previewLimitHighlightedSectors = true;
     private bool _previewZoomControlsDepth;
     private string? _previewLegendText;
+    private Core.ModDatabase? _majorSpaceLaneDb;
+    private long _majorSpaceLaneChangeStamp = long.MinValue;
+    private HashSet<int> _majorSpaceLaneSectors = [];
 
     private static string GetViewModeLabel(TacticalMapViewMode viewMode)
     {
@@ -475,6 +478,20 @@ public class TacticalMapControl : Control
             StrokeWidth = 1.4f,
             PathEffect = SKPathEffect.CreateDash([6f, 6f], 0),
         };
+        using var majorLaneGlow = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            Color = new SKColor(0x33, 0x99, 0xff, 44),
+            StrokeWidth = 8f,
+        };
+        using var majorLanePaint = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Stroke,
+            Color = new SKColor(0x33, 0x99, 0xff, 210),
+            StrokeWidth = 2.5f,
+        };
 
         var drawnEdges = new HashSet<(int A, int B)>();
         foreach ((int sectorNumber, SKPoint position) in snapshot.Positions)
@@ -498,6 +515,9 @@ public class TacticalMapControl : Control
                 bool gateEdge = snapshot.GateSector > 0 &&
                                 ((sectorNumber == snapshot.GateSector && snapshot.HighlightedSectors.Contains(targetSector)) ||
                                  (targetSector == snapshot.GateSector && snapshot.HighlightedSectors.Contains(sectorNumber)));
+                bool majorLaneEdge = !snapshot.IsPreview &&
+                                     snapshot.MajorSpaceLaneSectors.Contains(sectorNumber) &&
+                                     snapshot.MajorSpaceLaneSectors.Contains(targetSector);
 
                 SKPoint start = position;
                 SKPoint end = snapshot.Positions[targetSector];
@@ -520,8 +540,8 @@ public class TacticalMapControl : Control
                     }
                 }
 
-                canvas.DrawLine(start, end, linkGlow);
-                canvas.DrawLine(start, end, twoWay ? linkPaint : oneWayPaint);
+                canvas.DrawLine(start, end, majorLaneEdge ? majorLaneGlow : linkGlow);
+                canvas.DrawLine(start, end, majorLaneEdge ? majorLanePaint : twoWay ? linkPaint : oneWayPaint);
             }
         }
     }
@@ -589,10 +609,13 @@ public class TacticalMapControl : Control
 
             bool isCurrent = sectorNumber == snapshot.CurrentSector;
             bool isLandmark = snapshot.Landmarks.Contains(sectorNumber);
+            bool isMajorLane = snapshot.MajorSpaceLaneSectors.Contains(sectorNumber);
             SKColor fillColor = isCurrent
                 ? new SKColor(0xff, 0xc0, 0x54)
                 : isLandmark
                     ? new SKColor(0x52, 0xa4, 0xff)
+                    : isMajorLane
+                        ? new SKColor(0x33, 0x99, 0xff)
                     : sector?.Explored == Core.ExploreType.Yes
                         ? new SKColor(0x00, 0xd9, 0xd0)
                         : sector?.Explored == Core.ExploreType.Density
@@ -609,6 +632,8 @@ public class TacticalMapControl : Control
                 ? new SKColor(0xff, 0xe8, 0xa4)
                 : isLandmark
                     ? new SKColor(0x8a, 0xc6, 0xff)
+                    : isMajorLane
+                        ? new SKColor(0x9d, 0xcf, 0xff)
                     : new SKColor(0x73, 0xd4, 0xd9);
             canvas.DrawCircle(position, isCurrent ? NodeRadius + 4f : NodeRadius + 1.5f, ringPaint);
             if (snapshot.OwnershipOverlays.TryGetValue(sectorNumber, out SectorOwnershipOverlay overlay))
@@ -826,6 +851,8 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = visited;
+        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+            snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, visited);
         else
@@ -898,6 +925,8 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = BuildPreviewDepths(snapshot.Sectors, centerSector);
+        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+            snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
         if (_viewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
         else
@@ -1789,6 +1818,15 @@ public class TacticalMapControl : Control
                 new SKColor(0x9f, 0xdd, 0xff));
         }
 
+        if (snapshot.MajorSpaceLaneSectors.Contains(sectorNumber))
+        {
+            return (
+                new SKColor(0x0e, 0x20, 0x3a, 205),
+                new SKColor(0x33, 0x99, 0xff),
+                new SKColor(0xe9, 0xf5, 0xff),
+                new SKColor(0xa8, 0xd2, 0xff));
+        }
+
         return sector?.Explored switch
         {
             Core.ExploreType.Yes => (
@@ -1842,6 +1880,18 @@ public class TacticalMapControl : Control
         return port.ClassIndex > 0 ? $"C{port.ClassIndex}" : "PORT";
     }
 
+    private HashSet<int> GetCachedMajorSpaceLaneSectors(Core.ModDatabase db)
+    {
+        long changeStamp = db.ChangeStamp;
+        if (ReferenceEquals(_majorSpaceLaneDb, db) && _majorSpaceLaneChangeStamp == changeStamp)
+            return _majorSpaceLaneSectors;
+
+        _majorSpaceLaneDb = db;
+        _majorSpaceLaneChangeStamp = changeStamp;
+        _majorSpaceLaneSectors = db.GetMajorSpaceLaneSectors();
+        return _majorSpaceLaneSectors;
+    }
+
     private readonly record struct HexCell(int Q, int R);
 
     private sealed class MapSnapshot
@@ -1860,6 +1910,7 @@ public class TacticalMapControl : Control
         public Dictionary<int, SectorOwnershipOverlay> OwnershipOverlays { get; } = [];
         public HashSet<int> HighlightedSectors { get; } = [];
         public HashSet<int> Landmarks { get; } = [];
+        public HashSet<int> MajorSpaceLaneSectors { get; } = [];
     }
 
     private readonly record struct SectorOwnershipOverlay(

@@ -29,6 +29,7 @@ public sealed class MacroPlayDialog : Window
 
     private readonly Func<string, string?>? _macroValidator;
     private readonly Func<MacroPlayDialog, Task<string?>>? _playAsync;
+    private readonly Func<MacroPlayDialog, Task<string?>>? _saveAsync;
     private readonly IReadOnlyList<AppPreferences.MacroBinding> _existingBindings;
     private readonly TextBox _macroTextBox;
     private readonly TextBox _countTextBox;
@@ -38,6 +39,7 @@ public sealed class MacroPlayDialog : Window
     private readonly ComboBox? _hotkeyCombo;
     private readonly TextBlock? _hotkeyHint;
     private readonly Button _playButton;
+    private readonly Button? _saveButton;
 
     public int PlayCount { get; private set; } = 1;
     public string MacroText { get; private set; } = string.Empty;
@@ -50,12 +52,14 @@ public sealed class MacroPlayDialog : Window
         bool allowHotkeyAssignment = false,
         IReadOnlyList<AppPreferences.MacroBinding>? existingBindings = null,
         string? preferredHotkey = null,
-        Func<MacroPlayDialog, Task<string?>>? playAsync = null)
+        Func<MacroPlayDialog, Task<string?>>? playAsync = null,
+        Func<MacroPlayDialog, Task<string?>>? saveAsync = null)
     {
         _macroValidator = macroValidator;
         _playAsync = playAsync;
+        _saveAsync = saveAsync;
         _existingBindings = existingBindings ?? Array.Empty<AppPreferences.MacroBinding>();
-        Title = "Play Macro";
+        Title = "Quick Macro";
         Width = 640;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -76,14 +80,14 @@ public sealed class MacroPlayDialog : Window
                 {
                     new TextBlock
                     {
-                        Text = "Play Macro",
+                        Text = "Quick Macro",
                         Foreground = FgLabel,
                         FontWeight = FontWeight.Bold,
                         FontSize = 22,
                     },
                     new TextBlock
                     {
-                        Text = "Tune the macro text, choose how many bursts to send, and optionally pin it to a function key for later.",
+                        Text = "Edit and save the quick macro, play it now, or optionally pin it to a function key for later.",
                         Foreground = FgNormal,
                         TextWrapping = TextWrapping.Wrap,
                     },
@@ -250,9 +254,26 @@ public sealed class MacroPlayDialog : Window
             Padding = new Thickness(14, 8),
         };
 
+        if (_saveAsync != null)
+        {
+            _saveButton = new Button
+            {
+                Content = "Save",
+                MinWidth = 80,
+                Background = BgButtonSoft,
+                Foreground = FgNormal,
+                BorderBrush = BdInput,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 0, 8, 0),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(14, 8),
+            };
+            _saveButton.Click += async (_, _) => await TrySaveAsync();
+        }
+
         var btnCancel = new Button
         {
-            Content = _playAsync == null ? "Cancel" : "Close",
+            Content = _playAsync == null && _saveAsync == null ? "Cancel" : "Close",
             MinWidth = 80,
             Background = BgButtonSoft,
             Foreground = FgNormal,
@@ -269,8 +290,11 @@ public sealed class MacroPlayDialog : Window
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 12, 0, 0),
-            Children = { _playButton, btnCancel },
         };
+        buttons.Children.Add(_playButton);
+        if (_saveButton != null)
+            buttons.Children.Add(_saveButton);
+        buttons.Children.Add(btnCancel);
 
         Content = new StackPanel
         {
@@ -317,28 +341,8 @@ public sealed class MacroPlayDialog : Window
 
     private async Task TryPlayOrAcceptAsync()
     {
-        ClearMessages();
-
-        if (!int.TryParse((_countTextBox.Text ?? string.Empty).Trim(), out int count) || count < 1 || count > 1000)
-        {
-            ShowError("Enter a whole number from 1 to 1000.");
+        if (!TryApplyDialogValues())
             return;
-        }
-
-        string macroText = _macroTextBox.Text ?? string.Empty;
-        string? macroError = _macroValidator?.Invoke(macroText);
-        if (!string.IsNullOrWhiteSpace(macroError))
-        {
-            ShowError(macroError);
-            return;
-        }
-
-        MacroText = macroText;
-        PlayCount = count;
-        AssignToHotkey = _assignHotkeyCheckBox?.IsChecked == true;
-        AssignedHotkey = AssignToHotkey
-            ? NormalizeHotkey(_hotkeyCombo?.SelectedItem as string)
-            : string.Empty;
 
         if (_playAsync == null)
         {
@@ -359,6 +363,54 @@ public sealed class MacroPlayDialog : Window
         {
             _playButton.IsEnabled = true;
         }
+    }
+
+    private async Task TrySaveAsync()
+    {
+        if (_saveAsync == null || !TryApplyDialogValues())
+            return;
+
+        _saveButton!.IsEnabled = false;
+        try
+        {
+            string? saveError = await _saveAsync(this);
+            if (!string.IsNullOrWhiteSpace(saveError))
+                ShowError(saveError);
+            else
+                ShowStatus("Quick macro saved.");
+        }
+        finally
+        {
+            _saveButton.IsEnabled = true;
+        }
+    }
+
+    private bool TryApplyDialogValues()
+    {
+        ClearMessages();
+
+        if (!int.TryParse((_countTextBox.Text ?? string.Empty).Trim(), out int count) || count < 1 || count > 1000)
+        {
+            ShowError("Enter a whole number from 1 to 1000.");
+            return false;
+        }
+
+        string macroText = _macroTextBox.Text ?? string.Empty;
+        string? macroError = _macroValidator?.Invoke(macroText);
+        if (!string.IsNullOrWhiteSpace(macroError))
+        {
+            ShowError(macroError);
+            return false;
+        }
+
+        MacroText = macroText;
+        PlayCount = count;
+        AssignToHotkey = _assignHotkeyCheckBox?.IsChecked == true;
+        AssignedHotkey = AssignToHotkey
+            ? NormalizeHotkey(_hotkeyCombo?.SelectedItem as string)
+            : string.Empty;
+
+        return true;
     }
 
     private void ClearMessages()

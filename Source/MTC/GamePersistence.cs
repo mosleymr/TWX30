@@ -89,6 +89,7 @@ public partial class MainWindow
         ScannerD        = _state.ScannerD,
         ScannerH        = _state.ScannerH,
         ScannerP        = _state.ScannerP,
+        EditId          = _embeddedGameConfig?.Mtc?.EditId ?? string.Empty,
     };
 
     private ConnectionProfile BuildProfileFromConfig(EmbeddedGameConfig config)
@@ -116,6 +117,7 @@ public partial class MainWindow
             LoginName = config.LoginName,
             Password = config.Password,
             GameLetter = config.GameLetter,
+            EditId = mtc.EditId,
             LoginSettingsConfigured = mtc.EmbeddedProxy,
             ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines),
             TraderName = state.TraderName,
@@ -360,6 +362,7 @@ public partial class MainWindow
         config.Mtc.LocalTwxProxy = _state.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = _state.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = _state.EmbeddedProxy;
+        config.Mtc.EditId = config.Mtc.EditId ?? string.Empty;
         config.Mtc.ListenForConnections = _state.ListenForConnections;
         config.Mtc.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         config.Mtc.State = BuildEmbeddedMtcState();
@@ -461,6 +464,7 @@ public partial class MainWindow
         config.Mtc.LocalTwxProxy = profile.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = profile.TwxProxyDbPath;
         config.Mtc.EmbeddedProxy = profile.EmbeddedProxy;
+        config.Mtc.EditId = profile.EditId ?? string.Empty;
         config.Mtc.ListenForConnections = profile.ListenForConnections;
         config.Mtc.ScrollbackLines = AppPreferences.NormalizeScrollbackLines(_appPrefs.ScrollbackLines);
         config.Mtc.State = BuildEmbeddedMtcState(profile);
@@ -978,6 +982,7 @@ public partial class MainWindow
         string sharedDbPath = DatabasePathForMode(gameName, imported.EmbeddedProxy);
         EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(imported, sharedDbPath);
         await SaveEmbeddedGameConfigAsync(gameName, config);
+        TwEditCatalogService.ApplyEditDefaults(gameName, imported.EditId);
         string configPath = GameConfigPathForMode(gameName, imported.EmbeddedProxy);
         await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
     }

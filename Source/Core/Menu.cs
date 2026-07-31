@@ -36,7 +36,8 @@ namespace TWXProxy.Core
         Port,
         Script,
         Setup,
-        Database
+        Database,
+        Extensions
     }
 
     /// <summary>
@@ -100,6 +101,7 @@ namespace TWXProxy.Core
         private bool _skipNextLineFeed;
         private int _pendingNumber;
         private readonly List<string> _workflowArgs = new();
+        private string _extensionMenuPath = string.Empty;
 
         public MenuHandler(GameInstance gameInstance, ModInterpreter? interpreter = null, string? scriptDirectory = null, Func<int>? currentClientIndexProvider = null)
         {
@@ -129,6 +131,7 @@ namespace TWXProxy.Core
             _inputMode = InputMode.None;
             _inputBuffer.Clear();
             _workflowArgs.Clear();
+            _extensionMenuPath = string.Empty;
             _pendingNumber = 0;
             _skipNextLineFeed = false;
 
@@ -171,6 +174,8 @@ namespace TWXProxy.Core
                     return await HandleSetupMenuAsync(command);
                 case MenuState.Database:
                     return await HandleDatabaseMenuAsync(command);
+                case MenuState.Extensions:
+                    return await HandleExtensionMenuAsync(command);
                 default:
                     return false;
             }
@@ -227,6 +232,15 @@ namespace TWXProxy.Core
                 case 'H':
                     await ToggleNativeHaggleAsync();
                     return true;
+                case 'M':
+                    if (_gameInstance.HasProxyMenuPath("M"))
+                    {
+                        _currentMenu = MenuState.Extensions;
+                        _extensionMenuPath = "M";
+                        await ShowExtensionMenuAsync();
+                        return true;
+                    }
+                    break;
                 case 'P':
                     _currentMenu = MenuState.Port;
                     await ShowPortMenuAsync();
@@ -248,11 +262,55 @@ namespace TWXProxy.Core
                 case 'Z':
                     await StopAllScriptsAsync();
                     return true;
-                default:
-                    await _gameInstance.SendMessageAsync($"\r\nUnknown command '{command}'. Press ? for help.\r\n");
-                    await ShowMenuPromptAsync();
+            }
+
+            await _gameInstance.SendMessageAsync($"\r\nUnknown command '{command}'. Press ? for help.\r\n");
+            await ShowMenuPromptAsync();
+            return true;
+        }
+
+        private async Task<bool> HandleExtensionMenuAsync(char command)
+        {
+            char key = char.ToUpperInvariant(command);
+
+            switch (key)
+            {
+                case '?':
+                    await ShowExtensionMenuHelpAsync();
+                    return true;
+                case 'Q':
+                    if (_extensionMenuPath.Length <= 1)
+                    {
+                        _currentMenu = MenuState.Main;
+                        _extensionMenuPath = string.Empty;
+                        await ShowMenuPromptAsync();
+                    }
+                    else
+                    {
+                        _extensionMenuPath = _extensionMenuPath[..^1];
+                        await ShowExtensionMenuPromptAsync();
+                    }
                     return true;
             }
+
+            string nextPath = _extensionMenuPath + key;
+            if (!_gameInstance.HasProxyMenuPath(nextPath))
+            {
+                await _gameInstance.SendMessageAsync($"\r\nUnknown command '{command}'. Press ? for help.\r\n");
+                await ShowExtensionMenuPromptAsync();
+                return true;
+            }
+
+            _extensionMenuPath = nextPath;
+            ProxyMenuCommandResult? result = await _gameInstance.ExecuteProxyMenuCommandAsync(nextPath);
+            if (result == ProxyMenuCommandResult.ExitMenu)
+            {
+                await ExitMenuAsync();
+                return true;
+            }
+
+            await ShowExtensionMenuPromptAsync();
+            return true;
         }
 
         private async Task<bool> HandleDataMenuAsync(char command)
@@ -554,6 +612,7 @@ namespace TWXProxy.Core
         private async Task ShowScriptMenuPromptAsync() => await _gameInstance.SendMessageAsync("Script> ");
         private async Task ShowSetupMenuPromptAsync() => await _gameInstance.SendMessageAsync("Setup> ");
         private async Task ShowDatabaseMenuPromptAsync() => await _gameInstance.SendMessageAsync("Database> ");
+        private async Task ShowExtensionMenuPromptAsync() => await _gameInstance.SendMessageAsync(GetExtensionMenuPrompt());
 
         private async Task ShowCurrentMenuPromptAsync()
         {
@@ -577,6 +636,9 @@ namespace TWXProxy.Core
                 case MenuState.Database:
                     await ShowDatabaseMenuPromptAsync();
                     break;
+                case MenuState.Extensions:
+                    await ShowExtensionMenuPromptAsync();
+                    break;
             }
         }
 
@@ -595,6 +657,8 @@ namespace TWXProxy.Core
             help.Append("  D - Data menu\r\n");
             help.Append("  E - Edit/Send last burst\r\n");
             help.Append("  H - Toggle native haggle\r\n");
+            if (_gameInstance.HasProxyMenuPath("M"))
+                help.Append("  M - Module commands\r\n");
             help.Append("  P - Port menu\r\n");
             help.Append("  R - Repeat last burst\r\n");
             help.Append("  S - Script menu\r\n");
@@ -603,6 +667,52 @@ namespace TWXProxy.Core
             help.Append("  Z - Stop all scripts\r\n\r\n");
             await _gameInstance.SendMessageAsync(help.ToString());
             await ShowMenuPromptAsync();
+        }
+
+        private async Task ShowExtensionMenuAsync()
+        {
+            await _gameInstance.SendMessageAsync("\r\nModule commands - Press ? for help\r\n");
+            await ShowExtensionMenuPromptAsync();
+        }
+
+        private async Task ShowExtensionMenuHelpAsync()
+        {
+            var help = new StringBuilder();
+            help.Append($"\r\n{GetExtensionMenuTitle()}:\r\n");
+            help.Append("  ? - Command list\r\n");
+            help.Append("  Q - Return\r\n");
+
+            foreach (ProxyMenuCommand command in _gameInstance.GetProxyMenuChildCommands(_extensionMenuPath))
+            {
+                char key = command.Path[^1];
+                help.Append("  ");
+                help.Append(key);
+                help.Append(" - ");
+                help.Append(command.Description);
+                help.Append("\r\n");
+            }
+
+            help.Append("\r\n");
+            await _gameInstance.SendMessageAsync(help.ToString());
+            await ShowExtensionMenuPromptAsync();
+        }
+
+        private string GetExtensionMenuPrompt()
+        {
+            if (string.Equals(_extensionMenuPath, "M", StringComparison.OrdinalIgnoreCase))
+                return "Modules> ";
+
+            string description = _gameInstance.GetProxyMenuCommandDescription(_extensionMenuPath);
+            return string.IsNullOrWhiteSpace(description) ? "Modules> " : $"{description}> ";
+        }
+
+        private string GetExtensionMenuTitle()
+        {
+            if (string.Equals(_extensionMenuPath, "M", StringComparison.OrdinalIgnoreCase))
+                return "Module commands";
+
+            string description = _gameInstance.GetProxyMenuCommandDescription(_extensionMenuPath);
+            return string.IsNullOrWhiteSpace(description) ? "Module commands" : description;
         }
 
         private async Task ShowDataMenuHelpAsync()

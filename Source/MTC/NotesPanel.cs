@@ -19,6 +19,7 @@ public partial class MainWindow
     private DispatcherTimer? _notesSaveTimer;
     private bool _notesPanelVisible;
     private bool _notesLoading;
+    private bool _notesApplyingText;
     private bool _notesDirty;
     private string? _notesGameName;
     private string? _notesFilePath;
@@ -30,29 +31,35 @@ public partial class MainWindow
     {
         bool ownsVisibleControls = NotesTabOwnsVisibleControls(tab);
 
+        if (!ownsVisibleControls)
+        {
+            tab.NotesPanelVisible = _notesPanelVisible;
+            return;
+        }
+
         tab.NotesPanelVisible = _notesPanelVisible;
         tab.NotesLoading = _notesLoading;
         tab.NotesDirty = _notesDirty;
         tab.NotesGameName = _notesGameName;
         tab.NotesFilePath = _notesFilePath;
 
-        if (ownsVisibleControls && _notesTextBox != null)
+        if (_notesTextBox != null)
             tab.NotesText = _notesTextBox.Text ?? string.Empty;
 
-        if (ownsVisibleControls && _notesStatusText != null)
+        if (_notesStatusText != null)
             tab.NotesStatus = _notesStatusText.Text ?? tab.NotesStatus;
     }
 
     private void BindNotesState(MtcTabPrototype tab)
     {
+        if (!NotesTabOwnsVisibleControls(tab))
+            return;
+
         _notesPanelVisible = tab.NotesPanelVisible;
         _notesLoading = tab.NotesLoading;
         _notesDirty = tab.NotesDirty;
         _notesGameName = tab.NotesGameName;
         _notesFilePath = tab.NotesFilePath;
-
-        if (!NotesTabOwnsVisibleControls(tab))
-            return;
 
         if (_notesTextBox != null)
         {
@@ -60,7 +67,18 @@ public partial class MainWindow
             _notesLoading = true;
             try
             {
-                _notesTextBox.Text = tab.NotesText;
+                if (!string.Equals(_notesTextBox.Text, tab.NotesText, StringComparison.Ordinal))
+                {
+                    _notesApplyingText = true;
+                    try
+                    {
+                        _notesTextBox.Text = tab.NotesText;
+                    }
+                    finally
+                    {
+                        _notesApplyingText = false;
+                    }
+                }
             }
             finally
             {
@@ -88,10 +106,13 @@ public partial class MainWindow
     private void SaveAllTabNotesNow()
     {
         var restore = ResolveNotesTabOwner();
-        foreach (var tab in _mtcTabs.ToArray())
-            ExecuteInOptionalMtcTabSession(tab, SaveCurrentNotesNow);
+        if (ActiveMtcTab is { } activeTab)
+            CaptureNotesState(activeTab);
 
-        if (restore is not null)
+        foreach (var tab in _mtcTabs.ToArray())
+            SaveTabNotesNow(tab);
+
+        if (restore is not null && NotesTabOwnsVisibleControls(restore))
             EnsureMtcTabSessionBound(restore);
     }
 
@@ -372,7 +393,23 @@ public partial class MainWindow
 
     private void QueueNotesSave()
     {
-        if (_notesLoading || _notesTextBox == null || string.IsNullOrWhiteSpace(_notesFilePath))
+        if (_notesLoading || _notesApplyingText || _notesTextBox == null)
+            return;
+
+        string notesText = _notesTextBox.Text ?? string.Empty;
+        var owner = ResolveNotesTabOwner();
+        if (owner is not null && NotesTabOwnsVisibleControls(owner))
+        {
+            owner.NotesPanelVisible = _notesPanelVisible;
+            owner.NotesLoading = _notesLoading;
+            owner.NotesDirty = true;
+            owner.NotesGameName = _notesGameName;
+            owner.NotesFilePath = _notesFilePath;
+            owner.NotesText = notesText;
+            owner.NotesStatus = "Unsaved changes...";
+        }
+
+        if (string.IsNullOrWhiteSpace(_notesFilePath))
             return;
 
         _notesDirty = true;
@@ -433,6 +470,33 @@ public partial class MainWindow
             if (ownsVisibleControls)
                 owner.NotesText = notesText;
         }
+    }
+
+    private void SaveTabNotesNow(MtcTabPrototype tab)
+    {
+        if (NotesTabOwnsVisibleControls(tab))
+        {
+            SaveCurrentNotesNow();
+            return;
+        }
+
+        if (!tab.NotesDirty || string.IsNullOrWhiteSpace(tab.NotesFilePath))
+            return;
+
+        string status;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(tab.NotesFilePath)!);
+            File.WriteAllText(tab.NotesFilePath, tab.NotesText ?? string.Empty);
+            tab.NotesDirty = false;
+            status = $"Saved to {Path.GetFileName(tab.NotesFilePath)}";
+        }
+        catch (Exception ex)
+        {
+            status = $"Save failed: {ex.Message}";
+        }
+
+        tab.NotesStatus = status;
     }
 
     private void UpdateNotesHeader()

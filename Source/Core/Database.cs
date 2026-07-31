@@ -213,6 +213,12 @@ namespace TWXProxy.Core
         public char CommandChar { get; set; } = '$';
     }
 
+    public sealed record MajorSpaceLaneRoute(
+        string Name,
+        int FromSector,
+        int ToSector,
+        IReadOnlyList<int> Sectors);
+
     #endregion
 
     /// <summary>
@@ -673,6 +679,8 @@ namespace TWXProxy.Core
             if (sector.Number < 1 || (_header.Sectors > 0 && sector.Number > _header.Sectors))
                 throw new ArgumentOutOfRangeException(nameof(sector.Number));
 
+            // TWX27 recalculates TSector.Warps from Warp[] on every save.
+            sector.WarpCount = (byte)sector.Warp.Count(warp => warp != 0);
             _sectors[sector.Number] = sector;
             sector.Update = DateTime.Now;
 
@@ -1833,6 +1841,81 @@ namespace TWXProxy.Core
             }
 
             return new List<int>();
+        }
+
+        public IReadOnlyList<MajorSpaceLaneRoute> CalculateMajorSpaceLaneRoutes(bool markSectorParameters = false)
+        {
+            var routes = new List<MajorSpaceLaneRoute>(8);
+            DataHeader header = DBHeader;
+            int stardock = header.StarDock;
+            int rylos = header.Rylos;
+            int alpha = header.AlphaCentauri;
+
+            AddMajorSpaceLaneRoute(routes, "Terra to Stardock", 1, stardock);
+            AddMajorSpaceLaneRoute(routes, "Stardock to Terra", stardock, 1);
+            AddMajorSpaceLaneRoute(routes, "Stardock to Rylos", stardock, rylos);
+            AddMajorSpaceLaneRoute(routes, "Rylos to Stardock", rylos, stardock);
+            AddMajorSpaceLaneRoute(routes, "Stardock to Alpha Centauri", stardock, alpha);
+            AddMajorSpaceLaneRoute(routes, "Alpha Centauri to Stardock", alpha, stardock);
+            AddMajorSpaceLaneRoute(routes, "Rylos to Alpha Centauri", rylos, alpha);
+            AddMajorSpaceLaneRoute(routes, "Alpha Centauri to Rylos", alpha, rylos);
+
+            if (markSectorParameters)
+                MarkMajorSpaceLaneSectorParameters(routes);
+
+            return routes;
+        }
+
+        public HashSet<int> GetMajorSpaceLaneSectors(bool markSectorParameters = false)
+        {
+            var sectors = new HashSet<int>();
+            foreach (MajorSpaceLaneRoute route in CalculateMajorSpaceLaneRoutes(markSectorParameters))
+            {
+                foreach (int sectorNumber in route.Sectors)
+                    sectors.Add(sectorNumber);
+            }
+
+            return sectors;
+        }
+
+        private void AddMajorSpaceLaneRoute(List<MajorSpaceLaneRoute> routes, string name, int fromSector, int toSector)
+        {
+            if (!IsKnownSector(fromSector) || !IsKnownSector(toSector))
+                return;
+
+            List<int> sectors = CalculatePascalShortestPath(fromSector, toSector);
+            if (sectors.Count == 0)
+                return;
+
+            routes.Add(new MajorSpaceLaneRoute(name, fromSector, toSector, sectors));
+        }
+
+        public bool MarkMajorSpaceLaneSectorParameters(IReadOnlyList<MajorSpaceLaneRoute> routes)
+        {
+            bool changed = false;
+            foreach (MajorSpaceLaneRoute route in routes)
+            {
+                foreach (int sectorNumber in route.Sectors)
+                {
+                    if (GetSectorVar(sectorNumber, "MSLSEC") == "1")
+                        continue;
+
+                    SetSectorVar(sectorNumber, "MSLSEC", "1");
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                Interlocked.Increment(ref _changeStamp);
+
+            return changed;
+        }
+
+        private bool IsKnownSector(int sectorNumber)
+        {
+            return sectorNumber > 0 &&
+                   sectorNumber != ushort.MaxValue &&
+                   (_header.Sectors <= 0 || sectorNumber <= _header.Sectors);
         }
 
         /// <summary>

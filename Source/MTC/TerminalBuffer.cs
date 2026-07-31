@@ -107,6 +107,7 @@ public class TerminalBuffer
     private int _resizeBackupCursorRow;
     private bool[]? _resizeBackupSoftWrappedRows;
     private bool _suppressResizeBackupInvalidation;
+    private bool _pendingWrap;
 
     // ── Scrollback buffer ──────────────────────────────────────────────────
     /// <summary>Maximum number of lines retained in the off-screen scrollback buffer.</summary>
@@ -354,15 +355,23 @@ public class TerminalBuffer
     /// <summary>Writes a character at the current cursor position and advances.</summary>
     public void WriteChar(char ch)
     {
-        if (CursorCol >= Columns) LineFeed(softWrap: true);   // wrap
+        if (_pendingWrap)
+        {
+            _pendingWrap = false;
+            LineFeed(softWrap: true);
+            CursorCol = 0;
+        }
 
         SetCell(CursorRow, CursorCol, ch, CurrentFg, CurrentBg);
         _cells[CursorRow, CursorCol].Blink = CurrentBlink;
-        CursorCol++;
-        if (CursorCol >= Columns)
+
+        if (CursorCol >= Columns - 1)
         {
-            CursorCol = 0;
-            LineFeed(softWrap: true);
+            _pendingWrap = true;
+        }
+        else
+        {
+            CursorCol++;
         }
     }
 
@@ -370,6 +379,7 @@ public class TerminalBuffer
 
     public void SetCursor(int row, int col)
     {
+        _pendingWrap = false;
         CursorRow = Math.Clamp(row, 0, Rows - 1);
         CursorCol = Math.Clamp(col, 0, Columns - 1);
     }
@@ -377,12 +387,17 @@ public class TerminalBuffer
     public void MoveCursorRelative(int dRow, int dCol)
         => SetCursor(CursorRow + dRow, CursorCol + dCol);
 
-    public void CarriageReturn()  => CursorCol = 0;
+    public void CarriageReturn()
+    {
+        _pendingWrap = false;
+        CursorCol = 0;
+    }
 
     public void LineFeed() => LineFeed(softWrap: false);
 
     private void LineFeed(bool softWrap)
     {
+        _pendingWrap = false;
         _softWrappedRows[CursorRow] = softWrap;
         if (CursorRow >= ScrollBottom)
             ScrollUp();
@@ -392,11 +407,13 @@ public class TerminalBuffer
 
     public void BackSpace()
     {
+        _pendingWrap = false;
         if (CursorCol > 0) CursorCol--;
     }
 
     public void Tab()
     {
+        _pendingWrap = false;
         int next = ((CursorCol / 8) + 1) * 8;
         CursorCol = Math.Min(next, Columns - 1);
     }
@@ -430,7 +447,7 @@ public class TerminalBuffer
                     _cells[r, c] = _cells[r + 1, c];
                 _softWrappedRows[r] = _softWrappedRows[r + 1];
             }
-            EraseLine(ScrollBottom, 0, Columns - 1);
+            ClearLineToDefault(ScrollBottom, 0, Columns - 1);
             _softWrappedRows[ScrollBottom] = false;
         }
         Dirty = true;
@@ -447,7 +464,7 @@ public class TerminalBuffer
                     _cells[r, c] = _cells[r - 1, c];
                 _softWrappedRows[r] = _softWrappedRows[r - 1];
             }
-            EraseLine(ScrollTop, 0, Columns - 1);
+            ClearLineToDefault(ScrollTop, 0, Columns - 1);
             _softWrappedRows[ScrollTop] = false;
         }
         Dirty = true;
@@ -463,6 +480,12 @@ public class TerminalBuffer
         if (fromCol <= 0 && toCol >= Columns - 1)
             _softWrappedRows[row] = false;
         Dirty = true;
+    }
+
+    private void ClearLineToDefault(int row, int fromCol, int toCol)
+    {
+        for (int c = Math.Max(0, fromCol); c <= toCol && c < Columns; c++)
+            _cells[row, c] = TerminalCell.Default;
     }
 
     public void EraseDisplay(int fromRow = 0) => EraseDisplay(fromRow, Rows - 1);
@@ -565,6 +588,7 @@ public class TerminalBuffer
         ScrollBottom = rows - 1;
         CursorCol    = Math.Clamp(sourceCursorCol, 0, columns - 1);
         CursorRow    = Math.Clamp(sourceCursorRow - sourceRowStart, 0, rows - 1);
+        _pendingWrap = false;
         _suppressResizeBackupInvalidation = false;
 
         if (_resizeBackupCells != null &&
@@ -590,6 +614,7 @@ public class TerminalBuffer
         }
         CursorCol    = 0;
         CursorRow    = 0;
+        _pendingWrap = false;
         ScrollTop    = 0;
         ScrollBottom = Rows - 1;
         CurrentFg    = AnsiColor.ToColor(7);
@@ -597,6 +622,16 @@ public class TerminalBuffer
         // Intentionally do NOT clear _scrollback here — a terminal reset (ESC c)
         // from the server should not destroy the session scroll history.
         Dirty        = true;
+    }
+
+    public void ClearAll()
+    {
+        _scrollback = [];
+        _scrollbackSoftWrapped = [];
+        _scrollbackStart = 0;
+        _scrollbackCount = 0;
+        _scrollbackGeneration++;
+        Reset();
     }
 
     private void SaveResizeBackup()

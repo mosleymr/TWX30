@@ -84,11 +84,11 @@ namespace TWXProxy.Core
                 if (TryGetCompatibleVarValue(_currentGameVars, varName, out var gameValue, out var resolvedGameName))
                 {
                     varParam.Value = gameValue;
-                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='game-store' resolved='{resolvedGameName}' value='{gameValue}'\n");
+                    GlobalModules.VariablePersistenceDebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='game-store' resolved='{resolvedGameName}' value='{gameValue}'\n");
                 }
                 else
                 {
-                    GlobalModules.DebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='miss' value='{varParam.Value}'\n");
+                    GlobalModules.VariablePersistenceDebugLog($"[LOADVAR] scriptId='{scriptId}' var='{varName}' source='miss' value='{varParam.Value}'\n");
                 }
             }
             return CmdAction.None;
@@ -105,7 +105,7 @@ namespace TWXProxy.Core
                 string varName = varParam.Name;
                 string value = varParam.Value;
 
-                GlobalModules.DebugLog($"[SAVEVAR] scriptId='{scriptId}' var='{varName}' value='{value}'\n");
+                GlobalModules.VariablePersistenceDebugLog($"[SAVEVAR] scriptId='{scriptId}' var='{varName}' value='{value}'\n");
 
                 // Persist to the per-game data file via ProxyService callback.
                 _currentGameVars[varName] = value;

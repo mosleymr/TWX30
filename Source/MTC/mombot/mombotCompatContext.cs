@@ -118,9 +118,12 @@ internal sealed class mombotCompatContext
             "$bot~command_typed",
             "$command_typed");
         string userCommandLine = userCommandLineOverride ?? context.TypedParameterLine;
+        string playerOverride = settingsOverride;
         string onlyHelp = IsOnlyHelpCommand(context) ? "1" : "0";
         SetVars(vars, userCommandLine, "$BOT~USER_COMMAND_LINE", "$bot~user_command_line", "$USER_COMMAND_LINE", "$user_command_line");
         SetVars(vars, userCommandLine, "$SWITCHBOARD~USER_COMMAND_LINE", "$switchboard~user_command_line");
+        SetVars(vars, "1", "$BOT~COMMAND_LINES", "$bot~command_lines");
+        SetVars(vars, context.CommandLine, "$BOT~COMMAND_LINES[1]", "$bot~command_lines[1]");
         SetVars(vars, botName, "$BOT~BOT_NAME", "$SWITCHBOARD~BOT_NAME", "$SWITCHBOARD~bot_name", "$bot~bot_name", "$bot_name", "$bot~name");
         SetVars(vars, context.SelfCommand ? "1" : "0", "$BOT~SELF_COMMAND", "$SWITCHBOARD~SELF_COMMAND", "$switchboard~self_command", "$bot~self_command", "$self_command");
         SetVars(vars, onlyHelp, "$BOT~ONLY_HELP", "$bot~only_help", "$only_help", "$SWITCHBOARD~ONLY_HELP", "$switchboard~only_help");
@@ -187,6 +190,7 @@ internal sealed class mombotCompatContext
         SetVars(vars, photonDuration, "$GAME~PHOTON_DURATION", "$game~photon_duration");
         SetVars(vars, portMax, "$GAME~PORT_MAX", "$GAME~port_max", "$game~port_max");
         SetVars(vars, settingsOverride, "$SETTINGS~OVERRIDE", "$settings~override");
+        SetVars(vars, playerOverride, "$PLAYER~OVERRIDE", "$player~override");
         SetVars(vars, dropOffensive, "$PLAYER~DROPOFFENSIVE", "$PLAYER~dropOffensive");
         SetVars(vars, dropToll, "$PLAYER~DROPTOLL", "$PLAYER~dropToll");
 

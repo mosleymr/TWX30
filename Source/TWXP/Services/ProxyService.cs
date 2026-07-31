@@ -382,23 +382,10 @@ public class ProxyService : IProxyService
                         // Fire text triggers and text line triggers for scripts (all lines, including blank)
                         if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
                         {
-                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(line);
-                            TWXProxy.Core.ScriptRef.SetCurrentLine(scriptLine);
-
                             // Pascal dispatch order for complete lines: TextLineEvent first, then TextEvent.
                             // (Pascal ProcessLine calls TextLineEvent, then ProcessPrompt calls TextEvent with the same line.)
-                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextLineEvent...\n");
-                            interpreter.TextLineEvent(scriptLine, false);
-
-                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling TextEvent...\n");
-                            // TextEvent fires on complete lines too (matches Pascal ProcessPrompt calling TextEvent with CurrentLine)
-                            TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(line);
-                            TWXProxy.Core.ScriptRef.SetCurrentLine(scriptLine);
-                            interpreter.TextEvent(scriptLine, false);
-                            
-                            // Re-enable triggers for next line (they get disabled when they fire to prevent double-triggering)
-                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Re-activating triggers\n");
-                            interpreter.ActivateTriggers();
+                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Dispatching complete script line...\n");
+                            interpreter.DispatchCompleteLine(scriptLine, line, false);
                         }
                     }
                     

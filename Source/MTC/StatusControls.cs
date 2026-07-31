@@ -34,6 +34,7 @@ public partial class MainWindow
         ConfigureStatusStopAllButton();
         ConfigureStatusCommButton();
         ConfigureStatusBotButton();
+        ConfigureStatusDockShopperButton();
         ConfigureStatusHaggleButton();
         ConfigureStatusToggleButton();
         ConfigureStatusRedAlertButton();
@@ -57,6 +58,10 @@ public partial class MainWindow
         _statusBotFrame.Padding = new Thickness(3, 2);
         _statusBotFrame.CornerRadius = new CornerRadius(8);
         _statusBotFrame.Child = _statusBotButton;
+
+        _statusDockShopperFrame.Padding = new Thickness(3, 2);
+        _statusDockShopperFrame.CornerRadius = new CornerRadius(8);
+        _statusDockShopperFrame.Child = _statusDockShopperButton;
 
         _statusHaggleFrame.Padding = new Thickness(3, 2);
         _statusHaggleFrame.CornerRadius = new CornerRadius(8);
@@ -401,6 +406,34 @@ public partial class MainWindow
         };
     }
 
+    private void ConfigureStatusDockShopperButton()
+    {
+        _statusDockShopperButton.MinWidth = 0;
+        _statusDockShopperButton.Width = 28;
+        _statusDockShopperButton.Height = 20;
+        _statusDockShopperButton.Padding = new Thickness(2, 1);
+        _statusDockShopperButton.Focusable = false;
+        _statusDockShopperButton.VerticalAlignment = VerticalAlignment.Center;
+        _statusDockShopperButton.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusDockShopperButton.Content = BuildStatusDockShopperIcon();
+        ToolTip.SetTip(_statusDockShopperButton, "Open Dock Shopper");
+        _statusDockShopperButton.Click += async (_, _) =>
+        {
+            await ShowDockShopperAsync();
+            PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
+        };
+        _statusDockShopperButton.PointerEntered += (_, _) =>
+        {
+            _statusDockShopperHovered = true;
+            UpdateTerminalLiveSelector();
+        };
+        _statusDockShopperButton.PointerExited += (_, _) =>
+        {
+            _statusDockShopperHovered = false;
+            UpdateTerminalLiveSelector();
+        };
+    }
+
     private Control BuildStatusCommIcon()
     {
         _statusCommFlap = new Border
@@ -546,6 +579,68 @@ public partial class MainWindow
                 _statusBotAntenna,
                 _statusBotHead,
                 _statusBotBody,
+            },
+        };
+    }
+
+    private static Control BuildStatusDockShopperIcon()
+    {
+        return new Grid
+        {
+            Width = 18,
+            Height = 16,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new Avalonia.Controls.Shapes.Path
+                {
+                    Name = "CartBasket",
+                    Width = 16,
+                    Height = 10,
+                    Stretch = Stretch.Fill,
+                    StrokeThickness = 1.25,
+                    Data = Geometry.Parse("M 2,1 L 4,1 L 5.2,8 L 14,8 L 16,3 L 5,3"),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(0, 1, 0, 0),
+                    IsHitTestVisible = false,
+                },
+                new Avalonia.Controls.Shapes.Path
+                {
+                    Name = "CartCargo",
+                    Width = 9,
+                    Height = 4,
+                    Stretch = Stretch.Fill,
+                    StrokeThickness = 1,
+                    Data = Geometry.Parse("M 0,4 L 2,0 L 7,0 L 9,4"),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Margin = new Thickness(3, 4, 0, 0),
+                    IsHitTestVisible = false,
+                },
+                new Border
+                {
+                    Name = "CartWheelLeft",
+                    Width = 3.2,
+                    Height = 3.2,
+                    CornerRadius = new CornerRadius(1.6),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(5, 0, 0, 0),
+                    IsHitTestVisible = false,
+                },
+                new Border
+                {
+                    Name = "CartWheelRight",
+                    Width = 3.2,
+                    Height = 3.2,
+                    CornerRadius = new CornerRadius(1.6),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 2, 0),
+                    IsHitTestVisible = false,
+                },
             },
         };
     }
@@ -758,10 +853,13 @@ public partial class MainWindow
             : !remoteProxyScripts && _standaloneNativeHaggle.Enabled;
         BotRuntimeState botRuntime = GetBotRuntimeState();
         bool nativeBotAvailable = enabled && (botRuntime.NativeRunning || IsNativeMombotConfiguredForStart());
+        MTC.mombot.mombotStatusSnapshot botSnapshot = _mombot.GetStatusSnapshot();
+        bool dockShopperAvailable = enabled && botSnapshot.Enabled && botSnapshot.AcceptSelfCommands;
         ApplyStatusToggleFrameStyle(_statusMacrosFrame, true);
         ApplyStatusToggleFrameStyle(_statusMapFrame, true);
         ApplyStatusToggleFrameStyle(_statusCommFrame, true);
         ApplyStatusToggleFrameStyle(_statusBotFrame, nativeBotAvailable);
+        ApplyStatusToggleFrameStyle(_statusDockShopperFrame, dockShopperAvailable);
         ApplyStatusToggleFrameStyle(_statusHaggleFrame, haggleAvailable);
         ApplyStatusToggleFrameStyle(_statusLivePausedFrame, enabled);
         ApplyStatusToggleFrameStyle(_statusRedAlertFrame, _appPrefs.EnableRedAlertMode);
@@ -771,6 +869,7 @@ public partial class MainWindow
         ApplyStatusMapButtonStyle(_statusMapButton, ActiveMtcTab?.MapWindow is { IsVisible: true });
         ApplyStatusCommButtonStyle(_statusCommButton, _commWindowVisible);
         ApplyStatusBotButtonStyle(_statusBotButton, selected: botRuntime.NativeRunning, nativeBotAvailable);
+        ApplyStatusDockShopperButtonStyle(_statusDockShopperButton, dockShopperAvailable);
         ApplyStatusHaggleButtonStyle(_statusHaggleButton, selected: haggleSelected, haggleAvailable);
         ToolTip.SetTip(_statusBotButton,
             nativeBotAvailable
@@ -781,7 +880,11 @@ public partial class MainWindow
                 ? "Native haggle unavailable"
                 : remoteProxyScripts
                     ? "Toggle native haggle in standalone proxy"
-                : (haggleSelected ? "Disable native haggle" : "Enable native haggle"));
+                    : (haggleSelected ? "Disable native haggle" : "Enable native haggle"));
+        ToolTip.SetTip(_statusDockShopperButton,
+            dockShopperAvailable
+                ? "Open Dock Shopper"
+                : "Enable native Mombot before shopping");
         _statusLivePausedButton.Content = enabled && _statusLivePausedHovered
             ? (_terminalLivePaused ? "RESUME" : "PAUSE")
             : (_terminalLivePaused ? "PAUSED" : "LIVE");
@@ -944,6 +1047,41 @@ public partial class MainWindow
             _statusCommIndicator.Background = selected
                 ? HudAccentOk
                 : new SolidColorBrush(Color.Parse("#3A5360"));
+        }
+    }
+
+    private void ApplyStatusDockShopperButtonStyle(Button button, bool enabled)
+    {
+        button.IsEnabled = enabled;
+        button.Background = _statusDockShopperHovered ? HudHeaderAlt : HudFrame;
+        button.BorderBrush = _statusDockShopperHovered ? HudAccent : HudInnerEdge;
+        button.BorderThickness = new Thickness(1);
+        button.Foreground = Brushes.Transparent;
+
+        if (button.Content is not Grid icon)
+            return;
+
+        Color stroke = enabled
+            ? (_statusDockShopperHovered ? Color.Parse("#A7F1FF") : Color.Parse("#7CD0DE"))
+            : Color.Parse("#536872");
+        Color fill = enabled
+            ? (_statusDockShopperHovered ? Color.Parse("#FFE28A") : Color.Parse("#BE9952"))
+            : Color.Parse("#536872");
+        var strokeBrush = new SolidColorBrush(stroke);
+        var fillBrush = new SolidColorBrush(fill);
+
+        foreach (Control child in icon.Children)
+        {
+            switch (child)
+            {
+                case Avalonia.Controls.Shapes.Path path:
+                    path.Stroke = strokeBrush;
+                    path.Fill = Brushes.Transparent;
+                    break;
+                case Border wheel:
+                    wheel.Background = fillBrush;
+                    break;
+            }
         }
     }
 
@@ -1131,19 +1269,30 @@ public partial class MainWindow
     private void SetRedAlertEnabled(bool enabled)
     {
         bool effectiveEnabled = _appPrefs.EnableRedAlertMode && enabled;
+        var owner = ResolveCurrentMtcTabContext();
+        bool tabStateChanged = owner is not null && owner.RedAlertEnabled != effectiveEnabled;
 
         if (_redAlertEnabled == effectiveEnabled)
         {
+            if (owner is not null)
+                owner.RedAlertEnabled = effectiveEnabled;
+            if (tabStateChanged)
+                RefreshMtcTabStrip(force: true);
             if (PrepareMtcTabVisualRefresh())
                 ApplyVisibleRedAlertUi();
             return;
         }
 
         _redAlertEnabled = effectiveEnabled;
+        if (owner is not null)
+            owner.RedAlertEnabled = effectiveEnabled;
         if (_redAlertEnabled)
             RestartRedAlertTimer();
         else
             StopCurrentRedAlertTimer();
+
+        if (tabStateChanged)
+            RefreshMtcTabStrip(force: true);
 
         if (!PrepareMtcTabVisualRefresh())
             return;
@@ -1167,7 +1316,7 @@ public partial class MainWindow
         if (!PrepareMtcTabVisualRefresh())
             return;
 
-        ApplyRedAlertPalette(_redAlertEnabled);
+        ApplyRedAlertPalette(IsLiveMtcTabActive() && _redAlertEnabled);
         Background = BgWindow;
         _statusRedAlertFrame.IsVisible = _appPrefs.EnableRedAlertMode && _redAlertEnabled;
         ApplyStatusRedAlertButtonStyle(_statusRedAlertButton, _appPrefs.EnableRedAlertMode && _redAlertEnabled);

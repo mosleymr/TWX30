@@ -11,8 +11,8 @@ namespace MTC;
 
 /// <summary>
 /// Application-wide preferences dialog.
-/// Usage: <c>var saved = await new PreferencesDialog(prefs, debugPrefs, gameConfig, gameName).ShowDialog&lt;bool&gt;(owner);</c>
-/// The caller's app preferences, per-game debug preferences, and per-game log preferences
+/// Usage: <c>var saved = await new PreferencesDialog(prefs, debugPrefs, jsonRpcPrefs, gameConfig, gameName).ShowDialog&lt;bool&gt;(owner);</c>
+/// The caller's app preferences, per-game debug preferences, per-game RPC preferences, and per-game log preferences
 /// are updated in-place when the user clicks Save, and the dialog returns <c>true</c>.
 /// </summary>
 internal class PreferencesDialog : Window
@@ -47,9 +47,25 @@ internal class PreferencesDialog : Window
         new("Full automation", MtcRpcApprovalLevels.FullAutomation),
     };
 
+    private static readonly UpdateOption[] UpdateLaneOptions =
+    {
+        new("Beta", AppPreferences.UpdateLaneBeta),
+        new("Stable", AppPreferences.UpdateLaneStable),
+        new("Dev", AppPreferences.UpdateLaneDev),
+    };
+
+    private static readonly UpdateOption[] UpdateCadenceOptions =
+    {
+        new("Daily", AppPreferences.UpdateCadenceDaily),
+        new("Manual only", AppPreferences.UpdateCadenceManual),
+        new("Every startup", AppPreferences.UpdateCadenceStartup),
+        new("Weekly", AppPreferences.UpdateCadenceWeekly),
+    };
+
     public PreferencesDialog(
         AppPreferences prefs,
         EmbeddedMtcDebugConfig debugPrefs,
+        EmbeddedMtcJsonRpcConfig jsonRpcPrefs,
         EmbeddedGameConfig? gameConfig,
         string? gameName)
     {
@@ -133,6 +149,7 @@ internal class PreferencesDialog : Window
         var chkDebug = BuildCheckBox("Enable debug logging", debugPrefs.DebugLoggingEnabled);
         var chkVerbose = BuildCheckBox("Enable verbose parameter debug logging", debugPrefs.VerboseDebugLogging);
         var chkScriptTrace = BuildCheckBox("Enable script VM trace logging (huge)", debugPrefs.ScriptTraceDebugLogging);
+        var chkVariablePersistenceDebug = BuildCheckBox("Debug savevar/loadvar logging (very noisy)", debugPrefs.VariablePersistenceDebugLogging);
         var chkAutoRecorderDebug = BuildCheckBox("Enable AutoRecorder debug logging", debugPrefs.AutoRecorderDebugLogging);
         var chkTriggerDebug = BuildCheckBox("Enable trigger debug logging (very noisy)", debugPrefs.TriggerDebugLogging);
         var chkDebugDatabaseChanges = BuildCheckBox("Debug Database Changes", debugPrefs.DebugDatabaseChanges);
@@ -147,8 +164,28 @@ internal class PreferencesDialog : Window
         var chkPythonExposeRpcToken = BuildCheckBox("Expose JSON-RPC bearer token to Python scripts", prefs.PythonExposeJsonRpcToken);
         var txtPythonInterpreter = BuildPathTextBox(
             AppPreferences.NormalizePythonInterpreterPath(prefs.PythonInterpreterPath),
-            "python3");
+            "auto");
         var chkVmMetrics = BuildCheckBox("Log VM metrics", prefs.VmMetricsEnabled);
+        var chkPerformanceMonitoring = BuildCheckBox("Enable MTC performance monitoring when MTC_PERF_ENABLE_LOG=1", prefs.PerformanceMonitoringEnabled);
+        var chkUpdateChecks = BuildCheckBox("Check for MTC updates", prefs.UpdateChecksEnabled);
+        var cboUpdateLane = BuildUpdateOptionComboBox(
+            UpdateLaneOptions,
+            AppPreferences.NormalizeUpdateLane(prefs.UpdateLane));
+        var cboUpdateCadence = BuildUpdateOptionComboBox(
+            UpdateCadenceOptions,
+            AppPreferences.NormalizeUpdateCadence(prefs.UpdateCadence));
+        var txtUpdateManifestUrl = BuildPathTextBox(
+            AppPreferences.NormalizeUpdateManifestUrl(prefs.UpdateManifestUrl),
+            AppPreferences.DefaultUpdateManifestUrl);
+        void UpdateUpdateControlState()
+        {
+            bool enabled = chkUpdateChecks.IsChecked == true;
+            cboUpdateLane.IsEnabled = enabled;
+            cboUpdateCadence.IsEnabled = enabled;
+            txtUpdateManifestUrl.IsEnabled = enabled;
+        }
+        chkUpdateChecks.IsCheckedChanged += (_, _) => UpdateUpdateControlState();
+        UpdateUpdateControlState();
 
         var cboPreparedCacheLimit = BuildMemoryLimitComboBox(
             prefs.PreparedScriptCacheLimitKb,
@@ -161,18 +198,19 @@ internal class PreferencesDialog : Window
             AppPreferences.DefaultScrollbackLines.ToString(CultureInfo.InvariantCulture));
         txtScrollbackLines.Width = 120;
         txtScrollbackLines.HorizontalAlignment = HorizontalAlignment.Left;
-        prefs.EnsureJsonRpcAuthToken();
-        var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server", prefs.JsonRpcEnabled);
+        bool hasGame = gameConfig != null && !string.IsNullOrWhiteSpace(gameName);
+        string initialJsonRpcToken = AppPreferences.NormalizeJsonRpcAuthToken(jsonRpcPrefs.AuthToken);
+        var chkJsonRpc = BuildCheckBox("Enable JSON-RPC 2.0 server for this game", hasGame && jsonRpcPrefs.Enabled);
         var txtJsonRpcBind = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcBindAddress(prefs.JsonRpcBindAddress),
+            AppPreferences.NormalizeJsonRpcBindAddress(jsonRpcPrefs.BindAddress),
             "127.0.0.1");
         var txtJsonRpcPort = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcPort(prefs.JsonRpcPort).ToString(),
+            AppPreferences.NormalizeJsonRpcPort(jsonRpcPrefs.Port).ToString(),
             "7623");
         txtJsonRpcPort.Width = 110;
         txtJsonRpcPort.HorizontalAlignment = HorizontalAlignment.Left;
         var txtJsonRpcToken = BuildPathTextBox(
-            AppPreferences.NormalizeJsonRpcAuthToken(prefs.JsonRpcAuthToken),
+            initialJsonRpcToken,
             "bearer token");
         var btnRegenerateRpcToken = new Button
         {
@@ -182,13 +220,31 @@ internal class PreferencesDialog : Window
             Margin = new Thickness(8, 0, 0, 0),
         };
         btnRegenerateRpcToken.Click += (_, _) => txtJsonRpcToken.Text = AppPreferences.GenerateJsonRpcAuthToken();
-        var cboJsonRpcApproval = BuildRpcApprovalComboBox(prefs.JsonRpcApprovalLevel);
+        var cboJsonRpcApproval = BuildRpcApprovalComboBox(jsonRpcPrefs.ApprovalLevel);
+        Control[] jsonRpcControls =
+        {
+            txtJsonRpcBind,
+            txtJsonRpcPort,
+            txtJsonRpcToken,
+            btnRegenerateRpcToken,
+            cboJsonRpcApproval,
+        };
+        void UpdateJsonRpcControlState()
+        {
+            chkJsonRpc.IsEnabled = hasGame;
+            bool enabled = hasGame && chkJsonRpc.IsChecked == true;
+            foreach (Control control in jsonRpcControls)
+                control.IsEnabled = enabled;
+        }
+        chkJsonRpc.IsCheckedChanged += (_, _) => UpdateJsonRpcControlState();
+        UpdateJsonRpcControlState();
 
         chkDebug.IsCheckedChanged += (_, _) =>
         {
             bool debugEnabled = chkDebug.IsChecked == true;
             chkVerbose.IsEnabled = debugEnabled;
             chkScriptTrace.IsEnabled = debugEnabled;
+            chkVariablePersistenceDebug.IsEnabled = debugEnabled;
             chkAutoRecorderDebug.IsEnabled = debugEnabled;
             chkTriggerDebug.IsEnabled = debugEnabled;
             chkDebugDatabaseChanges.IsEnabled = debugEnabled;
@@ -196,6 +252,7 @@ internal class PreferencesDialog : Window
             {
                 chkVerbose.IsChecked = false;
                 chkScriptTrace.IsChecked = false;
+                chkVariablePersistenceDebug.IsChecked = false;
                 chkAutoRecorderDebug.IsChecked = false;
                 chkTriggerDebug.IsChecked = false;
                 chkDebugDatabaseChanges.IsChecked = false;
@@ -203,6 +260,7 @@ internal class PreferencesDialog : Window
         };
         chkVerbose.IsEnabled = chkDebug.IsChecked == true;
         chkScriptTrace.IsEnabled = chkDebug.IsChecked == true;
+        chkVariablePersistenceDebug.IsEnabled = chkDebug.IsChecked == true;
         chkAutoRecorderDebug.IsEnabled = chkDebug.IsChecked == true;
         chkTriggerDebug.IsEnabled = chkDebug.IsChecked == true;
         chkDebugDatabaseChanges.IsEnabled = chkDebug.IsChecked == true;
@@ -228,7 +286,21 @@ internal class PreferencesDialog : Window
                 ? "Logging controls for the currently selected game."
                 : $"Logging controls for game '{gameName}'.",
             BuildCheckGroup(chkCreateGameLogs, chkCreateAnsiGameLogs),
-            BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkAutoRecorderDebug, chkTriggerDebug, chkDebugDatabaseChanges, chkDebugPortHaggle, chkDebugPlanetHaggle));
+            BuildCheckGroup(chkDebug, chkVerbose, chkScriptTrace, chkVariablePersistenceDebug, chkAutoRecorderDebug, chkTriggerDebug, chkDebugDatabaseChanges, chkDebugPortHaggle, chkDebugPlanetHaggle));
+
+        var appDiagnosticsSection = BuildSection(
+            "Application Diagnostics",
+            "Global process instrumentation for MTC. Requires MTC_PERF_ENABLE_LOG=1 and should stay off during normal play.",
+            BuildCheckGroup(chkPerformanceMonitoring));
+
+        var updatesSection = BuildSection(
+            "Updates",
+            "Global MTC update checks. Downloads open the platform installer instead of replacing the running app.",
+            BuildCheckGroup(chkUpdateChecks),
+            BuildTwoColumnRow(
+                BuildField("Lane", cboUpdateLane, "Beta tracks normal test builds; stable can be used for GA releases."),
+                BuildField("Check cadence", cboUpdateCadence, "Manual checks are still available under About.")),
+            BuildField("Manifest URL", txtUpdateManifestUrl, "JSON manifest URL. SourceForge and GitHub-hosted manifests both work."));
 
         var alertsSection = BuildSection(
             "Alerts",
@@ -242,7 +314,7 @@ internal class PreferencesDialog : Window
             BuildField(
                 "Python interpreter",
                 txtPythonInterpreter,
-                "Command or full path used when launching .py scripts from MTC."),
+                "Use auto to detect Python, or enter a command/full path such as py -3."),
             BuildField(
                 "Scrollback lines",
                 txtScrollbackLines,
@@ -252,7 +324,9 @@ internal class PreferencesDialog : Window
 
         var integrationsSection = BuildSection(
             "Integrations",
-            "Local JSON-RPC 2.0 access for reasoning engines and external tools.",
+            hasGame
+                ? $"Local JSON-RPC 2.0 access for game '{gameName}'."
+                : "Open or create a game before enabling JSON-RPC access.",
             BuildCheckGroup(chkJsonRpc),
             BuildTwoColumnRow(
                 BuildField("Bind address", txtJsonRpcBind, "Use 127.0.0.1 unless remote access is intentional."),
@@ -288,6 +362,7 @@ internal class PreferencesDialog : Window
             debugPrefs.DebugLoggingEnabled = chkDebug.IsChecked == true;
             debugPrefs.VerboseDebugLogging = debugPrefs.DebugLoggingEnabled && chkVerbose.IsChecked == true;
             debugPrefs.ScriptTraceDebugLogging = debugPrefs.DebugLoggingEnabled && chkScriptTrace.IsChecked == true;
+            debugPrefs.VariablePersistenceDebugLogging = debugPrefs.DebugLoggingEnabled && chkVariablePersistenceDebug.IsChecked == true;
             debugPrefs.AutoRecorderDebugLogging = debugPrefs.DebugLoggingEnabled && chkAutoRecorderDebug.IsChecked == true;
             debugPrefs.TriggerDebugLogging = debugPrefs.DebugLoggingEnabled && chkTriggerDebug.IsChecked == true;
             debugPrefs.DebugDatabaseChanges = debugPrefs.DebugLoggingEnabled && chkDebugDatabaseChanges.IsChecked == true;
@@ -305,6 +380,11 @@ internal class PreferencesDialog : Window
             prefs.PythonInterpreterPath = AppPreferences.NormalizePythonInterpreterPath(txtPythonInterpreter.Text);
             prefs.PythonExposeJsonRpcToken = chkPythonExposeRpcToken.IsChecked == true;
             prefs.VmMetricsEnabled = chkVmMetrics.IsChecked == true;
+            prefs.PerformanceMonitoringEnabled = chkPerformanceMonitoring.IsChecked == true;
+            prefs.UpdateChecksEnabled = chkUpdateChecks.IsChecked == true;
+            prefs.UpdateLane = GetUpdateOptionValue(cboUpdateLane, AppPreferences.UpdateLaneBeta);
+            prefs.UpdateCadence = GetUpdateOptionValue(cboUpdateCadence, AppPreferences.UpdateCadenceDaily);
+            prefs.UpdateManifestUrl = AppPreferences.NormalizeUpdateManifestUrl(txtUpdateManifestUrl.Text);
             prefs.PreparedScriptCacheLimitKb = GetMemoryLimitKb(
                 cboPreparedCacheLimit,
                 AppPreferences.DefaultPreparedScriptCacheLimitKb);
@@ -315,14 +395,17 @@ internal class PreferencesDialog : Window
                 int.TryParse(txtScrollbackLines.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int scrollbackLines)
                     ? scrollbackLines
                     : AppPreferences.DefaultScrollbackLines);
-            prefs.JsonRpcEnabled = chkJsonRpc.IsChecked == true;
-            prefs.JsonRpcBindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
-            prefs.JsonRpcPort = AppPreferences.NormalizeJsonRpcPort(
-                int.TryParse(txtJsonRpcPort.Text, out int jsonRpcPort) ? jsonRpcPort : 7623);
-            prefs.JsonRpcAuthToken = AppPreferences.NormalizeJsonRpcAuthToken(txtJsonRpcToken.Text);
-            prefs.JsonRpcApprovalLevel = cboJsonRpcApproval.SelectedItem is RpcApprovalOption rpcApproval
-                ? MtcRpcApprovalLevels.Normalize(rpcApproval.Value)
-                : MtcRpcApprovalLevels.ApproveActions;
+            if (hasGame)
+            {
+                jsonRpcPrefs.Enabled = chkJsonRpc.IsChecked == true;
+                jsonRpcPrefs.BindAddress = AppPreferences.NormalizeJsonRpcBindAddress(txtJsonRpcBind.Text);
+                jsonRpcPrefs.Port = AppPreferences.NormalizeJsonRpcPort(
+                    int.TryParse(txtJsonRpcPort.Text, out int jsonRpcPort) ? jsonRpcPort : 7623);
+                jsonRpcPrefs.AuthToken = AppPreferences.NormalizeJsonRpcAuthToken(txtJsonRpcToken.Text);
+                jsonRpcPrefs.ApprovalLevel = cboJsonRpcApproval.SelectedItem is RpcApprovalOption rpcApproval
+                    ? MtcRpcApprovalLevels.Normalize(rpcApproval.Value)
+                    : MtcRpcApprovalLevels.ApproveActions;
+            }
             prefs.Save();
             Close(true);
         };
@@ -344,8 +427,9 @@ internal class PreferencesDialog : Window
             Items =
             {
                 BuildTabItem("General", storageSection, alertsSection, runtimeSection),
-                BuildTabItem("Diagnostics", diagnosticsSection),
-                BuildTabItem("MPC", integrationsSection),
+                BuildTabItem("Diagnostics", appDiagnosticsSection, diagnosticsSection),
+                BuildTabItem("Updates", updatesSection),
+                BuildTabItem("RPC", integrationsSection),
             },
         };
 
@@ -374,7 +458,7 @@ internal class PreferencesDialog : Window
                         },
                         new TextBlock
                         {
-                            Text = "Tune paths, diagnostics, runtime behavior, and MPC integrations.",
+                            Text = "Tune paths, diagnostics, runtime behavior, and per-game RPC integrations.",
                             Foreground = FgMuted,
                             Margin = new Thickness(0, 0, 0, 8),
                         },
@@ -659,10 +743,34 @@ internal class PreferencesDialog : Window
         return combo;
     }
 
+    private static ComboBox BuildUpdateOptionComboBox(UpdateOption[] options, string selectedValue)
+    {
+        var combo = new ComboBox
+        {
+            ItemsSource = options,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = BdInput,
+            MinWidth = 170,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        combo.SelectedItem = options.FirstOrDefault(option =>
+            string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase)) ?? options[0];
+        return combo;
+    }
+
     private static int GetMemoryLimitKb(ComboBox combo, int defaultValue)
     {
         return combo.SelectedItem is MemoryLimitOption option
             ? option.Kilobytes
+            : defaultValue;
+    }
+
+    private static string GetUpdateOptionValue(ComboBox combo, string defaultValue)
+    {
+        return combo.SelectedItem is UpdateOption option
+            ? option.Value
             : defaultValue;
     }
 
@@ -694,6 +802,20 @@ internal class PreferencesDialog : Window
     private sealed class RpcApprovalOption
     {
         public RpcApprovalOption(string label, string value)
+        {
+            Label = label;
+            Value = value;
+        }
+
+        public string Label { get; }
+        public string Value { get; }
+
+        public override string ToString() => Label;
+    }
+
+    private sealed class UpdateOption
+    {
+        public UpdateOption(string label, string value)
         {
             Label = label;
             Value = value;

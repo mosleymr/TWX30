@@ -4,8 +4,11 @@
    
      Keeps personal limpets loaded in the current sector.
         
-     Usage:  plimper {saveme}
+     Usage:  plimper {limit} {saveme} {credits:xxxxxxx}
         
-        {saveme} - start CK saveme before running.
+         {limit} - minimum limpets in sector (default: 250).
+        {saveme} - run saveme while keeping limps current.
+       {credits} - minimum credits to furb (default: 5000000)
+        
         Run from Citadel, blue alignment, with T-warp and Stardock known.
         Refurbs limpets at Stardock and reloads the sector after limp hits.

@@ -51,6 +51,7 @@ public class MapWindow : Window
     private Dictionary<int, int> _depthCache = new();
     private HashSet<int> _majorSpaceLaneSectors = new();
     private (ushort StarDock, ushort AlphaCentauri, ushort Rylos)? _majorSpaceLaneHeader;
+    private long _majorSpaceLaneChangeStamp = long.MinValue;
 
     // Nav history (browser-style back/forward)
     private readonly List<int> _history      = new();
@@ -841,31 +842,13 @@ public class MapWindow : Window
     {
         var header = db.DBHeader;
         var currentHeader = (header.StarDock, header.AlphaCentauri, header.Rylos);
-        if (!force && _majorSpaceLaneHeader == currentHeader)
+        long changeStamp = db.ChangeStamp;
+        if (!force && _majorSpaceLaneHeader == currentHeader && _majorSpaceLaneChangeStamp == changeStamp)
             return;
 
         _majorSpaceLaneHeader = currentHeader;
-        _majorSpaceLaneSectors = new HashSet<int>();
-
-        void AddPath(int fromSector, int toSector)
-        {
-            if (fromSector <= 0 || toSector <= 0 || fromSector == 65535 || toSector == 65535)
-                return;
-
-            foreach (int sector in db.CalculateBidirectionalShortestPath(fromSector, toSector))
-                _majorSpaceLaneSectors.Add(sector);
-        }
-
-        int stardock = header.StarDock;
-        int alpha = header.AlphaCentauri;
-        int rylos = header.Rylos;
-
-        AddPath(1, stardock);
-        AddPath(stardock, 1);
-        AddPath(alpha, stardock);
-        AddPath(stardock, alpha);
-        AddPath(rylos, stardock);
-        AddPath(stardock, rylos);
+        _majorSpaceLaneChangeStamp = changeStamp;
+        _majorSpaceLaneSectors = db.GetMajorSpaceLaneSectors();
     }
 
     // ── Position computation ──────────────────────────────────────────────
