@@ -9,6 +9,8 @@ namespace MTC;
 
 internal static class GameConfigService
 {
+    private static readonly Core.DebouncedGameVariableStore VariableSaves = new();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -22,16 +24,7 @@ internal static class GameConfigService
     }
 
     public static Dictionary<string, string> NormalizeVariables(IDictionary<string, string>? source)
-    {
-        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (source == null)
-            return normalized;
-
-        foreach (KeyValuePair<string, string> entry in source)
-            normalized[entry.Key] = entry.Value;
-
-        return normalized;
-    }
+        => Core.GameVariableStore.Normalize(source);
 
     public static string GameConfigPathForMode(string gameName, bool embeddedProxy)
         => embeddedProxy
@@ -42,6 +35,9 @@ internal static class GameConfigService
         => embeddedProxy
             ? AppPaths.TwxproxyDatabasePathForGame(gameName)
             : AppPaths.MtcStandaloneDatabasePathForGame(gameName);
+
+    public static string VariablesPathForGame(string gameName)
+        => AppPaths.GameVariablesFileFor(NormalizeGameName(gameName));
 
     public static string GameConfigPathForConfig(EmbeddedGameConfig config)
         => GameConfigPathForMode(NormalizeGameName(config.Name), config.Mtc?.EmbeddedProxy ?? true);
@@ -110,7 +106,7 @@ internal static class GameConfigService
         MTC.mombot.mombotConfig persistedMombot = GetOrCreateMombotConfig(persisted);
         persistedMombot.Enabled = false;
         persistedMombot.WatcherEnabled = false;
-        persisted.Variables = NormalizeVariables(persisted.Variables);
+        persisted.Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         return persisted;
     }
 
@@ -122,7 +118,11 @@ internal static class GameConfigService
             if (!File.Exists(path))
                 return null;
 
-            string json = File.ReadAllText(path);
+            string backupPath = ConfigBackupPathForGame(gameName, path);
+            string? json = Core.SafeJsonFile.ReadAllTextWithRecovery(path, backupPath);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
             EmbeddedGameConfig? config = JsonSerializer.Deserialize<EmbeddedGameConfig>(json, JsonOptions);
             if (config == null)
                 return null;
@@ -133,7 +133,9 @@ internal static class GameConfigService
             config.DatabasePath = string.IsNullOrWhiteSpace(config.DatabasePath)
                 ? AppPaths.TwxproxyDatabasePathForGame(config.Name)
                 : config.DatabasePath;
-            config.Variables = NormalizeVariables(config.Variables);
+            config.Variables = LoadVariablesAndMigrateInlineAsync(config.Name, config, path)
+                .GetAwaiter()
+                .GetResult();
             return NormalizeMombotConfig(config);
         }
         catch
@@ -146,17 +148,22 @@ internal static class GameConfigService
     {
         try
         {
-            string json = await File.ReadAllTextAsync(path);
+            string fallbackGameName = NormalizeGameNameFromConfigPath(path);
+            string backupPath = ConfigBackupPathForGame(fallbackGameName, path);
+            string? json = await Core.SafeJsonFile.ReadAllTextWithRecoveryAsync(path, backupPath);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
             EmbeddedGameConfig? config = JsonSerializer.Deserialize<EmbeddedGameConfig>(json, JsonOptions);
             if (config == null)
                 return null;
             if (string.IsNullOrWhiteSpace(config.Name))
-                config.Name = NormalizeGameName(Path.GetFileNameWithoutExtension(path));
+                config.Name = fallbackGameName;
             if (config.Sectors <= 0)
                 config.Sectors = 1000;
             if (string.IsNullOrWhiteSpace(config.DatabasePath))
                 config.DatabasePath = DatabasePathForMode(config.Name, config.Mtc?.EmbeddedProxy ?? true);
-            config.Variables = NormalizeVariables(config.Variables);
+            config.Variables = await LoadVariablesAndMigrateInlineAsync(config.Name, config, path);
             return NormalizeMombotConfig(config);
         }
         catch
@@ -174,14 +181,92 @@ internal static class GameConfigService
                 ? NormalizeGameName(gameName)
                 : NormalizeGameName(config.Name);
             string path = GameConfigPathForConfig(config);
+            await SaveVariablesAsync(config.Name, config.Variables);
             EmbeddedGameConfig persisted = BuildPersistableConfig(config);
             string json = JsonSerializer.Serialize(persisted, JsonOptions);
-            await File.WriteAllTextAsync(path, json);
+            await Core.SafeJsonFile.WriteAllTextAtomicAsync(path, json, ConfigBackupPathForGame(config.Name, path));
         }
         catch (Exception ex)
         {
             Core.GlobalModules.DebugLog($"[MTC.GameConfig] save failed for '{gameName}': {ex}\n");
             Core.GlobalModules.FlushDebugLog();
         }
+    }
+
+    public static void RequestVariablesSave(string gameName, IDictionary<string, string>? variables)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        VariableSaves.RequestSave(
+            VariablesPathForGame(normalizedGameName),
+            variables,
+            VariablesBackupPathForGame(normalizedGameName));
+    }
+
+    public static async Task SaveVariablesAsync(string gameName, IDictionary<string, string>? variables)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        await Core.GameVariableStore.SaveAsync(
+            VariablesPathForGame(normalizedGameName),
+            variables,
+            VariablesBackupPathForGame(normalizedGameName));
+    }
+
+    public static async Task FlushVariablesAsync(string gameName)
+    {
+        await VariableSaves.FlushAsync(VariablesPathForGame(NormalizeGameName(gameName)));
+    }
+
+    private static async Task<Dictionary<string, string>> LoadVariablesAndMigrateInlineAsync(
+        string gameName,
+        EmbeddedGameConfig config,
+        string configPath)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        Dictionary<string, string> inlineVariables = NormalizeVariables(config.Variables);
+        string variablesPath = VariablesPathForGame(normalizedGameName);
+        bool variablesFileExists = File.Exists(variablesPath) || File.Exists(VariablesBackupPathForGame(normalizedGameName));
+        Dictionary<string, string> variables = variablesFileExists
+            ? await Core.GameVariableStore.LoadAsync(variablesPath, VariablesBackupPathForGame(normalizedGameName))
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        bool migratedInline = false;
+        if (inlineVariables.Count > 0)
+        {
+            foreach (KeyValuePair<string, string> entry in inlineVariables)
+            {
+                if (!variables.ContainsKey(entry.Key))
+                    variables[entry.Key] = entry.Value;
+            }
+
+            await SaveVariablesAsync(normalizedGameName, variables);
+            migratedInline = true;
+        }
+
+        if (migratedInline)
+        {
+            config.Variables = variables;
+            EmbeddedGameConfig persisted = BuildPersistableConfig(config);
+            string json = JsonSerializer.Serialize(persisted, JsonOptions);
+            await Core.SafeJsonFile.WriteAllTextAtomicAsync(
+                configPath,
+                json,
+                ConfigBackupPathForGame(normalizedGameName, configPath));
+        }
+
+        return variables;
+    }
+
+    private static string ConfigBackupPathForGame(string gameName, string configPath)
+        => Path.Combine(AppPaths.GameDataDirForGame(NormalizeGameName(gameName)), Path.GetFileName(configPath) + ".bak");
+
+    private static string VariablesBackupPathForGame(string gameName)
+        => VariablesPathForGame(gameName) + ".bak";
+
+    private static string NormalizeGameNameFromConfigPath(string path)
+    {
+        string name = Path.GetFileNameWithoutExtension(path);
+        return name.EndsWith("_mtc", StringComparison.OrdinalIgnoreCase)
+            ? NormalizeGameName(name[..^4])
+            : NormalizeGameName(name);
     }
 }

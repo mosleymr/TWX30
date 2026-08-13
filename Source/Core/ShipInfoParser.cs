@@ -169,15 +169,12 @@ public class ShipInfoParser
         }
 
         // ── Live credits/holds lines seen during trading ──────────────────
+        if (ShipStatusTextParser.TryParseLiveCreditsLine(trimmed, out long credits, out int? emptyHolds))
         {
-            var m = _rxCreditsAndEmptyHolds.Match(trimmed);
-            if (m.Success)
-            {
-                _s.Credits = ParseLong(m.Groups[1].Value);
-                if (m.Groups[2].Success)
-                    _s.HoldsEmpty = ParseInt(m.Groups[2].Value);
-                Updated?.Invoke(_s);
-            }
+            _s.Credits = credits;
+            if (emptyHolds.HasValue)
+                _s.HoldsEmpty = emptyHolds.Value;
+            Updated?.Invoke(_s);
         }
     }
 
@@ -216,58 +213,58 @@ public class ShipInfoParser
             // after the label keyword.  We match by the known keyword prefix.
             any = true;
 
-            if      (TrySlash(tok, "Sect ",   out long sect))   _s.CurrentSector  = (int)sect;
-            else if (TrySlash(tok, "Turns ",  out long turns))
+            if (TrySlash(tok, "Sect ", out long sect)) _s.CurrentSector = (int)sect;
+            else if (TrySlash(tok, "Turns ", out long turns))
             {
                 _s.Turns = (int)turns;
                 if (turns > 0)
                     _s.UnlimitedGame = false;
             }
-            else if (TrySlash(tok, "Creds ",  out long creds))  _s.Credits        = creds;
-            else if (TrySlash(tok, "Figs ",   out long figs))   _s.Fighters       = (int)figs;
-            else if (TrySlash(tok, "Shlds ",  out long shlds))  _s.Shields        = (int)shlds;
-            else if (TrySlash(tok, "Hlds ",   out long hlds))
+            else if (TrySlash(tok, "Creds ", out long creds)) _s.Credits = creds;
+            else if (TrySlash(tok, "Figs ", out long figs)) _s.Fighters = (int)figs;
+            else if (TrySlash(tok, "Shlds ", out long shlds)) _s.Shields = (int)shlds;
+            else if (TrySlash(tok, "Hlds ", out long hlds))
             {
                 _s.TotalHolds = (int)hlds;
                 sawSlashHoldsTotal = true;
             }
-            else if (TrySlash(tok, "Ore ",    out long ore))
+            else if (TrySlash(tok, "Ore ", out long ore))
             {
                 _s.FuelOre = (int)ore;
                 sawSlashFuelOre = true;
             }
-            else if (TrySlash(tok, "Org ",    out long org))
+            else if (TrySlash(tok, "Org ", out long org))
             {
                 _s.Organics = (int)org;
                 sawSlashOrganics = true;
             }
-            else if (TrySlash(tok, "Equ ",    out long equ))
+            else if (TrySlash(tok, "Equ ", out long equ))
             {
                 _s.Equipment = (int)equ;
                 sawSlashEquipment = true;
             }
-            else if (TrySlash(tok, "Col ",    out long col))
+            else if (TrySlash(tok, "Col ", out long col))
             {
                 _s.Colonists = (int)col;
                 sawSlashColonists = true;
             }
-            else if (TrySlash(tok, "Phot ",   out long phot))   _s.Photons        = (int)phot;
-            else if (TrySlash(tok, "Armd ",   out long armd))   _s.ArmidMines     = (int)armd;
-            else if (TrySlash(tok, "Lmpt ",   out long lmpt))   _s.LimpetMines    = (int)lmpt;
-            else if (TrySlash(tok, "GTorp ",  out long gtorp))  _s.GenesisTorps   = (int)gtorp;
-            else if (TrySlash(tok, "TWarp ",  out string twarp)) ApplySlashTranswarpType(twarp);
-            else if (TrySlash(tok, "Clks ",   out long clks))   _s.Cloaks         = (int)clks;
-            else if (TrySlash(tok, "Beacns ", out long beacns)) _s.Beacons        = (int)beacns;
-            else if (TrySlash(tok, "AtmDt ",  out long atmdt))  _s.AtomicDet      = (int)atmdt;
-            else if (TrySlash(tok, "Crbo ",   out long crbo))   _s.Corbomite      = (int)crbo;
-            else if (TrySlash(tok, "EPrb ",   out long eprb))   _s.EtherProbes    = (int)eprb;
-            else if (TrySlash(tok, "MDis ",   out long mdis))   _s.MineDisruptors = (int)mdis;
-            else if (TrySlash(tok, "PsPrb ",  out string psp))  _s.PsychProbe     = IsBoolYes(psp);
-            else if (TrySlash(tok, "PlScn ",  out string plsn)) _s.PlanetScanner  = IsBoolYes(plsn);
-            else if (TrySlash(tok, "LRS ",    out string lrs))  _s.LRSType        = NormalizeLongRangeScannerType(lrs);
-            else if (TrySlash(tok, "Aln ",    out long aln))    _s.Alignment      = aln;
-            else if (TrySlash(tok, "Exp ",    out long exp))    _s.Experience     = exp;
-            else if (TrySlash(tok, "Corp ",   out long corp))   _s.Corp           = (int)corp;
+            else if (TrySlash(tok, "Phot ", out long phot)) _s.Photons = (int)phot;
+            else if (TrySlash(tok, "Armd ", out long armd)) _s.ArmidMines = (int)armd;
+            else if (TrySlash(tok, "Lmpt ", out long lmpt)) _s.LimpetMines = (int)lmpt;
+            else if (TrySlash(tok, "GTorp ", out long gtorp)) _s.GenesisTorps = (int)gtorp;
+            else if (TrySlash(tok, "TWarp ", out string twarp)) ApplySlashTranswarpType(twarp);
+            else if (TrySlash(tok, "Clks ", out long clks)) _s.Cloaks = (int)clks;
+            else if (TrySlash(tok, "Beacns ", out long beacns)) _s.Beacons = (int)beacns;
+            else if (TrySlash(tok, "AtmDt ", out long atmdt)) _s.AtomicDet = (int)atmdt;
+            else if (TrySlash(tok, "Crbo ", out long crbo)) _s.Corbomite = (int)crbo;
+            else if (TrySlash(tok, "EPrb ", out long eprb)) _s.EtherProbes = (int)eprb;
+            else if (TrySlash(tok, "MDis ", out long mdis)) _s.MineDisruptors = (int)mdis;
+            else if (TrySlash(tok, "PsPrb ", out string psp)) _s.PsychProbe = IsBoolYes(psp);
+            else if (TrySlash(tok, "PlScn ", out string plsn)) _s.PlanetScanner = IsBoolYes(plsn);
+            else if (TrySlash(tok, "LRS ", out string lrs)) _s.LRSType = NormalizeLongRangeScannerType(lrs);
+            else if (TrySlash(tok, "Aln ", out long aln)) _s.Alignment = aln;
+            else if (TrySlash(tok, "Exp ", out long exp)) _s.Experience = exp;
+            else if (TrySlash(tok, "Corp ", out long corp)) _s.Corp = (int)corp;
             else if (TrySlash(tok, "Ship ", out string shipInfo))
             {
                 string[] shipParts = shipInfo.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
@@ -303,10 +300,6 @@ public class ShipInfoParser
     // "Done. You have 837 fighter(s) in close support."
     private static readonly Regex _rxDoneFighters = new(
         @"^Done\.\s+You have ([\d,]+) fighter",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-    private static readonly Regex _rxCreditsAndEmptyHolds = new(
-        @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?(?:, and the Treasury has [\d,]+)?\.?$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex _rxTurnsRemaining = new(
@@ -362,26 +355,26 @@ public class ShipInfoParser
         switch (key)
         {
             case "Trader Name":
-            {
-                // val is "Rank Name" — we only want the last word (the name, not the rank)
-                var parts = val.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                target.TraderName = parts.Length > 0 ? parts[^1] : val;
-                break;
-            }
+                {
+                    // val is "Rank Name" — we only want the last word (the name, not the rank)
+                    var parts = val.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    target.TraderName = parts.Length > 0 ? parts[^1] : val;
+                    break;
+                }
 
             case "Rank and Exp":
-            {
-                var m = _rxRankExp.Match(val);
-                if (m.Success)
                 {
-                    target.Experience = ParseLong(m.Groups[1].Value);
-                    target.Alignment  = ParseLong(m.Groups[2].Value);
-                    // Optional alignment text after the number
-                    string rest = val[(m.Index + m.Length)..].Trim();
-                    if (!string.IsNullOrEmpty(rest)) target.AlignText = rest;
+                    var m = _rxRankExp.Match(val);
+                    if (m.Success)
+                    {
+                        target.Experience = ParseLong(m.Groups[1].Value);
+                        target.Alignment = ParseLong(m.Groups[2].Value);
+                        // Optional alignment text after the number
+                        string rest = val[(m.Index + m.Length)..].Trim();
+                        if (!string.IsNullOrEmpty(rest)) target.AlignText = rest;
+                    }
+                    break;
                 }
-                break;
-            }
 
             case "Times Blown Up":
                 target.TimesBlownUp = ParseInt(val);
@@ -423,25 +416,25 @@ public class ShipInfoParser
                 break;
 
             case "Total Holds":
-            {
-                var m = _rxTotalHolds.Match(val);
-                if (m.Success)
                 {
-                    target.TotalHolds = ParseInt(m.Groups[1].Value);
-                    ParseHoldComponents(target, m.Groups[2].Value);
-
-                    if (target.HoldsEmpty <= 0)
+                    var m = _rxTotalHolds.Match(val);
+                    if (m.Success)
                     {
-                        int empty = target.TotalHolds - target.FuelOre - target.Organics - target.Equipment - target.Colonists;
-                        target.HoldsEmpty = empty < 0 ? 0 : empty;
+                        target.TotalHolds = ParseInt(m.Groups[1].Value);
+                        ParseHoldComponents(target, m.Groups[2].Value);
+
+                        if (target.HoldsEmpty <= 0)
+                        {
+                            int empty = target.TotalHolds - target.FuelOre - target.Organics - target.Equipment - target.Colonists;
+                            target.HoldsEmpty = empty < 0 ? 0 : empty;
+                        }
                     }
+                    else
+                    {
+                        target.TotalHolds = ParseInt(val.Split('-')[0].Trim());
+                    }
+                    break;
                 }
-                else
-                {
-                    target.TotalHolds = ParseInt(val.Split('-')[0].Trim());
-                }
-                break;
-            }
 
             case "Fighters":
                 target.Fighters = ParseInt(val);
@@ -453,12 +446,12 @@ public class ShipInfoParser
 
             // Two-value lines — handled below after the switch
             case var k when k.StartsWith("Armid Mines"):
-                target.ArmidMines  = ParseFirstNum(val);
+                target.ArmidMines = ParseFirstNum(val);
                 target.LimpetMines = ParseSecondField(line, "Limpet Mines");
                 break;
 
             case var k when k.StartsWith("Photon Missiles"):
-                target.Photons      = ParseFirstNum(val);
+                target.Photons = ParseFirstNum(val);
                 target.GenesisTorps = ParseSecondField(line, "Genesis Torps");
                 break;
 
@@ -467,8 +460,8 @@ public class ShipInfoParser
                 break;
 
             case var k when k.StartsWith("Atomic Detn"):
-                target.AtomicDet  = ParseFirstNum(val);
-                target.Corbomite  = ParseSecondField(line, "Corbomite Level");
+                target.AtomicDet = ParseFirstNum(val);
+                target.Corbomite = ParseSecondField(line, "Corbomite Level");
                 break;
 
             case "Ether Probes":
@@ -476,7 +469,7 @@ public class ShipInfoParser
                 break;
 
             case var k when k.StartsWith("Cloaking Device"):
-                target.Cloaks      = ParseFirstNum(val);
+                target.Cloaks = ParseFirstNum(val);
                 target.EtherProbes = ParseSecondField(line, "Ether Probes");
                 break;
 
@@ -773,7 +766,7 @@ public class ShipInfoParser
 
     private static bool IsBoolYes(string s) =>
         s.Equals("Yes", StringComparison.OrdinalIgnoreCase) ||
-        s.Equals("Y",   StringComparison.OrdinalIgnoreCase);
+        s.Equals("Y", StringComparison.OrdinalIgnoreCase);
 
     private static int ParseInt(string s)
     {
@@ -785,7 +778,7 @@ public class ShipInfoParser
     /// Used for compound lines like "5     Limpet Mines T2:      10" where we want just 5.</summary>
     private static int ParseFirstNum(string s)
     {
-        var first = s.TrimStart().Split(new char[]{' ', '\t'}, 2, StringSplitOptions.RemoveEmptyEntries);
+        var first = s.TrimStart().Split(new char[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
         return first.Length > 0 ? ParseInt(first[0]) : 0;
     }
 

@@ -25,7 +25,9 @@ internal sealed record mombotRelogDialogResult(
     int DelayMinutes,
     string AfterLoginAction,
     string BotCommand,
-    string MacroAfterLogin);
+    string MacroAfterLogin,
+    bool AttemptAtSpecifiedTime = false,
+    DateTime? AttemptAt = null);
 
 internal sealed class mombotRelogDialog : Window
 {
@@ -97,19 +99,53 @@ internal sealed class mombotRelogDialog : Window
         };
 
         string defaultLoginName = NormalizeFreeform(defaults.LoginName);
-        string defaultServerName = defaultLoginName;
+        string defaultServerName = NormalizeFreeform(defaults.ServerName);
         string defaultGameLetter = NormalizeGameLetter(defaults.GameLetter);
 
-        var txtLoginName = BuildTextBox(defaultLoginName, "login name");
+        var txtLoginName = BuildTextBox(defaultLoginName, "trader alias");
         var txtPassword = BuildTextBox(defaults.Password, "password");
         txtPassword.PasswordChar = '*';
         var txtBotName = BuildTextBox(defaults.BotName, "mombot");
         txtBotName.Width = 110;
         txtBotName.HorizontalAlignment = HorizontalAlignment.Left;
-        var txtServerName = BuildTextBox(defaultServerName, "server name");
+        var txtServerName = BuildTextBox(defaultServerName, "bbs login");
         var txtDelay = BuildTextBox(defaults.DelayMinutes.ToString(), "0");
         txtDelay.Width = 110;
         txtDelay.HorizontalAlignment = HorizontalAlignment.Left;
+        var optAttemptImmediately = new RadioButton
+        {
+            Content = "Attempt login immediately",
+            GroupName = "native-mombot-login-attempt",
+            Foreground = FgNormal,
+            IsChecked = !defaults.AttemptAtSpecifiedTime,
+        };
+        var optAttemptAtTime = new RadioButton
+        {
+            Content = "Attempt login at specified time",
+            GroupName = "native-mombot-login-attempt",
+            Foreground = FgNormal,
+            IsChecked = defaults.AttemptAtSpecifiedTime,
+        };
+        DateTime defaultAttemptAt = defaults.AttemptAt ?? DateTime.Now;
+        var txtAttemptDate = BuildTextBox(defaultAttemptAt.ToString("yyyy-MM-dd"), "yyyy-mm-dd");
+        var txtAttemptHour = BuildTextBox(defaultAttemptAt.Hour.ToString("00"), "hh");
+        var txtAttemptMinute = BuildTextBox(defaultAttemptAt.Minute.ToString("00"), "mm");
+        var txtAttemptSecond = BuildTextBox(defaultAttemptAt.Second.ToString("00"), "ss");
+        txtAttemptHour.Width = 64;
+        txtAttemptMinute.Width = 64;
+        txtAttemptSecond.Width = 64;
+        var attemptTimeRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                txtAttemptDate,
+                txtAttemptHour,
+                txtAttemptMinute,
+                txtAttemptSecond,
+            },
+        };
 
         string[] gameLetters = Enumerable.Range('A', 26)
             .Select(value => ((char)value).ToString())
@@ -129,40 +165,33 @@ internal sealed class mombotRelogDialog : Window
 
         var txtBotCommand = BuildTextBox(defaults.BotCommand, "bot command");
         var txtMacro = BuildTextBox(defaults.MacroAfterLogin, "macro");
+        Control afterLoginCell = BuildFullWidthCell("After login", cboAfterLogin);
         Control commandCell = BuildFullWidthCell("Bot command to perform", txtBotCommand);
         Control macroCell = BuildFullWidthCell("Macro to fire", txtMacro);
 
-        bool syncingServerName = false;
-        bool serverNameEdited = false;
-
-        txtLoginName.TextChanged += (_, _) =>
-        {
-            if (serverNameEdited)
-                return;
-
-            syncingServerName = true;
-            txtServerName.Text = txtLoginName.Text ?? string.Empty;
-            syncingServerName = false;
-        };
-
-        txtServerName.TextChanged += (_, _) =>
-        {
-            if (syncingServerName)
-                return;
-
-            if (txtServerName.IsKeyboardFocusWithin)
-                serverNameEdited = true;
-        };
-
         void RefreshAfterLoginFields()
         {
+            bool showAfterLogin = (cboLoginType.SelectedItem as LoginTypeOption)?.Value != mombotRelogLoginType.NewGameAccountCreation;
+            afterLoginCell.IsVisible = showAfterLogin;
             string selectedAction = (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing";
-            commandCell.IsVisible = string.Equals(selectedAction, "command", StringComparison.OrdinalIgnoreCase);
-            macroCell.IsVisible = string.Equals(selectedAction, "macro", StringComparison.OrdinalIgnoreCase);
+            commandCell.IsVisible = showAfterLogin &&
+                string.Equals(selectedAction, "command", StringComparison.OrdinalIgnoreCase);
+            macroCell.IsVisible = showAfterLogin &&
+                string.Equals(selectedAction, "macro", StringComparison.OrdinalIgnoreCase);
+        }
+
+        void RefreshAttemptTimeFields()
+        {
+            bool specified = optAttemptAtTime.IsChecked == true;
+            attemptTimeRow.IsEnabled = specified;
         }
 
         cboAfterLogin.SelectionChanged += (_, _) => RefreshAfterLoginFields();
+        cboLoginType.SelectionChanged += (_, _) => RefreshAfterLoginFields();
         RefreshAfterLoginFields();
+        optAttemptImmediately.IsCheckedChanged += (_, _) => RefreshAttemptTimeFields();
+        optAttemptAtTime.IsCheckedChanged += (_, _) => RefreshAttemptTimeFields();
+        RefreshAttemptTimeFields();
 
         var btnSave = BuildButton("Save", primary: true);
         var btnCancel = BuildButton("Cancel", primary: false);
@@ -177,7 +206,13 @@ internal sealed class mombotRelogDialog : Window
             int delayMinutes = int.TryParse(txtDelay.Text?.Trim(), out int parsedDelay) && parsedDelay >= 0
                 ? parsedDelay
                 : 0;
-            string afterLoginAction = (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing";
+            mombotRelogLoginType loginType = (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mombotRelogLoginType.NewGameAccountCreation;
+            string afterLoginAction = loginType == mombotRelogLoginType.NewGameAccountCreation
+                ? "nothing"
+                : (cboAfterLogin.SelectedItem as AfterLoginOption)?.Value ?? "nothing";
+            bool attemptAtSpecifiedTime = optAttemptAtTime.IsChecked == true;
+            DateTime? attemptAt = null;
+            DateTime parsedAttemptAt = default;
 
             if (string.IsNullOrWhiteSpace(loginName))
             {
@@ -209,8 +244,17 @@ internal sealed class mombotRelogDialog : Window
                 return;
             }
 
+            if (attemptAtSpecifiedTime &&
+                !TryBuildAttemptAt(txtAttemptDate.Text, txtAttemptHour.Text, txtAttemptMinute.Text, txtAttemptSecond.Text, out parsedAttemptAt))
+            {
+                txtAttemptDate.Focus();
+                return;
+            }
+            if (attemptAtSpecifiedTime)
+                attemptAt = parsedAttemptAt;
+
             Result = new mombotRelogDialogResult(
-                (cboLoginType.SelectedItem as LoginTypeOption)?.Value ?? mombotRelogLoginType.NewGameAccountCreation,
+                loginType,
                 botName,
                 serverName,
                 loginName,
@@ -225,7 +269,9 @@ internal sealed class mombotRelogDialog : Window
                     ? "pt"
                     : string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
                     ? NormalizeFreeform(txtMacro.Text)
-                    : string.Empty);
+                    : string.Empty,
+                attemptAtSpecifiedTime,
+                attemptAt);
             Close(true);
         };
 
@@ -257,15 +303,25 @@ internal sealed class mombotRelogDialog : Window
                     {
                         BuildFullWidthCell("Login type", cboLoginType),
                         BuildPairRow(
-                            BuildFieldCell("Login name", txtLoginName),
-                            BuildFieldCell("Server name", txtServerName)),
+                            BuildFieldCell("Trader alias", txtLoginName),
+                            BuildFieldCell("BBS login", txtServerName)),
                         BuildPairRow(
                             BuildFieldCell("Password", txtPassword),
                             BuildFieldCell("Game letter", cboGameLetter)),
                         BuildPairRow(
                             BuildFieldCell("Bot name", txtBotName),
                             BuildFieldCell("Delay", txtDelay)),
-                        BuildFullWidthCell("After login", cboAfterLogin),
+                        BuildFullWidthCell("Login attempt", new StackPanel
+                        {
+                            Spacing = 8,
+                            Children =
+                            {
+                                optAttemptImmediately,
+                                optAttemptAtTime,
+                            },
+                        }),
+                        BuildFullWidthCell("Attempt at", attemptTimeRow),
+                        afterLoginCell,
                         commandCell,
                         macroCell,
                         buttonRow,
@@ -391,5 +447,24 @@ internal sealed class mombotRelogDialog : Window
     {
         string trimmed = (value ?? string.Empty).Trim();
         return string.Equals(trimmed, "none", StringComparison.OrdinalIgnoreCase) ? string.Empty : trimmed;
+    }
+
+    private static bool TryBuildAttemptAt(string? dateText, string? hourText, string? minuteText, string? secondText, out DateTime value)
+    {
+        value = default;
+        if (!DateOnly.TryParse(dateText?.Trim(), out DateOnly date))
+            return false;
+
+        if (!int.TryParse(hourText?.Trim(), out int hour) || hour < 0 || hour > 23)
+            return false;
+
+        if (!int.TryParse(minuteText?.Trim(), out int minute) || minute < 0 || minute > 59)
+            return false;
+
+        if (!int.TryParse(secondText?.Trim(), out int second) || second < 0 || second > 59)
+            return false;
+
+        value = date.ToDateTime(new TimeOnly(hour, minute, second));
+        return true;
     }
 }

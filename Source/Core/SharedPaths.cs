@@ -65,6 +65,15 @@ public static class SharedPaths
         return Path.Combine(GamesDir, safe + ".json");
     }
 
+    public static string GameDataDirForGame(string gameName, string? programDir = null)
+    {
+        string safe = SanitizeFileComponent(gameName);
+        return Path.Combine(GetGamesDir(programDir), safe);
+    }
+
+    public static string GameVariablesPathForGame(string gameName, string? programDir = null)
+        => Path.Combine(GameDataDirForGame(gameName, programDir), "variables.json");
+
     public static void EnsureDatabaseDir() => Directory.CreateDirectory(DatabaseDir);
     public static void EnsureLogDir() => Directory.CreateDirectory(LogDir);
     public static void EnsureGamesDir()

@@ -28,6 +28,8 @@ public class ConnectionProfile
     // ── TWXProxy integration ───────────────────────────────────────────────
     public bool       LocalTwxProxy   { get; set; } = true;
     public string     TwxProxyDbPath  { get; set; } = string.Empty;
+    public string     RemoteProxyServerId { get; set; } = string.Empty;
+    public string     RemoteProxyGameId { get; set; } = string.Empty;
 
     // ── Embedded proxy (native script engine inside MTC) ───────────────────
     /// <summary>When true MTC runs the TWX proxy engine in-process instead of using a bare telnet connection.</summary>
@@ -118,6 +120,8 @@ public class ConnectionProfile
                 new XElement("Protocol",        Protocol.ToString()),
                 new XElement("LocalTwxProxy",   LocalTwxProxy),
                 new XElement("TwxProxyDbPath",  TwxProxyDbPath),
+                new XElement("RemoteProxyServerId", RemoteProxyServerId),
+                new XElement("RemoteProxyGameId", RemoteProxyGameId),
                 new XElement("EmbeddedProxy",   EmbeddedProxy),
                 new XElement("Sectors",         Sectors),
                 new XElement("AutoReconnect",   AutoReconnect),
@@ -193,6 +197,8 @@ public class ConnectionProfile
                             ? proto : TwProtocol.Telnet;
         p.LocalTwxProxy   = B("LocalTwxProxy", true);
         p.TwxProxyDbPath  = S("TwxProxyDbPath");
+        p.RemoteProxyServerId = S("RemoteProxyServerId");
+        p.RemoteProxyGameId = S("RemoteProxyGameId");
         p.EmbeddedProxy   = B("EmbeddedProxy", true);
         p.Sectors         = I("Sectors", DefaultSectors);
         p.AutoReconnect   = B("AutoReconnect",  false);

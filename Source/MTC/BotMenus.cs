@@ -61,12 +61,17 @@ public partial class MainWindow
         bool hasInterpreter = CurrentInterpreter != null;
         bool canPlayCapture = _gameInstance != null;
         bool canRunProxyScripts = hasInterpreter || CanUseRemoteProxyScripts();
+        var owner = CurrentMtcTabContext();
 
         var proxyItems = BuildProxyMenuItems(gameName, hasGame, hasDatabase, hasInterpreter, canPlayCapture);
         _proxyMenu.ItemsSource = proxyItems;
-        _proxyMenu.IsEnabled = _gameInstance != null;
-        _botMenu.ItemsSource = BuildTopLevelBotMenuItems(hasInterpreter);
-        _botMenu.IsEnabled = hasInterpreter;
+        bool canUseManagedRemote = IsManagedRemoteProxyGame();
+        _proxyMenu.IsEnabled = _gameInstance != null || canUseManagedRemote;
+        _botMenu.IsEnabled = hasInterpreter || canUseManagedRemote;
+        if (canUseManagedRemote)
+            RebuildManagedRemoteBotMenu(hasInterpreter || canUseManagedRemote, owner);
+        else
+            _botMenu.ItemsSource = BuildTopLevelBotMenuItems(hasInterpreter);
         _quickMenu.ItemsSource = BuildQuickMenuItems(canRunProxyScripts);
         _quickMenu.IsEnabled = canRunProxyScripts;
         _scriptsMenu.IsEnabled = canRunProxyScripts;
@@ -122,7 +127,7 @@ public partial class MainWindow
             new Separator(),
         };
 
-        var stopMenu = new MenuItem { Header = "_Stop", IsEnabled = hasInterpreter };
+        var stopMenu = new MenuItem { Header = "_Stop", IsEnabled = hasInterpreter || CanUseRemoteProxyScripts() };
         stopMenu.ItemsSource = BuildStopMenuItems();
         stopMenu.SubmenuOpened += (_, _) => stopMenu.ItemsSource = BuildStopMenuItems();
         items.Add(stopMenu);
@@ -394,6 +399,12 @@ public partial class MainWindow
             return items;
         }
 
+        if (IsManagedRemoteProxyGame())
+        {
+            items.Add(new MenuItem { Header = "Remote scripts are in the Scripts menu", IsEnabled = false });
+            return items;
+        }
+
         string scriptDirectory = GetEffectiveProxyScriptDirectory();
         string programDir = GetEffectiveProxyProgramDir(scriptDirectory);
         var groups = Core.ProxyMenuCatalog.BuildQuickLoadGroups(programDir, scriptDirectory);
@@ -438,18 +449,47 @@ public partial class MainWindow
         return items;
     }
 
-    private List<object> BuildTopLevelBotMenuItems(bool enabled)
+    private void RebuildManagedRemoteBotMenu(bool enabled, MtcTabPrototype? owner)
+    {
+        _botMenu.ItemsSource = BuildTopLevelBotMenuItems(enabled, BuildRemoteBotLoadingSections());
+        if (!TryGetCurrentProxyManagementClient(out ProxyManagementClient? remoteClient))
+            return;
+
+        _ = Task.Run(async () => await remoteClient!.ListBotConfigsAsync())
+            .ContinueWith(t =>
+            {
+                ExecuteInOptionalMtcTabSession(owner, () =>
+                {
+                    if (!PrepareMtcTabVisualRefresh() || !IsManagedRemoteProxyGame())
+                        return;
+
+                    IReadOnlyList<StoredBotSection> bots = t.IsFaulted
+                        ? BuildRemoteBotErrorSections()
+                        : BuildRemoteBotSections(t.Result);
+                    _botMenu.ItemsSource = BuildTopLevelBotMenuItems(enabled, bots);
+                    RequestNativeAppMenuRefresh();
+                });
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+    }
+
+    private List<object> BuildTopLevelBotMenuItems(bool enabled, IReadOnlyList<StoredBotSection>? configuredBots = null)
     {
         var items = new List<object>();
         BotRuntimeState runtime = GetBotRuntimeState();
-        IReadOnlyList<StoredBotSection> bots = LoadConfiguredBotSections();
-        bool nativeConfigured = IsNativeMombotConfiguredForStart();
-        bool hasStartableExternalBot = bots.Any(bot => !bot.IsNative && bot.ScriptAvailable);
+        bool managedRemote = IsManagedRemoteProxyGame();
+        IReadOnlyList<StoredBotSection> bots = configuredBots ?? LoadConfiguredBotSections();
+        bool nativeConfigured = managedRemote
+            ? bots.Any(bot => bot.IsNative && bot.ScriptAvailable)
+            : IsNativeMombotConfiguredForStart();
+        bool hasStartableExternalBot = bots.Any(bot => !bot.IsNative && (managedRemote || bot.ScriptAvailable));
 
         var startMenu = new MenuItem { Header = "_Start", IsEnabled = enabled && (nativeConfigured || hasStartableExternalBot) };
         startMenu.ItemsSource = BuildBotStartMenuItems(enabled, bots);
-        startMenu.SubmenuOpened += (_, _) =>
-            startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
+        if (!managedRemote)
+        {
+            startMenu.SubmenuOpened += (_, _) =>
+                startMenu.ItemsSource = BuildBotStartMenuItems(enabled, LoadConfiguredBotSections());
+        }
         items.Add(startMenu);
 
         var stopItem = new MenuItem { Header = "S_top", IsEnabled = runtime.IsRunning };
@@ -458,8 +498,11 @@ public partial class MainWindow
 
         var configureMenu = new MenuItem { Header = "_Configure" };
         configureMenu.ItemsSource = BuildBotConfigureMenuItems(bots);
-        configureMenu.SubmenuOpened += (_, _) =>
-            configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
+        if (!managedRemote)
+        {
+            configureMenu.SubmenuOpened += (_, _) =>
+                configureMenu.ItemsSource = BuildBotConfigureMenuItems(LoadConfiguredBotSections());
+        }
         items.Add(configureMenu);
 
         var addBot = new MenuItem { Header = "_Add Bot…" };
@@ -472,7 +515,8 @@ public partial class MainWindow
     private List<object> BuildBotStartMenuItems(bool proxyReady, IReadOnlyList<StoredBotSection> bots)
     {
         var items = new List<object>();
-        if (!proxyReady || _gameInstance == null || CurrentInterpreter == null)
+        bool managedRemote = IsManagedRemoteProxyGame();
+        if (!proxyReady || (_gameInstance == null || CurrentInterpreter == null) && !managedRemote)
         {
             items.Add(new MenuItem { Header = "Embedded proxy is not running", IsEnabled = false });
             return items;
@@ -480,7 +524,7 @@ public partial class MainWindow
 
         BotRuntimeState runtime = GetBotRuntimeState();
         StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
-        bool nativeConfigured = IsNativeMombotConfiguredForStart();
+        bool nativeConfigured = managedRemote ? nativeBot.ScriptAvailable : IsNativeMombotConfiguredForStart();
         var nativeItem = new MenuItem
         {
             Header = runtime.NativeRunning
@@ -490,8 +534,20 @@ public partial class MainWindow
                     : $"{NativeMombotMenuLabel} (configure first)",
             IsEnabled = runtime.NativeRunning || nativeConfigured,
         };
-        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotAsync(nativeBot));
+        string nativeSectionName = nativeBot.SectionName;
+        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotFromCurrentTabAsync(nativeSectionName));
         items.Add(nativeItem);
+
+        if (!managedRemote)
+        {
+            var nativeNewGameItem = new MenuItem
+            {
+                Header = "New Game",
+                IsEnabled = nativeConfigured && !runtime.NativeRunning,
+            };
+            nativeNewGameItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredNativeMombotNewGameFromCurrentTabAsync(nativeSectionName));
+            items.Add(nativeNewGameItem);
+        }
 
         List<StoredBotSection> externalBots = bots
             .Where(bot => !bot.IsNative)
@@ -508,18 +564,19 @@ public partial class MainWindow
         items.Add(new Separator());
         foreach (StoredBotSection bot in externalBots)
         {
+            string sectionName = bot.SectionName;
             string header = bot.DisplayName;
             if (string.Equals(runtime.ExternalBotName, bot.Config.Name, StringComparison.OrdinalIgnoreCase))
                 header += " (running)";
-            else if (!bot.ScriptAvailable)
+            else if (!managedRemote && !bot.ScriptAvailable)
                 header += " (script missing)";
 
             var item = new MenuItem
             {
                 Header = EscapeMenuHeaderText(header),
-                IsEnabled = bot.ScriptAvailable,
+                IsEnabled = managedRemote || bot.ScriptAvailable,
             };
-            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotAsync(bot));
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => StartConfiguredBotFromCurrentTabAsync(sectionName));
             items.Add(item);
         }
 
@@ -532,7 +589,8 @@ public partial class MainWindow
 
         StoredBotSection nativeBot = bots.First(bot => bot.IsNative);
         var nativeItem = new MenuItem { Header = NativeMombotMenuLabel };
-        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotAsync(nativeBot));
+        string nativeSectionName = nativeBot.SectionName;
+        nativeItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotFromCurrentTabAsync(nativeSectionName));
         items.Add(nativeItem);
 
         List<StoredBotSection> externalBots = bots
@@ -550,15 +608,62 @@ public partial class MainWindow
         items.Add(new Separator());
         foreach (StoredBotSection bot in externalBots)
         {
+            string sectionName = bot.SectionName;
             var item = new MenuItem
             {
                 Header = EscapeMenuHeaderText(bot.DisplayName),
             };
-            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotAsync(bot));
+            item.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(() => ConfigureBotFromCurrentTabAsync(sectionName));
             items.Add(item);
         }
 
         return items;
+    }
+
+    private StoredBotSection? ResolveConfiguredBotSectionForCurrentTab(string sectionName)
+    {
+        IReadOnlyList<StoredBotSection> currentBots = LoadConfiguredBotSections();
+        if (string.Equals(sectionName, Core.ProxyMenuCatalog.NativeMombotSectionName, StringComparison.OrdinalIgnoreCase))
+            return currentBots.FirstOrDefault(bot => bot.IsNative);
+
+        return currentBots.FirstOrDefault(bot =>
+            string.Equals(bot.SectionName, sectionName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task StartConfiguredBotFromCurrentTabAsync(string sectionName)
+    {
+        StoredBotSection? bot = ResolveConfiguredBotSectionForCurrentTab(sectionName);
+        if (bot == null)
+        {
+            await ShowMessageAsync("Bot", "That bot configuration is no longer available.");
+            return;
+        }
+
+        await StartConfiguredBotAsync(bot);
+    }
+
+    private async Task StartConfiguredNativeMombotNewGameFromCurrentTabAsync(string sectionName)
+    {
+        StoredBotSection? bot = ResolveConfiguredBotSectionForCurrentTab(sectionName);
+        if (bot == null || !bot.IsNative)
+        {
+            await ShowMessageAsync("Bot", "The native MomBot configuration is no longer available.");
+            return;
+        }
+
+        await StartConfiguredNativeMombotNewGameAsync(bot);
+    }
+
+    private async Task ConfigureBotFromCurrentTabAsync(string sectionName)
+    {
+        StoredBotSection? bot = ResolveConfiguredBotSectionForCurrentTab(sectionName);
+        if (bot == null)
+        {
+            await ShowMessageAsync("Bot", "That bot configuration is no longer available.");
+            return;
+        }
+
+        await ConfigureBotAsync(bot);
     }
 
     private IReadOnlyList<StoredBotSection> LoadConfiguredBotSections()
@@ -689,5 +794,113 @@ public partial class MainWindow
             config,
             values);
     }
+
+    private IReadOnlyList<StoredBotSection> BuildRemoteBotLoadingSections()
+    {
+        StoredBotSection native = CreateRemoteNativePlaceholder(scriptAvailable: false);
+        return [native];
+    }
+
+    private IReadOnlyList<StoredBotSection> BuildRemoteBotErrorSections()
+    {
+        StoredBotSection native = CreateRemoteNativePlaceholder(scriptAvailable: false);
+        return [native];
+    }
+
+    private IReadOnlyList<StoredBotSection> BuildRemoteBotSections(IReadOnlyList<ProxyManagedBotConfig> remoteBots)
+    {
+        var sections = new List<StoredBotSection>();
+        ProxyManagedBotConfig? remoteMombot = remoteBots.FirstOrDefault(IsRemoteMombotConfig);
+        sections.Add(remoteMombot != null
+            ? CreateRemoteStoredBotSection(remoteMombot, isNative: true)
+            : CreateRemoteNativePlaceholder(scriptAvailable: false));
+
+        sections.AddRange(remoteBots
+            .Where(bot => !IsRemoteMombotConfig(bot))
+            .Select(bot => CreateRemoteStoredBotSection(bot, isNative: false))
+            .OrderBy(bot => bot.DisplayName, StringComparer.OrdinalIgnoreCase));
+        return sections;
+    }
+
+    private StoredBotSection CreateRemoteNativePlaceholder(bool scriptAvailable)
+    {
+        Core.BotConfig config = BuildCurrentGameNativeBotConfig();
+        config.Alias = "mombot";
+        config.ScriptFile = "mombot/mombot.cts";
+        config.ScriptFiles = ["mombot/mombot.cts"];
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Name"] = config.Name,
+            ["Script"] = config.ScriptFile,
+            ["Description"] = config.Description,
+            ["AutoStart"] = config.AutoStart ? "1" : "0",
+            ["NameVar"] = config.NameVar,
+            ["CommsVar"] = config.CommsVar,
+            ["LoginScript"] = "disabled",
+            ["Theme"] = config.Theme,
+        };
+
+        return new StoredBotSection(
+            "bot:mombot",
+            "mombot",
+            NativeMombotMenuLabel,
+            true,
+            scriptAvailable,
+            config,
+            values);
+    }
+
+    private static StoredBotSection CreateRemoteStoredBotSection(ProxyManagedBotConfig remote, bool isNative)
+    {
+        string alias = string.IsNullOrWhiteSpace(remote.Alias) ? "bot" : remote.Alias.Trim();
+        string sectionName = string.IsNullOrWhiteSpace(remote.SectionName) ? "bot:" + alias : remote.SectionName.Trim();
+        string scriptList = NormalizeBotScriptList(remote.Script);
+        List<string> scripts = scriptList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(script => script.Replace('\\', '/'))
+            .Where(script => !string.IsNullOrWhiteSpace(script))
+            .ToList();
+        string displayName = string.IsNullOrWhiteSpace(remote.Name) ? alias : remote.Name.Trim();
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Name"] = displayName,
+            ["Script"] = scriptList,
+            ["Description"] = remote.Description ?? string.Empty,
+            ["AutoStart"] = remote.AutoStart ? "1" : "0",
+            ["NameVar"] = remote.NameVar ?? string.Empty,
+            ["CommsVar"] = remote.CommsVar ?? string.Empty,
+            ["LoginScript"] = isNative ? "disabled" : remote.LoginScript ?? string.Empty,
+            ["Theme"] = remote.Theme ?? string.Empty,
+        };
+
+        var config = new Core.BotConfig
+        {
+            Alias = alias,
+            Name = displayName,
+            ScriptFile = scripts.FirstOrDefault() ?? string.Empty,
+            ScriptFiles = scripts,
+            Description = values["Description"],
+            AutoStart = remote.AutoStart,
+            NameVar = values["NameVar"],
+            CommsVar = values["CommsVar"],
+            LoginScript = values["LoginScript"],
+            Theme = values["Theme"],
+            Properties = values,
+        };
+
+        return new StoredBotSection(
+            sectionName,
+            alias,
+            isNative ? NativeMombotMenuLabel : displayName,
+            isNative,
+            scripts.Count > 0,
+            config,
+            values);
+    }
+
+    private static bool IsRemoteMombotConfig(ProxyManagedBotConfig bot)
+        => string.Equals(bot.Alias, "mombot", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(bot.SectionName, "bot:mombot", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(bot.SectionName, Core.ProxyMenuCatalog.NativeMombotSectionName, StringComparison.OrdinalIgnoreCase);
 
 }

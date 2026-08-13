@@ -24,10 +24,10 @@ namespace TWXProxy.Core
 
         /// <summary>Exposes the active database for other components such as AutoRecorder.</summary>
         internal static ModDatabase? ActiveDatabase => GlobalModules.CurrentContext.ActiveDatabase;
-        
+
         // Sector avoid list
         private static readonly HashSet<int> _avoidedSectors = new();
-        
+
         #region Database Command Implementation
 
         private static CmdAction CmdGetSector_Impl(object script, CmdParam[] parameters)
@@ -252,10 +252,7 @@ namespace TWXProxy.Core
                 string warp1 = sectorVar.GetIndexVar(new[] { "warp", "1" }).Value;
                 string warp2 = sectorVar.GetIndexVar(new[] { "warp", "2" }).Value;
                 string warp3 = sectorVar.GetIndexVar(new[] { "warp", "3" }).Value;
-                GlobalModules.DebugLog(
-                    $"[GETSECTOR TRACE] var='{sectorVar.Name}' sector={sectorNum} " +
-                    $"warps={warps.Count} warp1='{warp1}' warp2='{warp2}' warp3='{warp3}' " +
-                    $"density='{sector.Density}' portClass='{sector.SectorPort?.ClassIndex ?? 0}'\n");
+                GlobalModules.DebugLog($"[GETSECTOR TRACE] var='{sectorVar.Name}' sector={sectorNum} warps={warps.Count} warp1='{warp1}' warp2='{warp2}' warp3='{warp3}' density='{sector.Density}' portClass='{sector.SectorPort?.ClassIndex ?? 0}'\n");
             }
 
             return CmdAction.None;
@@ -267,7 +264,7 @@ namespace TWXProxy.Core
             ConvertToNumber(parameters[0].Value, out sectorNum);
             string paramName = parameters[1].Value;
             CmdParam outputParam = parameters[2];
-            
+
             if (sectorNum == 0)
                 return CmdAction.None;
 
@@ -279,13 +276,13 @@ namespace TWXProxy.Core
                 outputParam.Value = string.Empty;
                 return CmdAction.None;
             }
-            
+
             string varValue = _activeDatabase.GetSectorVar(sectorNum, paramName);
             if (varValue.Length > 40)
                 throw new ScriptException("Sector parameter value exceeds 40 characters");
 
             outputParam.Value = varValue;
-            
+
             return CmdAction.None;
         }
 
@@ -300,12 +297,14 @@ namespace TWXProxy.Core
                 throw new ScriptException("Sector parameter name exceeds 10 characters");
             if (value.Length > 40)
                 throw new ScriptException("Sector parameter value exceeds 40 characters");
-            
+
             if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
             {
                 _activeDatabase.SetSectorVar(sectorNum, paramName, value);
+                if (script is Script activeScript)
+                    activeScript.MarkExecutionWatchdogActivity();
             }
-            
+
             return CmdAction.None;
         }
 
@@ -313,10 +312,10 @@ namespace TWXProxy.Core
         {
             // CMD: listsectorparameters <sector> var
             // List all custom parameters set for a sector
-            
+
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
-            
+
             if (parameters[1] is VarParam varParam)
             {
                 if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
@@ -332,7 +331,7 @@ namespace TWXProxy.Core
                     varParam.Value = "0";
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -376,11 +375,11 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetCourseCore(CmdParam[] parameters, bool scalarIsHopCount)
         {
-            
+
             int fromSector, toSector;
             ConvertToNumber(parameters[1].Value, out fromSector);
             ConvertToNumber(parameters[2].Value, out toSector);
-            
+
             if (parameters[0] is VarParam varParam &&
                 _activeDatabase != null &&
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
@@ -406,7 +405,7 @@ namespace TWXProxy.Core
                 if (parameters[0] is VarParam emptyVarParam)
                     emptyVarParam.SetArrayFromStrings(new List<string>());
             }
-            
+
             return CmdAction.None;
         }
 
@@ -414,12 +413,12 @@ namespace TWXProxy.Core
         {
             // CMD: getdistance var <from> <to>
             // Calculate distance (number of warps) between two sectors
-            
+
             int fromSector, toSector;
             ConvertToNumber(parameters[1].Value, out fromSector);
             ConvertToNumber(parameters[2].Value, out toSector);
-            
-            if (_activeDatabase != null && 
+
+            if (_activeDatabase != null &&
                 fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
                 toSector > 0 && toSector <= _activeDatabase.SectorCount)
             {
@@ -453,7 +452,7 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog(
                     $"[GETDISTANCE] from={fromSector} to={toSector} distance=0 path=<invalid input> sectorCount={_activeDatabase?.SectorCount ?? 0}\n");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -462,7 +461,7 @@ namespace TWXProxy.Core
             // CMD: getallcourses <2-DimensionArrayName> <StartingSector>
             int startSector;
             ConvertToNumber(parameters[1].Value, out startSector);
-            
+
             if (parameters[0] is VarParam varParam)
             {
                 if (_activeDatabase == null ||
@@ -476,7 +475,7 @@ namespace TWXProxy.Core
                 var allCourses = _activeDatabase.GetAllCoursesFrom(startSector, _avoidedSectors);
                 varParam.SetMultiArraysFromStringsLists(allCourses);
             }
-            
+
             return CmdAction.None;
         }
 
@@ -506,7 +505,7 @@ namespace TWXProxy.Core
                     varParam.SetArrayFromStrings(new List<string>());
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -514,15 +513,15 @@ namespace TWXProxy.Core
         {
             // CMD: setavoid <sector>
             // Mark sector as avoided in pathfinding
-            
+
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
-            
+
             if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
             {
                 _avoidedSectors.Add(sectorNum);
             }
-            
+
             return CmdAction.None;
         }
 
@@ -530,11 +529,11 @@ namespace TWXProxy.Core
         {
             // CMD: clearavoid <sector>
             // Remove sector from avoid list
-            
+
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
             _avoidedSectors.Remove(sectorNum);
-            
+
             return CmdAction.None;
         }
 
@@ -542,7 +541,7 @@ namespace TWXProxy.Core
         {
             // CMD: clearallavoids
             // Clear all avoided sectors
-            
+
             _avoidedSectors.Clear();
             return CmdAction.None;
         }
@@ -551,14 +550,14 @@ namespace TWXProxy.Core
         {
             // CMD: listavoids var
             // List all avoided sectors
-            
+
             if (parameters[0] is VarParam varParam)
             {
                 var avoidList = _avoidedSectors.OrderBy(s => s).Select(s => s.ToString()).ToList();
                 varParam.SetArrayFromStrings(avoidList);
                 varParam.Value = avoidList.Count.ToString(CultureInfo.InvariantCulture);
             }
-            
+
             return CmdAction.None;
         }
 

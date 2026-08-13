@@ -25,7 +25,7 @@ namespace TWXProxy.Core
 
         // Global variable storage (shared across all scripts)
         private static readonly Dictionary<string, GlobalVarEntry> _globalVars = new();
-        
+
         // Program variables (internal proxy settings)
         private static readonly Dictionary<string, string> _progVars = new();
 
@@ -60,7 +60,7 @@ namespace TWXProxy.Core
         {
             (context ?? GlobalModules.CurrentContext).OnVariableSaved?.Invoke(name, value);
         }
-        
+
         // Persistence file paths
         private static string _globalVarsPath = "globals.json";
         private static string _progVarsPath = "progvars.json";
@@ -193,7 +193,7 @@ namespace TWXProxy.Core
             // Set program variable (internal proxy settings)
             string name = parameters[0].Value;
             string value = parameters[1].Value;
-            
+
             GlobalModules.DebugLog($"[SETPROGVAR] '{name}' = '{value}'\n");
             _progVars[name] = value;
             return CmdAction.None;
@@ -248,12 +248,12 @@ namespace TWXProxy.Core
         {
             // Simple wildcard matching (* and ?)
             if (pattern == "*") return true;
-            
+
             var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
                 .Replace("\\*", ".*")
                 .Replace("\\?", ".") + "$";
-            
-            return System.Text.RegularExpressions.Regex.IsMatch(text, regexPattern, 
+
+            return System.Text.RegularExpressions.Regex.IsMatch(text, regexPattern,
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 

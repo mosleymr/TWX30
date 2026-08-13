@@ -9,6 +9,8 @@ BIN_ROOT="${REPO_ROOT}/bin"
 
 cd "${SCRIPT_DIR}"
 
+"${SCRIPT_DIR}/stamp-mtc-build.sh"
+
 install_release_artifact() {
   local src="$1"
   local dest="$2"

@@ -20,7 +20,7 @@ public partial class MainWindow
     private void SyncMombotPromptStateFromLine(string line, string? ansiLine = null)
     {
         string trimmedLine = Core.AnsiCodes.NormalizeTerminalText(line).TrimStart();
-        if (trimmedLine.StartsWith("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
+        if (IsNativeMombotShipDestroyedLine(trimmedLine))
         {
             MarkNativeMombotShipDestroyed();
         }
@@ -61,6 +61,18 @@ public partial class MainWindow
 
         SetMombotCurrentVars(context, promptName, "$PLAYER~CURRENT_PROMPT", "$PLAYER~startingLocation", "$bot~startingLocation");
         SetMombotCurrentVars(context, "0", "$relogging", "$connectivity~relogging");
+    }
+
+    private static bool IsNativeMombotShipDestroyedLine(string trimmedLine)
+    {
+        if (trimmedLine.StartsWith("You will have to start over from scratch!", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (trimmedLine.StartsWith("You rush to an escape pod and abandon ship", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return trimmedLine.StartsWith("Your ", StringComparison.OrdinalIgnoreCase) &&
+            trimmedLine.EndsWith(" has been destroyed!", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string SanitizeObservedPromptForDisplay(string text)
@@ -214,8 +226,7 @@ public partial class MainWindow
 
     private void ObserveEmbeddedKeepaliveWatchLine(
         string line,
-        Core.GameInstance? gameInstance = null,
-        MtcTabPrototype? owner = null)
+        Core.GameInstance? gameInstance = null)
     {
         gameInstance ??= _gameInstance;
         if (gameInstance == null ||
@@ -225,9 +236,7 @@ public partial class MainWindow
             return;
         }
 
-        bool updateCurrentFields = owner is null;
-        owner ??= ResolveCurrentMtcTabContext();
-        _ = SendKeepaliveEscapeAsync(gameInstance, owner, updateCurrentFields);
+        _ = SendKeepaliveEscapeAsync(gameInstance);
     }
 
     private void ObserveNativeMombotWatchLine(string line)
@@ -285,48 +294,15 @@ public partial class MainWindow
 
     private async Task SendKeepaliveEscapeAsync()
     {
-        await SendKeepaliveEscapeAsync(
-            _gameInstance,
-            ResolveCurrentMtcTabContext(),
-            updateCurrentFields: true);
+        await SendKeepaliveEscapeAsync(_gameInstance);
     }
 
-    private async Task SendKeepaliveEscapeAsync(
-        Core.GameInstance? gameInstance,
-        MtcTabPrototype? owner,
-        bool updateCurrentFields)
+    private async Task SendKeepaliveEscapeAsync(Core.GameInstance? gameInstance)
     {
         if (gameInstance == null || !gameInstance.IsConnected)
             return;
 
         await gameInstance.SendToServerAsync(new byte[] { 0x1B });
-        RegisterNativeMombotEscapeEchoSuppression(owner, updateCurrentFields);
-    }
-
-    private void RegisterNativeMombotEscapeEchoSuppression()
-        => RegisterNativeMombotEscapeEchoSuppression(ResolveCurrentMtcTabContext(), updateCurrentFields: true);
-
-    private void RegisterNativeMombotEscapeEchoSuppression(MtcTabPrototype? owner, bool updateCurrentFields)
-    {
-        long suppressUntilTicks = DateTime.UtcNow.AddSeconds(2).Ticks;
-        if (owner is not null)
-        {
-            lock (owner.TerminalDisplayArtifactSync)
-            {
-                owner.PendingNativeMombotEscapeEchoSuppressions++;
-                owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = suppressUntilTicks;
-            }
-
-            if (updateCurrentFields)
-            {
-                _pendingNativeMombotEscapeEchoSuppressions = owner.PendingNativeMombotEscapeEchoSuppressions;
-                _nativeMombotEscapeEchoSuppressUntilUtcTicks = owner.NativeMombotEscapeEchoSuppressUntilUtcTicks;
-            }
-            return;
-        }
-
-        Interlocked.Increment(ref _pendingNativeMombotEscapeEchoSuppressions);
-        Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, suppressUntilTicks);
     }
 
     private byte[] FilterTerminalDisplayArtifacts(byte[] chunk)
@@ -340,20 +316,10 @@ public partial class MainWindow
         object sync = owner?.TerminalDisplayArtifactSync ?? _terminalDisplayArtifactSync;
         lock (sync)
         {
-            bool suppressingPendingNativeMombotEscapeSequence =
-                owner?.SuppressingPendingNativeMombotEscapeSequence ?? _suppressingPendingNativeMombotEscapeSequence;
-            bool suppressingPendingNativeMombotEscapeCsiBody =
-                owner?.SuppressingPendingNativeMombotEscapeCsiBody ?? _suppressingPendingNativeMombotEscapeCsiBody;
             bool pendingTerminalSyncMarkerLeadByte =
                 owner?.PendingTerminalSyncMarkerLeadByte ?? _pendingTerminalSyncMarkerLeadByte;
             bool pendingTerminalSyncMarkerUtf8LeadByte =
                 owner?.PendingTerminalSyncMarkerUtf8LeadByte ?? _pendingTerminalSyncMarkerUtf8LeadByte;
-            int pendingNativeMombotEscapeEchoSuppressions =
-                owner?.PendingNativeMombotEscapeEchoSuppressions ??
-                Interlocked.CompareExchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0, 0);
-            long nativeMombotEscapeEchoSuppressUntilUtcTicks =
-                owner?.NativeMombotEscapeEchoSuppressUntilUtcTicks ??
-                Interlocked.Read(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks);
 
             List<byte>? filtered = null;
             int index = 0;
@@ -400,62 +366,6 @@ public partial class MainWindow
             for (; index < chunk.Length; index++)
             {
                 byte value = chunk[index];
-
-                if (suppressingPendingNativeMombotEscapeSequence)
-                {
-                    filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                    suppressingPendingNativeMombotEscapeSequence = false;
-                    suppressingPendingNativeMombotEscapeCsiBody = false;
-
-                    if (IsAnsiEscapeIntroducer(value))
-                    {
-                        // The previous chunk ended with a possible echoed ESC, but this
-                        // byte proves it was the start of a real ANSI sequence.
-                        filtered.Add(0x1B);
-                        filtered.Add(value);
-                        ConsumePendingNativeMombotEscapeEchoSuppression(
-                            ref pendingNativeMombotEscapeEchoSuppressions,
-                            ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
-                        continue;
-                    }
-
-                    // It was a standalone echoed ESC. Keep suppressing only that byte;
-                    // the current byte is real game data and must still be displayed.
-                    ConsumePendingNativeMombotEscapeEchoSuppression(
-                        ref pendingNativeMombotEscapeEchoSuppressions,
-                        ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
-                }
-
-                if (value == 0x1B &&
-                    HasPendingNativeMombotEscapeEchoSuppression(
-                        pendingNativeMombotEscapeEchoSuppressions,
-                        nativeMombotEscapeEchoSuppressUntilUtcTicks))
-                {
-                    if (index + 1 < chunk.Length)
-                    {
-                        if (IsAnsiEscapeIntroducer(chunk[index + 1]))
-                        {
-                            ConsumePendingNativeMombotEscapeEchoSuppression(
-                                ref pendingNativeMombotEscapeEchoSuppressions,
-                                ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
-                        }
-                        else
-                        {
-                            filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                            ConsumePendingNativeMombotEscapeEchoSuppression(
-                                ref pendingNativeMombotEscapeEchoSuppressions,
-                                ref nativeMombotEscapeEchoSuppressUntilUtcTicks);
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        filtered = EnsureTerminalDisplayFilteredBuffer(filtered, chunk, index);
-                        suppressingPendingNativeMombotEscapeSequence = true;
-                        suppressingPendingNativeMombotEscapeCsiBody = false;
-                        continue;
-                    }
-                }
 
                 if (value == 0xC2)
                 {
@@ -531,21 +441,13 @@ public partial class MainWindow
 
             if (owner is not null)
             {
-                owner.SuppressingPendingNativeMombotEscapeSequence = suppressingPendingNativeMombotEscapeSequence;
-                owner.SuppressingPendingNativeMombotEscapeCsiBody = suppressingPendingNativeMombotEscapeCsiBody;
                 owner.PendingTerminalSyncMarkerLeadByte = pendingTerminalSyncMarkerLeadByte;
                 owner.PendingTerminalSyncMarkerUtf8LeadByte = pendingTerminalSyncMarkerUtf8LeadByte;
-                owner.PendingNativeMombotEscapeEchoSuppressions = pendingNativeMombotEscapeEchoSuppressions;
-                owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = nativeMombotEscapeEchoSuppressUntilUtcTicks;
             }
             else
             {
-                _suppressingPendingNativeMombotEscapeSequence = suppressingPendingNativeMombotEscapeSequence;
-                _suppressingPendingNativeMombotEscapeCsiBody = suppressingPendingNativeMombotEscapeCsiBody;
                 _pendingTerminalSyncMarkerLeadByte = pendingTerminalSyncMarkerLeadByte;
                 _pendingTerminalSyncMarkerUtf8LeadByte = pendingTerminalSyncMarkerUtf8LeadByte;
-                Interlocked.Exchange(ref _pendingNativeMombotEscapeEchoSuppressions, pendingNativeMombotEscapeEchoSuppressions);
-                Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, nativeMombotEscapeEchoSuppressUntilUtcTicks);
             }
 
             return filtered == null ? chunk : filtered.ToArray();
@@ -566,35 +468,6 @@ public partial class MainWindow
             result.Add(chunk[copyIndex]);
 
         return result;
-    }
-
-    private static bool IsAnsiEscapeIntroducer(byte value)
-        => value is (byte)'[' or (byte)']' or (byte)'P' or (byte)'X' or (byte)'^' or (byte)'_' or
-                    (byte)'7' or (byte)'8' or (byte)'c' or (byte)'M';
-
-    private static bool HasPendingNativeMombotEscapeEchoSuppression(
-        int pendingSuppressions,
-        long suppressUntilTicks)
-    {
-        if (pendingSuppressions <= 0)
-            return false;
-
-        if (suppressUntilTicks <= 0 || DateTime.UtcNow.Ticks > suppressUntilTicks)
-            return false;
-
-        return true;
-    }
-
-    private static void ConsumePendingNativeMombotEscapeEchoSuppression(
-        ref int pendingSuppressions,
-        ref long suppressUntilTicks)
-    {
-        if (pendingSuppressions <= 0)
-            return;
-
-        pendingSuppressions--;
-        if (pendingSuppressions <= 0)
-            suppressUntilTicks = 0;
     }
 
     private bool ShouldNativeMombotAutoRelog()
@@ -1118,7 +991,9 @@ public partial class MainWindow
 
         try
         {
-            if (interpreter != null)
+            if (IsManagedRemoteProxyGame())
+                await TryRunManagedRemoteScriptAsync(scriptPath);
+            else if (interpreter != null)
                 Core.ProxyGameOperations.LoadScript(interpreter, scriptPath);
             else
                 SendProxyMenuCommand($"ss {scriptPath}");
@@ -1147,7 +1022,9 @@ public partial class MainWindow
 
         try
         {
-            if (interpreter != null)
+            if (IsManagedRemoteProxyGame())
+                await TryRunManagedRemoteScriptAsync(relativePath);
+            else if (interpreter != null)
                 Core.ProxyGameOperations.LoadScript(interpreter, relativePath);
             else
                 SendProxyMenuCommand($"ss {relativePath}");
@@ -1412,59 +1289,8 @@ public partial class MainWindow
             return Task.CompletedTask;
 
         string macroText = GetTemporaryMacroText();
-
-        if (owner?.QuickMacroPlayWindow is { IsVisible: true } existing)
-        {
-            existing.Activate();
-            return Task.CompletedTask;
-        }
-
-        var dialog = new MacroPlayDialog(
-            macroText,
-            ValidateTemporaryMacroText,
-            allowHotkeyAssignment: true,
-            existingBindings: _appPrefs.MacroBindings,
-            playAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => PlayQuickMacroFromDialogAsync(playDialog)),
-            saveAsync: playDialog => ExecuteInOptionalMtcTabSessionAsync(owner, () => SaveQuickMacroFromDialogAsync(playDialog)));
-
-        dialog.Closed += (_, _) =>
-        {
-            if (owner != null && ReferenceEquals(owner.QuickMacroPlayWindow, dialog))
-                owner.QuickMacroPlayWindow = null;
-
-            if (!_mainWindowClosing)
-                FocusActiveTerminal();
-        };
-
-        if (owner != null)
-            owner.QuickMacroPlayWindow = dialog;
-        ShowMtcTabOwnedWindow(owner, dialog, activate: false);
+        ShowQuickMacroOverlay(owner, macroText);
         return Task.CompletedTask;
-
-        async Task<string?> PlayQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
-        {
-            string? saveError = await SaveQuickMacroFromDialogAsync(playDialog);
-            if (!string.IsNullOrWhiteSpace(saveError))
-                return saveError;
-
-            return await PlayTemporaryMacroBurstAsync(_temporaryMacroChunks, playDialog.PlayCount);
-        }
-    }
-
-    private Task<string?> SaveQuickMacroFromDialogAsync(MacroPlayDialog playDialog)
-    {
-        if (!TryDecodeTemporaryMacroText(playDialog.MacroText, out byte[] updatedMacroBytes, out string? parseError))
-            return Task.FromResult<string?>(parseError ?? "temporary macro is invalid");
-
-        _temporaryMacroChunks.Clear();
-        if (updatedMacroBytes.Length > 0)
-            _temporaryMacroChunks.Add(updatedMacroBytes);
-        UpdateTemporaryMacroControls();
-
-        if (playDialog.AssignToHotkey)
-            UpsertConfiguredMacroBinding(playDialog.AssignedHotkey, playDialog.MacroText);
-
-        return Task.FromResult<string?>(null);
     }
 
     private async Task PlaySavedQuickMacroOnceAsync()
@@ -1491,10 +1317,10 @@ public partial class MainWindow
 
     private void UpdateOpenQuickMacroPlayWindow(string macroText, string statusMessage)
     {
-        if (ActiveMtcTab?.QuickMacroPlayWindow is not { IsVisible: true } dialog)
+        if (ActiveMtcTab?.QuickMacroPlayOverlay is not { IsVisible: true } overlay)
             return;
 
-        dialog.SetMacroText(macroText, statusMessage);
+        overlay.SetMacroText(macroText);
     }
 
     private Task<string?> PlayTemporaryMacroBurstAsync(IReadOnlyList<byte[]> macroChunks, int count)

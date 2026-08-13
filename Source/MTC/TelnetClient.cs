@@ -1,6 +1,7 @@
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 
 namespace MTC;
 
@@ -35,6 +36,9 @@ public sealed class TelnetClient : IDisposable
     private TcpClient?  _tcp;
     private NetworkStream? _stream;
     private CancellationTokenSource? _cts;
+    private Channel<byte[]>? _sendChannel;
+    private Task? _sendTask;
+    private int _disconnectRaised;
 
     private TelnetState _tstate = TelnetState.Data;
     private byte        _sbOption;
@@ -97,17 +101,23 @@ public sealed class TelnetClient : IDisposable
 
         await _tcp.ConnectAsync(host, port, _cts.Token);
         _stream = _tcp.GetStream();
+        _sendChannel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+        });
+        Interlocked.Exchange(ref _disconnectRaised, 0);
+        NetworkStream stream = _stream;
+        CancellationToken token = _cts.Token;
+        _sendTask = Task.Run(() => SendLoopAsync(stream, _sendChannel.Reader, token), token);
         Connected?.Invoke();
 
-        _ = Task.Run(ReadLoopAsync, _cts.Token);
+        _ = Task.Run(() => ReadLoopAsync(stream, token), token);
     }
 
     public void Disconnect()
     {
-        _cts?.Cancel();
-        _stream?.Close();
-        _tcp?.Close();
-        Disconnected?.Invoke();
+        CloseConnection(raiseDisconnected: true, disposeCts: false);
     }
 
     // ── Send ───────────────────────────────────────────────────────────────
@@ -116,27 +126,50 @@ public sealed class TelnetClient : IDisposable
     {
         if (_stream == null || !IsConnected) return;
         var data = Encoding.Latin1.GetBytes(text + "\r\n");
-        _stream.Write(data, 0, data.Length);
+        SendRaw(data);
     }
 
     public void SendRaw(byte[] data)
     {
-        if (_stream == null || !IsConnected) return;
-        _stream.Write(data, 0, data.Length);
+        Channel<byte[]>? channel = _sendChannel;
+        if (channel == null || data.Length == 0 || !IsConnected)
+            return;
+
+        byte[] copy = new byte[data.Length];
+        Buffer.BlockCopy(data, 0, copy, 0, data.Length);
+        if (!channel.Writer.TryWrite(copy) && IsConnected)
+            Error?.Invoke("Unable to queue outbound telnet data.");
     }
 
     // ── Read loop ──────────────────────────────────────────────────────────
 
-    private async Task ReadLoopAsync()
+    private async Task SendLoopAsync(NetworkStream stream, ChannelReader<byte[]> reader, CancellationToken token)
+    {
+        try
+        {
+            await foreach (byte[] data in reader.ReadAllAsync(token))
+            {
+                await stream.WriteAsync(data, 0, data.Length, token);
+                await stream.FlushAsync(token);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Error?.Invoke(ex.Message);
+            CloseConnection(raiseDisconnected: true, disposeCts: false);
+        }
+    }
+
+    private async Task ReadLoopAsync(NetworkStream stream, CancellationToken token)
     {
         var raw  = new byte[4096];
         var app  = new byte[4096];
 
         try
         {
-            while (_stream != null && !_cts!.Token.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
-                int n = await _stream.ReadAsync(raw, _cts.Token);
+                int n = await stream.ReadAsync(raw, token);
                 if (n == 0) break;
 
                 int appLen = ProcessTelnet(raw, n, app);
@@ -155,7 +188,7 @@ public sealed class TelnetClient : IDisposable
         }
         finally
         {
-            Disconnected?.Invoke();
+            CloseConnection(raiseDisconnected: true, disposeCts: false);
         }
     }
 
@@ -316,7 +349,7 @@ public sealed class TelnetClient : IDisposable
         {
             // Server requests our terminal type
             byte[] resp = [IAC, SB, OPT_TERM_TYPE, IS, .."ANSI"u8.ToArray(), IAC, SE];
-            _stream?.Write(resp, 0, resp.Length);
+            SendRaw(resp);
         }
     }
 
@@ -332,25 +365,44 @@ public sealed class TelnetClient : IDisposable
         payload.AddRange(Esc(_termRows & 0xFF));
         payload.Add(IAC);
         payload.Add(SE);
-        _stream?.Write(payload.ToArray(), 0, payload.Count);
+        SendRaw(payload.ToArray());
     }
 
     private void Send(byte verb, byte opt)
     {
         byte[] buf = [IAC, verb, opt];
-        try { _stream?.Write(buf, 0, 3); } catch { /* connection dropped */ }
+        SendRaw(buf);
     }
 
     // ── Dispose ────────────────────────────────────────────────────────────
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
-        _stream?.Dispose();
-        _tcp?.Dispose();
-        _cts    = null;
+        CloseConnection(raiseDisconnected: false, disposeCts: true);
+    }
+
+    private void CloseConnection(bool raiseDisconnected, bool disposeCts)
+    {
+        _sendChannel?.Writer.TryComplete();
+        try { _cts?.Cancel(); } catch { }
+        try { _stream?.Close(); } catch { }
+        try { _tcp?.Close(); } catch { }
+        try { _stream?.Dispose(); } catch { }
+        try { _tcp?.Dispose(); } catch { }
+
+        if (disposeCts)
+        {
+            try { _cts?.Dispose(); } catch { }
+        }
+
+        _sendChannel = null;
+        _sendTask = null;
         _stream = null;
-        _tcp    = null;
+        _tcp = null;
+        if (disposeCts)
+            _cts = null;
+
+        if (raiseDisconnected && Interlocked.Exchange(ref _disconnectRaised, 1) == 0)
+            Disconnected?.Invoke();
     }
 }

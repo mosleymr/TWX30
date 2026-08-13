@@ -21,15 +21,15 @@ namespace TWXProxy.Core
     public class AutoRecorder
     {
         // ── State ──────────────────────────────────────────────────────────────
-        private int  _lastSector;        // Most recently seen "Sector  : NNNN" number
+        private int _lastSector;        // Most recently seen "Sector  : NNNN" number
         private bool _inDensityScan;     // Inside a Relative Density Scan block
         private bool _inHoloScan;        // Inside a Holo Scan block
-        private int  _currentSector;     // Sector extracted from most recent Command prompt
+        private int _currentSector;     // Sector extracted from most recent Command prompt
 
         // Density-scan warp collection: all sectors listed in an active density scan
         // are adjacent to the player's current sector — so we collect them and write
         // them as Warp[] for the origin sector when the scan finishes.
-        private int        _densityFromSector;  // _currentSector snapshot at scan start
+        private int _densityFromSector;  // _currentSector snapshot at scan start
         private readonly List<int> _densityScanSectors = new();
 
         // Sector-display position: tracks which continuation-line type we're inside
@@ -67,11 +67,11 @@ namespace TWXProxy.Core
 
         // Planet land-list / detail parsing state
         private bool _inLandList;     // True after "Registry# and Planet Name" header
-        private int  _landListSector; // Sector the land list belongs to (_lastSector at entry)
-        private int  _lastLandListPlanetId;
-        private int  _activePlanetDetailId;
-        private int  _landedPlanetId;
-        private int  _landListPlanetIndex;
+        private int _landListSector; // Sector the land list belongs to (_lastSector at entry)
+        private int _lastLandListPlanetId;
+        private int _activePlanetDetailId;
+        private int _landedPlanetId;
+        private int _landListPlanetIndex;
         private readonly List<bool> _pendingLandListShielded = new();
 
         // Warp-lane (Frontier Map) parsing state
@@ -84,10 +84,10 @@ namespace TWXProxy.Core
         // Commerce / port report parsing state
         // Pascal: Process.ParsePortReport — triggered by "Commerce report for X:"
         private bool _inPortReport;       // Inside a commerce report block
-        private int  _portReportSector;   // Sector whose port is being updated
+        private int _portReportSector;   // Sector whose port is being updated
         private bool _portReportHasFuel;  // Fuel Ore line was received
         private bool _portReportHasOrg;   // Organics line was received
-        private int  _pendingPortReportSectorOverride;
+        private int _pendingPortReportSectorOverride;
         private PortStaticSnapshot? _portReportOriginalSnapshot;
 
         // CIM (Computer Information Menu) download state.
@@ -368,10 +368,6 @@ namespace TWXProxy.Core
             @"^You have ([\d,]+) credits\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        private static readonly Regex _rxLiveCredits = new(
-            @"^You have ([\d,]+) credits(?: and (\d+) empty cargo holds)?(?:, and the Treasury has [\d,]+)?\.?$",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
         private static readonly Regex _rxDockCurrentFighters = new(
             @"^You have ([\d,]+) fighters\.$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -571,6 +567,12 @@ namespace TWXProxy.Core
             if (TryProcessPrompt(db, rawLine, trimmedLine, ansiLine))
                 return;
 
+            if (IsDestroyedStarPortNotice(rawLine))
+            {
+                MarkDestroyedPort(db, ResolveDestroyedPortSector());
+                return;
+            }
+
             if (TryProcessLiveShipStatus(trimmedLine))
                 return;
 
@@ -681,7 +683,7 @@ namespace TWXProxy.Core
             // Header line triggers the mode; entries supply planet ID + name.
             if (trimmedLine.StartsWith("Registry# and Planet Name", StringComparison.OrdinalIgnoreCase))
             {
-                _inLandList   = true;
+                _inLandList = true;
                 _landListSector = _currentSector;
                 _lastLandListPlanetId = 0;
                 _landListPlanetIndex = 0;
@@ -846,7 +848,7 @@ namespace TWXProxy.Core
             {
                 FinalizeWarpLane(db);
                 _inDensityScan = true;
-                _inHoloScan    = false;
+                _inHoloScan = false;
                 _densityFromSector = _currentSector;
                 _densityScanSectors.Clear();
                 return;
@@ -859,7 +861,7 @@ namespace TWXProxy.Core
                 // _currentSector (those sectors are neighbors, NOT the player's
                 // current position).
                 FinalizeWarpLane(db);
-                _inHoloScan    = true;
+                _inHoloScan = true;
                 _inDensityScan = false;
                 GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] HoloScan started, currentSector={_currentSector}\n");
                 return;
@@ -903,7 +905,7 @@ namespace TWXProxy.Core
                         FinalizeWarpLane(db);
                     }
                     _lastSector = sn;
-                    _sectorPos  = SectorPos.None;
+                    _sectorPos = SectorPos.None;
 
                     // Clear volatile sector data to be re-populated from following lines.
                     var sec = GetOrCreate(db, sn);
@@ -912,8 +914,8 @@ namespace TWXProxy.Core
                         _activeSectorDisplaySector = sn;
                         _activeSectorDisplaySawPort = false;
                         _activeSectorDisplayHadCachedPort = sec.SectorPort != null && !string.IsNullOrEmpty(sec.SectorPort.Name);
-                        sec.Fighters    = new SpaceObject();
-                        sec.MinesArmid  = new SpaceObject();
+                        sec.Fighters = new SpaceObject();
+                        sec.MinesArmid = new SpaceObject();
                         sec.MinesLimpet = new SpaceObject();
                         sec.Beacon = string.Empty;
                         sec.PlanetNames.Clear();
@@ -1050,10 +1052,10 @@ namespace TWXProxy.Core
                 var m = _rxCommerceReport.Match(trimmedLine);
                 if (m.Success)
                 {
-                    _inPortReport      = true;
-                    _portReportSector  = _pendingPortReportSectorOverride > 0 ? _pendingPortReportSectorOverride : _currentSector;
+                    _inPortReport = true;
+                    _portReportSector = _pendingPortReportSectorOverride > 0 ? _pendingPortReportSectorOverride : _currentSector;
                     _portReportHasFuel = false;
-                    _portReportHasOrg  = false;
+                    _portReportHasOrg = false;
                     _pendingPortReportSectorOverride = 0;
                     // Set port name now; product lines will fill BuyProduct/Amount/Percent
                     var sec = GetOrCreate(db, _portReportSector);
@@ -1147,7 +1149,7 @@ namespace TWXProxy.Core
 
             // Port
             {
-                if (_rxPortDestroyed.IsMatch(rawLine))
+                if (IsDestroyedPortDisplayLine(rawLine))
                 {
                     MarkDestroyedPort(db, _lastSector);
                     _sectorPos = SectorPos.Ports;
@@ -1727,16 +1729,15 @@ namespace TWXProxy.Core
 
         private bool TryProcessLiveShipStatus(string trimmedLine)
         {
-            var credits = _rxLiveCredits.Match(trimmedLine);
-            if (credits.Success)
+            if (ShipStatusTextParser.TryParseLiveCreditsLine(trimmedLine, out long credits, out int? emptyHolds))
             {
                 var delta = new ShipStatusDelta
                 {
-                    Credits = ParseCommaLong(credits.Groups[1].Value)
+                    Credits = credits
                 };
 
-                if (credits.Groups[2].Success && int.TryParse(credits.Groups[2].Value, out int emptyHolds))
-                    delta.HoldsEmpty = emptyHolds;
+                if (emptyHolds.HasValue)
+                    delta.HoldsEmpty = emptyHolds.Value;
 
                 EmitShipStatusDelta(delta);
                 return true;
@@ -2176,10 +2177,46 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
 
-            sector.SectorPort ??= new Port();
-            sector.SectorPort.Dead = true;
+            sector.SectorPort = new Port
+            {
+                Dead = true,
+                Update = DateTime.Now,
+            };
+            if (_activeSectorDisplaySector == sectorNum)
+            {
+                _activeSectorDisplaySawPort = true;
+                _activeSectorDisplayHadCachedPort = false;
+            }
+
             db.SaveSector(sector);
-            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port marked destroyed\n");
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {sectorNum} port marked destroyed and non-existent\n");
+        }
+
+        private int ResolveDestroyedPortSector()
+        {
+            if (_currentSector > 0)
+                return _currentSector;
+
+            if (_lastSector > 0)
+                return _lastSector;
+
+            return _activeSectorDisplaySector;
+        }
+
+        private static bool IsDestroyedStarPortNotice(string rawLine)
+        {
+            return rawLine.StartsWith("You destroyed the Star Port!", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDestroyedPortDisplayLine(string rawLine)
+        {
+            if (_rxPortDestroyed.IsMatch(rawLine))
+                return true;
+
+            string trimmed = rawLine.TrimStart();
+            return trimmed.StartsWith("Ports", StringComparison.OrdinalIgnoreCase) &&
+                   trimmed.IndexOf(':') >= 0 &&
+                   trimmed.IndexOf("Scanners indicate massive debris", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static void ParsePortContinuation(ModDatabase db, int sectorNum, string line)
@@ -2862,29 +2899,32 @@ namespace TWXProxy.Core
             _pendingSectorDefenseType = FighterType.None;
         }
 
-        private static bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
+        private bool TryProcessWatcherState(ModDatabase db, string rawLine, string trimmedLine)
         {
             if (ShouldIgnoreRecorderCommLine(rawLine, ansiLine: null))
                 return false;
 
-            if (trimmedLine.StartsWith("For getting caught your alignment went down by", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("For getting caught your alignment went down by", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("Suddenly you're Busted!", StringComparison.OrdinalIgnoreCase))
             {
-                int sector = ScriptRef.GetCurrentSector();
+                int sector = ResolveWatcherSector();
                 if (sector <= 0)
                     return true;
 
-                db.SetSectorVar(sector, "BUSTED", "1");
+                db.SetSectorVar(sector, DatabaseConstants.BustParameterName, "1");
                 GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] BUSTED sector={sector}\n");
                 return true;
             }
 
-            if (trimmedLine.StartsWith("(You realize the guards saw you last time!)", StringComparison.OrdinalIgnoreCase))
+            if (trimmedLine.StartsWith("(You realize the guards saw you last time!)", StringComparison.OrdinalIgnoreCase) ||
+                trimmedLine.StartsWith("(You suddenly remember that you were caught stealing here before)", StringComparison.OrdinalIgnoreCase))
             {
-                int sector = ScriptRef.GetCurrentSector();
+                int sector = ResolveWatcherSector();
                 if (sector <= 0)
                     return true;
 
-                db.SetSectorVar(sector, "FAKEBUST", "1");
+                db.SetSectorVar(sector, DatabaseConstants.BustParameterName, "1");
+                db.SetSectorVar(sector, DatabaseConstants.FakeBustParameterName, "1");
                 GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] FAKEBUST sector={sector}\n");
                 return true;
             }
@@ -3045,6 +3085,18 @@ namespace TWXProxy.Core
             }
 
             return false;
+        }
+
+        private int ResolveWatcherSector()
+        {
+            if (_currentSector > 0)
+                return _currentSector;
+
+            int scriptSector = ScriptRef.GetCurrentSector();
+            if (scriptSector > 0)
+                return scriptSector;
+
+            return _lastSector;
         }
 
         private static bool ShouldIgnoreRecorderCommLine(string line, string? ansiLine)
@@ -3252,7 +3304,7 @@ namespace TWXProxy.Core
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Sector {fromSector} warps from density scan: {string.Join(", ", sectors)}\n");
         }
 
-        private static void ParseWarpsLine(ModDatabase db, int sectorNum, string warpsPart)
+        private void ParseWarpsLine(ModDatabase db, int sectorNum, string warpsPart)
         {
             var sector = GetOrCreate(db, sectorNum);
             if (sector == null) return;
@@ -3290,6 +3342,9 @@ namespace TWXProxy.Core
 
             db.SaveSector(sector);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");
+
+            if (_activeSectorDisplaySector == sectorNum)
+                FinalizeActiveSectorDisplay(db);
         }
 
         private void ParsePortLine(ModDatabase db, int sectorNum, string rawLine, Match m)
@@ -3331,8 +3386,8 @@ namespace TWXProxy.Core
                 if (notation.Length == 3)
                 {
                     observedType = notation;
-                    sector.SectorPort.BuyProduct[ProductType.FuelOre]   = notation[0] == 'B';
-                    sector.SectorPort.BuyProduct[ProductType.Organics]  = notation[1] == 'B';
+                    sector.SectorPort.BuyProduct[ProductType.FuelOre] = notation[0] == 'B';
+                    sector.SectorPort.BuyProduct[ProductType.Organics] = notation[1] == 'B';
                     sector.SectorPort.BuyProduct[ProductType.Equipment] = notation[2] == 'B';
                 }
             }
@@ -3415,9 +3470,9 @@ namespace TWXProxy.Core
             sector.SectorPort ??= new Port();
 
             string productName = m.Groups[1].Value;
-            string status      = m.Groups[2].Value;
-            string amtStr      = m.Groups[3].Value.Replace(",", "");
-            string pctStr      = m.Groups[4].Value;
+            string status = m.Groups[2].Value;
+            string amtStr = m.Groups[3].Value.Replace(",", "");
+            string pctStr = m.Groups[4].Value;
 
             // "Buying" → port buys (players sell here), "Selling" → port sells (players buy here)
             bool buys = status.Equals("Buying", StringComparison.OrdinalIgnoreCase);
@@ -3446,8 +3501,8 @@ namespace TWXProxy.Core
                 pt = ProductType.Equipment;
             }
 
-            sector.SectorPort.BuyProduct[pt]     = buys;
-            sector.SectorPort.ProductAmount[pt]  = amt;
+            sector.SectorPort.BuyProduct[pt] = buys;
+            sector.SectorPort.ProductAmount[pt] = amt;
             sector.SectorPort.ProductPercent[pt] = pct;
 
             // After Equipment line: derive ClassIndex from buy pattern if not already set,
@@ -3489,14 +3544,14 @@ namespace TWXProxy.Core
         /// </summary>
         private static byte DeriveClassIndex(bool buyFuel, bool buyOrg, bool buyEquip)
         {
-            if  ( buyFuel &&  buyOrg && !buyEquip) return 1; // BBS
-            if  ( buyFuel && !buyOrg &&  buyEquip) return 2; // BSB
-            if  (!buyFuel &&  buyOrg &&  buyEquip) return 3; // SBB
-            if  (!buyFuel && !buyOrg &&  buyEquip) return 4; // SSB
-            if  (!buyFuel &&  buyOrg && !buyEquip) return 5; // SBS
-            if  ( buyFuel && !buyOrg && !buyEquip) return 6; // BSS
-            if  (!buyFuel && !buyOrg && !buyEquip) return 7; // SSS
-            if  ( buyFuel &&  buyOrg &&  buyEquip) return 8; // BBB
+            if (buyFuel && buyOrg && !buyEquip) return 1; // BBS
+            if (buyFuel && !buyOrg && buyEquip) return 2; // BSB
+            if (!buyFuel && buyOrg && buyEquip) return 3; // SBB
+            if (!buyFuel && !buyOrg && buyEquip) return 4; // SSB
+            if (!buyFuel && buyOrg && !buyEquip) return 5; // SBS
+            if (buyFuel && !buyOrg && !buyEquip) return 6; // BSS
+            if (!buyFuel && !buyOrg && !buyEquip) return 7; // SSS
+            if (buyFuel && buyOrg && buyEquip) return 8; // BBB
             return 0;
         }
 
@@ -3539,18 +3594,18 @@ namespace TWXProxy.Core
 
             if (!int.TryParse(m.Groups[1].Value, out int qty)) return;
             string mineType = m.Groups[2].Value;
-            string owner    = NormalizeOwnerText(m.Groups[3].Value);
+            string owner = NormalizeOwnerText(m.Groups[3].Value);
 
             if (mineType.Equals("Armid", StringComparison.OrdinalIgnoreCase))
             {
                 sector.MinesArmid.Quantity = qty;
-                sector.MinesArmid.Owner    = owner;
+                sector.MinesArmid.Owner = owner;
                 SetMineMarker(db, sectorNum, MineScanKind.Armid, qty > 0 && IsFriendlyDeploymentOwner(owner));
             }
             else
             {
                 sector.MinesLimpet.Quantity = qty;
-                sector.MinesLimpet.Owner    = owner;
+                sector.MinesLimpet.Owner = owner;
                 SetMineMarker(db, sectorNum, MineScanKind.Limpet, qty > 0 && IsFriendlyDeploymentOwner(owner));
             }
 
@@ -3666,8 +3721,8 @@ namespace TWXProxy.Core
             if (sec.Explored == ExploreType.No)
             {
                 sec.Constellation = "??? (warp calc only)";
-                sec.Explored      = ExploreType.Calc;
-                sec.Update        = DateTime.Now;
+                sec.Explored = ExploreType.Calc;
+                sec.Update = DateTime.Now;
             }
 
             db.SaveSector(sec);
@@ -3905,8 +3960,8 @@ namespace TWXProxy.Core
                 return;
             }
 
-            if (!int.TryParse(nums[1], out int ore)   || !int.TryParse(nums[2], out int pOre)
-             || !int.TryParse(nums[3], out int org)   || !int.TryParse(nums[4], out int pOrg)
+            if (!int.TryParse(nums[1], out int ore) || !int.TryParse(nums[2], out int pOre)
+             || !int.TryParse(nums[3], out int org) || !int.TryParse(nums[4], out int pOrg)
              || !int.TryParse(nums[5], out int equip) || !int.TryParse(nums[6], out int pEquip))
             {
                 FinishPortCimBatch(db, "invalid-values");
@@ -3933,11 +3988,11 @@ namespace TWXProxy.Core
                 : null;
             sector.SectorPort ??= new Port();
 
-            sector.SectorPort.ProductAmount[ProductType.FuelOre]   = (ushort)Math.Min(ore,   ushort.MaxValue);
-            sector.SectorPort.ProductAmount[ProductType.Organics]  = (ushort)Math.Min(org,   ushort.MaxValue);
+            sector.SectorPort.ProductAmount[ProductType.FuelOre] = (ushort)Math.Min(ore, ushort.MaxValue);
+            sector.SectorPort.ProductAmount[ProductType.Organics] = (ushort)Math.Min(org, ushort.MaxValue);
             sector.SectorPort.ProductAmount[ProductType.Equipment] = (ushort)Math.Min(equip, ushort.MaxValue);
-            sector.SectorPort.ProductPercent[ProductType.FuelOre]   = (byte)pOre;
-            sector.SectorPort.ProductPercent[ProductType.Organics]  = (byte)pOrg;
+            sector.SectorPort.ProductPercent[ProductType.FuelOre] = (byte)pOre;
+            sector.SectorPort.ProductPercent[ProductType.Organics] = (byte)pOrg;
             sector.SectorPort.ProductPercent[ProductType.Equipment] = (byte)pEquip;
             sector.SectorPort.Update = DateTime.Now;
 
@@ -3968,8 +4023,8 @@ namespace TWXProxy.Core
                     "AutoRecorder.PortCIM");
             }
 
-            sector.SectorPort.BuyProduct[ProductType.FuelOre]   = buyFuel;
-            sector.SectorPort.BuyProduct[ProductType.Organics]  = buyOrg;
+            sector.SectorPort.BuyProduct[ProductType.FuelOre] = buyFuel;
+            sector.SectorPort.BuyProduct[ProductType.Organics] = buyOrg;
             sector.SectorPort.BuyProduct[ProductType.Equipment] = buyEquip;
             sector.SectorPort.ClassIndex = observedClass;
             if (string.IsNullOrEmpty(sector.SectorPort.Name))

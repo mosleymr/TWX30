@@ -18,6 +18,8 @@ namespace MTC;
 
 public partial class MainWindow
 {
+    private readonly HashSet<int> _mtcTabClosePromptTabIds = [];
+
     private sealed class MtcTabPrototype
     {
         public int Id { get; init; }
@@ -140,11 +142,7 @@ public partial class MainWindow
         public int MombotMacroPromptRedrawTicket { get; set; }
         public string MombotLastObservedGamePromptAnsi { get; set; } = string.Empty;
         public string MombotLastObservedGamePromptPlain { get; set; } = string.Empty;
-        public int PendingNativeMombotEscapeEchoSuppressions { get; set; }
-        public long NativeMombotEscapeEchoSuppressUntilUtcTicks { get; set; }
         public string PendingNativeMombotPostLoginMacro { get; set; } = string.Empty;
-        public bool SuppressingPendingNativeMombotEscapeSequence { get; set; }
-        public bool SuppressingPendingNativeMombotEscapeCsiBody { get; set; }
         public bool PendingTerminalSyncMarkerLeadByte { get; set; }
         public bool PendingTerminalSyncMarkerUtf8LeadByte { get; set; }
         public bool MombotKeepaliveTickRunning { get; set; }
@@ -183,6 +181,7 @@ public partial class MainWindow
         public ScriptDebuggerWindow? ScriptDebuggerWindow { get; set; }
         public MacroSettingsDialog? MacroSettingsDialog { get; set; }
         public MacroPlayDialog? QuickMacroPlayWindow { get; set; }
+        public QuickMacroPlayOverlay? QuickMacroPlayOverlay { get; set; }
         public GameAgentWindow? GameAgentWindow { get; set; }
         public GameAgentReplayWindow? GameAgentReplayWindow { get; set; }
         public TerminalRecordingPlaybackWindow? RecordingPlaybackWindow { get; set; }
@@ -838,6 +837,14 @@ public partial class MainWindow
 
     private void CaptureMtcTabSession(MtcTabPrototype tab)
     {
+        if (!IsMtcTabSessionCurrentlyBound(tab))
+        {
+            Core.GlobalModules.DebugLog(
+                $"[MTC.TabIsolation] skipped capture for tab={tab.Id} title='{tab.Title}' because the bound globals do not match the tab session.\n");
+            Core.GlobalModules.FlushDebugLog();
+            return;
+        }
+
         tab.SessionDb = _sessionDb;
         tab.GameInstance = _gameInstance;
         tab.ModuleHost = _moduleHost;
@@ -911,11 +918,7 @@ public partial class MainWindow
         tab.MombotMacroPromptRedrawTicket = _mombotMacroPromptRedrawTicket;
         tab.MombotLastObservedGamePromptAnsi = _mombotLastObservedGamePromptAnsi;
         tab.MombotLastObservedGamePromptPlain = _mombotLastObservedGamePromptPlain;
-        tab.PendingNativeMombotEscapeEchoSuppressions = _pendingNativeMombotEscapeEchoSuppressions;
-        tab.NativeMombotEscapeEchoSuppressUntilUtcTicks = _nativeMombotEscapeEchoSuppressUntilUtcTicks;
         tab.PendingNativeMombotPostLoginMacro = _pendingNativeMombotPostLoginMacro;
-        tab.SuppressingPendingNativeMombotEscapeSequence = _suppressingPendingNativeMombotEscapeSequence;
-        tab.SuppressingPendingNativeMombotEscapeCsiBody = _suppressingPendingNativeMombotEscapeCsiBody;
         tab.PendingTerminalSyncMarkerLeadByte = _pendingTerminalSyncMarkerLeadByte;
         tab.PendingTerminalSyncMarkerUtf8LeadByte = _pendingTerminalSyncMarkerUtf8LeadByte;
         tab.MombotKeepaliveTickRunning = _mombotKeepaliveTickRunning;
@@ -938,6 +941,16 @@ public partial class MainWindow
         tab.LastGameAgentServerEventSignature = _lastGameAgentServerEventSignature;
         tab.LastGameAgentServerEventUtc = _lastGameAgentServerEventUtc;
     }
+
+    private bool IsMtcTabSessionCurrentlyBound(MtcTabPrototype tab)
+        => ReferenceEquals(_boundMtcTab, tab) &&
+           ReferenceEquals(_state, tab.State) &&
+           ReferenceEquals(_buffer, tab.Buffer) &&
+           ReferenceEquals(_parser, tab.Parser) &&
+           ReferenceEquals(_telnet, tab.Telnet) &&
+           ReferenceEquals(_mombot, tab.Mombot) &&
+           ReferenceEquals(_pythonScripts, tab.PythonScripts) &&
+           ReferenceEquals(_gameAgent, tab.GameAgent);
 
     private void BindMtcTabSession(MtcTabPrototype tab)
     {
@@ -1026,11 +1039,7 @@ public partial class MainWindow
         _mombotMacroPromptRedrawTicket = tab.MombotMacroPromptRedrawTicket;
         _mombotLastObservedGamePromptAnsi = tab.MombotLastObservedGamePromptAnsi;
         _mombotLastObservedGamePromptPlain = tab.MombotLastObservedGamePromptPlain;
-        _pendingNativeMombotEscapeEchoSuppressions = tab.PendingNativeMombotEscapeEchoSuppressions;
-        _nativeMombotEscapeEchoSuppressUntilUtcTicks = tab.NativeMombotEscapeEchoSuppressUntilUtcTicks;
         _pendingNativeMombotPostLoginMacro = tab.PendingNativeMombotPostLoginMacro;
-        _suppressingPendingNativeMombotEscapeSequence = tab.SuppressingPendingNativeMombotEscapeSequence;
-        _suppressingPendingNativeMombotEscapeCsiBody = tab.SuppressingPendingNativeMombotEscapeCsiBody;
         _pendingTerminalSyncMarkerLeadByte = tab.PendingTerminalSyncMarkerLeadByte;
         _pendingTerminalSyncMarkerUtf8LeadByte = tab.PendingTerminalSyncMarkerUtf8LeadByte;
         _mombotKeepaliveTickRunning = tab.MombotKeepaliveTickRunning;
@@ -1709,6 +1718,9 @@ public partial class MainWindow
         bool changed = false;
         if (owner is { IsLiveSession: true } liveTab)
         {
+            if (!CanMtcTabAdoptGameIdentity(liveTab, gameName, "title"))
+                return;
+
             string nextTitle = GetLiveMtcTabTitle(liveTab, gameName);
             if (!string.Equals(liveTab.Title, nextTitle, StringComparison.Ordinal))
             {
@@ -1723,6 +1735,54 @@ public partial class MainWindow
             RefreshMtcTabOwnedWindowTitles(owner);
             UpdateCommandDeckActiveConsole();
         }
+    }
+
+    private bool CanCurrentMtcTabAdoptGameIdentity(string? nextGameName, string reason)
+    {
+        MtcTabPrototype? owner = PeekCurrentMtcTabContext();
+        if (owner is null && Dispatcher.UIThread.CheckAccess())
+            owner = ActiveMtcTab;
+
+        return CanMtcTabAdoptGameIdentity(owner, nextGameName, reason);
+    }
+
+    private bool CanMtcTabAdoptGameIdentity(MtcTabPrototype? owner, string? nextGameName, string reason)
+    {
+        if (owner is null || string.IsNullOrWhiteSpace(nextGameName))
+            return true;
+
+        string next = NormalizeGameName(nextGameName);
+        string current = NormalizeGameName(
+            !string.IsNullOrWhiteSpace(owner.EmbeddedGameName)
+                ? owner.EmbeddedGameName!
+                : !string.IsNullOrWhiteSpace(owner.EmbeddedGameConfig?.Name)
+                    ? owner.EmbeddedGameConfig!.Name
+                    : owner.State.GameName);
+
+        if (string.IsNullOrWhiteSpace(current) ||
+            string.Equals(current, next, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        bool live = owner.GameInstance?.IsRunning == true ||
+                    owner.GameInstance?.IsConnected == true ||
+                    owner.Telnet.IsConnected ||
+                    owner.State.Connected;
+        if (!live)
+            return true;
+
+        Core.GlobalModules.DebugLog(
+            $"[MTC.TabIsolation] blocked {reason} identity change tab={owner.Id} title='{owner.Title}' current='{current}' next='{next}'.\n");
+        Core.GlobalModules.FlushDebugLog();
+
+        if (Dispatcher.UIThread.CheckAccess() && owner.Id == _activeMtcTabId)
+        {
+            _parser.Feed($"\x1b[1;31m[MTC blocked tab identity change from {current} to {next}; disconnect or open a new tab before switching games.]\x1b[0m\r\n");
+            _buffer.Dirty = true;
+        }
+
+        return false;
     }
 
     private void CaptureLiveMtcTabShell()
@@ -1759,6 +1819,8 @@ public partial class MainWindow
         BindActiveMtcTabSession();
         RestoreActiveMtcTabContent();
         RefreshMtcTabStrip();
+        RefreshQuickMacroOverlayVisibility();
+        BringMtcTabOwnedWindowsToForeground(ActiveMtcTab);
     }
 
     private void CloseActiveMtcTab()
@@ -1779,8 +1841,20 @@ public partial class MainWindow
         if (tab is null)
             return;
 
+        if (!await ConfirmCloseConnectedMtcTabAsync(tab))
+            return;
+
         if (tab.IsLiveSession && _mtcTabs.Count <= 1)
         {
+            if (IsMtcTabConnectedToServer(tab))
+            {
+                _mainWindowCloseConfirmed = true;
+                _mainWindowClosing = true;
+                CloseMtcTabOwnedWindows(tab);
+                Interlocked.Exchange(ref tab.Closed, 1);
+                await StopMtcTabSessionAsync(tab);
+            }
+
             Close();
             return;
         }
@@ -1810,6 +1884,34 @@ public partial class MainWindow
 
         RefreshMtcTabStrip();
         ApplyJsonRpcPreferences();
+    }
+
+    private async Task<bool> ConfirmCloseConnectedMtcTabAsync(MtcTabPrototype tab)
+    {
+        if (!tab.IsLiveSession)
+            return true;
+
+        if (ReferenceEquals(_boundMtcTab, tab))
+            CaptureMtcTabSession(tab);
+
+        if (!IsMtcTabConnectedToServer(tab))
+            return true;
+
+        if (!_mtcTabClosePromptTabIds.Add(tab.Id))
+            return false;
+
+        try
+        {
+            return await ShowConfirmAsync(
+                "Close Connected Games",
+                BuildCloseConnectedGamesMessage([tab]),
+                "Yes",
+                "No");
+        }
+        finally
+        {
+            _mtcTabClosePromptTabIds.Remove(tab.Id);
+        }
     }
 
     private void RestoreActiveMtcTabContent()
@@ -1914,6 +2016,51 @@ public partial class MainWindow
             ApplyMtcTabOwnedWindowTitle(owner, window);
     }
 
+    private void BringMtcTabOwnedWindowsToForeground(MtcTabPrototype? owner)
+    {
+        if (owner == null)
+            return;
+
+        Window[] windows = owner.AuxiliaryWindows
+            .Where(window => window.IsVisible)
+            .ToArray();
+        if (windows.Length == 0)
+            return;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            foreach (Window window in windows)
+            {
+                try
+                {
+                    if (window.IsVisible)
+                        BringMtcTabOwnedWindowForwardWithoutActivation(window);
+                }
+                catch (Exception ex)
+                {
+                    Core.GlobalModules.DebugLog($"[MTC.TabbedShell] failed to raise tab child window: {ex.Message}\n");
+                }
+            }
+        }, DispatcherPriority.Background);
+    }
+
+    private static void BringMtcTabOwnedWindowForwardWithoutActivation(Window window)
+    {
+        if (window is ScriptPopupWindow scriptWindow)
+        {
+            scriptWindow.RaiseForTabSelection();
+            return;
+        }
+
+        bool restoreTopmost = window.Topmost;
+        window.Topmost = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (window.IsVisible)
+                window.Topmost = restoreTopmost;
+        }, DispatcherPriority.Background);
+    }
+
     private void ApplyMtcTabOwnedWindowTitle(MtcTabPrototype owner, Window window)
     {
         string gameName = ResolveMtcTabOwnedWindowGameName(owner);
@@ -1980,7 +2127,10 @@ public partial class MainWindow
     private void ShowMtcTabOwnedWindow(MtcTabPrototype? owner, Window window, bool activate = true)
     {
         RegisterMtcTabOwnedWindow(owner, window);
-        window.Show(this);
+        // Keep MTC's tab/window association separate from native window ownership.
+        // Native child windows can be forced above their owner after activation on
+        // some desktops, which makes tab-associated popups behave like Topmost.
+        window.Show();
 
         if (activate)
             window.Activate();
@@ -2004,6 +2154,7 @@ public partial class MainWindow
         tab.ScriptDebuggerWindow = null;
         tab.MacroSettingsDialog = null;
         tab.QuickMacroPlayWindow = null;
+        CloseQuickMacroOverlay(tab);
         tab.GameAgentWindow = null;
         tab.GameAgentReplayWindow = null;
         tab.RecordingPlaybackWindow = null;
@@ -2140,8 +2291,13 @@ public partial class MainWindow
 
     private void StopAllMtcTabSessions()
     {
+        _ = StopAllMtcTabSessionsAsync();
+    }
+
+    private async Task StopAllMtcTabSessionsAsync()
+    {
         foreach (var tab in _mtcTabs.ToArray())
-            _ = StopMtcTabSessionAsync(tab);
+            await StopMtcTabSessionAsync(tab);
     }
 
     private Control BuildMtcTabButton(MtcTabPrototype tab)

@@ -636,9 +636,7 @@ namespace TWXProxy.Core
                 if (GlobalModules.EnableVmMetrics)
                 {
                     double prepareMs = StopwatchTicksToMilliseconds(LastPrepareTicks);
-                    GlobalModules.VmMetricLog(
-                        $"[VM LOAD] phase=prepare script='{_scriptFile}' preparedCacheHit={(LastPreparedCacheHit ? 1 : 0)} " +
-                        $"instructions={_preparedProgram?.Instructions.Length ?? 0} elapsedMs={prepareMs:F3}\n");
+                    GlobalModules.VmMetricLog($"[VM LOAD] phase=prepare script='{_scriptFile}' preparedCacheHit={(LastPreparedCacheHit ? 1 : 0)} instructions={_preparedProgram?.Instructions.Length ?? 0} elapsedMs={prepareMs:F3}\n");
                 }
             }
 
@@ -769,7 +767,7 @@ namespace TWXProxy.Core
             // Don't extend system variables (starting with $$)
             if (name.StartsWith("$$"))
                 return;
-                
+
             if (!name.Contains('~'))
             {
                 if (scriptID > 0 && scriptID < _includeScriptList.Count)
@@ -955,9 +953,7 @@ namespace TWXProxy.Core
 
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.VmMetricLog(
-                    $"[VM LOAD] phase=source-compile script='{fullPath}' cacheHit=0 deps={LastDependencyCount} " +
-                    $"compileMs={StopwatchTicksToMilliseconds(LastCompileTicks):F3} codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
+                GlobalModules.VmMetricLog($"[VM LOAD] phase=source-compile script='{fullPath}' cacheHit=0 deps={LastDependencyCount} compileMs={StopwatchTicksToMilliseconds(LastCompileTicks):F3} codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
             }
         }
 
@@ -1006,8 +1002,8 @@ namespace TWXProxy.Core
                     if (!inQuote)
                     {
                         string up = token.ToString().ToUpperInvariant();
-                        if      (up == "AND") token.Clear().Append(ScriptConstants.OP_AND);
-                        else if (up == "OR")  token.Clear().Append(ScriptConstants.OP_OR);
+                        if (up == "AND") token.Clear().Append(ScriptConstants.OP_AND);
+                        else if (up == "OR") token.Clear().Append(ScriptConstants.OP_OR);
                         else if (up == "XOR") token.Clear().Append(ScriptConstants.OP_XOR);
                     }
                     result.Append(token).Append(' ');
@@ -1034,9 +1030,9 @@ namespace TWXProxy.Core
                 }
                 else if (c == '=' && !inQuote)
                 {
-                    if      (last == '>') result.Append(ScriptConstants.OP_GREATEREQUAL);
+                    if (last == '>') result.Append(ScriptConstants.OP_GREATEREQUAL);
                     else if (last == '<') result.Append(ScriptConstants.OP_LESSEREQUAL);
-                    else                  result.Append('=');
+                    else result.Append('=');
                 }
                 else if ((c != '>' && c != '<') || inQuote)
                 {
@@ -1198,10 +1194,10 @@ namespace TWXProxy.Core
         // ── Binary expression tree node ──────────────────────────────────────────────────────
         private sealed class ExprNode
         {
-            public char      Op        { get; set; } = ScriptConstants.OP_NONE;
-            public string?   LeafValue { get; set; }
-            public ExprNode? Left      { get; set; }
-            public ExprNode? Right     { get; set; }
+            public char Op { get; set; } = ScriptConstants.OP_NONE;
+            public string? LeafValue { get; set; }
+            public ExprNode? Left { get; set; }
+            public ExprNode? Right { get; set; }
         }
 
         /// <summary>
@@ -1296,7 +1292,7 @@ namespace TWXProxy.Core
             if (node.Op == ScriptConstants.OP_NONE)
                 return node.LeafValue!;
 
-            string v1 = CompileTree(node.Left!,  lineNumber, scriptID);
+            string v1 = CompileTree(node.Left!, lineNumber, scriptID);
             string v2 = CompileTree(node.Right!, lineNumber, scriptID);
 
             char op = node.Op;
@@ -1306,55 +1302,55 @@ namespace TWXProxy.Core
                 RecurseCmd(new[] { "MERGETEXT", v1, v2, result }, lineNumber, scriptID);
             }
             else if (op == '=')
-                RecurseCmd(new[] { "ISEQUAL",        result, v1, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ISEQUAL", result, v1, v2 }, lineNumber, scriptID);
             else if (op == '>')
-                RecurseCmd(new[] { "ISGREATER",      result, v1, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ISGREATER", result, v1, v2 }, lineNumber, scriptID);
             else if (op == '<')
-                RecurseCmd(new[] { "ISLESSER",       result, v1, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ISLESSER", result, v1, v2 }, lineNumber, scriptID);
             else if (op == ScriptConstants.OP_GREATEREQUAL)
                 RecurseCmd(new[] { "ISGREATEREQUAL", result, v1, v2 }, lineNumber, scriptID);
             else if (op == ScriptConstants.OP_LESSEREQUAL)
-                RecurseCmd(new[] { "ISLESSEREQUAL",  result, v1, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ISLESSEREQUAL", result, v1, v2 }, lineNumber, scriptID);
             else if (op == ScriptConstants.OP_NOTEQUAL)
-                RecurseCmd(new[] { "ISNOTEQUAL",     result, v1, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ISNOTEQUAL", result, v1, v2 }, lineNumber, scriptID);
             else if (op == ScriptConstants.OP_AND)
             {
                 RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
-                RecurseCmd(new[] { "AND",    result, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "AND", result, v2 }, lineNumber, scriptID);
             }
             else if (op == ScriptConstants.OP_OR)
             {
                 RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
-                RecurseCmd(new[] { "OR",     result, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "OR", result, v2 }, lineNumber, scriptID);
             }
             else if (op == ScriptConstants.OP_XOR)
             {
                 RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
-                RecurseCmd(new[] { "XOR",    result, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "XOR", result, v2 }, lineNumber, scriptID);
             }
             else if (op == '+')
             {
                 RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
-                RecurseCmd(new[] { "ADD",    result, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "ADD", result, v2 }, lineNumber, scriptID);
             }
             else if (op == '-')
             {
-                RecurseCmd(new[] { "SETVAR",   result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
                 RecurseCmd(new[] { "SUBTRACT", result, v2 }, lineNumber, scriptID);
             }
             else if (op == '*')
             {
-                RecurseCmd(new[] { "SETVAR",   result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
                 RecurseCmd(new[] { "MULTIPLY", result, v2 }, lineNumber, scriptID);
             }
             else if (op == '/')
             {
-                RecurseCmd(new[] { "SETVAR",  result, v1 }, lineNumber, scriptID);
-                RecurseCmd(new[] { "DIVIDE",  result, v2 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "DIVIDE", result, v2 }, lineNumber, scriptID);
             }
             else if (op == '%')
             {
-                RecurseCmd(new[] { "SETVAR",  result, v1 }, lineNumber, scriptID);
+                RecurseCmd(new[] { "SETVAR", result, v1 }, lineNumber, scriptID);
                 RecurseCmd(new[] { "MODULUS", result, v2 }, lineNumber, scriptID);
             }
             else
@@ -1926,7 +1922,7 @@ namespace TWXProxy.Core
 
                 // Write 32-bit parameter ID
                 WriteCodeBytes(cmdCode, BitConverter.GetBytes(id));
-                
+
                 // NOTE: PARAM_CONST does NOT have array indexes in TWX bytecode format
                 // Only PARAM_VAR, PARAM_PROGVAR, and PARAM_SYSCONST have array index bytes
             }
@@ -1997,7 +1993,7 @@ namespace TWXProxy.Core
             {
                 // System constant - extract base name without array indexes
                 string constName = param;
-                
+
                 // Remove array indexes to get base constant name
                 int indexLevel = 0;
                 StringBuilder baseName = new StringBuilder();
@@ -2010,7 +2006,7 @@ namespace TWXProxy.Core
                     else if (indexLevel == 0)
                         baseName.Append(c);
                 }
-                
+
                 string baseConstName = baseName.ToString();
                 int constID = -1;
 
@@ -2143,7 +2139,7 @@ namespace TWXProxy.Core
         {
             // Parse and write array indexes from parameter
             var indexes = ExtractArrayIndexes(param);
-            
+
             if (indexes.Count == 0)
             {
                 // No indexes
@@ -2163,7 +2159,7 @@ namespace TWXProxy.Core
 
                 // Each index can be a variable, constant, or sysconst
                 byte indexType = IdentifyParam(compiledIndex);
-                
+
                 // Write type byte first
                 WriteCodeByte(cmdCode, indexType);
 
@@ -2208,26 +2204,26 @@ namespace TWXProxy.Core
                         else if (c == ']') indexLevel--;
                         else if (indexLevel == 0) baseName.Append(c);
                     }
-                    
+
                     int indexId = -1;
                     if (_scriptRef is ScriptRef scriptRef)
                     {
                         indexId = scriptRef.FindSysConst(baseName.ToString());
                     }
-                    
+
                     if (indexId < 0)
                         throw new Exception($"Unknown system constant in array index: {compiledIndex}");
-                    
+
                     WriteCodeBytes(cmdCode, BitConverter.GetBytes((ushort)indexId));
                     WriteArrayIndexes(compiledIndex, lineNumber, scriptID, cmdCode); // Recursive for nested arrays
                 }
-                else if  (indexType == ScriptConstants.PARAM_CONST)
+                else if (indexType == ScriptConstants.PARAM_CONST)
                 {
                     // Constant index - write 32-bit parameter ID
                     string value = compiledIndex;
                     if (value.StartsWith('"') && value.EndsWith('"'))
                         value = value.Substring(1, value.Length - 2);
-                    
+
                     var newParam = new CmdParam { Value = value };
                     int indexId = _paramList.Count;
                     _paramList.Add(newParam);
@@ -2377,7 +2373,7 @@ namespace TWXProxy.Core
             {
                 scriptText = LoadSourceLines(fullPath);
             }
-            
+
             // Get the actual filename from the filesystem (preserves correct case)
             // This is important because include statements may use different case than the actual file
             // e.g., "include\move" should get the actual filename "Move.ts" on case-insensitive filesystems
@@ -2386,7 +2382,7 @@ namespace TWXProxy.Core
             string? directory = Path.GetDirectoryName(fullPath);
             string searchFileName = Path.GetFileName(fullPath);
             string actualFileName = searchFileName; // fallback
-            
+
             if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
             {
                 // Find the actual file with correct case from the directory listing
@@ -2401,7 +2397,7 @@ namespace TWXProxy.Core
                     }
                 }
             }
-            
+
             string includeName = Path.GetFileNameWithoutExtension(actualFileName).ToUpperInvariant();
             string previousScriptDirectory = _scriptDirectory;
             string previousScriptFile = _scriptFile;
@@ -4108,11 +4104,7 @@ namespace TWXProxy.Core
 
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.VmMetricLog(
-                    $"[VM LOAD] phase=compiled-cache script='{fullPath}' " +
-                    $"validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} " +
-                    $"loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
-                    $"preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
+                GlobalModules.VmMetricLog($"[VM LOAD] phase=compiled-cache script='{fullPath}' validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
             }
 
             return true;
@@ -4186,10 +4178,7 @@ namespace TWXProxy.Core
 
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.VmMetricLog(
-                    $"[VM LOAD] phase=source-cache script='{filename}' cacheHit=1 deps={LastDependencyCount} " +
-                    $"validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} " +
-                    $"loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
+                GlobalModules.VmMetricLog($"[VM LOAD] phase=source-cache script='{filename}' cacheHit=1 deps={LastDependencyCount} validationMs={StopwatchTicksToMilliseconds(LastSourceCacheValidationTicks):F3} loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} preparedTemplateHit={(LastPreparedCacheHit ? 1 : 0)}\n");
             }
 
             return true;
@@ -4761,9 +4750,7 @@ namespace TWXProxy.Core
             LastLoadTicks = Stopwatch.GetTimestamp() - loadStart;
             if (GlobalModules.EnableVmMetrics)
             {
-                GlobalModules.VmMetricLog(
-                    $"[VM LOAD] phase=compiled-load script='{fullPath}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} " +
-                    $"codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
+                GlobalModules.VmMetricLog($"[VM LOAD] phase=compiled-load script='{fullPath}' loadMs={StopwatchTicksToMilliseconds(LastLoadTicks):F3} codeBytes={_codeSize} params={_paramList.Count} labels={_labelList.Count}\n");
             }
         }
 

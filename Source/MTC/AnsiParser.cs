@@ -273,7 +273,9 @@ public class AnsiParser
                     case (byte)'8': RestoreCursor(); break;
                     case (byte)'c': _buf.Reset();    ApplyAttributes(); break;
                     case (byte)'M': _buf.ScrollDown(); break;  // reverse index
-                    default: break; // ignore unrecognised
+                    default:
+                        ProcessByteAfterIgnoredEscape(b);
+                        break;
                 }
                 break;
 
@@ -320,6 +322,17 @@ public class AnsiParser
 
         HandleControlChar(b);
         return true;
+    }
+
+    private void ProcessByteAfterIgnoredEscape(byte b)
+    {
+        if (b == 0x1B)
+        {
+            _state = State.Escape;
+            return;
+        }
+
+        HandleControlChar(b);
     }
 
     private void HandleControlChar(byte b)

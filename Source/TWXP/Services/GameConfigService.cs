@@ -10,6 +10,9 @@ public interface IGameConfigService
     event EventHandler<string>? ScriptsDirectoryChanged;
     Task<ObservableCollection<GameConfig>> LoadConfigsAsync();
     Task SaveConfigAsync(GameConfig config);
+    void RequestVariablesSave(GameConfig config);
+    Task SaveVariablesAsync(GameConfig config);
+    Task FlushVariablesAsync(GameConfig config);
     Task RemoveConfigAsync(string configId);
     Task DeleteConfigAsync(string configId);
     Task<GameConfig?> GetConfigAsync(string configId);
@@ -27,12 +30,37 @@ public class GameConfigService : IGameConfigService
 {
     public event EventHandler<string>? ProgramDirectoryChanged;
     public event EventHandler<string>? ScriptsDirectoryChanged;
+    private string? _programDirectoryOverride;
+    private string? _scriptsDirectoryOverride;
+    private readonly TWXProxy.Core.DebouncedGameVariableStore _variableSaves = new();
 
-    public GameConfigService()
+    public GameConfigService(string? programDirectory = null, string? scriptsDirectory = null)
     {
+        if (!string.IsNullOrWhiteSpace(programDirectory))
+        {
+            _programDirectoryOverride = NormalizeProgramDirectory(programDirectory);
+            _scriptsDirectoryOverride = NormalizeScriptDirectory(scriptsDirectory);
+            AppPaths.SetConfiguredProgramDir(_programDirectoryOverride);
+        }
+        else
+        {
+            var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
+            AppPaths.SetConfiguredProgramDir(sharedPaths.ProgramDirectory);
+        }
+
+        AppPaths.EnsureDirectories();
+    }
+
+    private void ApplyProgramDirectory()
+    {
+        if (!string.IsNullOrWhiteSpace(_programDirectoryOverride))
+        {
+            AppPaths.SetConfiguredProgramDir(_programDirectoryOverride);
+            return;
+        }
+
         var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
         AppPaths.SetConfiguredProgramDir(sharedPaths.ProgramDirectory);
-        AppPaths.EnsureDirectories();
     }
 
     public static string GetDefaultScriptDirectory()
@@ -70,6 +98,27 @@ public class GameConfigService : IGameConfigService
             return programDirectory.Trim();
         }
     }
+
+    private static string VariablesPathForGame(string gameName)
+        => AppPaths.GameVariablesFileFor(NormalizeGameName(gameName));
+
+    private static string VariablesBackupPathForGame(string gameName)
+        => VariablesPathForGame(gameName) + ".bak";
+
+    private static string ConfigBackupPathForGame(string gameName, string configPath)
+        => Path.Combine(AppPaths.GameDataDirForGame(NormalizeGameName(gameName)), Path.GetFileName(configPath) + ".bak");
+
+    private static string NormalizeGameName(string? value)
+    {
+        string name = string.Concat((value ?? string.Empty).Split(Path.GetInvalidFileNameChars())).Trim();
+        return string.IsNullOrWhiteSpace(name) ? "game" : name;
+    }
+
+    private static string NormalizeGameNameFromConfigPath(string path)
+        => NormalizeGameName(Path.GetFileNameWithoutExtension(path));
+
+    private static Dictionary<string, string> NormalizeVariables(IDictionary<string, string>? variables)
+        => TWXProxy.Core.GameVariableStore.Normalize(variables);
 
     private static string ResolveEffectiveScriptDirectory(string? configuredScriptDirectory, string? programDirectory)
     {
@@ -132,8 +181,7 @@ public class GameConfigService : IGameConfigService
 
     private async Task<GameRegistry> LoadRegistryAsync()
     {
-        var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
-        AppPaths.SetConfiguredProgramDir(sharedPaths.ProgramDirectory);
+        ApplyProgramDirectory();
 
         string configPath = AppPaths.ConfigFile;
         if (File.Exists(configPath))
@@ -256,14 +304,100 @@ public class GameConfigService : IGameConfigService
     {
         try
         {
-            string json = await File.ReadAllTextAsync(filePath);
-            return System.Text.Json.JsonSerializer.Deserialize(
+            string fallbackGameName = NormalizeGameNameFromConfigPath(filePath);
+            string? json = await TWXProxy.Core.SafeJsonFile.ReadAllTextWithRecoveryAsync(
+                filePath,
+                ConfigBackupPathForGame(fallbackGameName, filePath));
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            GameConfig? config = System.Text.Json.JsonSerializer.Deserialize(
                 json, GameConfigJsonContext.Default.GameConfig);
+            if (config == null)
+                return null;
+
+            if (string.IsNullOrWhiteSpace(config.Name))
+                config.Name = fallbackGameName;
+
+            config.GameDataFilePath = filePath;
+            config.Variables = await LoadVariablesAndMigrateInlineAsync(config, filePath);
+            return config;
         }
         catch
         {
             return null;
         }
+    }
+
+    private static async Task<Dictionary<string, string>> LoadVariablesAndMigrateInlineAsync(
+        GameConfig config,
+        string configPath)
+    {
+        string gameName = NormalizeGameName(config.Name);
+        Dictionary<string, string> inlineVariables = NormalizeVariables(config.Variables);
+        string variablesPath = VariablesPathForGame(gameName);
+        bool variablesFileExists = File.Exists(variablesPath) || File.Exists(VariablesBackupPathForGame(gameName));
+        Dictionary<string, string> variables = variablesFileExists
+            ? await TWXProxy.Core.GameVariableStore.LoadAsync(variablesPath, VariablesBackupPathForGame(gameName))
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        bool migratedInline = false;
+        if (inlineVariables.Count > 0)
+        {
+            foreach (KeyValuePair<string, string> entry in inlineVariables)
+            {
+                if (!variables.ContainsKey(entry.Key))
+                    variables[entry.Key] = entry.Value;
+            }
+
+            await SaveVariablesStaticAsync(gameName, variables);
+            migratedInline = true;
+        }
+
+        if (migratedInline)
+        {
+            config.Variables = variables;
+            await WriteGameFileAsync(config, configPath);
+        }
+
+        return variables;
+    }
+
+    private static async Task SaveVariablesStaticAsync(string gameName, IDictionary<string, string>? variables)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        await TWXProxy.Core.GameVariableStore.SaveAsync(
+            VariablesPathForGame(normalizedGameName),
+            variables,
+            VariablesBackupPathForGame(normalizedGameName));
+    }
+
+    private static async Task WriteGameFileAsync(GameConfig config, string path)
+    {
+        Dictionary<string, string> runtimeVariables = config.Variables;
+        string? runtimeScriptDirectory = config.ScriptDirectory;
+        string? runtimeNativeHaggleMode = config.NativeHaggleMode;
+
+        config.ScriptDirectory = null;
+        config.NativeHaggleMode = null;
+        config.Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string json;
+        try
+        {
+            json = System.Text.Json.JsonSerializer.Serialize(
+                config, GameConfigJsonContext.Default.GameConfig);
+        }
+        finally
+        {
+            config.ScriptDirectory = runtimeScriptDirectory;
+            config.NativeHaggleMode = runtimeNativeHaggleMode;
+            config.Variables = runtimeVariables;
+        }
+
+        await TWXProxy.Core.SafeJsonFile.WriteAllTextAtomicAsync(
+            path,
+            json,
+            ConfigBackupPathForGame(config.Name, path));
     }
 
     private async Task<GameRegistry> MigrateOldConfigsAsync(List<GameConfig> oldConfigs)
@@ -285,15 +419,8 @@ public class GameConfigService : IGameConfigService
             config.GameDataFilePath = AppPaths.GameDataFileFor(config.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
-            string? runtimeScriptDirectory = config.ScriptDirectory;
-            string? runtimeNativeHaggleMode = config.NativeHaggleMode;
-            config.ScriptDirectory = null;
-            config.NativeHaggleMode = null;
-            string json = System.Text.Json.JsonSerializer.Serialize(
-                config, GameConfigJsonContext.Default.GameConfig);
-            config.ScriptDirectory = runtimeScriptDirectory;
-            config.NativeHaggleMode = runtimeNativeHaggleMode;
-            await File.WriteAllTextAsync(config.GameDataFilePath, json);
+            await SaveVariablesStaticAsync(config.Name, config.Variables);
+            await WriteGameFileAsync(config, config.GameDataFilePath);
             registry.Games.Add(config.GameDataFilePath);
         }
 
@@ -383,21 +510,35 @@ public class GameConfigService : IGameConfigService
         config.GameDataFilePath = desiredPath;
 
         Directory.CreateDirectory(Path.GetDirectoryName(config.GameDataFilePath)!);
-        string? runtimeScriptDirectory = config.ScriptDirectory;
-        string? runtimeNativeHaggleMode = config.NativeHaggleMode;
-        config.ScriptDirectory = null;
-        config.NativeHaggleMode = null;
-        string json = System.Text.Json.JsonSerializer.Serialize(
-            config, GameConfigJsonContext.Default.GameConfig);
-        config.ScriptDirectory = runtimeScriptDirectory;
-        config.NativeHaggleMode = runtimeNativeHaggleMode;
-        await File.WriteAllTextAsync(config.GameDataFilePath, json);
+        await SaveVariablesAsync(config);
+        await WriteGameFileAsync(config, config.GameDataFilePath);
 
         registry.Games.RemoveAll(path => string.Equals(path, previousPath, StringComparison.OrdinalIgnoreCase));
         if (!registry.Games.Contains(config.GameDataFilePath, StringComparer.OrdinalIgnoreCase))
             registry.Games.Add(config.GameDataFilePath);
 
         await SaveRegistryAsync(registry);
+    }
+
+    public void RequestVariablesSave(GameConfig config)
+    {
+        ApplyProgramDirectory();
+        _variableSaves.RequestSave(
+            VariablesPathForGame(config.Name),
+            config.Variables,
+            VariablesBackupPathForGame(config.Name));
+    }
+
+    public Task SaveVariablesAsync(GameConfig config)
+    {
+        ApplyProgramDirectory();
+        return SaveVariablesStaticAsync(config.Name, config.Variables);
+    }
+
+    public Task FlushVariablesAsync(GameConfig config)
+    {
+        ApplyProgramDirectory();
+        return _variableSaves.FlushAsync(VariablesPathForGame(config.Name));
     }
 
     public async Task RemoveConfigAsync(string configId)
@@ -425,6 +566,9 @@ public class GameConfigService : IGameConfigService
 
     public Task<string> GetProgramDirectoryAsync()
     {
+        if (!string.IsNullOrWhiteSpace(_programDirectoryOverride))
+            return Task.FromResult(_programDirectoryOverride);
+
         string programDirectory = TWXProxy.Core.SharedPathSettingsStore.Load().ProgramDirectory;
         AppPaths.SetConfiguredProgramDir(programDirectory);
         return Task.FromResult(programDirectory);
@@ -432,6 +576,19 @@ public class GameConfigService : IGameConfigService
 
     public Task SetProgramDirectoryAsync(string programDirectory)
     {
+        if (!string.IsNullOrWhiteSpace(_programDirectoryOverride))
+        {
+            string normalizedOverride = NormalizeProgramDirectory(programDirectory);
+            if (string.IsNullOrWhiteSpace(normalizedOverride))
+                normalizedOverride = TWXProxy.Core.SharedPaths.GetDefaultProgramDir();
+            _programDirectoryOverride = normalizedOverride;
+            if (string.IsNullOrWhiteSpace(_scriptsDirectoryOverride))
+                _scriptsDirectoryOverride = TWXProxy.Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(normalizedOverride);
+            AppPaths.SetConfiguredProgramDir(normalizedOverride);
+            ProgramDirectoryChanged?.Invoke(this, normalizedOverride);
+            return Task.CompletedTask;
+        }
+
         var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
         string oldDefaultScripts = TWXProxy.Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(sharedPaths.ProgramDirectory);
         string nextProgramDirectory = NormalizeProgramDirectory(programDirectory);
@@ -455,6 +612,15 @@ public class GameConfigService : IGameConfigService
 
     public Task<string> GetScriptsDirectoryAsync()
     {
+        if (!string.IsNullOrWhiteSpace(_programDirectoryOverride))
+        {
+            string scriptsDirectory = string.IsNullOrWhiteSpace(_scriptsDirectoryOverride)
+                ? TWXProxy.Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(_programDirectoryOverride)
+                : _scriptsDirectoryOverride;
+            AppPaths.SetConfiguredProgramDir(_programDirectoryOverride);
+            return Task.FromResult(scriptsDirectory);
+        }
+
         var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
         AppPaths.SetConfiguredProgramDir(sharedPaths.ProgramDirectory);
         return Task.FromResult(sharedPaths.ScriptsDirectory);
@@ -462,6 +628,17 @@ public class GameConfigService : IGameConfigService
 
     public Task SetScriptsDirectoryAsync(string scriptDirectory)
     {
+        if (!string.IsNullOrWhiteSpace(_programDirectoryOverride))
+        {
+            string normalizedOverrideScripts = NormalizeScriptDirectory(scriptDirectory);
+            if (string.IsNullOrWhiteSpace(normalizedOverrideScripts))
+                normalizedOverrideScripts = TWXProxy.Core.SharedPathSettingsStore.GetDefaultScriptsDirectory(_programDirectoryOverride);
+            _scriptsDirectoryOverride = normalizedOverrideScripts;
+            AppPaths.SetConfiguredProgramDir(_programDirectoryOverride);
+            ScriptsDirectoryChanged?.Invoke(this, normalizedOverrideScripts);
+            return Task.CompletedTask;
+        }
+
         var sharedPaths = TWXProxy.Core.SharedPathSettingsStore.Load();
         string normalized = NormalizeScriptDirectory(scriptDirectory);
         if (string.IsNullOrWhiteSpace(normalized))

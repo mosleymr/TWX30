@@ -39,6 +39,8 @@ public partial class MainWindow
         Protocol        = _state.Protocol,
         LocalTwxProxy   = _state.LocalTwxProxy,
         TwxProxyDbPath  = _state.TwxProxyDbPath,
+        RemoteProxyServerId = _state.RemoteProxyServerId,
+        RemoteProxyGameId = _state.RemoteProxyGameId,
         EmbeddedProxy   = _state.EmbeddedProxy,
         Sectors         = _state.Sectors,
         AutoReconnect   = _state.AutoReconnect,
@@ -106,6 +108,8 @@ public partial class MainWindow
                 : TwProtocol.Telnet,
             LocalTwxProxy = mtc.LocalTwxProxy,
             TwxProxyDbPath = mtc.TwxProxyDbPath,
+            RemoteProxyServerId = mtc.RemoteProxyServerId,
+            RemoteProxyGameId = mtc.RemoteProxyGameId,
             EmbeddedProxy = mtc.EmbeddedProxy,
             Sectors = config.Sectors,
             AutoReconnect = config.AutoReconnect,
@@ -361,6 +365,8 @@ public partial class MainWindow
         config.Mtc.Protocol = _state.Protocol.ToString();
         config.Mtc.LocalTwxProxy = _state.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = _state.TwxProxyDbPath;
+        config.Mtc.RemoteProxyServerId = _state.RemoteProxyServerId;
+        config.Mtc.RemoteProxyGameId = _state.RemoteProxyGameId;
         config.Mtc.EmbeddedProxy = _state.EmbeddedProxy;
         config.Mtc.EditId = config.Mtc.EditId ?? string.Empty;
         config.Mtc.ListenForConnections = _state.ListenForConnections;
@@ -390,6 +396,8 @@ public partial class MainWindow
         _state.ListenForConnections = config.Mtc?.ListenForConnections ?? false;
         _state.LocalTwxProxy = config.Mtc?.LocalTwxProxy ?? _state.LocalTwxProxy;
         _state.TwxProxyDbPath = config.Mtc?.TwxProxyDbPath ?? _state.TwxProxyDbPath;
+        _state.RemoteProxyServerId = config.Mtc?.RemoteProxyServerId ?? string.Empty;
+        _state.RemoteProxyGameId = config.Mtc?.RemoteProxyGameId ?? string.Empty;
         _state.Protocol = Enum.TryParse<TwProtocol>(config.Mtc?.Protocol, true, out TwProtocol protocol)
             ? protocol
             : TwProtocol.Telnet;
@@ -463,6 +471,8 @@ public partial class MainWindow
         config.Mtc.Protocol = profile.Protocol.ToString();
         config.Mtc.LocalTwxProxy = profile.LocalTwxProxy;
         config.Mtc.TwxProxyDbPath = profile.TwxProxyDbPath;
+        config.Mtc.RemoteProxyServerId = profile.RemoteProxyServerId;
+        config.Mtc.RemoteProxyGameId = profile.RemoteProxyGameId;
         config.Mtc.EmbeddedProxy = profile.EmbeddedProxy;
         config.Mtc.EditId = profile.EditId ?? string.Empty;
         config.Mtc.ListenForConnections = profile.ListenForConnections;
@@ -507,6 +517,9 @@ public partial class MainWindow
     /// <summary>Applies a profile to GameState and the terminal buffer.</summary>
     private void ApplyProfile(ConnectionProfile p)
     {
+        if (!CanCurrentMtcTabAdoptGameIdentity(p.Name, "profile"))
+            return;
+
         if (p.EmbeddedProxy && !HasExplicitEmbeddedLoginSettings(p))
         {
             var sharedConfig = TryLoadEmbeddedGameConfigForGame(GetEmbeddedGameName(p));
@@ -535,6 +548,8 @@ public partial class MainWindow
         _state.Protocol       = p.Protocol;
         _state.LocalTwxProxy  = p.LocalTwxProxy;
         _state.TwxProxyDbPath = p.TwxProxyDbPath;
+        _state.RemoteProxyServerId = p.RemoteProxyServerId;
+        _state.RemoteProxyGameId = p.RemoteProxyGameId;
         _state.EmbeddedProxy   = p.EmbeddedProxy;
         _state.Sectors         = p.Sectors;
         _state.AutoReconnect   = p.AutoReconnect;
@@ -786,6 +801,9 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(gameName))
             return;
 
+        if (!CanCurrentMtcTabAdoptGameIdentity(gameName, "save-config"))
+            return;
+
         EmbeddedGameConfig config = _embeddedGameConfig ?? (_state.EmbeddedProxy
             ? await LoadOrCreateEmbeddedGameConfigAsync(gameName)
             : BuildEmbeddedGameConfigFromState(gameName, new EmbeddedGameConfig
@@ -896,6 +914,9 @@ public partial class MainWindow
     private async Task ApplyLoadedGameConfigAsync(EmbeddedGameConfig config, string configPath, bool addToRecent)
     {
         string targetGameName = NormalizeGameName(config.Name);
+        if (!CanCurrentMtcTabAdoptGameIdentity(targetGameName, "load-game"))
+            return;
+
         bool switchingProfile =
             !string.IsNullOrWhiteSpace(_currentProfilePath) &&
             !PathsEqualSafe(_currentProfilePath, configPath);
@@ -966,7 +987,7 @@ public partial class MainWindow
             }
         }
 
-        var dialog = new NewConnectionDialog(draft);
+        var dialog = new NewConnectionDialog(draft, proxyServers: _appPrefs.ProxyServers);
         if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
             return;
 
@@ -1044,7 +1065,7 @@ public partial class MainWindow
                 "Game Name In Use",
                 $"A game or database named '{working.Name}' already exists under the shared twxproxy folder.\n\nPlease choose a different game name.");
 
-            var dialog = new NewConnectionDialog(working);
+            var dialog = new NewConnectionDialog(working, proxyServers: _appPrefs.ProxyServers);
             if (!await dialog.ShowDialog<bool>(this) || dialog.Result == null)
                 return null;
             working = dialog.Result;
@@ -1229,6 +1250,15 @@ public partial class MainWindow
 
     private bool CanUseRemoteProxyScripts()
     {
+        if (!_state.EmbeddedProxy &&
+            _telnet.IsConnected &&
+            !string.IsNullOrWhiteSpace(_state.RemoteProxyServerId) &&
+            !string.IsNullOrWhiteSpace(_state.RemoteProxyGameId) &&
+            _appPrefs.ProxyServers.Any(server => string.Equals(server.Id, _state.RemoteProxyServerId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
         return !_state.EmbeddedProxy &&
             _gameInstance == null &&
             _telnet.IsConnected &&

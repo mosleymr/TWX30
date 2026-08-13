@@ -160,6 +160,7 @@ internal class PreferencesDialog : Window
         var chkCreateAnsiGameLogs = BuildCheckBox("Create ANSI game logs", logPrefs.LogAnsiCompanion);
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
+        var chkDisableScriptWindowStayInFront = BuildCheckBox("Ignore stay-in-front for script popup windows", prefs.DisableScriptWindowStayInFront);
         var chkPythonScripts = BuildCheckBox("Enable Python scripts in the Scripts menu", prefs.PythonScriptsEnabled);
         var chkPythonExposeRpcToken = BuildCheckBox("Expose JSON-RPC bearer token to Python scripts", prefs.PythonExposeJsonRpcToken);
         var txtPythonInterpreter = BuildPathTextBox(
@@ -310,7 +311,7 @@ internal class PreferencesDialog : Window
         var runtimeSection = BuildSection(
             "Runtime",
             "Global terminal and script runtime behavior.",
-            BuildCheckGroup(chkPreparedVm, chkVmMetrics, chkPythonScripts, chkPythonExposeRpcToken),
+            BuildCheckGroup(chkPreparedVm, chkDisableScriptWindowStayInFront, chkVmMetrics, chkPythonScripts, chkPythonExposeRpcToken),
             BuildField(
                 "Python interpreter",
                 txtPythonInterpreter,
@@ -376,6 +377,7 @@ internal class PreferencesDialog : Window
             }
             prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
+            prefs.DisableScriptWindowStayInFront = chkDisableScriptWindowStayInFront.IsChecked == true;
             prefs.PythonScriptsEnabled = chkPythonScripts.IsChecked == true;
             prefs.PythonInterpreterPath = AppPreferences.NormalizePythonInterpreterPath(txtPythonInterpreter.Text);
             prefs.PythonExposeJsonRpcToken = chkPythonExposeRpcToken.IsChecked == true;

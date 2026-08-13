@@ -165,7 +165,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.DebugLog($"[LOAD] Failed: {ex.Message}\n");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -213,7 +213,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.DebugLog($"[STOP] Failed: {ex.Message}\n");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -289,36 +289,36 @@ namespace TWXProxy.Core
         {
             // CMD: isscriptloaded var <filename>
             // Check if a script is currently loaded
-            
+
             if (parameters[0] is VarParam varParam)
             {
                 string filename = parameters[1].Value;
                 bool loaded = false;
-                
-            ModInterpreter? interpreter = GetActiveInterpreter();
-            if (interpreter != null)
-            {
-                for (int i = 0; i < interpreter.Count; i++)
+
+                ModInterpreter? interpreter = GetActiveInterpreter();
+                if (interpreter != null)
                 {
-                    var scriptObj = interpreter.GetScript(i);
-                    if (ScriptReferenceMatches(interpreter, scriptObj, filename))
+                    for (int i = 0; i < interpreter.Count; i++)
                     {
-                        loaded = true;
-                        break;
+                        var scriptObj = interpreter.GetScript(i);
+                        if (ScriptReferenceMatches(interpreter, scriptObj, filename))
+                        {
+                            loaded = true;
+                            break;
                         }
                     }
 
-                if (!loaded &&
-                    TryResolveNativeBotScriptReference(interpreter, filename, out GameInstance? gameInstance, out BotConfig? nativeConfig, out _) &&
-                    IsNativeBotRunning(gameInstance, nativeConfig))
-                {
-                    loaded = true;
+                    if (!loaded &&
+                        TryResolveNativeBotScriptReference(interpreter, filename, out GameInstance? gameInstance, out BotConfig? nativeConfig, out _) &&
+                        IsNativeBotRunning(gameInstance, nativeConfig))
+                    {
+                        loaded = true;
+                    }
                 }
-                }
-                
+
                 varParam.Value = loaded ? "1" : "0";
             }
-            
+
             return CmdAction.None;
         }
 
@@ -326,7 +326,7 @@ namespace TWXProxy.Core
         {
             // CMD: pausescript <filename>
             // Pause a running script
-            
+
             ModInterpreter? interpreter = GetActiveInterpreter();
             if (interpreter == null)
             {
@@ -335,7 +335,7 @@ namespace TWXProxy.Core
             }
 
             string filename = parameters[0].Value;
-            
+
             try
             {
                 for (int i = 0; i < interpreter.Count; i++)
@@ -356,7 +356,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[Script] PAUSESCRIPT failed: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -364,7 +364,7 @@ namespace TWXProxy.Core
         {
             // CMD: resumescript <filename>
             // Resume a paused script
-            
+
             ModInterpreter? interpreter = GetActiveInterpreter();
             if (interpreter == null)
             {
@@ -373,7 +373,7 @@ namespace TWXProxy.Core
             }
 
             string filename = parameters[0].Value;
-            
+
             try
             {
                 for (int i = 0; i < interpreter.Count; i++)
@@ -394,7 +394,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[Script] RESUMESCRIPT failed: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -402,11 +402,11 @@ namespace TWXProxy.Core
         {
             // CMD: getloadedscripts var
             // Get list of all currently loaded scripts
-            
+
             if (parameters[0] is VarParam varParam)
             {
                 var scriptNames = new List<string>();
-                
+
                 ModInterpreter? interpreter = GetActiveInterpreter();
                 if (interpreter != null)
                 {
@@ -426,11 +426,11 @@ namespace TWXProxy.Core
                         scriptNames.Add(nativeLeafName);
                     }
                 }
-                
+
                 parameters[0].Value = scriptNames.Count.ToString();
                 varParam.SetArrayFromStrings(scriptNames);
             }
-            
+
             return CmdAction.None;
         }
 
@@ -438,7 +438,7 @@ namespace TWXProxy.Core
         {
             // CMD: stopallscripts
             // Stop all running scripts (except system scripts)
-            
+
             ModInterpreter? interpreter = GetActiveInterpreter();
             if (interpreter == null)
             {
@@ -454,7 +454,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[Script] STOPALLSCRIPTS failed: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -462,7 +462,7 @@ namespace TWXProxy.Core
         {
             // CMD: getscriptname var
             // Get the name of the current script
-            
+
             if (parameters[0] is VarParam varParam)
             {
                 if (script is Script scriptObj)
@@ -474,7 +474,7 @@ namespace TWXProxy.Core
                     varParam.Value = string.Empty;
                 }
             }
-            
+
             return CmdAction.None;
         }
 

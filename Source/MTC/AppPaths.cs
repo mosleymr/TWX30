@@ -109,9 +109,15 @@ public static class AppPaths
     public static string MtcStandaloneGameConfigFileFor(string gameName)
         => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName) + "_mtc.json");
 
+    public static string GameDataDirForGame(string gameName)
+        => Core.SharedPaths.GameDataDirForGame(gameName, ProgramDir);
+
+    public static string GameVariablesFileFor(string gameName)
+        => Core.SharedPaths.GameVariablesPathForGame(gameName, ProgramDir);
+
     /// <summary>Returns the per-game notes file path under the shared TWX program directory.</summary>
     public static string NotesPathForGame(string gameName)
-        => Path.Combine(TwxproxyGamesDir, Core.SharedPaths.SanitizeFileComponent(gameName), "notes.txt");
+        => Path.Combine(GameDataDirForGame(gameName), "notes.txt");
 
     public static string ConfigFilePath => Core.SharedPaths.ConfigFilePath;
 

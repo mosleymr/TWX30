@@ -88,6 +88,9 @@ public partial class MainWindow
         var items = new List<object>();
         foreach (var path in _appPrefs.RecentFiles)
         {
+            if (IsRecentGameOpenInAnotherProcess(path))
+                continue;
+
             var p    = path;  // capture
             var name = Path.GetFileNameWithoutExtension(p);
             if (string.IsNullOrWhiteSpace(name))
@@ -107,6 +110,29 @@ public partial class MainWindow
         _recentMenu.ItemsSource = items;
         _viewClearRecents.IsEnabled = _appPrefs.RecentFiles.Count > 0;
         RequestNativeAppMenuRefresh();
+    }
+
+    private static bool IsRecentGameOpenInAnotherProcess(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) ||
+            !Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            string lockFilePath = Core.GameFileLock.GetLockFilePath(path);
+            Core.GameFileLock.Info? info = Core.GameFileLock.TryInspect(lockFilePath);
+            if (info?.Pid is not int pid || !info.IsProcessRunning)
+                return false;
+
+            return pid != Environment.ProcessId;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void OnRecentMenuOpened()

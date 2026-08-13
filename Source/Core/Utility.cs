@@ -145,7 +145,7 @@ namespace TWXProxy.Core
             // Initialize name variations
             for (int i = 0; i < 3; i++)
                 nameList[i * 2] = s;
-            
+
             for (int i = 0; i < 3; i++)
                 nameList[i * 2 + 1] = Path.Combine("scripts", s);
 
@@ -373,8 +373,8 @@ namespace TWXProxy.Core
 
         public static List<string> Split(string line, string? delimiters = null)
         {
-            char[] separators = string.IsNullOrEmpty(delimiters) 
-                ? new[] { '\t', ' ' } 
+            char[] separators = string.IsNullOrEmpty(delimiters)
+                ? new[] { '\t', ' ' }
                 : delimiters.ToCharArray();
 
             return line.Split(separators, StringSplitOptions.RemoveEmptyEntries).ToList();

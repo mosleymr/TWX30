@@ -69,7 +69,7 @@ namespace TWXProxy.Core
         public int Width => _width;
         public int Height => _height;
         public bool OnTop => _onTop;
-        
+
         public string TextContent
         {
             get => _textContent;
@@ -184,7 +184,7 @@ namespace TWXProxy.Core
     /// </summary>
     public interface ITWXMenu
     {
-        MenuItem? AddCustomMenu(string parent, string name, string description, 
+        MenuItem? AddCustomMenu(string parent, string name, string description,
             string reference, string prompt, char hotkey, bool closeMenu, object script);
         void OpenMenu(string menuName, int flags);
         void CloseMenu(bool force);
@@ -426,7 +426,7 @@ namespace TWXProxy.Core
                 });
             }
         }
-        
+
         public bool IsMenuOpen()
         {
             using var runtimeScope = BindRuntimeContext();
@@ -508,19 +508,19 @@ namespace TWXProxy.Core
                 _inputVarParam = null;
             }
         }
-        
+
         private void DisplayScriptMenu(MenuItem menu)
         {
             using var runtimeScope = BindRuntimeContext();
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Displaying menu: {menu.Name}, Parent: {menu.Parent}, Options: Q={menu.OptionQ} ?={menu.OptionHelp} +={menu.OptionPlus}\n");
-            
+
             string title = menu.Description.Replace("\r", string.Empty).Replace("\n", string.Empty);
             if (!string.IsNullOrWhiteSpace(title))
                 SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r" + title + ":\r\n");
             else
                 SendMenuMessage(AnsiCodes.ANSI_CLEARLINE + "\r\n");
-            
+
             // Get all menu items that have this menu as their parent
             // Note: Parent '0' means display in all menus (like root-level items)
             if (GlobalModules.DebugMode)
@@ -534,14 +534,14 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[DEBUG]   Item '{m.Name}' parent='{m.Parent}' hotkey='{m.Hotkey}': parentMatch={parentMatch}, zeroMatch={zeroMatch}, included={included}\n");
                 }
             }
-            var childItems = _menuItems.Where(m => 
-                m.Parent == menu.Name || 
+            var childItems = _menuItems.Where(m =>
+                m.Parent == menu.Name ||
                 (m.Parent == "0" && (string.IsNullOrEmpty(menu.Parent) || menu.Name == "MAIN"))
             ).OrderBy(m => m.Hotkey).ToList();
-            
+
             if (GlobalModules.DebugMode)
                 GlobalModules.DebugLog($"[DEBUG] Found {childItems.Count} child items\n");
-            
+
             // Display menu items
             foreach (var item in childItems)
             {
@@ -557,7 +557,7 @@ namespace TWXProxy.Core
                     SendMenuMessage($"{item.Hotkey} - {item.Description}\r\n");
                 }
             }
-            
+
             // Display standard menu options
             if (menu.OptionQ)
                 SendMenuMessage((_menuStack.Count <= 1 ? "Q - Terminate script" : "Q - Exit menu") + "\r\n");
@@ -565,7 +565,7 @@ namespace TWXProxy.Core
                 SendMenuMessage("? - Command list\r\n");
             if (menu.OptionPlus)
                 SendMenuMessage("+ - Help on command\r\n");
-            
+
             // Use prompt if available, otherwise use name
             string prompt = !string.IsNullOrEmpty(menu.Prompt) ? menu.Prompt : menu.Name;
             SendMenuMessage($"\r\n{prompt}> ");
@@ -576,7 +576,7 @@ namespace TWXProxy.Core
             using var runtimeScope = BindRuntimeContext();
             GlobalModules.TWXServer?.Broadcast(char.ToUpperInvariant(key).ToString(), broadcastDeaf: true);
         }
-        
+
         public bool HandleMenuInput(char keyChar)
         {
             using var runtimeScope = BindRuntimeContext();
@@ -589,7 +589,7 @@ namespace TWXProxy.Core
             // to ignore that newline rather than moving the prompt to the next line.
             if (keyChar == '\r' || keyChar == '\n')
                 return true;
-                
+
             var currentMenu = _menuStack.Peek();
 
             // Handle standard options
@@ -623,13 +623,13 @@ namespace TWXProxy.Core
                 }
                 return true; // Always consume Q key
             }
-            
+
             // Find matching menu item
             // Include items with parent matching current menu, or parent '0' (global items)
-            var matchingItem = _menuItems.FirstOrDefault(m => 
-                (m.Parent == currentMenu.Name || (m.Parent == "0" && (string.IsNullOrEmpty(currentMenu.Parent) || currentMenu.Name == "MAIN"))) && 
+            var matchingItem = _menuItems.FirstOrDefault(m =>
+                (m.Parent == currentMenu.Name || (m.Parent == "0" && (string.IsNullOrEmpty(currentMenu.Parent) || currentMenu.Name == "MAIN"))) &&
                 char.ToUpper(m.Hotkey) == upperKey);
-            
+
             if (matchingItem != null)
             {
                 // Execute menu item reference (GOSUB to label)
@@ -644,7 +644,7 @@ namespace TWXProxy.Core
                         string labelName = matchingItem.Reference;
                         if (labelName.StartsWith(':'))
                             labelName = labelName.Substring(1);
-                        
+
                         // If reference is empty, this is a submenu - open it
                         if (string.IsNullOrEmpty(labelName))
                         {
@@ -663,7 +663,7 @@ namespace TWXProxy.Core
                             GlobalModules.TWXServer?.BroadcastLiteral($"\r\nMenu item '{matchingItem.Description}' has no submenu defined.\r\n");
                             return true;
                         }
-                        
+
                         // Start each hotkey handler with a clean pause reason so
                         // Pascal-style submenu stubs like ":Menu_Nav -> pause" don't
                         // inherit a stale OpenMenu/Input reason from the previous menu action.
@@ -675,32 +675,32 @@ namespace TWXProxy.Core
                         // Close-menu items like "Start" should resume the script after OPENMENU
                         // instead of returning to EOF like config-only menu handlers.
                         script.GosubFromMenu(labelName, matchingItem.CloseMenu);
-                        
+
                         // Close menu if configured
                         if (matchingItem.CloseMenu)
                         {
                             CloseMenu(true);
                         }
-                        
+
                         // Call Execute() to actually run the GOSUBed code
                         // Execute until handler completes (RETURN) or pauses (GETINPUT)
                         GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Calling Execute() for handler '{labelName}', subStack depth before={initialSubStackDepth}...\n");
                         GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Hotkey '{upperKey}' matched menu item '{matchingItem.Name}'\n");
-                        
+
                         bool handlerCompleted = false;
                         bool handlerMenuAlreadyDisplayed = false;
                         int maxIterations = 100; // Safety limit
                         int iterations = 0;
-                        
+
                         while (!handlerCompleted && iterations < maxIterations)
                         {
                             GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Loop iteration {iterations + 1}, Paused={script.Paused}, WaitingForInput={script.WaitingForInput}, SubStackDepth={script.SubStackDepth}\n");
-                            
+
                             bool scriptCompleted = script.Execute();
                             iterations++;
-                            
+
                             GlobalModules.DebugLog($"[DEBUG HandleMenuInput] After Execute(): completed={scriptCompleted}, Paused={script.Paused}, WaitingForInput={script.WaitingForInput}, SubStackDepth={script.SubStackDepth}\n");
-                            
+
                             // Check if handler completed (script reached end or HALT)
                             // Note: Don't check SubStackDepth == initialSubStackDepth because handlers can call GOSUB
                             // and still have more code to execute after the GOSUB returns (e.g., HALT)
@@ -710,7 +710,7 @@ namespace TWXProxy.Core
                                 handlerCompleted = true;
                                 break;
                             }
-                            
+
                             // Check if paused for input (GETINPUT)
                             if (script.Paused && script.WaitingForInput)
                             {
@@ -719,7 +719,7 @@ namespace TWXProxy.Core
                                     SuspendMenuForInput(clearDisplay: false);
                                 break; // Exit - will resume later when input received
                             }
-                            
+
                             // If paused but NOT waiting for input, it might be from OPENMENU - continue
                             if (script.Paused && !script.WaitingForInput)
                             {
@@ -744,9 +744,9 @@ namespace TWXProxy.Core
                                 }
                             }
                         }
-                        
+
                         GlobalModules.DebugLog($"[DEBUG HandleMenuInput] Execute() finished after {iterations} iterations, handlerCompleted={handlerCompleted}, script.Paused={script.Paused}, SubStackDepth={script.SubStackDepth}\n");
-                        
+
                         // After execution, redisplay menu if handler completed
                         if (!matchingItem.CloseMenu && _menuStack.Count > 0)
                         {
@@ -778,14 +778,14 @@ namespace TWXProxy.Core
                     catch (Exception ex)
                     {
                         SendMenuMessage($"\r\nMenu error: {ex.Message}\r\n");
-                        
+
                         // Re-display the menu after error
                         DisplayScriptMenu(currentMenu);
                     }
                 }
                 return true;
             }
-            
+
             return false;
         }
 

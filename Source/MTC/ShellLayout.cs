@@ -225,8 +225,16 @@ public partial class MainWindow
     private Control BuildLayout()
     {
         // Root: DockPanel – menu top, status bottom, swappable shell in the middle.
+        var root = new Grid { Background = HudWindow };
         var dock = new DockPanel { Background = HudWindow };
         _rootDock = dock;
+        root.Children.Add(dock);
+
+        _quickMacroOverlayLayer.Children.Clear();
+        _quickMacroOverlayLayer.Background = null;
+        _quickMacroOverlayLayer.ZIndex = 1000;
+        _quickMacroOverlayLayer.SizeChanged += (_, _) => ClampQuickMacroOverlays();
+        root.Children.Add(_quickMacroOverlayLayer);
 
         ConfigureStatusModeSelector();
 
@@ -285,7 +293,7 @@ public partial class MainWindow
 
         ApplySelectedSkinSafe();
         ApplyUiScaleToMainWindow();
-        return dock;
+        return root;
     }
 
     private Control BuildClassicShell()
@@ -2195,6 +2203,7 @@ public partial class MainWindow
         try
         {
             ApplySelectedSkin();
+            ApplyUiScaleToMainWindow();
         }
         catch (Exception ex)
         {
@@ -2209,6 +2218,7 @@ public partial class MainWindow
                 try
                 {
                     ApplySelectedSkin();
+                    ApplyUiScaleToMainWindow();
                 }
                 catch (Exception fallbackEx)
                 {
@@ -2706,17 +2716,12 @@ public partial class MainWindow
         var viewDbItem = new MenuItem { Header = "_Database..." };
         viewDbItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewDatabase);
 
-        var viewBubblesItem = new MenuItem { Header = "_Bubbles..." };
-        viewBubblesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewBubbles);
-
         var viewCacheItem = new MenuItem { Header = "_Cache..." };
         viewCacheItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewCache);
         var viewGameInfoItem = new MenuItem { Header = "_Game Info..." };
         viewGameInfoItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewGameInfo);
         var viewAliensItem = new MenuItem { Header = "_Aliens..." };
         viewAliensItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewAliens);
-        var viewMajorSpaceLanesItem = new MenuItem { Header = "Show _MSL's..." };
-        viewMajorSpaceLanesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewMajorSpaceLanes);
         _viewClearRecents.Click += (_, _) => OnViewClearRecents();
 
         _viewClassicSkin.Click += (_, _) => SetSkin(useCommandDeckSkin: false);
@@ -2734,7 +2739,7 @@ public partial class MainWindow
         var viewMenu = new MenuItem
         {
             Header = "_View",
-            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewBubblesItem, viewMajorSpaceLanesItem, viewDbItem, new Separator(), _viewClearRecents },
+            Items  = { viewFont, viewFontSize, skinMenu, _viewCommWindow, _viewNotes, _viewShowHaggleDetails, _viewBottomBar, new Separator(), viewCacheItem, viewGameInfoItem, viewAliensItem, viewDbItem, new Separator(), _viewClearRecents },
         };
 
         var helpUpdates = new MenuItem { Header = "_Update MTC..." };
@@ -2758,12 +2763,57 @@ public partial class MainWindow
             Items  = { mapViewItem },
         };
 
-        var toolsFindItem = new MenuItem { Header = "_Find..." };
-        toolsFindItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFind);
+        var findSearchItem = new MenuItem { Header = "_Search Database..." };
+        findSearchItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.General));
+        var findSectorsItem = new MenuItem { Header = "_Sectors..." };
+        findSectorsItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.Sectors));
+        var findTradersItem = new MenuItem { Header = "_Traders..." };
+        findTradersItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.Traders));
+        var findShipsItem = new MenuItem { Header = "S_hips..." };
+        findShipsItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.Ships));
+        var findPortsItem = new MenuItem { Header = "_Ports..." };
+        findPortsItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.Ports));
+        var findPortPairsItem = new MenuItem { Header = "Port _Pairs..." };
+        findPortPairsItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.PortPairs));
+        var findBubblesItem = new MenuItem { Header = "_Bubbles / Dead Ends / Tunnels..." };
+        findBubblesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewBubbles);
+        var findMajorSpaceLanesItem = new MenuItem { Header = "_Major Space Lanes..." };
+        findMajorSpaceLanesItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewMajorSpaceLanes);
+        var findMslFigsItem = new MenuItem { Header = "MSL Figs > _500..." };
+        findMslFigsItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.MajorSpaceLaneFigs));
+        var findDeadEndsNearItem = new MenuItem { Header = "_Dead Ends Within 5 Hops..." };
+        findDeadEndsNearItem.Click += (_, _) => ExecuteInActiveMtcTabSession(() => OnToolsFind(DataMiningStartupPreset.DeadEndsNearCurrent));
+        var findRouteItem = new MenuItem { Header = "_Route..." };
+        findRouteItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFindRoute);
+        var findMenu = new MenuItem
+        {
+            Header = "_Find",
+            Items =
+            {
+                findSearchItem,
+                new Separator(),
+                findSectorsItem,
+                findTradersItem,
+                findShipsItem,
+                findPortsItem,
+                findPortPairsItem,
+                new Separator(),
+                findMslFigsItem,
+                findDeadEndsNearItem,
+                findMajorSpaceLanesItem,
+                findBubblesItem,
+                findRouteItem,
+            },
+        };
+
         var toolsQuickMacroItem = new MenuItem { Header = "_Quick Macro..." };
         toolsQuickMacroItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OpenQuickMacroWindowAsync);
-        var toolsFindRouteItem = new MenuItem { Header = "Find _Route..." };
-        toolsFindRouteItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsFindRoute);
+        var toolsDockShopperItem = new MenuItem { Header = "_Dock Shopper..." };
+        toolsDockShopperItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(ShowDockShopperAsync);
+        var toolsClearBustsItem = new MenuItem { Header = "_Clear Busts" };
+        toolsClearBustsItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnToolsClearBustsAsync);
+        var toolsManageProxyServerItem = new MenuItem { Header = "_Manage Proxy Server..." };
+        toolsManageProxyServerItem.Click += (_, _) => _ = OnManageProxyServerAsync();
         var toolsQCannonCalculatorItem = new MenuItem { Header = "_QCannon Calculator..." };
         toolsQCannonCalculatorItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnToolsQCannonCalculator);
         var toolsConfigureStatusPanelItem = new MenuItem { Header = "Configure Status _Panel..." };
@@ -2772,7 +2822,7 @@ public partial class MainWindow
         toolsConfigureStatusBarItem.Click += (_, _) => _ = ExecuteInActiveMtcTabSessionAsync(OnConfigureStatusBarAsync);
         var toolsScriptDebuggerItem = new MenuItem { Header = "_Script Debugger" };
         toolsScriptDebuggerItem.Click += (_, _) => ExecuteInActiveMtcTabSession(OnViewScriptDebugger);
-        _toolsMenu.ItemsSource = new object[] { toolsFindItem, toolsQuickMacroItem, toolsFindRouteItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
+        _toolsMenu.ItemsSource = new object[] { toolsQuickMacroItem, toolsDockShopperItem, toolsClearBustsItem, toolsManageProxyServerItem, toolsQCannonCalculatorItem, new Separator(), toolsConfigureStatusPanelItem, toolsConfigureStatusBarItem, toolsScriptDebuggerItem };
         RebuildAiMenu();
 
         TrackSharedMenuOpenState(fileMenu);
@@ -2780,6 +2830,7 @@ public partial class MainWindow
         TrackSharedMenuOpenState(_proxyMenu);
         TrackSharedMenuOpenState(_botMenu);
         TrackSharedMenuOpenState(_quickMenu);
+        TrackSharedMenuOpenState(findMenu);
         TrackSharedMenuOpenState(_toolsMenu);
         TrackSharedMenuOpenState(_aiMenu);
         TrackSharedMenuOpenState(mapMenu);
@@ -2790,7 +2841,7 @@ public partial class MainWindow
         {
             Background = BgSidebar,
             Foreground = FgKey,
-            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, _toolsMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
+            Items      = { fileMenu, _scriptsMenu, _proxyMenu, _botMenu, _quickMenu, findMenu, _toolsMenu, _aiMenu, mapMenu, viewMenu, helpMenu },
         };
 
         RefreshCommWindowMenuState();
@@ -2939,11 +2990,12 @@ public partial class MainWindow
         ShowMtcTabOwnedWindow(owner, win);
     }
 
-    private void OnToolsFind()
+    private void OnToolsFind(DataMiningStartupPreset preset = DataMiningStartupPreset.General)
     {
         var owner = ActiveMtcTab;
         if (owner?.DataMiningWindow is { IsVisible: true } existing)
         {
+            existing.ApplyPreset(preset);
             existing.Activate();
             return;
         }
@@ -2951,7 +3003,8 @@ public partial class MainWindow
         var window = new DataMiningWindow(
             () => ExecuteInOptionalMtcTabSession(owner, () => _sessionDb),
             () => ExecuteInOptionalMtcTabSession(owner, () => _state.Sector),
-            () => ExecuteInOptionalMtcTabSession(owner, () => _state));
+            () => ExecuteInOptionalMtcTabSession(owner, () => _state),
+            preset);
         window.Closed += (_, _) =>
         {
             if (owner != null && ReferenceEquals(owner.DataMiningWindow, window))
@@ -3157,6 +3210,28 @@ public partial class MainWindow
         _appPrefs.RecentFiles.Clear();
         _appPrefs.Save();
         RebuildRecentMenu();
+    }
+
+    private async Task OnToolsClearBustsAsync()
+    {
+        Core.ModDatabase? db = ResolveCurrentMtcTabContext()?.RuntimeContext.ActiveDatabase
+            ?? ActiveMtcRuntimeContext?.ActiveDatabase
+            ?? Core.ScriptRef.GetActiveDatabase();
+
+        if (db == null || !db.IsOpen)
+        {
+            await ShowMessageAsync("Clear Busts", "Open or load a game database first.");
+            return;
+        }
+
+        int cleared = db.ClearBustsBefore(DateTime.Now);
+        if (cleared > 0)
+            db.SaveDatabase();
+
+        string message = cleared == 1
+            ? "Cleared 1 bust from a previous day."
+            : $"Cleared {cleared} busts from previous days.";
+        await ShowMessageAsync("Clear Busts", message);
     }
 
     private void QueueFinderPrewarm(Core.ModDatabase? db)

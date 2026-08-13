@@ -52,6 +52,28 @@ public class AppPreferences
         public int OnlineRefreshIntervalSeconds { get; set; } = DefaultOnlineRefreshIntervalSeconds;
     }
 
+    public sealed class ProxyServerPreference
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Name { get; set; } = string.Empty;
+        public string Host { get; set; } = "127.0.0.1";
+        public int ManagementPort { get; set; } = 2099;
+        public string SecurityToken { get; set; } = string.Empty;
+
+        public string DisplayName
+        {
+            get
+            {
+                string name = string.IsNullOrWhiteSpace(Name) ? "Proxy Server" : Name.Trim();
+                string host = string.IsNullOrWhiteSpace(Host) ? "127.0.0.1" : Host.Trim();
+                int port = NormalizeTcpPort(ManagementPort, 2099);
+                return $"{name} ({host}:{port})";
+            }
+        }
+
+        public override string ToString() => DisplayName;
+    }
+
     public const string StatusPanelTrader = "trader";
     public const string StatusPanelOnline = "online";
     public const string StatusPanelHolds = "holds"; // legacy-only; folded into Ship Info
@@ -68,6 +90,7 @@ public class AppPreferences
 
     public List<string> RecentFiles { get; } = [];
     public List<MacroBinding> MacroBindings { get; } = [];
+    public List<ProxyServerPreference> ProxyServers { get; } = [];
     public Dictionary<string, DeckPanelLayout> CommandDeckPanels { get; }
         = new(StringComparer.OrdinalIgnoreCase);
     public List<StatusPanelSectionPreference> StatusPanelSections { get; } = [];
@@ -93,6 +116,7 @@ public class AppPreferences
     public double TerminalFontSize { get; set; } = TerminalControl.DefaultFontSize;
     public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
+    public bool DisableScriptWindowStayInFront { get; set; }
     public bool PythonScriptsEnabled { get; set; } = true;
     public string PythonInterpreterPath { get; set; } = "auto";
     public bool PythonExposeJsonRpcToken { get; set; }
@@ -214,6 +238,7 @@ public class AppPreferences
                 new XElement("TerminalFontSize", TerminalFontSize.ToString(CultureInfo.InvariantCulture)),
                 new XElement("ScrollbackLines", NormalizeScrollbackLines(ScrollbackLines)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
+                new XElement("DisableScriptWindowStayInFront", DisableScriptWindowStayInFront),
                 new XElement("PythonScriptsEnabled", PythonScriptsEnabled),
                 new XElement("PythonInterpreterPath", NormalizePythonInterpreterPath(PythonInterpreterPath)),
                 new XElement("PythonExposeJsonRpcToken", PythonExposeJsonRpcToken),
@@ -267,6 +292,17 @@ public class AppPreferences
                                 new XAttribute("Provider", NormalizeGameAgentProvider(pair.Key)),
                                 pair.Value.Trim())))),
                 new XElement("RecentFiles", RecentFiles.Select(path => new XElement("File", path))),
+                new XElement("ProxyServers",
+                    ProxyServers
+                        .Where(server => !string.IsNullOrWhiteSpace(server.Host))
+                        .OrderBy(server => server.Name, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(server => server.Host, StringComparer.OrdinalIgnoreCase)
+                        .Select(server => new XElement("Server",
+                            new XAttribute("Id", string.IsNullOrWhiteSpace(server.Id) ? Guid.NewGuid().ToString() : server.Id),
+                            new XAttribute("Name", server.Name ?? string.Empty),
+                            new XAttribute("Host", server.Host ?? string.Empty),
+                            new XAttribute("ManagementPort", NormalizeTcpPort(server.ManagementPort, 2099)),
+                            new XAttribute("SecurityToken", server.SecurityToken ?? string.Empty)))),
                 new XElement("Macros",
                     MacroBindings
                         .Where(binding => !string.IsNullOrWhiteSpace(binding.Hotkey) &&
@@ -370,6 +406,8 @@ public class AppPreferences
                 prefs.ScrollbackLines = NormalizeScrollbackLines(scrollbackLines);
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
+            if (bool.TryParse((string?)root.Element("DisableScriptWindowStayInFront"), out bool disableScriptWindowStayInFront))
+                prefs.DisableScriptWindowStayInFront = disableScriptWindowStayInFront;
             if (bool.TryParse((string?)root.Element("PythonScriptsEnabled"), out bool pythonScriptsEnabled))
                 prefs.PythonScriptsEnabled = pythonScriptsEnabled;
             prefs.PythonInterpreterPath = NormalizePythonInterpreterPath((string?)root.Element("PythonInterpreterPath"));
@@ -454,6 +492,25 @@ public class AppPreferences
                 string? path = ResolveRecentFilePath((string?)element, prefs.ProgramDirectory);
                 if (!string.IsNullOrWhiteSpace(path))
                     prefs.RecentFiles.Add(path);
+            }
+
+            foreach (XElement server in root.Element("ProxyServers")?.Elements("Server")
+                                      ?? Enumerable.Empty<XElement>())
+            {
+                string host = ((string?)server.Attribute("Host") ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(host))
+                    continue;
+
+                prefs.ProxyServers.Add(new ProxyServerPreference
+                {
+                    Id = string.IsNullOrWhiteSpace((string?)server.Attribute("Id"))
+                        ? Guid.NewGuid().ToString()
+                        : ((string?)server.Attribute("Id") ?? string.Empty).Trim(),
+                    Name = ((string?)server.Attribute("Name") ?? string.Empty).Trim(),
+                    Host = host,
+                    ManagementPort = NormalizeTcpPort(ParseInt(server.Attribute("ManagementPort"), 2099), 2099),
+                    SecurityToken = ((string?)server.Attribute("SecurityToken") ?? string.Empty).Trim(),
+                });
             }
 
             foreach (XElement element in root.Element("Macros")?.Elements("Macro")
@@ -631,6 +688,9 @@ public class AppPreferences
 
     public static int NormalizeMemoryLimitKb(int value, int defaultValue)
         => value > 0 ? value : defaultValue;
+
+    public static int NormalizeTcpPort(int value, int defaultValue)
+        => value is >= 1 and <= 65535 ? value : defaultValue;
 
     public static int NormalizeOnlineRefreshIntervalSeconds(int value)
         => OnlineRefreshIntervalSecondOptions.Contains(value)

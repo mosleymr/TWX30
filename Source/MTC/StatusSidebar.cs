@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -821,73 +819,18 @@ public partial class MainWindow
     {
         var button = CreateMacroControlButton(
             "▶",
-            "Play Saved Quick Macro (hold to open Quick Macro)",
+            "Open Quick Macro Player / play once when open",
             deckSkin,
             OnQuickMacroPlayButtonClicked,
             compact);
-
-        button.PointerPressed += (_, _) =>
-        {
-            BeginQuickMacroPlayHold();
-        };
-        button.PointerReleased += (_, _) =>
-        {
-            CancelQuickMacroPlayHold();
-        };
-        button.PointerCaptureLost += (_, _) =>
-        {
-            if (!_quickMacroPlayHoldTriggered)
-                CancelQuickMacroPlayHold();
-        };
         return button;
     }
 
     private void OnQuickMacroPlayButtonClicked()
     {
-        if (_quickMacroPlayHoldTriggered)
-        {
-            _quickMacroPlayHoldTriggered = false;
-            return;
-        }
-
-        _ = PlaySavedQuickMacroOnceAsync();
-    }
-
-    private void BeginQuickMacroPlayHold()
-    {
-        CancelQuickMacroPlayHold();
-        _quickMacroPlayHoldTriggered = false;
-        var cancellation = new CancellationTokenSource();
-        _quickMacroPlayHoldCancellation = cancellation;
-        _ = TriggerQuickMacroPlayHoldAsync(cancellation);
-    }
-
-    private void CancelQuickMacroPlayHold()
-    {
-        _quickMacroPlayHoldCancellation?.Cancel();
-        _quickMacroPlayHoldCancellation = null;
-    }
-
-    private async Task TriggerQuickMacroPlayHoldAsync(CancellationTokenSource cancellation)
-    {
-        try
-        {
-            await Task.Delay(QuickMacroPlayHoldThreshold, cancellation.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (!ReferenceEquals(_quickMacroPlayHoldCancellation, cancellation) || cancellation.IsCancellationRequested)
-                return;
-
-            _quickMacroPlayHoldTriggered = true;
-            _quickMacroPlayHoldCancellation = null;
-            _ = ExecuteInActiveMtcTabSessionAsync(OpenQuickMacroWindowAsync);
-        }, DispatcherPriority.Input);
+        _ = IsActiveQuickMacroOverlayVisible()
+            ? PlaySavedQuickMacroOnceAsync()
+            : OpenQuickMacroWindowAsync();
     }
 
     private Control BuildStatusMacroBox()

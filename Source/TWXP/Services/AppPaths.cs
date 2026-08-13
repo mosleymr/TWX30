@@ -36,6 +36,12 @@ public static class AppPaths
         return Path.Combine(GamesDir, TWXProxy.Core.SharedPaths.SanitizeFileComponent(gameName) + ".json");
     }
 
+    public static string GameDataDirForGame(string gameName)
+        => TWXProxy.Core.SharedPaths.GameDataDirForGame(gameName, ProgramDir);
+
+    public static string GameVariablesFileFor(string gameName)
+        => TWXProxy.Core.SharedPaths.GameVariablesPathForGame(gameName, ProgramDir);
+
     /// <summary>
     /// Directory where per-game databases are stored alongside the game JSON files.
     /// </summary>

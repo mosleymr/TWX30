@@ -102,6 +102,44 @@ public partial class MainWindow
             return;
         }
 
+        if (IsManagedRemoteProxyGame() && TryGetCurrentProxyManagementClient(out ProxyManagementClient? remoteClient))
+        {
+            _scriptsMenu.ItemsSource = new List<object>
+            {
+                reloadItem, stopPythonScriptsItem, new Separator(),
+                new MenuItem { Header = "Loading remote scripts...", IsEnabled = false },
+            };
+
+            string gameId = _state.RemoteProxyGameId;
+            _ = Task.Run(async () => await remoteClient!.ListScriptsAsync(gameId))
+                .ContinueWith(t =>
+                {
+                    ExecuteInOptionalMtcTabSession(owner, () =>
+                    {
+                        if (!PrepareMtcTabVisualRefresh())
+                            return;
+
+                        var items = new List<object> { reloadItem, stopPythonScriptsItem, new Separator() };
+                        if (t.IsFaulted)
+                        {
+                            items.Add(new MenuItem { Header = "Remote script list failed", IsEnabled = false });
+                        }
+                        else if (t.Result.Count == 0)
+                        {
+                            items.Add(new MenuItem { Header = "(no remote scripts found)", IsEnabled = false });
+                        }
+                        else
+                        {
+                            BuildRemoteScriptMenuItems(items, t.Result);
+                        }
+
+                        _scriptsMenu.ItemsSource = items;
+                        RequestNativeAppMenuRefresh();
+                    });
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            return;
+        }
+
         var dir = _appPrefs.ScriptsDirectory;
 
         if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
@@ -241,6 +279,36 @@ public partial class MainWindow
                 };
                 target.Add(item);
             }
+        }
+    }
+
+    private void BuildRemoteScriptMenuItems(List<object> target, IReadOnlyList<ProxyManagedScript> scripts)
+    {
+        foreach (ProxyManagedScript script in scripts.OrderBy(script => script.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            string relPath = script.Path;
+            var item = new MenuItem { Header = EscapeMenuHeaderText(relPath) };
+            ToolTip.SetTip(item, $"Remote proxy script: {relPath}");
+            item.Click += (_, _) =>
+            {
+                _ = ExecuteInActiveMtcTabSessionAsync(async () =>
+                {
+                    try
+                    {
+                        await TryRunManagedRemoteScriptAsync(relPath);
+                        _parser.Feed($"\x1b[1;36m[Loaded remote script: {relPath}]\x1b[0m\r\n");
+                        _buffer.Dirty = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        await ShowMessageAsync("Remote Script Failed", ex.Message);
+                    }
+
+                    RebuildProxyMenu();
+                    FocusActiveTerminal();
+                });
+            };
+            target.Add(item);
         }
     }
 

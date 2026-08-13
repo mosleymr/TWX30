@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -304,7 +305,7 @@ public class BubblesWindow : Window
                         Children =
                         {
                             state.CopySelectedButton,
-                            BuildToolbarLabel("Sector Search").WithColumn(2),
+                            BuildToolbarLabel("Find Sector").WithColumn(2),
                             state.SectorSearchBox.WithColumn(3),
                             state.SectorSearchButton.WithColumn(4),
                         },
@@ -449,6 +450,7 @@ public class BubblesWindow : Window
                 : null,
             SectorSearchBox = new TextBox
             {
+                Watermark = "sector",
                 Width = 92,
                 Height = 34,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
@@ -468,7 +470,7 @@ public class BubblesWindow : Window
             },
             SectorSearchButton = new Button
             {
-                Content = "Go",
+                Content = "Find",
                 Padding = new Thickness(12, 5),
                 Height = 34,
             },
@@ -510,6 +512,14 @@ public class BubblesWindow : Window
         StyleActionButton(state.SectorSearchButton, primary: true);
         state.CopySelectedButton.Click += async (_, _) => await CopySelectedAsync(state);
         state.SectorSearchButton.Click += async (_, _) => await SearchForSectorAsync(state);
+        state.SectorSearchBox.KeyDown += async (_, e) =>
+        {
+            if (e.Key != Key.Enter)
+                return;
+
+            e.Handled = true;
+            await SearchForSectorAsync(state);
+        };
 
         if (state.AllowSeparatedByGatesCheckBox != null)
             state.AllowSeparatedByGatesCheckBox.IsCheckedChanged += async (_, _) => await RefreshTabAsync(state, forceRecompute: true);

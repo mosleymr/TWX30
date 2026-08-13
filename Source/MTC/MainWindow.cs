@@ -149,6 +149,11 @@ public partial class MainWindow : Window
         Margin = new Thickness(8, 0),
     };
     private DockPanel? _rootDock;
+    private readonly Canvas _quickMacroOverlayLayer = new()
+    {
+        IsHitTestVisible = false,
+        IsVisible = false,
+    };
     private Canvas? _deckSurface;
     private Grid? _deckWorkspaceHost;
     private Viewbox? _deckWorkspaceScaler;
@@ -178,9 +183,6 @@ public partial class MainWindow : Window
     private Button? _deckMacroRecordButton;
     private Button? _deckMacroStopButton;
     private Button? _deckMacroPlayButton;
-    private static readonly TimeSpan QuickMacroPlayHoldThreshold = TimeSpan.FromMilliseconds(500);
-    private CancellationTokenSource? _quickMacroPlayHoldCancellation;
-    private bool _quickMacroPlayHoldTriggered;
     private List<byte[]> _temporaryMacroChunks = [];
     private bool _temporaryMacroRecording;
     private bool _suppressTemporaryMacroRecording;
@@ -347,12 +349,8 @@ public partial class MainWindow : Window
     private int _mombotMacroPromptRedrawTicket;
     private string _mombotLastObservedGamePromptAnsi = string.Empty;
     private string _mombotLastObservedGamePromptPlain = string.Empty;
-    private int _pendingNativeMombotEscapeEchoSuppressions;
-    private long _nativeMombotEscapeEchoSuppressUntilUtcTicks;
     private readonly object _nativeMombotPostLoginMacroLock = new();
     private string _pendingNativeMombotPostLoginMacro = string.Empty;
-    private bool _suppressingPendingNativeMombotEscapeSequence;
-    private bool _suppressingPendingNativeMombotEscapeCsiBody;
     private bool _pendingTerminalSyncMarkerLeadByte;
     private bool _pendingTerminalSyncMarkerUtf8LeadByte;
     private bool _mombotKeepaliveTickRunning;

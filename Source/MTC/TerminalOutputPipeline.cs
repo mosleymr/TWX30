@@ -861,21 +861,13 @@ public partial class MainWindow
         {
             if (owner is not null)
             {
-                owner.SuppressingPendingNativeMombotEscapeSequence = false;
-                owner.SuppressingPendingNativeMombotEscapeCsiBody = false;
                 owner.PendingTerminalSyncMarkerLeadByte = false;
                 owner.PendingTerminalSyncMarkerUtf8LeadByte = false;
-                owner.PendingNativeMombotEscapeEchoSuppressions = 0;
-                owner.NativeMombotEscapeEchoSuppressUntilUtcTicks = 0;
                 return;
             }
 
-            _suppressingPendingNativeMombotEscapeSequence = false;
-            _suppressingPendingNativeMombotEscapeCsiBody = false;
             _pendingTerminalSyncMarkerLeadByte = false;
             _pendingTerminalSyncMarkerUtf8LeadByte = false;
-            Interlocked.Exchange(ref _pendingNativeMombotEscapeEchoSuppressions, 0);
-            Interlocked.Exchange(ref _nativeMombotEscapeEchoSuppressUntilUtcTicks, 0);
         }
     }
 

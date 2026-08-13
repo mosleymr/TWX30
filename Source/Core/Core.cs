@@ -278,7 +278,7 @@ namespace TWXProxy.Core
         int ClientCount { get; }
         ClientType GetClientType(int index);
         void SetClientType(int index, ClientType type);
-        
+
         // Bot management
         void RegisterBot(string botName, string scriptFile, string description = "");
         void UnregisterBot(string botName);

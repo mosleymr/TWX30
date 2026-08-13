@@ -32,6 +32,9 @@ internal sealed record DockShopperOrderResult(string EncodedOrder, string Comman
 
 internal sealed class DockShopperWindow : Window
 {
+    private const double ShipChoiceDropDownRowHeight = 36;
+    private const double ShipChoiceDropDownPadding = 12;
+
     private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(8, 14, 20));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(14, 33, 42));
     private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(18, 43, 53));
@@ -57,7 +60,7 @@ internal sealed class DockShopperWindow : Window
     public DockShopperWindow(IReadOnlyList<DockShopperShipChoice> shipChoices)
     {
         _shipChoices = shipChoices.Count > 1 ? shipChoices : BuildFallbackShipChoices();
-        _shipChoice = BuildCombo(_shipChoices);
+        _shipChoice = BuildShipCombo(_shipChoices);
         _planetScannerChoice.SelectionChanged += (_, _) => RefreshPreview();
         _longRangeChoice.SelectionChanged += (_, _) => RefreshPreview();
         _twarpChoice.SelectionChanged += (_, _) => RefreshPreview();
@@ -410,6 +413,13 @@ internal sealed class DockShopperWindow : Window
 
     private static ComboBox BuildCombo(IEnumerable<string> items)
         => BuildCombo(items.Cast<object>());
+
+    private static ComboBox BuildShipCombo(IReadOnlyList<DockShopperShipChoice> choices)
+    {
+        var combo = BuildCombo(choices.Cast<object>());
+        combo.MaxDropDownHeight = choices.Count * ShipChoiceDropDownRowHeight + ShipChoiceDropDownPadding;
+        return combo;
+    }
 
     private static TextBox BuildSmallTextBox(string text, double width)
         => new()

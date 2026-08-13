@@ -85,7 +85,7 @@ while ($i <= SECTORS)
   if ($TestSector~Match)
     add $total 1
     
-    if (PORT.BUYORE[$i])
+    if (PORT.BUYFUEL[$i])
       setVar $port ANSI_2 & "B"
     else
       setVar $port ANSI_11 & "S"

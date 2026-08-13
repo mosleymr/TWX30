@@ -42,7 +42,7 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(previousDatabasePath))
             previousDatabasePath = DatabasePathForMode(previousGameName, _state.EmbeddedProxy);
 
-        var dlg = new NewConnectionDialog(BuildProfileFromState());
+        var dlg = new NewConnectionDialog(BuildProfileFromState(), proxyServers: _appPrefs.ProxyServers);
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
 
         ConnectionProfile? uniqueEditedProfile = await EnsureUniqueProfileAsync(
@@ -158,6 +158,9 @@ public partial class MainWindow
         }
 
         string gameName = GetEmbeddedGameName();
+        if (!CanCurrentMtcTabAdoptGameIdentity(gameName, "sync-embedded-proxy"))
+            return;
+
         var gameConfig = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         gameConfig.Mtc ??= new EmbeddedMtcConfig();
         string? originalNativeHaggleMode = gameConfig.NativeHaggleMode;
@@ -279,7 +282,7 @@ public partial class MainWindow
 
     private async Task OnNewConnectionAsync()
     {
-        var dlg = new NewConnectionDialog();
+        var dlg = new NewConnectionDialog(proxyServers: _appPrefs.ProxyServers);
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null) return;
 
         ConnectionProfile? uniqueNewProfile = await EnsureUniqueProfileAsync(dlg.Result);
@@ -338,7 +341,7 @@ public partial class MainWindow
             return;
         }
 
-        var dlg = new NewConnectionDialog(BuildProfileFromState());
+        var dlg = new NewConnectionDialog(BuildProfileFromState(), proxyServers: _appPrefs.ProxyServers);
         if (!await dlg.ShowDialog<bool>(this) || dlg.Result == null)
             return;
 
@@ -537,38 +540,56 @@ public partial class MainWindow
     private async Task<bool> ShowConfirmAsync(string title, string message, string yesText, string noText)
     {
         bool result = false;
-        var yesBtn = new Button { Content = yesText, MinWidth = 110 };
-        var noBtn = new Button { Content = noText, MinWidth = 110 };
+        var yesBtn = BuildDialogActionButton(yesText, primary: true);
+        var noBtn = BuildDialogActionButton(noText, primary: false);
+        var messageBlock = new TextBlock
+        {
+            Text = message,
+            Foreground = HudText,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 15,
+            LineHeight = 22,
+        };
+        var messageScroll = new ScrollViewer
+        {
+            Content = messageBlock,
+            MaxHeight = 340,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        var buttonRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 10,
+            Margin = new Thickness(0, 18, 0, 0),
+            Children = { yesBtn, noBtn },
+        };
+        var content = new Border
+        {
+            Background = HudFrame,
+            BorderBrush = HudEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(20),
+            Child = new StackPanel
+            {
+                Spacing = 0,
+                Children = { messageScroll, buttonRow },
+            },
+        };
 
         var dlg = new Window
         {
             Title = title,
-            Width = 520,
-            Height = 220,
+            Width = 560,
+            MinHeight = 180,
+            MaxHeight = 560,
+            SizeToContent = SizeToContent.Height,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
-            Background = BgPanel,
-            Content = new StackPanel
-            {
-                Margin = new Thickness(20),
-                Spacing = 16,
-                Children =
-                {
-                    new TextBlock
-                    {
-                        Text = message,
-                        Foreground = FgKey,
-                        TextWrapping = TextWrapping.Wrap,
-                    },
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        HorizontalAlignment = HorizontalAlignment.Center,
-                        Spacing = 10,
-                        Children = { yesBtn, noBtn },
-                    },
-                },
-            },
+            Background = HudWindow,
+            Content = content,
         };
 
         yesBtn.Click += (_, _) =>
@@ -585,4 +606,18 @@ public partial class MainWindow
         await dlg.ShowDialog(this);
         return result;
     }
+
+    private static Button BuildDialogActionButton(string text, bool primary)
+        => new()
+        {
+            Content = text,
+            MinWidth = 112,
+            Padding = new Thickness(18, 8),
+            Background = primary ? HudAccent : HudHeaderAlt,
+            BorderBrush = primary ? HudAccentHot : HudInnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Foreground = primary ? HudAccentInk : HudText,
+            FontWeight = FontWeight.Bold,
+        };
 }

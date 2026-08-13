@@ -24,7 +24,7 @@ namespace TWXProxy.Core
                 {
                     dimensions[i - 1] = (int)parameters[i].DecValue;
                 }
-                
+
                 varParam.SetArray(dimensions);
             }
             return CmdAction.None;
@@ -45,7 +45,7 @@ namespace TWXProxy.Core
             // Get order parameter (default to ascending if not specified or invalid)
             // The original TWX supports both numeric and string sorting
             var items = new List<string>();
-            
+
             // Collect all array items
             for (int i = 0; i < sourceVar.ArraySize; i++)
             {

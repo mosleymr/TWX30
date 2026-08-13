@@ -17,6 +17,18 @@ using Core = TWXProxy.Core;
 
 namespace MTC;
 
+public enum DataMiningStartupPreset
+{
+    General,
+    Sectors,
+    Traders,
+    Ships,
+    Ports,
+    PortPairs,
+    MajorSpaceLaneFigs,
+    DeadEndsNearCurrent
+}
+
 public sealed class DataMiningWindow : Window
 {
     private enum NumericOperator
@@ -61,13 +73,22 @@ public sealed class DataMiningWindow : Window
         Hostile,
         NoHostile,
         Friendly,
-        Backdoor
+        Backdoor,
+        MajorSpaceLane,
+        DeadEnd,
+        Distance,
+        TraderName,
+        ShipName,
+        PortName,
+        Beacon,
+        SectorNote
     }
 
     private enum OwnerFilterMode
     {
         Any,
         Me,
+        MineOrCorp,
         MyCorp,
         Custom
     }
@@ -144,7 +165,9 @@ public sealed class DataMiningWindow : Window
         string OwnerText,
         string PortType,
         string PlanetShield,
-        bool BooleanValue);
+        bool BooleanValue,
+        string AnchorSector,
+        string TextValue);
 
     private sealed record SavedFinderQuery(string Name, List<SavedFinderQueryRow> Rows);
     private sealed record SavedFinderQueryRow(
@@ -155,7 +178,8 @@ public sealed class DataMiningWindow : Window
         string OwnerText,
         string PortType,
         string PlanetShield,
-        bool BooleanValue);
+        bool BooleanValue,
+        string AnchorSector = "");
 
     private sealed record SectorResult(int Sector, string Display);
     private sealed record PortResult(int Sector, string Display, int? Distance);
@@ -283,6 +307,8 @@ public sealed class DataMiningWindow : Window
     {
         public Border Host { get; init; } = null!;
         public ComboBox Field { get; init; } = null!;
+        public Control AnchorGroup { get; init; } = null!;
+        public TextBox AnchorSector { get; init; } = null!;
         public Control NumberGroup { get; init; } = null!;
         public OperatorPicker Operator { get; init; } = null!;
         public TextBox Number { get; init; } = null!;
@@ -374,9 +400,17 @@ public sealed class DataMiningWindow : Window
         "Has enemies",
         "No enemies",
         "Friendly",
-        "Backdoor"
+        "Backdoor",
+        "Major Space Lane",
+        "Dead end",
+        "Distance",
+        "Trader name",
+        "Ship name",
+        "Port name",
+        "Beacon",
+        "Sector note"
     ];
-    private static readonly string[] OwnerModeLabels = ["Any owner", "Me", "My corp", "Custom"];
+    private static readonly string[] OwnerModeLabels = ["Any owner", "Me", "Mine or corp", "My corp", "Custom"];
     private static readonly string[] BooleanLabels = ["True", "False"];
     private static readonly string[] PlanetShieldLabels = ["Any shield", "Shielded", "Unshielded"];
     private static readonly string[] PortTypeLabels =
@@ -407,7 +441,8 @@ public sealed class DataMiningWindow : Window
     public DataMiningWindow(
         Func<Core.ModDatabase?> getDb,
         Func<int> getCurrentSector,
-        Func<GameState?> getState)
+        Func<GameState?> getState,
+        DataMiningStartupPreset startupPreset = DataMiningStartupPreset.General)
     {
         _getDb = getDb;
         _getCurrentSector = getCurrentSector;
@@ -533,6 +568,7 @@ public sealed class DataMiningWindow : Window
         };
 
         AddEmptyResult("Choose a preset or build a query, then search to see matches here.");
+        ApplyStartupPreset(startupPreset);
     }
 
     private Control BuildCriteriaPane()
@@ -687,6 +723,7 @@ public sealed class DataMiningWindow : Window
         addButton.Click += (_, _) => AddQueryRow();
 
         AddDefaultQueryRow();
+        var quickFindPanel = BuildQuickFindPanel();
 
         return new ScrollViewer
         {
@@ -702,6 +739,7 @@ public sealed class DataMiningWindow : Window
                         FontSize = SmallFontSize,
                         TextWrapping = TextWrapping.Wrap,
                     },
+                    quickFindPanel,
                     savedPanel,
                     _queryRowsHost,
                     new StackPanel
@@ -725,6 +763,27 @@ public sealed class DataMiningWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Margin = new Thickness(0, 8, 0, 0),
+        };
+    }
+
+    private Control BuildQuickFindPanel()
+    {
+        var panel = new WrapPanel { Orientation = Orientation.Horizontal };
+        AddToolbarItem(panel, BuildSmallLabel("Quick finds"));
+        AddToolbarItem(panel, BuildPresetButton("MSL figs > 500", () => ApplyMajorSpaceLaneFigsPreset(runSearch: false)));
+        AddToolbarItem(panel, BuildPresetButton("Trader name", () => ApplyTextQueryPreset("Trader name", string.Empty, runSearch: false)));
+        AddToolbarItem(panel, BuildPresetButton("Ship name", () => ApplyTextQueryPreset("Ship name", string.Empty, runSearch: false)));
+        AddToolbarItem(panel, BuildPresetButton("Port pairs", () => ApplyPortPairPreset(runSearch: false)));
+        AddToolbarItem(panel, BuildPresetButton("Dead ends nearby", () => ApplyDeadEndsNearPreset("Current", 5, runSearch: false)));
+
+        return new Border
+        {
+            Background = BgCardAlt,
+            BorderBrush = InnerEdge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(8, 8, 0, 2),
+            Child = panel,
         };
     }
 
@@ -763,11 +822,14 @@ public sealed class DataMiningWindow : Window
         var ownerMode = BuildCombo(OwnerModeLabels, string.IsNullOrWhiteSpace(saved?.OwnerMode) ? "Any owner" : saved!.OwnerMode, 108);
         var ownerText = BuildTextBox(saved?.OwnerText ?? string.Empty, 132);
         ownerText.Watermark = "owner";
+        var anchorSector = BuildTextBox(string.IsNullOrWhiteSpace(saved?.AnchorSector) ? "Current" : saved!.AnchorSector, 88);
+        anchorSector.Watermark = "sector";
         var portType = BuildCombo(PortTypeLabels, string.IsNullOrWhiteSpace(saved?.PortType) ? "Any" : saved!.PortType, 150);
         var shieldState = BuildCombo(PlanetShieldLabels, string.IsNullOrWhiteSpace(saved?.PlanetShield) ? "Any shield" : saved!.PlanetShield, 120);
         var boolValue = BuildCombo(BooleanLabels, (saved?.BooleanValue ?? true) ? "True" : "False", 76);
         var remove = BuildSmallActionButton("-", 32);
 
+        var anchorGroup = BuildInlineGroup("From", anchorSector);
         var numberGroup = BuildInlineGroup(string.Empty, op, number);
         var ownerGroup = BuildInlineGroup("Owner", ownerMode, ownerText);
         var portGroup = BuildInlineGroup("Port", portType);
@@ -779,6 +841,7 @@ public sealed class DataMiningWindow : Window
             Orientation = Orientation.Horizontal,
         };
         AddFlowItem(rowFlow, field);
+        AddFlowItem(rowFlow, anchorGroup);
         AddFlowItem(rowFlow, numberGroup);
         AddFlowItem(rowFlow, ownerGroup);
         AddFlowItem(rowFlow, portGroup);
@@ -808,6 +871,8 @@ public sealed class DataMiningWindow : Window
                 Child = rowBody,
             },
             Field = field,
+            AnchorGroup = anchorGroup,
+            AnchorSector = anchorSector,
             NumberGroup = numberGroup,
             Operator = op,
             Number = number,
@@ -883,6 +948,96 @@ public sealed class DataMiningWindow : Window
         AddDefaultQueryRow();
     }
 
+    private void ApplyQueryRows(IEnumerable<SavedFinderQueryRow> rows, bool runSearch)
+    {
+        _modeTabs.SelectedIndex = 0;
+        _queryRows.Clear();
+        _queryRowsHost.Children.Clear();
+        foreach (SavedFinderQueryRow row in rows)
+            AddQueryRow(row);
+
+        if (_queryRows.Count == 0)
+            AddDefaultQueryRow();
+
+        if (runSearch)
+            _ = RunSearchAsync();
+    }
+
+    private void ApplyMajorSpaceLaneFigsPreset(bool runSearch)
+        => ApplyQueryRows(
+            new[]
+            {
+                new SavedFinderQueryRow("Major Space Lane", "=", "0", "Any owner", string.Empty, "Any", "Any shield", true),
+                new SavedFinderQueryRow("Fighters", ">", "500", "Mine or corp", string.Empty, "Any", "Any shield", true),
+            },
+            runSearch);
+
+    private void ApplyTextQueryPreset(string field, string value, bool runSearch)
+        => ApplyQueryRows(
+            new[]
+            {
+                new SavedFinderQueryRow(field, "=", value, "Any owner", string.Empty, "Any", "Any shield", true),
+            },
+            runSearch);
+
+    private void ApplyDeadEndsNearPreset(string anchor, int hops, bool runSearch)
+        => ApplyQueryRows(
+            new[]
+            {
+                new SavedFinderQueryRow("Dead end", "=", "0", "Any owner", string.Empty, "Any", "Any shield", true),
+                new SavedFinderQueryRow("Distance", "<=", hops.ToString(CultureInfo.InvariantCulture), "Any owner", string.Empty, "Any", "Any shield", true, anchor),
+            },
+            runSearch);
+
+    private void ApplyPortPairPreset(bool runSearch)
+    {
+        _modeTabs.SelectedIndex = 1;
+        if (_portQueries.Count > 0)
+        {
+            PortQueryControls query = _portQueries[0];
+            ResetPortQuery(query);
+            query.SinglePorts.IsChecked = false;
+            query.PortPairs.IsChecked = true;
+            SetPanelEnabled(query.SecondaryPanel, true);
+        }
+
+        if (runSearch)
+            _ = RunSearchAsync();
+    }
+
+    private void ApplyStartupPreset(DataMiningStartupPreset preset)
+    {
+        switch (preset)
+        {
+            case DataMiningStartupPreset.Sectors:
+                _modeTabs.SelectedIndex = 0;
+                break;
+            case DataMiningStartupPreset.Traders:
+                ApplyTextQueryPreset("Trader name", string.Empty, runSearch: false);
+                break;
+            case DataMiningStartupPreset.Ships:
+                ApplyTextQueryPreset("Ship name", string.Empty, runSearch: false);
+                break;
+            case DataMiningStartupPreset.Ports:
+                _modeTabs.SelectedIndex = 1;
+                if (_portQueries.Count > 0)
+                    ResetPortQuery(_portQueries[0]);
+                break;
+            case DataMiningStartupPreset.PortPairs:
+                ApplyPortPairPreset(runSearch: false);
+                break;
+            case DataMiningStartupPreset.MajorSpaceLaneFigs:
+                ApplyMajorSpaceLaneFigsPreset(runSearch: false);
+                break;
+            case DataMiningStartupPreset.DeadEndsNearCurrent:
+                ApplyDeadEndsNearPreset("Current", 5, runSearch: false);
+                break;
+        }
+    }
+
+    public void ApplyPreset(DataMiningStartupPreset preset)
+        => ApplyStartupPreset(preset);
+
     private static void UpdateQueryRowShape(QueryBuilderRowControls row)
     {
         SectorQueryField field = ParseQueryField(row.Field.SelectedItem?.ToString());
@@ -890,12 +1045,17 @@ public sealed class DataMiningWindow : Window
         bool numeric = IsNumericQueryField(field);
         bool port = field == SectorQueryField.Port;
         bool planets = field == SectorQueryField.Planets;
-        bool boolean = !deployment && !numeric && !port && !planets;
+        bool distance = field == SectorQueryField.Distance;
+        bool text = IsTextQueryField(field);
+        bool boolean = !deployment && !numeric && !port && !planets && !distance && !text;
         bool customOwner = ParseOwnerMode(row.OwnerMode.SelectedItem?.ToString()) == OwnerFilterMode.Custom;
 
-        row.NumberGroup.IsVisible = numeric || deployment || planets;
-        row.Operator.IsVisible = numeric || deployment || planets;
-        row.Number.IsVisible = numeric || deployment || planets;
+        row.AnchorGroup.IsVisible = distance;
+        row.AnchorSector.IsVisible = distance;
+        row.NumberGroup.IsVisible = numeric || deployment || planets || distance || text;
+        row.Operator.IsVisible = numeric || deployment || planets || distance;
+        row.Number.IsVisible = numeric || deployment || planets || distance || text;
+        row.Number.Watermark = text ? "contains" : string.Empty;
         row.OwnerGroup.IsVisible = deployment || planets;
         row.OwnerMode.IsVisible = deployment || planets;
         row.OwnerText.IsVisible = (deployment || planets) && customOwner;
@@ -913,6 +1073,9 @@ public sealed class DataMiningWindow : Window
     private static bool IsNumericQueryField(SectorQueryField field)
         => field is SectorQueryField.Density or SectorQueryField.NavHaz or SectorQueryField.Warps;
 
+    private static bool IsTextQueryField(SectorQueryField field)
+        => field is SectorQueryField.TraderName or SectorQueryField.ShipName or SectorQueryField.PortName or SectorQueryField.Beacon or SectorQueryField.SectorNote;
+
     private IReadOnlyList<SectorQueryCondition> CaptureSectorQueryConditions()
     {
         if (_queryRows.Count == 0)
@@ -927,7 +1090,9 @@ public sealed class DataMiningWindow : Window
                 row.OwnerText.Text?.Trim() ?? string.Empty,
                 row.PortType.SelectedItem?.ToString() ?? "Any",
                 row.ShieldState.SelectedItem?.ToString() ?? "Any shield",
-                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString())))
+                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString()),
+                row.AnchorSector.Text?.Trim() ?? string.Empty,
+                row.Number.Text?.Trim() ?? string.Empty))
             .ToArray();
     }
 
@@ -941,7 +1106,8 @@ public sealed class DataMiningWindow : Window
                 row.OwnerText.Text?.Trim() ?? string.Empty,
                 row.PortType.SelectedItem?.ToString() ?? "Any",
                 row.ShieldState.SelectedItem?.ToString() ?? "Any shield",
-                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString())))
+                ParseBooleanLabel(row.BoolValue.SelectedItem?.ToString()),
+                row.AnchorSector.Text?.Trim() ?? string.Empty))
             .ToList();
 
     private void LoadSelectedSavedQuery()
@@ -1307,6 +1473,9 @@ public sealed class DataMiningWindow : Window
         OwnerContext ownerContext)
     {
         var results = new List<SectorResult>();
+        HashSet<int>? majorSpaceLaneSectors = conditions.Any(condition => condition.Field == SectorQueryField.MajorSpaceLane)
+            ? db.GetMajorSpaceLaneSectors()
+            : null;
         for (int sectorNumber = 1; sectorNumber <= totalSectors; sectorNumber++)
         {
             Core.SectorData? sector = db.GetSector(sectorNumber);
@@ -1317,7 +1486,7 @@ public sealed class DataMiningWindow : Window
                 continue;
             }
 
-            if (!MatchesSector(db, sectorNumber, sector, conditions, ownerContext))
+            if (!MatchesSector(db, totalSectors, majorSpaceLaneSectors, sectorNumber, sector, conditions, ownerContext))
                 continue;
 
             results.Add(new SectorResult(
@@ -1440,6 +1609,8 @@ public sealed class DataMiningWindow : Window
 
     private bool MatchesSector(
         Core.ModDatabase db,
+        int totalSectors,
+        HashSet<int>? majorSpaceLaneSectors,
         int sectorNumber,
         Core.SectorData sector,
         IReadOnlyList<SectorQueryCondition> conditions,
@@ -1447,7 +1618,7 @@ public sealed class DataMiningWindow : Window
     {
         foreach (SectorQueryCondition condition in conditions)
         {
-            if (!MatchesSectorCondition(db, sectorNumber, sector, condition, ownerContext))
+            if (!MatchesSectorCondition(db, totalSectors, majorSpaceLaneSectors, sectorNumber, sector, condition, ownerContext))
                 return false;
         }
 
@@ -1456,6 +1627,8 @@ public sealed class DataMiningWindow : Window
 
     private bool MatchesSectorCondition(
         Core.ModDatabase db,
+        int totalSectors,
+        HashSet<int>? majorSpaceLaneSectors,
         int sectorNumber,
         Core.SectorData sector,
         SectorQueryCondition condition,
@@ -1519,6 +1692,24 @@ public sealed class DataMiningWindow : Window
                 return MatchesBoolean(HasFriendlyData(db, sectorNumber, sector, ownerContext), condition.BooleanValue);
             case SectorQueryField.Backdoor:
                 return MatchesBoolean(HasBackdoor(sector), condition.BooleanValue);
+            case SectorQueryField.MajorSpaceLane:
+                return MatchesBoolean(majorSpaceLaneSectors?.Contains(sectorNumber) == true, condition.BooleanValue);
+            case SectorQueryField.DeadEnd:
+                return MatchesBoolean(IsInDeadEndBranch(db, totalSectors, sectorNumber), condition.BooleanValue);
+            case SectorQueryField.Distance:
+                int anchorSector = ResolveAnchorSector(db, condition.AnchorSector);
+                int? distance = GetDistance(db, anchorSector, sectorNumber);
+                return distance.HasValue && MatchesNumeric(distance.Value, Number(condition));
+            case SectorQueryField.TraderName:
+                return MatchesTraderText(sector, condition.TextValue);
+            case SectorQueryField.ShipName:
+                return MatchesShipText(sector, condition.TextValue);
+            case SectorQueryField.PortName:
+                return MatchesText(sector.SectorPort?.Name, new TextCriteria(true, condition.TextValue));
+            case SectorQueryField.Beacon:
+                return MatchesText(sector.Beacon, new TextCriteria(true, condition.TextValue));
+            case SectorQueryField.SectorNote:
+                return MatchesSectorNote(sector, new TextCriteria(true, condition.TextValue));
             default:
                 return true;
         }
@@ -1532,17 +1723,21 @@ public sealed class DataMiningWindow : Window
         OwnerContext ownerContext)
     {
         bool hasFriendlyFlag = IsSectorVarTrue(sector, friendlyFlag);
-        int effectiveQuantity = deployment.Quantity > 0
-            ? deployment.Quantity
-            : hasFriendlyFlag ? 1 : 0;
+        bool ownerFiltered = condition.OwnerMode != OwnerFilterMode.Any;
+        bool ownerMatches =
+            !ownerFiltered ||
+            OwnerMatchesMode(deployment.Owner, condition.OwnerMode, condition.OwnerText, ownerContext) ||
+            ((condition.OwnerMode == OwnerFilterMode.MyCorp || condition.OwnerMode == OwnerFilterMode.MineOrCorp) && hasFriendlyFlag);
+        int effectiveQuantity = ownerMatches
+            ? deployment.Quantity > 0
+                ? deployment.Quantity
+                : hasFriendlyFlag ? 1 : 0
+            : 0;
 
         if (!MatchesNumeric(effectiveQuantity, new NumericCriteria(true, condition.Operator, condition.Number)))
             return false;
 
-        if (condition.OwnerMode == OwnerFilterMode.MyCorp && hasFriendlyFlag)
-            return true;
-
-        return OwnerMatchesMode(deployment.Owner, condition.OwnerMode, condition.OwnerText, ownerContext);
+        return !ownerFiltered || ownerMatches;
     }
 
     private static int CountMatchingPlanets(
@@ -2057,10 +2252,121 @@ public sealed class DataMiningWindow : Window
             pair.Value.IndexOf(criteria.Text, StringComparison.OrdinalIgnoreCase) >= 0);
     }
 
+    private static bool MatchesTraderText(Core.SectorData sector, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return sector.Traders.Count > 0;
+
+        return sector.Traders.Any(trader =>
+            MatchesText(trader.Name, new TextCriteria(true, text)) ||
+            MatchesText(trader.ShipName, new TextCriteria(true, text)) ||
+            MatchesText(trader.ShipType, new TextCriteria(true, text)) ||
+            MatchesText(trader.DisplayLabel, new TextCriteria(true, text)) ||
+            MatchesText($"{trader.Name} {trader.ShipName} {trader.ShipType} {trader.DisplayLabel}", new TextCriteria(true, text)));
+    }
+
+    private static bool MatchesShipText(Core.SectorData sector, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return sector.Ships.Count > 0;
+
+        return sector.Ships.Any(ship =>
+            MatchesText(ship.Name, new TextCriteria(true, text)) ||
+            MatchesText(ship.Owner, new TextCriteria(true, text)) ||
+            MatchesText(ship.ShipType, new TextCriteria(true, text)) ||
+            MatchesText($"{ship.Name} {ship.Owner} {ship.ShipType}", new TextCriteria(true, text)));
+    }
+
     private static bool HasBackdoor(Core.SectorData sector)
     {
         HashSet<ushort> outbound = sector.Warp.Where(w => w > 0).ToHashSet();
         return sector.WarpsIn.Any(warpIn => warpIn > 0 && !outbound.Contains(warpIn));
+    }
+
+    private int ResolveAnchorSector(Core.ModDatabase db, string? anchor)
+    {
+        string value = (anchor ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Equals("current", StringComparison.OrdinalIgnoreCase))
+            return Math.Max(1, _getCurrentSector());
+
+        if (value.Equals("terra", StringComparison.OrdinalIgnoreCase))
+            return 1;
+
+        Core.DataHeader header = db.DBHeader;
+        if (value.Equals("dock", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("stardock", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("sd", StringComparison.OrdinalIgnoreCase))
+            return NormalizeHeaderSector(header.StarDock);
+
+        if (value.Equals("rylos", StringComparison.OrdinalIgnoreCase))
+            return NormalizeHeaderSector(header.Rylos);
+
+        if (value.Equals("alpha", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("alpha centauri", StringComparison.OrdinalIgnoreCase))
+            return NormalizeHeaderSector(header.AlphaCentauri);
+
+        return ParseInt(value, 0, 0, int.MaxValue);
+    }
+
+    private static int NormalizeHeaderSector(ushort sector)
+        => sector == 0 || sector == 65535 ? 0 : sector;
+
+    private static bool IsInDeadEndBranch(Core.ModDatabase db, int totalSectors, int sectorNumber)
+    {
+        IReadOnlyList<int> neighbors = GetLinkedNeighbors(db, totalSectors, sectorNumber);
+        if (neighbors.Count <= 1)
+            return true;
+
+        if (neighbors.Count != 2)
+            return false;
+
+        foreach (int neighbor in neighbors)
+        {
+            int previous = sectorNumber;
+            int current = neighbor;
+            var visited = new HashSet<int> { sectorNumber };
+
+            while (current > 0 && visited.Add(current))
+            {
+                IReadOnlyList<int> currentNeighbors = GetLinkedNeighbors(db, totalSectors, current);
+                if (currentNeighbors.Count <= 1)
+                    return true;
+                if (currentNeighbors.Count > 2)
+                    break;
+
+                int next = currentNeighbors.FirstOrDefault(candidate => candidate != previous);
+                if (next <= 0)
+                    return true;
+
+                previous = current;
+                current = next;
+            }
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyList<int> GetLinkedNeighbors(Core.ModDatabase db, int totalSectors, int sectorNumber)
+    {
+        Core.SectorData? sector = db.GetSector(sectorNumber);
+        if (sector == null)
+            return Array.Empty<int>();
+
+        var neighbors = new HashSet<int>();
+        foreach (ushort warp in sector.Warp)
+        {
+            if (warp > 0 && warp <= totalSectors)
+                neighbors.Add(warp);
+        }
+
+        foreach (ushort warpIn in sector.WarpsIn)
+        {
+            if (warpIn > 0 && warpIn <= totalSectors)
+                neighbors.Add(warpIn);
+        }
+
+        return neighbors.ToArray();
     }
 
     private static bool HasFriendlyData(Core.ModDatabase db, int sectorNumber, Core.SectorData sector, OwnerContext context)
@@ -2124,6 +2430,7 @@ public sealed class DataMiningWindow : Window
         return mode switch
         {
             OwnerFilterMode.Me => IsPersonalOwner(trimmed, context),
+            OwnerFilterMode.MineOrCorp => IsFriendlyOwner(trimmed, context),
             OwnerFilterMode.MyCorp => IsCorpOwner(trimmed, context),
             OwnerFilterMode.Custom => string.IsNullOrWhiteSpace(customOwner) ||
                                       trimmed.Contains(customOwner.Trim(), StringComparison.OrdinalIgnoreCase),
@@ -2352,6 +2659,14 @@ public sealed class DataMiningWindow : Window
             "No enemies" => SectorQueryField.NoHostile,
             "Friendly" => SectorQueryField.Friendly,
             "Backdoor" => SectorQueryField.Backdoor,
+            "Major Space Lane" => SectorQueryField.MajorSpaceLane,
+            "Dead end" => SectorQueryField.DeadEnd,
+            "Distance" => SectorQueryField.Distance,
+            "Trader name" => SectorQueryField.TraderName,
+            "Ship name" => SectorQueryField.ShipName,
+            "Port name" => SectorQueryField.PortName,
+            "Beacon" => SectorQueryField.Beacon,
+            "Sector note" => SectorQueryField.SectorNote,
             _ => SectorQueryField.Fighters
         };
 
@@ -2359,6 +2674,7 @@ public sealed class DataMiningWindow : Window
         => label switch
         {
             "Me" => OwnerFilterMode.Me,
+            "Mine or corp" => OwnerFilterMode.MineOrCorp,
             "My corp" => OwnerFilterMode.MyCorp,
             "Custom" => OwnerFilterMode.Custom,
             _ => OwnerFilterMode.Any

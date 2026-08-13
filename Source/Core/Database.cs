@@ -56,6 +56,9 @@ namespace TWXProxy.Core
     {
         public const int DatabaseVersion = 15;
         public static readonly string[] DayNames = { "Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat" };
+        public const string BustParameterName = "BUSTED";
+        public const string FakeBustParameterName = "FAKEBUST";
+        public const string BustDateParameterName = "BUSTDATE";
     }
 
     #endregion
@@ -256,7 +259,7 @@ namespace TWXProxy.Core
             _planets = new ConcurrentDictionary<int, Planet>();
             _header = new DataHeader();
             _headerLock = new ReaderWriterLockSlim();
-            
+
             GlobalModules.DebugLog($"[ModDatabase] Constructor called\n");
         }
 
@@ -336,10 +339,10 @@ namespace TWXProxy.Core
             try
             {
                 int previousSectors = _header.Sectors;
-                if (updates.Sectors > 0)       _header.Sectors     = updates.Sectors;
+                if (updates.Sectors > 0) _header.Sectors = updates.Sectors;
                 if (!string.IsNullOrEmpty(updates.Address)) _header.Address = updates.Address;
-                if (updates.ServerPort  != 0)  _header.ServerPort  = updates.ServerPort;
-                if (updates.ListenPort  != 0)  _header.ListenPort  = updates.ListenPort;
+                if (updates.ServerPort != 0) _header.ServerPort = updates.ServerPort;
+                if (updates.ListenPort != 0) _header.ListenPort = updates.ListenPort;
                 if (updates.CommandChar != '\0') _header.CommandChar = updates.CommandChar;
                 if (!string.IsNullOrEmpty(updates.Description)) _header.Description = updates.Description;
                 if (_header.Sectors > previousSectors)
@@ -524,7 +527,7 @@ namespace TWXProxy.Core
                         {
                             WriteSector(writer, sector);
                         }
-    
+
                         // Write planets (top-level, keyed by ID — v10+)
                         writer.Write(_planets.Count);
                         foreach (var planet in _planets.Values)
@@ -606,9 +609,9 @@ namespace TWXProxy.Core
                         int planetCount = reader.ReadInt32();
                         for (int i = 0; i < planetCount; i++)
                         {
-                            int    id         = reader.ReadInt32();
-                            string name       = reader.ReadString();
-                            int    lastSector = reader.ReadInt32();
+                            int id = reader.ReadInt32();
+                            string name = reader.ReadString();
+                            int lastSector = reader.ReadInt32();
                             var planet = new Planet { Id = id, Name = name, LastSector = lastSector };
                             if (_header.Version >= 12 && reader.BaseStream.Position < reader.BaseStream.Length)
                             {
@@ -674,6 +677,28 @@ namespace TWXProxy.Core
         /// </summary>
         public void SaveSector(SectorData sector)
         {
+            SaveSectorCore(sector, updateWarpInCache: true);
+            Interlocked.Increment(ref _changeStamp);
+        }
+
+        public void SaveSectorsBulk(IEnumerable<SectorData> sectors)
+        {
+            bool savedAny = false;
+            foreach (SectorData sector in sectors)
+            {
+                SaveSectorCore(sector, updateWarpInCache: false);
+                savedAny = true;
+            }
+
+            if (!savedAny)
+                return;
+
+            RebuildWarpInCache();
+            Interlocked.Increment(ref _changeStamp);
+        }
+
+        private void SaveSectorCore(SectorData sector, bool updateWarpInCache)
+        {
             // When _header.Sectors == 0 the universe size is not yet known (live capture
             // before a .twx file is loaded) — allow any positive sector number.
             if (sector.Number < 1 || (_header.Sectors > 0 && sector.Number > _header.Sectors))
@@ -732,8 +757,32 @@ namespace TWXProxy.Core
             }
 
             // Update warp-in cache for connected sectors
-            UpdateWarpInCache(sector);
-            Interlocked.Increment(ref _changeStamp);
+            if (updateWarpInCache)
+                UpdateWarpInCache(sector);
+        }
+
+        private void RebuildWarpInCache()
+        {
+            foreach (var sector in _sectors.Values)
+                sector.WarpsIn.Clear();
+
+            foreach (var sector in _sectors.Values)
+            {
+                ushort origin = (ushort)sector.Number;
+                foreach (ushort warp in sector.Warp.Where(w => w > 0))
+                {
+                    if (!_sectors.TryGetValue(warp, out var targetSector))
+                    {
+                        targetSector = new SectorData { Number = warp };
+                        _sectors[warp] = targetSector;
+                        if (warp > _maxSectorSeen)
+                            _maxSectorSeen = warp;
+                    }
+
+                    if (!targetSector.WarpsIn.Contains(origin))
+                        targetSector.WarpsIn.Add(origin);
+                }
+            }
         }
 
         private bool RepairLandmarkHeadersFromSectorData()
@@ -775,9 +824,7 @@ namespace TWXProxy.Core
 
             if (changed)
             {
-                GlobalModules.DebugLog(
-                    $"[ModDatabase] Repaired landmark header sectors SD {_header.StarDock}->{stardock}, " +
-                    $"Alpha {_header.AlphaCentauri}->{alpha}, Rylos {_header.Rylos}->{rylos}\n");
+                GlobalModules.DebugLog($"[ModDatabase] Repaired landmark header sectors SD {_header.StarDock}->{stardock}, Alpha {_header.AlphaCentauri}->{alpha}, Rylos {_header.Rylos}->{rylos}\n");
                 if (GlobalModules.DatabaseCorrectionLoggingEnabled)
                 {
                     GlobalModules.DatabaseCorrectionLog(
@@ -1660,6 +1707,90 @@ namespace TWXProxy.Core
             {
                 sector.Variables[varName] = value;
             }
+
+            if (string.Equals(varName, DatabaseConstants.BustParameterName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (IsTruthySectorParameter(value))
+                    sector.Variables[DatabaseConstants.BustDateParameterName] = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                else
+                    sector.Variables.Remove(DatabaseConstants.BustDateParameterName);
+            }
+
+            Interlocked.Increment(ref _changeStamp);
+        }
+
+        public int ClearBustsBefore(DateTime localDay)
+        {
+            DateTime cutoff = localDay.Date;
+            int cleared = 0;
+
+            foreach (SectorData sector in _sectors.Values)
+            {
+                if (!sector.Variables.TryGetValue(DatabaseConstants.BustParameterName, out string? bustedValue) ||
+                    !IsTruthySectorParameter(bustedValue))
+                {
+                    continue;
+                }
+
+                if (!sector.Variables.TryGetValue(DatabaseConstants.BustDateParameterName, out string? bustDateValue) ||
+                    !TryParseBustDate(bustDateValue, out DateTime bustDate) ||
+                    bustDate.Date >= cutoff)
+                {
+                    continue;
+                }
+
+                sector.Variables.Remove(DatabaseConstants.BustParameterName);
+                sector.Variables.Remove(DatabaseConstants.FakeBustParameterName);
+                sector.Variables.Remove(DatabaseConstants.BustDateParameterName);
+                cleared++;
+            }
+
+            if (cleared > 0)
+                Interlocked.Increment(ref _changeStamp);
+
+            return cleared;
+        }
+
+        private static bool TryParseBustDate(string value, out DateTime date)
+        {
+            if (DateTime.TryParseExact(
+                    value,
+                    "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out date))
+            {
+                return true;
+            }
+
+            return DateTime.TryParse(
+                value,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeLocal,
+                out date);
+        }
+
+        private static bool IsTruthySectorParameter(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string trimmed = value.Trim();
+            if (string.Equals(trimmed, "true", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(trimmed, "yes", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(trimmed, "no", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int number)
+                ? number != 0
+                : !string.Equals(trimmed, "0", StringComparison.Ordinal);
         }
 
         /// <summary>
@@ -1688,7 +1819,7 @@ namespace TWXProxy.Core
         public List<int> CalculateShortestPath(int fromSector, int toSector, HashSet<int>? avoidSectors = null)
         {
             // Validate inputs
-            if (fromSector < 1 || fromSector > _header.Sectors || 
+            if (fromSector < 1 || fromSector > _header.Sectors ||
                 toSector < 1 || toSector > _header.Sectors)
             {
                 return new List<int>();
@@ -1711,7 +1842,7 @@ namespace TWXProxy.Core
             var distances = new Dictionary<int, int>();
             var previous = new Dictionary<int, int>();
             var visited = new HashSet<int>();
-            
+
             // Priority queue: (distance, sectorNumber)
             var priorityQueue = new SortedSet<(int distance, int sector)>();
 
@@ -2285,7 +2416,7 @@ namespace TWXProxy.Core
         /// <returns>Best warp sector number, or 0 if no valid warp found</returns>
         public int GetNearestWarp(int fromSector, int toSector, HashSet<int>? avoidSectors = null)
         {
-            if (fromSector < 1 || fromSector > _header.Sectors || 
+            if (fromSector < 1 || fromSector > _header.Sectors ||
                 toSector < 1 || toSector > _header.Sectors)
             {
                 return 0;
@@ -2435,7 +2566,7 @@ namespace TWXProxy.Core
         private void WriteSector(BinaryWriter writer, SectorData sector)
         {
             writer.Write(sector.Number);
-            
+
             // Warps
             for (int i = 0; i < 6; i++)
                 writer.Write(sector.Warp[i]);
@@ -2551,14 +2682,14 @@ namespace TWXProxy.Core
             writer.Write(port.Dead);
             writer.Write(port.BuildTime);
             writer.Write(port.ClassIndex);
-            
+
             foreach (ProductType pt in Enum.GetValues<ProductType>())
             {
                 writer.Write(port.BuyProduct[pt]);
                 writer.Write(port.ProductPercent[pt]);
                 writer.Write(port.ProductAmount[pt]);
             }
-            
+
             writer.Write(port.Update.ToBinary());
         }
 
@@ -2904,7 +3035,7 @@ namespace TWXProxy.Core
             }
 
             byte[] bytes = reader.ReadBytes(length);
-            
+
             // Skip remaining allocated space
             int remaining = maxLength - length;
             if (remaining > 0)
@@ -3026,7 +3157,7 @@ namespace TWXProxy.Core
             if (_networkManager != null)
             {
                 await _networkManager.StopGameAsync(gameName);
-                
+
                 // If this was our game instance, clear the reference
                 if (_gameInstance != null && _gameInstance.GameName == gameName)
                 {

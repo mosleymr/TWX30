@@ -139,6 +139,8 @@ namespace TWXProxy.Core
         private Timer _tmrTime;
         private int _timerEventCount;
         private readonly object _scriptEventLock = new();
+        private readonly Queue<Action> _pendingScriptEvents = new();
+        private bool _processingScriptEvent;
         private string _lastScript = string.Empty;
         private string _activeBot = string.Empty;
         private string _activeBotScript = string.Empty;
@@ -382,7 +384,8 @@ namespace TWXProxy.Core
             // Normalise separators and resolve case-insensitively so scripts written
             // on Windows (with backslashes and arbitrary casing) work on macOS/Linux.
             filename = ResolveFilePath(NormalizeScriptReference(filename, _programDir, _scriptDirectory), _programDir);
-            _scriptDirectory = ResolveScriptRoot(filename, _scriptDirectory);
+            if (string.IsNullOrWhiteSpace(_scriptDirectory) || !Directory.Exists(_scriptDirectory))
+                _scriptDirectory = ResolveScriptRoot(filename, _scriptDirectory);
 
             // MB - Stop script if it is already running
             int i = 0;
@@ -411,7 +414,7 @@ namespace TWXProxy.Core
 
             string extension = Path.GetExtension(filename).ToUpperInvariant();
             GlobalModules.DebugLog($"[ModInterpreter.Load] Extension: '{extension}'\n");
-            
+
             if (extension == ".CTS" || extension == ".TWX")
             {
                 if (!silent)
@@ -464,7 +467,7 @@ namespace TWXProxy.Core
             }
 
             GlobalModules.DebugLog($"[ModInterpreter.Load] Error flag: {error}\n");
-            
+
             if (!error)
             {
                 if (!string.IsNullOrWhiteSpace(entryLabel))
@@ -496,25 +499,25 @@ namespace TWXProxy.Core
                     var server = GlobalModules.TWXServer;
                     GlobalModules.DebugLog($"[DEBUG] About to execute script. TWXServer is {(server == null ? "NULL" : "set")}\n");
                     Console.WriteLine($"[ModInterpreter] Executing script: {filename}, TWXServer={server != null}");
-                    
+
                     // Keep executing the script until it actually pauses or completes
                     // This handles cases where the script returns from Execute() but should continue
                     bool completed = false;
                     int iterations = 0;
                     const int maxIterations = 1000; // Safety limit to prevent infinite loops
-                    
+
                     Console.WriteLine($"[ModInterpreter] Starting execution loop, script.Paused={script.Paused}");
                     GlobalModules.DebugLog($"[DEBUG] Starting execution loop, script.Paused={script.Paused}\n");
-                    
+
                     while (!completed && iterations < maxIterations)
                     {
                         Console.WriteLine($"[ModInterpreter] Loop iteration {iterations + 1}, calling Execute()...");
                         completed = script.Execute();
                         iterations++;
-                        
+
                         Console.WriteLine($"[ModInterpreter] Execute() returned: {completed}, script.Paused={script.Paused}");
                         GlobalModules.DebugLog($"[DEBUG] Iteration {iterations}: completed={completed}, paused={script.Paused}\n");
-                        
+
                         // If script is paused (waiting for input, trigger, etc.), stop looping
                         if (script.Paused)
                         {
@@ -522,7 +525,7 @@ namespace TWXProxy.Core
                             GlobalModules.DebugLog($"[DEBUG] Script PAUSED after {iterations} iterations\n");
                             break;
                         }
-                        
+
                         // If Execute() returned true (completed), we're done
                         if (completed)
                         {
@@ -530,7 +533,7 @@ namespace TWXProxy.Core
                             GlobalModules.DebugLog($"[DEBUG] Script COMPLETED after {iterations} iterations\n");
                             break;
                         }
-                        
+
                         // Otherwise, the script has more work to do - continue looping
                         Console.WriteLine($"[ModInterpreter] Script iteration {iterations} - continuing...");
                         GlobalModules.DebugLog($"[DEBUG] Continuing to iteration {iterations + 1}...\n");
@@ -538,13 +541,13 @@ namespace TWXProxy.Core
 
                     if (completed && !script.Paused && _scriptList.Contains(script))
                         StopByHandle(script);
-                    
+
                     if (iterations >= maxIterations)
                     {
                         Console.WriteLine($"[ModInterpreter] WARNING: Script hit max iterations ({maxIterations}) - may be in infinite loop");
                         ScriptDiagnosticOutput.Write(server, $"\r\n[WARNING] Script hit execution limit - check for infinite loops\r\n");
                     }
-                    
+
                     GlobalModules.DebugLog($"[DEBUG] Script execution {(completed ? "completed" : "paused")}.\n");
                 }
                 catch (Exception ex)
@@ -566,20 +569,26 @@ namespace TWXProxy.Core
 
             string fileDirectory = Path.GetDirectoryName(Path.GetFullPath(filename)) ?? Directory.GetCurrentDirectory();
             string? candidate = fileDirectory;
+            string? includeRoot = null;
 
             while (!string.IsNullOrEmpty(candidate))
             {
-                if (Directory.Exists(Path.Combine(candidate, "include")) ||
-                    Path.GetFileName(candidate).Equals("scripts", StringComparison.OrdinalIgnoreCase))
+                if (Path.GetFileName(candidate).Equals("scripts", StringComparison.OrdinalIgnoreCase))
                 {
                     return candidate;
                 }
+
+                if (includeRoot is null && Directory.Exists(Path.Combine(candidate, "include")))
+                    includeRoot = candidate;
 
                 string? parent = Path.GetDirectoryName(candidate);
                 if (string.IsNullOrEmpty(parent) || string.Equals(parent, candidate, StringComparison.Ordinal))
                     break;
                 candidate = parent;
             }
+
+            if (includeRoot is not null)
+                return includeRoot;
 
             if (!string.IsNullOrWhiteSpace(currentScriptDirectory) && Directory.Exists(currentScriptDirectory))
                 return Path.GetFullPath(currentScriptDirectory);
@@ -1199,7 +1208,20 @@ namespace TWXProxy.Core
         {
             lock (_scriptEventLock)
             {
-                action();
+                _pendingScriptEvents.Enqueue(action);
+                if (_processingScriptEvent)
+                    return;
+
+                _processingScriptEvent = true;
+                try
+                {
+                    while (_pendingScriptEvents.Count > 0)
+                        _pendingScriptEvents.Dequeue()();
+                }
+                finally
+                {
+                    _processingScriptEvent = false;
+                }
             }
         }
 
@@ -1279,7 +1301,9 @@ namespace TWXProxy.Core
             {
                 Script script = _scriptList[i];
                 script.SetCurrentTextContext(text, currentAnsiLine);
-                bool completed = script.TextEvent(text, forceTrigger);
+                bool completed = script.TextEvent(
+                    text,
+                    ShouldForcePromptProbe(script, text, forceTrigger));
                 if (completed)
                     StopByHandle(script);
                 else if (IsScriptStillAtIndex(i, script))
@@ -1304,7 +1328,9 @@ namespace TWXProxy.Core
             {
                 Script script = _scriptList[i];
                 script.SetCurrentTextContext(text, currentAnsiLine);
-                bool completed = script.TextLineEvent(text, forceTrigger);
+                bool completed = script.TextLineEvent(
+                    text,
+                    ShouldForcePromptProbe(script, text, forceTrigger));
                 if (completed)
                     StopByHandle(script);
                 else if (IsScriptStillAtIndex(i, script))
@@ -1328,7 +1354,9 @@ namespace TWXProxy.Core
             {
                 Script script = _scriptList[i];
                 script.SetCurrentTextContext(text, currentAnsiLine);
-                bool completed = script.AutoTextEvent(text, forceTrigger);
+                bool completed = script.AutoTextEvent(
+                    text,
+                    ShouldForcePromptProbe(script, text, forceTrigger));
                 if (completed)
                     StopByHandle(script);
                 else if (IsScriptStillAtIndex(i, script))
@@ -1351,6 +1379,35 @@ namespace TWXProxy.Core
 
                 ActivateTriggersCore();
             });
+        }
+
+        public void DispatchPartialLine(string text, string ansiText, bool forceTrigger)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            RunSerializedScriptEvent(() =>
+            {
+                // Match Pascal TWX ProcessInBound for prompts/partial lines:
+                // AutoTextEvent(CurrentLine), then ProcessPrompt(CurrentLine), which
+                // calls TextEvent(CurrentLine). TextLineEvent and ActivateTriggers are
+                // reserved for CR-terminated lines handled by DispatchCompleteLine.
+                //
+                // The TWX27 LIB~SYNC primitive uses #145/#8 as an out-of-band probe.
+                // It must bypass same-line trigger suppression or a handler that sends
+                // the probe from a partial prompt can never observe the immediate echo.
+                ScriptRef.SetCurrentAnsiLine(ansiText);
+                ScriptRef.SetCurrentLine(text);
+                AutoTextEventCore(text, forceTrigger);
+
+                ScriptRef.SetCurrentAnsiLine(ansiText);
+                ScriptRef.SetCurrentLine(text);
+                TextEventCore(text, forceTrigger);
+            });
+        }
+
+        private static bool ShouldForcePromptProbe(Script script, string text, bool forceTrigger)
+        {
+            return forceTrigger ||
+                Script.CountPromptProbes(text) > script.PromptProbesHandledOnCurrentLine;
         }
 
         public bool EventActive(string eventName)
@@ -1379,20 +1436,35 @@ namespace TWXProxy.Core
             foreach (var script in _scriptList)
             {
                 script.TriggersActive = true;
+                script.ResetPromptProbeForNextLine();
             }
 
+            CleanupTerminatedScripts();
+        }
+
+        private void CleanupTerminatedScripts()
+        {
             // Clean up scripts that have fully terminated: no more code to run, not paused,
             // and no pending triggers or waitFor.  This handles scripts that exited via
             // "halt" (CmdAction.Stop sets _codePos = code.Length → HasCode = false) as well
             // as scripts that ran to the natural end of their bytecode.
-            for (int i = _scriptList.Count - 1; i >= 0; i--)
+            int i = _scriptList.Count - 1;
+            while (i >= 0)
             {
+                if (i >= _scriptList.Count)
+                {
+                    i = _scriptList.Count - 1;
+                    continue;
+                }
+
                 var s = _scriptList[i];
                 if (!s.HasCode && !s.Paused && !s.HasActiveTriggers)
                 {
                     GlobalModules.DebugLog($"[ActivateTriggers] Cleaning up terminated script '{s.ScriptName}' (HasCode=false, no triggers)\n");
-                    Stop(i);
+                    StopByHandle(s);
                 }
+
+                i = Math.Min(i - 1, _scriptList.Count - 1);
             }
         }
 
@@ -1718,6 +1790,7 @@ namespace TWXProxy.Core
         private bool _isExecuting;
         private int _executionWatchdogActivityCounter;
         private bool _lastLineHandled;
+        private int _promptProbesHandledOnCurrentLine;
         private int _lastCodePos = -1;
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
@@ -1799,18 +1872,17 @@ namespace TWXProxy.Core
 
         public void Dispose()
         {
-            string triggerSummary;
-            lock (_triggerLock)
+            if (GlobalModules.DebugMode)
             {
-                triggerSummary = string.Join(", ",
-                    Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>()
-                        .Select(triggerType => $"{triggerType}={_triggers[triggerType].Count}"));
+                string triggerSummary;
+                lock (_triggerLock)
+                {
+                    triggerSummary = string.Join(", ",
+                        Enum.GetValues(typeof(TriggerType)).Cast<TriggerType>()
+                            .Select(triggerType => $"{triggerType}={_triggers[triggerType].Count}"));
+                }
+                GlobalModules.DebugLog($"[Script.Dispose] script='{ScriptName}' persistenceId='{PersistenceId}' paused={_paused} pauseReason={_pausedReason} waitForActive={_waitForActive} waitText='{_waitText}' waitingInput={_waitingForInput} subDepth={_subStack.Count} triggers=[{triggerSummary}]\n");
             }
-            GlobalModules.DebugLog(
-                $"[Script.Dispose] script='{ScriptName}' persistenceId='{PersistenceId}' " +
-                $"paused={_paused} pauseReason={_pausedReason} waitForActive={_waitForActive} " +
-                $"waitText='{_waitText}' waitingInput={_waitingForInput} subDepth={_subStack.Count} " +
-                $"triggers=[{triggerSummary}]\n");
 
             if (GlobalModules.TWXLog is IModLog log)
                 log.ClearScriptLoggingOverride(this);
@@ -2025,7 +2097,7 @@ namespace TWXProxy.Core
                         ScriptRef.SetCurrentLine(currentLine);
                         ScriptRef.SetCurrentAnsiLine(currentAnsiLine);
                         GlobalModules.TriggerDebugLog($"[CheckTriggers] Calling GotoLabel('{labelName}')\n");
-                        
+
                         GotoLabel(labelName);
                         GlobalModules.TriggerDebugLog($"[CheckTriggers] GotoLabel succeeded, result={result}\n");
                     }
@@ -2061,7 +2133,7 @@ namespace TWXProxy.Core
                     // original Pascal TWX where all triggers are removed before firing.
                     // This path is only relevant for any future LifeCycle = 0 triggers.
                     bool outerWaitActive = _waitForActive;   // true when mid-waitOn
-                    int  savedCodePos    = _codePos;
+                    int savedCodePos = _codePos;
                     string savedWaitText = _waitText;
 
                     if (Execute())
@@ -2080,11 +2152,11 @@ namespace TWXProxy.Core
                             // was mid-waitOn.  Restore the pre-trigger IP and waitFor state
                             // so the outer waitOn resumes from the correct bytecode spot.
                             GlobalModules.TriggerDebugLog($"[CheckTriggers] Persistent trigger fired mid-waitOn; restoring outer IP and waitFor state\n");
-                            _codePos      = savedCodePos;
+                            _codePos = savedCodePos;
                             _waitForActive = outerWaitActive;  // true
-                            _waitText      = savedWaitText;
-                            _paused        = true;
-                            _pausedReason  = savedPauseReason;
+                            _waitText = savedWaitText;
+                            _paused = true;
+                            _pausedReason = savedPauseReason;
                         }
                         else if (handlerPaused)
                         {
@@ -2182,7 +2254,9 @@ namespace TWXProxy.Core
             // (waitFor/waitOn is handled exclusively in TextEvent.)
             // Check through lineTriggers for matches with Text
             bool handled = false;
-            return CheckTriggers(_triggers[TriggerType.TextLine], text, false, forceTrigger, ref handled);
+            bool completed = CheckTriggers(_triggers[TriggerType.TextLine], text, false, forceTrigger, ref handled);
+            RememberPromptProbeMatch(text, handled);
+            return completed;
         }
 
         public bool AutoTextEvent(string text, bool forceTrigger)
@@ -2190,7 +2264,9 @@ namespace TWXProxy.Core
             _lastLineHandled = false;
             // Check through autoTriggers for matches with Text
             bool handled = false;
-            return CheckTriggers(_triggers[TriggerType.TextAuto], text, false, forceTrigger, ref handled);
+            bool completed = CheckTriggers(_triggers[TriggerType.TextAuto], text, false, forceTrigger, ref handled);
+            RememberPromptProbeMatch(text, handled);
+            return completed;
         }
 
         public bool TextEvent(string text, bool forceTrigger)
@@ -2220,7 +2296,28 @@ namespace TWXProxy.Core
 
             // Check through textTriggers for matches with Text
             bool handled = false;
-            return CheckTriggers(_triggers[TriggerType.Text], text, false, forceTrigger, ref handled);
+            bool completed = CheckTriggers(_triggers[TriggerType.Text], text, false, forceTrigger, ref handled);
+            RememberPromptProbeMatch(text, handled);
+            return completed;
+        }
+
+        private void RememberPromptProbeMatch(string text, bool handled)
+        {
+            if (handled)
+                _promptProbesHandledOnCurrentLine = CountPromptProbes(text);
+        }
+
+        internal static int CountPromptProbes(string text)
+        {
+            int count = 0;
+            int searchStart = 0;
+            while ((searchStart = text.IndexOf("\u0091\b", searchStart, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                searchStart += 2;
+            }
+
+            return count;
         }
 
         public bool ProgramEvent(string eventName, string matchText, bool exclusive)
@@ -2309,6 +2406,14 @@ namespace TWXProxy.Core
                     {
                         result = true; // script was self-terminated
                     }
+                    else if (_paused)
+                    {
+                        // Program events are not part of a text-line dispatch, so there is
+                        // no later ActivateTriggers call to arm triggers installed by the
+                        // event handler before its PAUSE. Child-script completion handlers
+                        // commonly send a command and wait on the very next server line.
+                        TriggersActive = true;
+                    }
                     else if (wasPaused && !_paused)
                     {
                         // Handler ran to completion without re-pausing; restore original pause
@@ -2378,7 +2483,8 @@ namespace TWXProxy.Core
             {
                 // Unpause the script so delay trigger can resume execution
                 _paused = false;
-                Execute();
+                if (Execute())
+                    _owner.StopByHandle(this);
             }
         }
 
@@ -2458,7 +2564,8 @@ namespace TWXProxy.Core
                 // In the original Pascal TWX, re-registering a waitOn is valid and simply
                 // replaces the old entry (e.g. when a persistent handler re-issues the same waitOn).
                 KillTrigger(name);
-                _triggers[TriggerType.Text].Add(CreateTrigger(name, labelName, value));
+                var trigger = CreateTrigger(name, labelName, value);
+                _triggers[TriggerType.Text].Add(trigger);
             }
         }
 
@@ -2668,7 +2775,7 @@ namespace TWXProxy.Core
                 '-' => baseVal - plan.RightValue,
                 '*' => baseVal * plan.RightValue,
                 '/' when plan.RightValue != 0 => baseVal / plan.RightValue,
-                _   => baseVal
+                _ => baseVal
             };
 
             GlobalModules.DebugLog(
@@ -2686,17 +2793,17 @@ namespace TWXProxy.Core
             // Read index count
             if (codePos >= code.Length)
                 return;
-            
+
             byte indexCount = code[codePos++];
-            
+
             // For each index, read: type byte + data (format matches TWX decompiler)
             for (int i = 0; i < indexCount; i++)
             {
                 if (codePos >= code.Length)
                     return;
-                
+
                 byte indexType = code[codePos++];
-                
+
                 if (indexType == ScriptConstants.PARAM_CONST)
                 {
                     // 32-bit parameter ID
@@ -2725,18 +2832,18 @@ namespace TWXProxy.Core
         private CmdParam EvaluateArrayIndexes(byte[] code, ref int codePos, CmdParam baseParam)
         {
             var server = GlobalModules.TWXServer;
-            
+
             // Read index count
             if (codePos >= code.Length)
                 return baseParam;
-            
+
             byte indexCount = code[codePos++];
-            
+
             if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[EvaluateArrayIndexes] indexCount={indexCount}, baseParam type={baseParam.GetType().Name}\n");
-            
+
             if (indexCount == 0)
                 return baseParam;  // Not an array reference
-            
+
             // Only VarParam supports arrays
             if (!(baseParam is VarParam varParam))
             {
@@ -2745,9 +2852,9 @@ namespace TWXProxy.Core
                 {
                     if (codePos >= code.Length)
                         break;
-                    
+
                     byte indexType = code[codePos++];
-                    
+
                     if (indexType == ScriptConstants.PARAM_CONST)
                         codePos += 4;
                     else if (indexType == ScriptConstants.PARAM_VAR || indexType == ScriptConstants.PARAM_PROGVAR)
@@ -2765,27 +2872,27 @@ namespace TWXProxy.Core
                 }
                 return baseParam;
             }
-            
+
             // Evaluate each index dimension
             var indexes = new List<string>();
-            
+
             for (int i = 0; i < indexCount; i++)
             {
                 if (codePos >= code.Length)
                     return baseParam;
-                
+
                 byte indexType = code[codePos++];
-                
+
                 string indexValue = "";
-                
+
                 if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[EvalIndex {i}] indexType={indexType}\n");
-                
+
                 if (indexType == ScriptConstants.PARAM_CONST)
                 {
                     // 32-bit parameter ID
                     int paramID = BitConverter.ToInt32(code, codePos);
                     codePos += 4;
-                    
+
                     if (paramID >= 0 && paramID < (_cmp?.ParamList.Count ?? 0))
                     {
                         indexValue = _cmp!.ParamList[paramID].Value;
@@ -2799,7 +2906,7 @@ namespace TWXProxy.Core
                     // 32-bit variable ID
                     int paramID = BitConverter.ToInt32(code, codePos);
                     codePos += 4;
-                    
+
                     if (paramID >= 0 && paramID < (_cmp?.ParamList.Count ?? 0))
                     {
                         var indexParam = _cmp!.ParamList[paramID];
@@ -2835,7 +2942,7 @@ namespace TWXProxy.Core
                     // 32-bit parameter ID
                     int paramID = BitConverter.ToInt32(code, codePos);
                     codePos += 4;
-                    
+
                     if (paramID >= 0 && paramID < (_cmp?.ParamList.Count ?? 0))
                     {
                         var nameParam = _cmp!.ParamList[paramID];
@@ -2858,10 +2965,10 @@ namespace TWXProxy.Core
                     // 16-bit sysconst ID
                     ushort constID = BitConverter.ToUInt16(code, codePos);
                     codePos += 2;
-                    
+
                     // Evaluate sysconst (skip nested indexes)
                     SkipArrayIndexes(code, ref codePos);
-                    
+
                     if (_owner.ScriptRef != null)
                     {
                         var sysConst = ResolveRuntimeSysConst(constID);
@@ -2877,15 +2984,15 @@ namespace TWXProxy.Core
                     byte charCode = code[codePos++];
                     indexValue = ((char)charCode).ToString();
                 }
-                
+
                 indexes.Add(indexValue);
             }
-            
+
             // Get the indexed array element
             try
             {
                 if (GlobalModules.VerboseDebugMode) GlobalModules.DebugLog($"[GetIndexVar] Getting element with indexes: [{string.Join(", ", indexes)}]\n");
-                
+
                 var result = varParam.GetIndexVar(indexes.ToArray());
 
                 string traceName = varParam.Name ?? string.Empty;
@@ -2894,16 +3001,14 @@ namespace TWXProxy.Core
                     traceName.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (traceSectorLookup && indexes.Count > 0)
                 {
-                    GlobalModules.DebugLog(
-                        $"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexes)}] " +
-                        $"resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
+                    GlobalModules.DebugLog($"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexes)}] resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
                 }
-                
+
                 if (GlobalModules.VerboseDebugMode && result is VarParam resultVp)
                 {
                     GlobalModules.DebugLog($"[GetIndexVar] Result: '{resultVp.Name}' = '{resultVp.Value}'\n");
                 }
-                
+
                 return result;
             }
             catch (Exception ex)
@@ -3107,9 +3212,7 @@ namespace TWXProxy.Core
             if (GlobalModules.EnableVmMetrics)
             {
                 double elapsedMs = startTimestamp == 0 ? 0 : LastExecutionTicks * 1000.0 / Stopwatch.Frequency;
-                GlobalModules.VmMetricLog(
-                    $"[VM EXEC] mode={(prepared ? "prepared" : "raw")} script='{ScriptName}' completed={(completed ? 1 : 0)} " +
-                    $"commands={commandsExecuted} resolvedParams={resolvedParamCount} elapsedMs={elapsedMs:F3} codePos={_codePos}\n");
+                GlobalModules.VmMetricLog($"[VM EXEC] mode={(prepared ? "prepared" : "raw")} script='{ScriptName}' completed={(completed ? 1 : 0)} commands={commandsExecuted} resolvedParams={resolvedParamCount} elapsedMs={elapsedMs:F3} codePos={_codePos}\n");
             }
         }
 
@@ -3201,9 +3304,7 @@ namespace TWXProxy.Core
             {
                 if (GlobalModules.VerboseDebugMode)
                 {
-                    GlobalModules.DebugLog(
-                        $"[SYSCONST] Missing runtime sysconst id={sysConstId} " +
-                        $"knownCount={scriptRef.SysConstCount} script='{ScriptName}'\n");
+                    GlobalModules.DebugLog($"[SYSCONST] Missing runtime sysconst id={sysConstId} knownCount={scriptRef.SysConstCount} script='{ScriptName}'\n");
                 }
 
                 return null;
@@ -3448,9 +3549,7 @@ namespace TWXProxy.Core
                     traceName.IndexOf("THISSECTOR", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (GlobalModules.VerboseDebugMode && traceSectorLookup)
                 {
-                    GlobalModules.DebugLog(
-                        $"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexValues)}] " +
-                        $"resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
+                    GlobalModules.DebugLog($"[ARRAY TRACE] base='{traceName}' indexes=[{string.Join(", ", indexValues)}] resultName='{(result as VarParam)?.Name ?? result.Value}' resultValue='{result.Value}'\n");
                 }
 
                 return result;
@@ -4096,7 +4195,7 @@ namespace TWXProxy.Core
                 _lastLoopCheck = DateTime.MinValue;
                 _resetLoopDetectionOnNextExecute = false;
             }
-            
+
             // Loop detection: check if we're repeatedly hitting the same code position
             if (_codePos == _lastCodePos && (DateTime.Now - _lastLoopCheck).TotalMilliseconds < 100)
             {
@@ -4142,7 +4241,7 @@ namespace TWXProxy.Core
             }
 
             byte[] code = cmp.Code;
-            
+
             if (code.Length == 0 || _codePos >= code.Length)
             {
                 return Finish(true); // No code or reached end
@@ -4158,7 +4257,7 @@ namespace TWXProxy.Core
                 // All supported compiled-script versions (2–7) currently use the same bytecode format:
                 // ScriptID:Byte|LineNumber:Word|CmdID:Word|Params|0:Byte
                 bool isOldFormat = true;
-                
+
                 // Execute bytecode until we hit a pause, stop, or end
                 while (_codePos < code.Length)
                 {
@@ -4167,16 +4266,16 @@ namespace TWXProxy.Core
                         _codePos = code.Length;
                         return Finish(true);
                     }
-                    
+
                     ushort cmdID;
                     ushort lineNumber = 0;
-                    
+
                     if (isOldFormat)
                     {
                         // Old format: ScriptID + LineNumber + CmdID
                         if (_codePos + 5 > code.Length)
                             return Finish(true); // End of script
-                        
+
                         byte scriptID = code[_codePos++];
                         _execScriptID = scriptID;
                         lineNumber = BitConverter.ToUInt16(code, _codePos);
@@ -4184,7 +4283,7 @@ namespace TWXProxy.Core
                         cmdID = BitConverter.ToUInt16(code, _codePos);
                         _codePos += 2;
                         SetCurrentSourceLocation(scriptID, lineNumber, _codePos - 5);
-                        
+
                         // [Execute] per-instruction logging removed — too high-frequency.
                     }
                     else
@@ -4199,7 +4298,7 @@ namespace TWXProxy.Core
 
                         cmdID = code[_codePos++];
                     }
-                    
+
                     // Check for label (cmdID = 255)
                     if (cmdID == 255)
                     {
@@ -4219,27 +4318,27 @@ namespace TWXProxy.Core
                     while (_codePos < code.Length)
                     {
                         byte paramType = code[_codePos];
-                        
+
                         // For old format, params are terminated by 0 byte, not PARAM_CMD
                         if (isOldFormat && paramType == 0)
                         {
                             _codePos++; // Skip terminator
                             break;
                         }
-                        
+
                         if (paramType == ScriptConstants.PARAM_CMD)
                             break; // Next command
 
                         _codePos++;
                         paramCount++;
-                        
+
                         // All versions use ParamList references; only command header format differs
                         if (paramType == ScriptConstants.PARAM_CONST || paramType == ScriptConstants.PARAM_VAR)
                         {
                             // Read 32-bit parameter ID
                             if (_codePos + 4 > code.Length)
                                 return Finish(true);
-                            
+
                             int paramID = BitConverter.ToInt32(code, _codePos);
                             _codePos += 4;
 
@@ -4249,13 +4348,13 @@ namespace TWXProxy.Core
                             {
                                 ScriptDiagnosticOutput.Write(server, $"Warning: Parameter ID {paramID} not found in list (count={cmp.ParamList.Count}), using empty string\r\n");
                                 Console.WriteLine($"Warning: Parameter ID {paramID} not found in ParamList (count={cmp.ParamList.Count})");
-                                
+
                                 // Skip array index data if it's a VAR type
                                 if (paramType == ScriptConstants.PARAM_VAR)
                                 {
                                     SkipArrayIndexes(code, ref _codePos);
                                 }
-                                
+
                                 var placeholder = GetScratchParam(_cmdParams.Count, string.Empty);
                                 _cmdParams.Add(placeholder);
                             }
@@ -4286,7 +4385,7 @@ namespace TWXProxy.Core
                                     }
 
                                     param = EvaluateArrayIndexes(code, ref _codePos, param);
-                                    
+
                                     if (GlobalModules.VerboseDebugMode && param is VarParam vp2)
                                     {
                                         GlobalModules.DebugLog($"[PostEval] VAR param '{vp2.Name}' = '{vp2.Value}', paramID={paramID}, objID={param.GetHashCode():X8}\n");
@@ -4304,7 +4403,7 @@ namespace TWXProxy.Core
                                 {
                                     _cmdParams.Add(param);
                                 }
-                                
+
                                 // Debug: show variable names for PARAM_VAR (only if enabled)
                                 if (_enableVariableDebug && paramType == ScriptConstants.PARAM_VAR && param is VarParam varParam)
                                 {
@@ -4317,14 +4416,14 @@ namespace TWXProxy.Core
                             // System constant - read 2-byte ID and lookup
                             if (_codePos + 2 > code.Length)
                                 return Finish(true);
-                            
+
                             ushort constID = BitConverter.ToUInt16(code, _codePos);
                             _codePos += 2;
-                            
+
                             // Evaluate array indexes so indexed sysconsts like PORT.CLASS[$CurSector]
                             // receive the actual runtime index values.
                             string[] sysConstIndexValues = EvaluateSysConstIndexes(code, ref _codePos);
-                            
+
                             if (_owner.ScriptRef == null)
                                 throw new Exception("ScriptRef not initialized");
 
@@ -4338,7 +4437,7 @@ namespace TWXProxy.Core
                             // Program variable - read from ParamList like other params
                             if (_codePos + 4 > code.Length)
                                 return Finish(true);
-                            
+
                             int paramID = BitConverter.ToInt32(code, _codePos);
                             _codePos += 4;
 
@@ -4364,7 +4463,7 @@ namespace TWXProxy.Core
                         {
                             if (_codePos >= code.Length)
                                 return Finish(true);
-                            
+
                             byte charCode = code[_codePos++];
                             var charParam = GetScratchParam(_cmdParams.Count, ((char)charCode).ToString());
                             _cmdParams.Add(charParam);
@@ -4375,23 +4474,23 @@ namespace TWXProxy.Core
                             // 1. Unimplemented parameter type
                             // 2. Bytecode misalignment 
                             // 3. Corrupted script file
-                            ScriptDiagnosticOutput.Write(server, $"ERROR: Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos-1}\r\n");
+                            ScriptDiagnosticOutput.Write(server, $"ERROR: Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos - 1}\r\n");
                             ScriptDiagnosticOutput.Write(server, $"  Current command ID: {cmdID}\r\n");
-                            ScriptDiagnosticOutput.Write(server, $"  Parameters read so far: {paramCount-1}\r\n");
-                            
+                            ScriptDiagnosticOutput.Write(server, $"  Parameters read so far: {paramCount - 1}\r\n");
+
                             int prevStart = Math.Max(0, _codePos - 17);
                             int prevLen = Math.Min(16, _codePos - 1 - prevStart);
                             if (prevLen > 0)
                                 ScriptDiagnosticOutput.Write(server, $"  Previous {prevLen} bytes: {BitConverter.ToString(code, prevStart, prevLen)}\r\n");
-                            
+
                             int nextLen = Math.Min(16, code.Length - _codePos);
                             if (nextLen > 0)
                                 ScriptDiagnosticOutput.Write(server, $"  Next {nextLen} bytes: {BitConverter.ToString(code, _codePos, nextLen)}\r\n");
-                            
+
                             // This is a fatal error - we cannot safely continue
-                            throw new Exception($"Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos-1}. Cannot safely parse remaining bytecode.");
+                            throw new Exception($"Unknown parameter type {paramType} (0x{paramType:X2}, ASCII:'{(char)paramType}') at position {_codePos - 1}. Cannot safely parse remaining bytecode.");
                         }
-                        nextParam: ;  // jump target used by arithmetic-expression variable evaluation
+                    nextParam:;  // jump target used by arithmetic-expression variable evaluation
                     }
 
                     if (_owner.ScriptRef == null)
@@ -4400,10 +4499,10 @@ namespace TWXProxy.Core
                     // Execute command (with bounds checking for compatibility)
                     if (cmdID >= _owner.ScriptRef.CmdCount)
                     {
-                        ScriptDiagnosticOutput.Write(server, $"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount-1}), skipping\r\n");
+                        ScriptDiagnosticOutput.Write(server, $"Warning: Command ID {cmdID} not found (max={_owner.ScriptRef.CmdCount - 1}), skipping\r\n");
                         continue; // Skip unknown commands for version compatibility
                     }
-                    
+
                     var cmd = _owner.ScriptRef.GetCmd(cmdID);
                     string commandName = cmd.Name;
 
@@ -4412,7 +4511,7 @@ namespace TWXProxy.Core
                         string ns = _cmp?.GetScriptNamespace(_execScriptID) ?? string.Empty;
                         GlobalModules.DebugLog($"[Execute/GOTO] raw='{_cmdParams[0].Value}' execScriptID={_execScriptID} ns='{ns}' codePos={_codePos}\n");
                     }
-                    
+
                     // Validate minimum parameter count before executing
                     if (_cmdParams.Count < cmd.MinParams)
                     {
@@ -4421,7 +4520,7 @@ namespace TWXProxy.Core
                         int dumpStart = Math.Max(0, cmdStartPos - 20);
                         int dumpLen = Math.Min(40, code.Length - dumpStart);
                         _dbgSb.AppendLine($"  Code pos: cmdStart={cmdStartPos}, current={_codePos}, total={code.Length}");
-                        _dbgSb.AppendLine($"  Bytes [{dumpStart}..{dumpStart+dumpLen-1}]: {BitConverter.ToString(code, dumpStart, dumpLen)}");
+                        _dbgSb.AppendLine($"  Bytes [{dumpStart}..{dumpStart + dumpLen - 1}]: {BitConverter.ToString(code, dumpStart, dumpLen)}");
                         for (int pi = 0; pi < _cmdParams.Count; pi++)
                             _dbgSb.AppendLine($"  Param[{pi}] = '{_cmdParams[pi].Value}'");
                         if (_codePos < code.Length)
@@ -4432,7 +4531,7 @@ namespace TWXProxy.Core
                         File.AppendAllText("/tmp/twxproxy_debug.log", _dbgSb.ToString());
                         continue;
                     }
-                    
+
                     // Handle RETURN before dispatch - stack/flow is maintained by Script itself.
                     if (commandName == "RETURN")
                     {
@@ -4457,10 +4556,10 @@ namespace TWXProxy.Core
                             GlobalModules.DebugLog($"[Execute] RETURN completed, new codePos={_codePos}, continuing execution\n");
                         continue;
                     }
-                    
+
                     if (cmd.OnCmd == null)
                         throw new Exception($"Command {commandName} has no handler");
-                    
+
                     if (GlobalModules.VerboseDebugMode)
                         GlobalModules.DebugLog($"[Dispatch] CMD={commandName} paramCount={_cmdParams.Count}\n");
                     CmdAction action;
@@ -4506,7 +4605,7 @@ namespace TWXProxy.Core
                             // halt (send bestWarp, goto :Move, re-register triggers, loop).
                             _codePos = code.Length;
                             return Finish(true); // Terminate script
-                        
+
                         case CmdAction.Pause:
                             _paused = true;
                             if (_pausedReason == PauseReason.None)
@@ -4515,13 +4614,13 @@ namespace TWXProxy.Core
                             if (GlobalModules.VerboseDebugMode)
                                 GlobalModules.DebugLog($"[PAUSED_BY] cmd='{commandName}' id={cmdID}\n");
                             return Finish(false); // Pause execution
-                        
+
                         case CmdAction.Auth:
                             _waitingForAuth = true;
                             _pausedReason = PauseReason.Auth;
                             _resetLoopDetectionOnNextExecute = true;
                             return Finish(false); // Wait for authentication
-                        
+
                         case CmdAction.None:
                         default:
                             // Continue execution
@@ -4702,7 +4801,11 @@ namespace TWXProxy.Core
         public void Return()
         {
             if (_subStack.Count == 0)
-                throw new ScriptException("Return without gosub");
+            {
+                if (_cmp?.Code != null)
+                    _codePos = _cmp.Code.Length;
+                return;
+            }
 
             int returnPos = _subStack.Pop();
             if (GlobalModules.VerboseDebugMode)
@@ -4942,7 +5045,7 @@ namespace TWXProxy.Core
         public bool LocalInputEvent(string text)
         {
             // Handle input from local client (for GETINPUT command)
-            string pname = (_inputVarParam is ProgVarParam pvp) ? $"PV:{pvp.Name}" 
+            string pname = (_inputVarParam is ProgVarParam pvp) ? $"PV:{pvp.Name}"
                          : (_inputVarParam is VarParam ivp) ? $"V:{ivp.Name}" : "null";
             GlobalModules.DebugLog($"[LIE] waiting={_waitingForInput} kpm={_keypressMode} var={pname} text='{text.TrimEnd('\r', '\n')}'\n");
             if (_waitingForInput && _inputVarParam != null)
@@ -4965,7 +5068,7 @@ namespace TWXProxy.Core
 
                 _suppressNextNestedKeypressValue = null;
                 Console.WriteLine($"[Script.LocalInputEvent] Received input: '{text}', storing and resuming");
-                
+
                 // Store the input in the variable
                 _inputVarParam.Value = trimmed;
 
@@ -4991,32 +5094,32 @@ namespace TWXProxy.Core
                     ScriptRef.SetCurrentGameVar("$BOT~DORELOG", "1");
                     GlobalModules.DebugLog("[Z-KEY] Set relog flags to '1' for current and next script\n");
                 }
-                
+
                 // Clear waiting state
                 _waitingForInput = false;
                 _keypressMode = false;
                 _echoKeypressInput = false;
                 _inputVarParam = null;
                 Locked = false;
-                
+
                 // Unpause the script before resuming
                 _paused = false;
-                
+
                 // Resume script execution with continuation loop
                 GlobalModules.DebugLog("[LocalInputEvent] Resuming script after input\n");
                 bool completed = false;
                 int iterations = 0;
                 const int maxIterations = 1000;
-                
+
                 while (!completed && iterations < maxIterations)
                 {
                     completed = Execute();
                     iterations++;
-                    
+
                     if (_paused || completed)
                         break;
                 }
-                
+
                 // After script input completes, match TWX27 menu flow: GETINPUT /
                 // GETCONSOLEINPUT uses a transient script-input menu. When that
                 // input is answered, the previous script menu is not resurrected
@@ -5049,10 +5152,10 @@ namespace TWXProxy.Core
                     _suppressNextNestedKeypressValue = trimmed;
                     GlobalModules.DebugLog($"[LIE] Nested keypress wait armed; suppressing repeated key '{trimmed}' once\n");
                 }
-                
+
                 return completed;
             }
-            
+
             Console.WriteLine($"[Script.LocalInputEvent] Not waiting for input or inputVarParam is null");
             return false;
         }
@@ -5137,6 +5240,8 @@ namespace TWXProxy.Core
         public bool EchoKeypressInput => _echoKeypressInput;
         public bool IsExecuting => _isExecuting;
         public bool LastLineHandled => _lastLineHandled;
+        internal int PromptProbesHandledOnCurrentLine => _promptProbesHandledOnCurrentLine;
+        internal void ResetPromptProbeForNextLine() => _promptProbesHandledOnCurrentLine = 0;
         public int SubStackDepth => _subStack.Count;
         public ModInterpreter Controller => _owner;
         public int ExecScript => _execScriptID;

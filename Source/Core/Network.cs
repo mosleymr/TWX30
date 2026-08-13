@@ -24,6 +24,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -61,6 +62,64 @@ namespace TWXProxy.Core
     /// </summary>
     public class GameInstance : IDisposable, ITWXServer
     {
+        [InterpolatedStringHandler]
+        private ref struct NetworkLogInterpolatedStringHandler
+        {
+            private DefaultInterpolatedStringHandler _builder;
+
+            public NetworkLogInterpolatedStringHandler(
+                int literalLength,
+                int formattedCount,
+                GameInstance instance,
+                out bool shouldAppend)
+            {
+                IsEnabled = shouldAppend = instance.Verbose || GlobalModules.DebugMode;
+                _builder = shouldAppend
+                    ? new DefaultInterpolatedStringHandler(literalLength, formattedCount)
+                    : default;
+            }
+
+            public bool IsEnabled { get; }
+            public void AppendLiteral(string value) => _builder.AppendLiteral(value);
+            public void AppendFormatted<T>(T value) => _builder.AppendFormatted(value);
+            public void AppendFormatted<T>(T value, string? format) =>
+                _builder.AppendFormatted(value, format);
+            public void AppendFormatted<T>(T value, int alignment) =>
+                _builder.AppendFormatted(value, alignment);
+            public void AppendFormatted<T>(T value, int alignment, string? format) =>
+                _builder.AppendFormatted(value, alignment, format);
+            public string GetFormattedText() => _builder.ToStringAndClear();
+        }
+
+        [InterpolatedStringHandler]
+        private ref struct VerboseLogInterpolatedStringHandler
+        {
+            private DefaultInterpolatedStringHandler _builder;
+
+            public VerboseLogInterpolatedStringHandler(
+                int literalLength,
+                int formattedCount,
+                GameInstance instance,
+                out bool shouldAppend)
+            {
+                IsEnabled = shouldAppend = instance.Verbose;
+                _builder = shouldAppend
+                    ? new DefaultInterpolatedStringHandler(literalLength, formattedCount)
+                    : default;
+            }
+
+            public bool IsEnabled { get; }
+            public void AppendLiteral(string value) => _builder.AppendLiteral(value);
+            public void AppendFormatted<T>(T value) => _builder.AppendFormatted(value);
+            public void AppendFormatted<T>(T value, string? format) =>
+                _builder.AppendFormatted(value, format);
+            public void AppendFormatted<T>(T value, int alignment) =>
+                _builder.AppendFormatted(value, alignment);
+            public void AppendFormatted<T>(T value, int alignment, string? format) =>
+                _builder.AppendFormatted(value, alignment, format);
+            public string GetFormattedText() => _builder.ToStringAndClear();
+        }
+
         private sealed class DeferredLocalOutput
         {
             public byte[] Data { get; init; } = Array.Empty<byte>();
@@ -125,7 +184,7 @@ namespace TWXProxy.Core
         private readonly object _clientLock = new();
         private readonly AsyncLocal<int?> _preferredClientIndex = new();
         private NativeHaggleChangeSource _pendingNativeHaggleChangeSource = NativeHaggleChangeSource.Runtime;
-        
+
         // ITWXServer / IModServer properties
         public bool StreamEnabled { get; set; }
         public bool AllowLerkers { get; set; } = true;
@@ -164,18 +223,18 @@ namespace TWXProxy.Core
         public Func<bool>? NativeBotCanAcceptLocalInput { get; set; }
         public Func<string, Task<bool>>? NativeBotLocalInputExecutor { get; set; }
         public Func<byte, Task<NativeBotClientInputResult>>? NativeBotHotkeyExecutor { get; set; }
-        
+
         private TcpClient? _serverClient;
         private TcpListener? _localListener;
         private TcpListener? _automationListener;
         private NetworkStream? _serverStream;
-        
+
         private CancellationTokenSource? _cancellationSource;
         private Task? _serverReadTask;
         private Task? _acceptTask;
         private Task? _automationAcceptTask;
         private Task? _serverStaleWatchdogTask;
-        
+
         private bool _isRunning;
         private readonly object _stateLock = new();
         private readonly MenuHandler _directMenuHandler;
@@ -237,8 +296,20 @@ namespace TWXProxy.Core
 
         // Log: important events (connect/disconnect/errors) → always written to DebugLog.
         // LogVerbose: high-frequency traffic (byte counts) → Console only when Verbose=true.
-        private void Log(string message) { GlobalModules.DebugLog(message + "\n"); if (Verbose) Console.WriteLine(message); }
+        private void Log(string message) { if (GlobalModules.DebugMode) GlobalModules.DebugLog(message + "\n"); if (Verbose) Console.WriteLine(message); }
         private void LogVerbose(string message) { if (Verbose) Console.WriteLine(message); }
+        private void Log(
+            [InterpolatedStringHandlerArgument("")] ref NetworkLogInterpolatedStringHandler message)
+        {
+            if (message.IsEnabled)
+                Log(message.GetFormattedText());
+        }
+        private void LogVerbose(
+            [InterpolatedStringHandlerArgument("")] ref VerboseLogInterpolatedStringHandler message)
+        {
+            if (message.IsEnabled)
+                LogVerbose(message.GetFormattedText());
+        }
 
         private static long UtcNowTicks() => DateTime.UtcNow.Ticks;
 
@@ -249,7 +320,7 @@ namespace TWXProxy.Core
                 host = $"[{host}]";
             return $"{host}:{serverPort}";
         }
-        
+
         // Telnet protocol constants
         private const byte IAC = 255;  // Interpret As Command
         private const byte DONT = 254;
@@ -258,7 +329,7 @@ namespace TWXProxy.Core
         private const byte WILL = 251;
         private const byte SB = 250;   // Subnegotiation Begin
         private const byte SE = 240;   // Subnegotiation End
-        
+
         // Events for script processing hooks
         public event EventHandler<DataReceivedEventArgs>? ServerDataReceived;
         public event EventHandler<DataReceivedEventArgs>? LocalDataReceived;
@@ -360,7 +431,7 @@ namespace TWXProxy.Core
             _serverPort = serverPort;
             _interpreter = interpreter;
             _scriptDirectory = scriptDirectory ?? GetDefaultScriptDirectory();
-            
+
             // Register this instance as the global TWXServer for script access
             if (_interpreter != null)
             {
@@ -592,16 +663,6 @@ namespace TWXProxy.Core
                 return _clients.ToList();
         }
 
-        private bool HasOutputEligibleClient(bool broadcastDeaf = false)
-        {
-            lock (_clientLock)
-            {
-                return _clients.Any(client =>
-                    client.Type != ClientType.Rejected &&
-                    (broadcastDeaf || client.Type != ClientType.Deaf));
-            }
-        }
-
         private void AddClientSession(ClientSession session)
         {
             lock (_clientLock)
@@ -612,6 +673,16 @@ namespace TWXProxy.Core
         {
             lock (_clientLock)
                 _clients.Remove(session);
+        }
+
+        private static void CloseClientSession(ClientSession session)
+        {
+            try { session.WriteStream.Close(); } catch { }
+            if (!ReferenceEquals(session.ReadStream, session.WriteStream))
+            {
+                try { session.ReadStream.Close(); } catch { }
+            }
+            try { session.TcpClient?.Close(); } catch { }
         }
 
         private static bool IsPrivateClientAddress(string remoteAddress)
@@ -994,7 +1065,7 @@ namespace TWXProxy.Core
                 _serverStream = _serverClient.GetStream();
 
                 Log($"[{_gameName}] Connected to {ServerEndpoint}");
-                
+
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
                 {
@@ -1094,7 +1165,7 @@ namespace TWXProxy.Core
                 }
 
                 Log($"[{_gameName}] Disconnecting from server");
-                
+
                 // Close the server connection
                 _serverStream?.Close();
                 _serverClient?.Close();
@@ -1102,17 +1173,17 @@ namespace TWXProxy.Core
                 _serverClient = null;
                 ClearPendingServerSends();
                 ClearPendingLocalInputProbe();
-                
+
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
                 {
                     _telnetNegotiationComplete = false;
                     _clientBufferDuringNegotiation.Clear();
                 }
-                
+
                 // Send disconnect message to client
                 await SendToLocalAsync(Encoding.ASCII.GetBytes($"\r\n[twxp] Disconnected from server.  Type {_commandChar}c to reconnect.\r\n"));
-                
+
                 Disconnected?.Invoke(this, new DisconnectEventArgs("User requested disconnect"));
             }
             catch (Exception ex)
@@ -1262,20 +1333,20 @@ namespace TWXProxy.Core
         private async Task ReadFromServerAsync(CancellationToken token)
         {
             var buffer = new byte[8192];
-            
+
             try
             {
                 while (!token.IsCancellationRequested && _serverStream != null)
                 {
                     int bytesRead = await _serverStream.ReadAsync(buffer, 0, buffer.Length, token);
-                    
+
                     if (bytesRead == 0)
                     {
                         Log($"[{_gameName}] Server disconnected");
 
                         if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
                             break;
-                        
+
                         try
                         {
                             string disconnectText = _autoReconnect && !token.IsCancellationRequested
@@ -1287,7 +1358,7 @@ namespace TWXProxy.Core
                         {
                             Log($"[{_gameName}] Could not send disconnect message to clients: {ex.Message}");
                         }
-                        
+
                         // Clean up server connection
                         _serverStream?.Close();
                         _serverClient?.Close();
@@ -1295,14 +1366,14 @@ namespace TWXProxy.Core
                         _serverClient = null;
                         ClearPendingServerSends();
                         ClearPendingLocalInputProbe();
-                        
+
                         // Reset telnet negotiation state
                         lock (_negotiationLock)
                         {
                             _telnetNegotiationComplete = false;
                             _clientBufferDuringNegotiation.Clear();
                         }
-                        
+
                         Disconnected?.Invoke(this, new DisconnectEventArgs("Server closed connection"));
                         StartReconnectIfNeeded();
                         break;
@@ -1319,7 +1390,7 @@ namespace TWXProxy.Core
 
                     // Process telnet protocol and get cleaned data
                     var (cleanData, telnetResponses) = ProcessTelnetFromServer(data);
-                    
+
                     // Send telnet responses back to server if needed
                     if (telnetResponses.Count > 0 && _serverStream != null)
                     {
@@ -1333,12 +1404,12 @@ namespace TWXProxy.Core
                     if (!_telnetNegotiationComplete && cleanData.Length > 0)
                     {
                         byte[]? bufferedData = null;
-                        
+
                         lock (_negotiationLock)
                         {
                             _telnetNegotiationComplete = true;
                             Log($"[{_gameName}] Telnet negotiation complete");
-                            
+
                             // Get any buffered client data that was waiting
                             if (_clientBufferDuringNegotiation.Count > 0)
                             {
@@ -1347,7 +1418,7 @@ namespace TWXProxy.Core
                                 _clientBufferDuringNegotiation.Clear();
                             }
                         }
-                        
+
                         // Send buffered data outside the lock
                         if (bufferedData != null && _serverStream != null)
                         {
@@ -1385,8 +1456,7 @@ namespace TWXProxy.Core
                                 EndServerDataDispatch();
                             }
 
-                            if (HasOutputEligibleClient())
-                                _log.RecordServerData(segment);
+                            _log.RecordServerData(segment);
 
                             await FlushDeferredLocalOutputWhenSafeAsync(token);
                         }
@@ -1408,7 +1478,7 @@ namespace TWXProxy.Core
 
                 if (System.Threading.Interlocked.CompareExchange(ref _disconnectHandling, 1, 0) != 0)
                     return;
-                
+
                 // Clean up server connection
                 _serverStream?.Close();
                 _serverClient?.Close();
@@ -1416,14 +1486,14 @@ namespace TWXProxy.Core
                 _serverClient = null;
                 ClearPendingServerSends();
                 ClearPendingLocalInputProbe();
-                
+
                 // Reset telnet negotiation state
                 lock (_negotiationLock)
                 {
                     _telnetNegotiationComplete = false;
                     _clientBufferDuringNegotiation.Clear();
                 }
-                
+
                 try
                 {
                     string disconnectText = _autoReconnect && !token.IsCancellationRequested
@@ -1542,8 +1612,7 @@ namespace TWXProxy.Core
 
                     if (IsServerDataDispatchActive())
                     {
-                        Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: " +
-                            $"elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
+                        Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
                         continue;
                     }
 
@@ -2016,9 +2085,7 @@ namespace TWXProxy.Core
                                         else
                                         {
                                             byte[] forwarded = new byte[] { b };
-                                            FastServerSendResult immediate = TrySendToServerImmediate(forwarded);
-                                            if (!immediate.Success)
-                                                await SendToServerAsync(forwarded);
+                                            await SendToServerAsync(forwarded);
                                             MarkLocalInputProbe(forwarded);
                                         }
                                     }
@@ -2081,12 +2148,7 @@ namespace TWXProxy.Core
                 bool wasRejected = session.Type == ClientType.Rejected;
                 RemoveClientSession(session);
 
-                try { session.WriteStream.Close(); } catch { }
-                if (!ReferenceEquals(session.ReadStream, session.WriteStream))
-                {
-                    try { session.ReadStream.Close(); } catch { }
-                }
-                try { session.TcpClient?.Close(); } catch { }
+                CloseClientSession(session);
 
                 if (!wasRejected)
                 {
@@ -2122,14 +2184,14 @@ namespace TWXProxy.Core
         {
             var cleanData = new List<byte>();
             var responses = new List<byte>();
-            
+
             int i = 0;
             while (i < data.Length)
             {
                 if (data[i] == IAC && i + 1 < data.Length)
                 {
                     byte command = data[i + 1];
-                    
+
                     if (command == IAC)
                     {
                         // Escaped IAC (255 255 means literal 255)
@@ -2210,7 +2272,7 @@ namespace TWXProxy.Core
                     i++;
                 }
             }
-            
+
             return (cleanData.ToArray(), responses);
         }
 
@@ -2262,6 +2324,31 @@ namespace TWXProxy.Core
             byte[] copy = new byte[data.Length];
             Buffer.BlockCopy(data, 0, copy, 0, data.Length);
             DispatchServerDataSent(copy);
+
+            if (_serverSendQueue.IsEmpty && _serverSendLock.Wait(0))
+            {
+                try
+                {
+                    NetworkStream? stream = _serverStream;
+                    if (stream != null && _serverClient?.Connected == true)
+                    {
+                        stream.Write(copy, 0, copy.Length);
+                        stream.Flush();
+                    }
+
+                    return Task.CompletedTask;
+                }
+                catch (Exception ex)
+                {
+                    Log($"[{_gameName}] Error sending immediate server data: {ex.Message}");
+                    return Task.CompletedTask;
+                }
+                finally
+                {
+                    _serverSendLock.Release();
+                }
+            }
+
             _serverSendQueue.Enqueue(copy);
             _serverSendSignal.Release();
             ScheduleServerSendPump();
@@ -2455,15 +2542,16 @@ namespace TWXProxy.Core
                 {
                     await _serverSendSignal.WaitAsync(token);
 
-                    while (!token.IsCancellationRequested &&
-                           _serverSendQueue.TryDequeue(out byte[]? data) &&
-                           data != null)
+                    while (!token.IsCancellationRequested)
                     {
                         try
                         {
                             await _serverSendLock.WaitAsync(token);
                             try
                             {
+                                if (!_serverSendQueue.TryDequeue(out byte[]? data) || data == null)
+                                    break;
+
                                 NetworkStream? stream = _serverStream;
                                 if (stream != null && _serverClient?.Connected == true)
                                 {
@@ -2541,6 +2629,8 @@ namespace TWXProxy.Core
                     catch (Exception ex)
                     {
                         Log($"[SendToLocalAsync] Failed sending to client {client.RemoteAddress}: {ex.Message}");
+                        RemoveClientSession(client);
+                        CloseClientSession(client);
                     }
                 }
             }
@@ -2560,7 +2650,20 @@ namespace TWXProxy.Core
                 if (client == null || client.Type == ClientType.Rejected)
                     return;
 
-                await WriteToClientAsync(client, data, token);
+                try
+                {
+                    await WriteToClientAsync(client, data, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log($"[SendToClientAsync] Failed sending to client {client.RemoteAddress}: {ex.Message}");
+                    RemoveClientSession(client);
+                    CloseClientSession(client);
+                }
             }
             finally
             {
@@ -3416,7 +3519,7 @@ namespace TWXProxy.Core
             {
                 GlobalModules.TWXServer = null;
             }
-            
+
             StopAsync().Wait();
             _cancellationSource?.Dispose();
             _serverSendLock.Dispose();
@@ -3634,7 +3737,7 @@ namespace TWXProxy.Core
             }
 
             var instance = new GameInstance(gameName, serverAddress, serverPort, listenPort, commandChar, interpreter, scriptDirectory);
-            
+
             if (_gameInstances.TryAdd(gameName, instance))
             {
                 try
@@ -3690,12 +3793,12 @@ namespace TWXProxy.Core
         {
             var tasks = _gameInstances.Values.Select(g => g.StopAsync()).ToList();
             await Task.WhenAll(tasks);
-            
+
             foreach (var instance in _gameInstances.Values)
             {
                 instance.Dispose();
             }
-            
+
             _gameInstances.Clear();
             Console.WriteLine("Stopped all game instances");
         }

@@ -52,6 +52,33 @@ public class NewConnectionDialog : Window
         public override string ToString() => Label;
     }
 
+    private sealed class ProxyServerOption
+    {
+        public ProxyServerOption(string id, string label)
+        {
+            Id = id;
+            Label = label;
+        }
+
+        public string Id { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
+    }
+
+    private sealed class ProxyGameOption
+    {
+        public ProxyGameOption(ProxyManagedGame game, AppPreferences.ProxyServerPreference server)
+        {
+            Game = game;
+            Server = server;
+        }
+
+        public ProxyManagedGame Game { get; }
+        public AppPreferences.ProxyServerPreference Server { get; }
+        public override string ToString()
+            => $"{Game.Name}  :{Game.ListenPort}  {Game.Status}";
+    }
+
     private static readonly IBrush BgWin = new SolidColorBrush(Color.FromRgb(8, 14, 20));
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(14, 33, 42));
     private static readonly IBrush BgCard = new SolidColorBrush(Color.FromRgb(16, 53, 67));
@@ -73,6 +100,7 @@ public class NewConnectionDialog : Window
     private const double FieldLabelWidth = 92;
 
     private readonly bool _allowAutoSetup;
+    private readonly IReadOnlyList<AppPreferences.ProxyServerPreference> _proxyServers;
     private bool _autoSetupLoaded;
     private CancellationTokenSource? _autoLoadCts;
     private readonly Dictionary<AutoSetupView, Button> _autoSetupViewButtons = new();
@@ -95,9 +123,13 @@ public class NewConnectionDialog : Window
     private Control? _autoMacroRow;
     private TwcrawlGameSummary? _selectedAutoGame;
 
-    public NewConnectionDialog(ConnectionProfile? defaults = null, bool allowAutoSetup = true)
+    public NewConnectionDialog(
+        ConnectionProfile? defaults = null,
+        bool allowAutoSetup = true,
+        IReadOnlyList<AppPreferences.ProxyServerPreference>? proxyServers = null)
     {
         _allowAutoSetup = allowAutoSetup && defaults == null;
+        _proxyServers = proxyServers ?? Array.Empty<AppPreferences.ProxyServerPreference>();
         Title = defaults == null ? "New Connection" : "Edit Connection";
         Width = _allowAutoSetup ? 1160 : 500;
         Height = _allowAutoSetup ? 760 : double.NaN;
@@ -234,6 +266,53 @@ public class NewConnectionDialog : Window
         var chkEmbedded = CreateCheckBox("Run embedded proxy (enables .ts/.cts scripts)", profile.EmbeddedProxy);
         var chkListenForConnections = CreateCheckBox("Listen for connections", profile.ListenForConnections);
         var chkStandaloneProxy = CreateCheckBox("Connect to standalone TWX proxy on this machine", profile.LocalTwxProxy);
+        var proxyServerOptions = new List<ProxyServerOption> { new(string.Empty, "None") };
+        proxyServerOptions.AddRange(_proxyServers.Select(server => new ProxyServerOption(server.Id, server.DisplayName)));
+        var cboProxyServer = new ComboBox
+        {
+            ItemsSource = proxyServerOptions,
+            SelectedItem = proxyServerOptions.FirstOrDefault(option =>
+                string.Equals(option.Id, profile.RemoteProxyServerId, StringComparison.OrdinalIgnoreCase)) ?? proxyServerOptions[0],
+            Width = 250,
+            MinHeight = 30,
+            FontSize = 13,
+            Background = BgInput,
+            Foreground = FgText,
+            BorderBrush = InnerEdge,
+        };
+        var txtRemoteProxyGameId = CreateTextBox(profile.RemoteProxyGameId, "remote game id", width: 250);
+        var cboRemoteProxyGame = new ComboBox
+        {
+            ItemsSource = Array.Empty<ProxyGameOption>(),
+            Width = 250,
+            MinHeight = 30,
+            FontSize = 13,
+            Background = BgInput,
+            Foreground = FgText,
+            BorderBrush = InnerEdge,
+        };
+        var btnRefreshRemoteGames = BuildSmallButton("Refresh");
+        var remoteGameStatus = new TextBlock
+        {
+            Foreground = FgMuted,
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            IsVisible = false,
+        };
+        var remoteGamePicker = new StackPanel
+        {
+            Spacing = 5,
+            Children =
+            {
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                    Children = { cboRemoteProxyGame, btnRefreshRemoteGames },
+                },
+                remoteGameStatus,
+            },
+        };
         var chkAutoReconnect = CreateCheckBox("Auto-reconnect on disconnect", profile.AutoReconnect);
         var chkUseLogin = CreateCheckBox("Run login script after connect", profile.UseLogin);
         var chkUseRLogin = CreateCheckBox("Use RLogin handshake", profile.UseRLogin);
@@ -242,6 +321,8 @@ public class NewConnectionDialog : Window
 
         var connectionFields = BuildConnectionFieldsGrid(txtName, txtServer, cboProtocol, txtPort, txtSectors);
         var editRow = BuildRow("Edit:", editPicker);
+        var proxyServerRow = BuildRow("Proxy server:", cboProxyServer);
+        var proxyGameIdRow = BuildRow("Proxy game:", remoteGamePicker);
         var listenPortRow = BuildRow("Listen port:", txtListenPort);
         var loginScriptRow = BuildRow("Login script:", txtLoginScript);
         var loginNameRow = BuildRow("Username:", txtLoginName);
@@ -249,7 +330,7 @@ public class NewConnectionDialog : Window
         var gameLetterRow = BuildRow("Game letter:", txtGameLetter);
 
         var connectionSection = BuildSection("Game & Server", connectionFields, editRow);
-        var proxySection = BuildSection("Proxy Mode", chkEmbedded, chkListenForConnections, listenPortRow, chkStandaloneProxy, chkAutoReconnect);
+        var proxySection = BuildSection("Proxy Mode", proxyServerRow, proxyGameIdRow, chkEmbedded, chkListenForConnections, listenPortRow, chkStandaloneProxy, chkAutoReconnect);
         var loginSection = BuildSection("Login Automation", chkUseLogin, chkUseRLogin, loginScriptRow, loginNameRow, passwordRow, gameLetterRow);
 
         void SetValidation(string? message)
@@ -258,12 +339,88 @@ public class NewConnectionDialog : Window
             validationText.IsVisible = !string.IsNullOrWhiteSpace(message);
         }
 
+        void SetRemoteStatus(string? message, IBrush? brush = null)
+        {
+            remoteGameStatus.Text = message ?? string.Empty;
+            remoteGameStatus.Foreground = brush ?? FgMuted;
+            remoteGameStatus.IsVisible = !string.IsNullOrWhiteSpace(message);
+        }
+
+        void ApplyRemoteGameSelection()
+        {
+            if (cboRemoteProxyGame.SelectedItem is not ProxyGameOption selected)
+                return;
+
+            txtRemoteProxyGameId.Text = selected.Game.Id;
+            if (string.IsNullOrWhiteSpace(txtName.Text))
+                txtName.Text = selected.Game.Name;
+            txtServer.Text = selected.Server.Host;
+            txtPort.Text = selected.Game.ListenPort.ToString();
+        }
+
+        async Task RefreshRemoteGamesAsync(bool preserveSelection = true)
+        {
+            if (cboProxyServer.SelectedItem is not ProxyServerOption proxyOption ||
+                string.IsNullOrWhiteSpace(proxyOption.Id))
+            {
+                cboRemoteProxyGame.ItemsSource = Array.Empty<ProxyGameOption>();
+                cboRemoteProxyGame.SelectedItem = null;
+                SetRemoteStatus(null);
+                return;
+            }
+
+            AppPreferences.ProxyServerPreference? server = _proxyServers.FirstOrDefault(item =>
+                string.Equals(item.Id, proxyOption.Id, StringComparison.OrdinalIgnoreCase));
+            if (server == null)
+            {
+                SetRemoteStatus("Proxy server settings were not found.", BadText);
+                return;
+            }
+
+            string previousGameId = preserveSelection
+                ? txtRemoteProxyGameId.Text?.Trim() ?? string.Empty
+                : string.Empty;
+            SetRemoteStatus("Loading remote games...");
+            btnRefreshRemoteGames.IsEnabled = false;
+            try
+            {
+                IReadOnlyList<ProxyManagedGame> games = await new ProxyManagementClient(server).ListGamesAsync();
+                var options = games
+                    .OrderBy(game => game.Name, StringComparer.OrdinalIgnoreCase)
+                    .Select(game => new ProxyGameOption(game, server))
+                    .ToArray();
+                cboRemoteProxyGame.ItemsSource = options;
+                ProxyGameOption? selected = !string.IsNullOrWhiteSpace(previousGameId)
+                    ? options.FirstOrDefault(option => string.Equals(option.Game.Id, previousGameId, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                selected ??= options.FirstOrDefault(option =>
+                    string.Equals(option.Game.Id, profile.RemoteProxyGameId, StringComparison.OrdinalIgnoreCase));
+                selected ??= options.FirstOrDefault();
+                cboRemoteProxyGame.SelectedItem = selected;
+                ApplyRemoteGameSelection();
+                SetRemoteStatus(options.Length == 0 ? "No games are configured on this proxy server." : null, WarnText);
+            }
+            catch (Exception ex)
+            {
+                cboRemoteProxyGame.ItemsSource = Array.Empty<ProxyGameOption>();
+                cboRemoteProxyGame.SelectedItem = null;
+                SetRemoteStatus($"Unable to load remote games: {ex.Message}", BadText);
+            }
+            finally
+            {
+                btnRefreshRemoteGames.IsEnabled = true;
+            }
+        }
+
         void RefreshModeVisibility()
         {
             bool embedded = chkEmbedded.IsChecked == true;
+            bool remoteProxy = cboProxyServer.SelectedItem is ProxyServerOption option && !string.IsNullOrWhiteSpace(option.Id);
             bool showDetails = embedded && (chkUseLogin.IsChecked == true || chkUseRLogin.IsChecked == true);
 
-            chkStandaloneProxy.IsVisible = !embedded;
+            chkEmbedded.IsEnabled = !remoteProxy;
+            proxyGameIdRow.IsVisible = remoteProxy;
+            chkStandaloneProxy.IsVisible = !embedded && !remoteProxy;
             chkAutoReconnect.IsVisible = embedded;
             chkListenForConnections.IsVisible = embedded;
             listenPortRow.IsVisible = embedded && chkListenForConnections.IsChecked == true;
@@ -275,10 +432,24 @@ public class NewConnectionDialog : Window
         }
 
         chkEmbedded.IsCheckedChanged += (_, _) => RefreshModeVisibility();
+        cboProxyServer.SelectionChanged += (_, _) =>
+        {
+            if (cboProxyServer.SelectedItem is ProxyServerOption option && !string.IsNullOrWhiteSpace(option.Id))
+            {
+                chkEmbedded.IsChecked = false;
+                chkStandaloneProxy.IsChecked = false;
+            }
+            RefreshModeVisibility();
+            _ = RefreshRemoteGamesAsync(preserveSelection: false);
+        };
+        cboRemoteProxyGame.SelectionChanged += (_, _) => ApplyRemoteGameSelection();
+        btnRefreshRemoteGames.Click += async (_, _) => await RefreshRemoteGamesAsync();
         chkListenForConnections.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         chkUseLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         chkUseRLogin.IsCheckedChanged += (_, _) => RefreshModeVisibility();
         RefreshModeVisibility();
+        if (!string.IsNullOrWhiteSpace(profile.RemoteProxyServerId))
+            _ = RefreshRemoteGamesAsync();
         void RefreshEditButton()
         {
             btnViewEdit.IsEnabled = (cboEdit.SelectedItem as TwEditOption)?.Edit != null;
@@ -297,6 +468,7 @@ public class NewConnectionDialog : Window
         WireDialogClipboard(txtPort);
         WireDialogClipboard(txtSectors);
         WireDialogClipboard(txtListenPort);
+        WireDialogClipboard(txtRemoteProxyGameId);
         WireDialogClipboard(txtLoginScript);
         WireDialogClipboard(txtLoginName);
         WireDialogClipboard(txtPassword);
@@ -332,14 +504,26 @@ public class NewConnectionDialog : Window
                 return;
             }
 
-            if (!int.TryParse(txtSectors.Text?.Trim(), out int sectors) || sectors is < 100 or > ushort.MaxValue)
+            if (!int.TryParse(txtSectors.Text?.Trim(), out int sectors) || !GameSizeLimits.IsValidSectorCount(sectors))
             {
-                SetValidation($"Enter a sector count from 100 to {ushort.MaxValue:N0}.");
+                SetValidation($"Enter a sector count from {GameSizeLimits.RangeDisplay}.");
                 txtSectors.Focus();
                 return;
             }
 
             bool embeddedProxy = chkEmbedded.IsChecked == true;
+            string remoteProxyServerId = (cboProxyServer.SelectedItem as ProxyServerOption)?.Id ?? string.Empty;
+            bool remoteProxySelected = !string.IsNullOrWhiteSpace(remoteProxyServerId);
+            if (remoteProxySelected)
+            {
+                ApplyRemoteGameSelection();
+                if (cboRemoteProxyGame.SelectedItem is not ProxyGameOption)
+                {
+                    SetValidation("Select a remote proxy game.");
+                    cboRemoteProxyGame.Focus();
+                    return;
+                }
+            }
             bool listenForConnections = embeddedProxy && chkListenForConnections.IsChecked == true;
             int listenPort = profile.ListenPort > 0 ? profile.ListenPort : ConnectionProfile.DefaultListenPort;
             bool listenPortValid = int.TryParse(txtListenPort.Text?.Trim(), out int parsedListenPort) &&
@@ -359,7 +543,11 @@ public class NewConnectionDialog : Window
                 Server = server,
                 Port = portVal,
                 Protocol = cboProtocol.SelectedIndex == 1 ? TwProtocol.Rlogin : TwProtocol.Telnet,
-                LocalTwxProxy = chkStandaloneProxy.IsChecked == true,
+                LocalTwxProxy = !remoteProxySelected && chkStandaloneProxy.IsChecked == true,
+                RemoteProxyServerId = remoteProxyServerId,
+                RemoteProxyGameId = remoteProxySelected
+                    ? (string.IsNullOrWhiteSpace(txtRemoteProxyGameId.Text) ? name : txtRemoteProxyGameId.Text.Trim())
+                    : string.Empty,
                 EmbeddedProxy = embeddedProxy,
                 AutoReconnect = chkAutoReconnect.IsChecked == true,
                 ListenForConnections = listenForConnections,

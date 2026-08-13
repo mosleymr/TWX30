@@ -53,6 +53,8 @@ public class GameState
     public TwProtocol Protocol    { get; set; } = TwProtocol.Telnet;
     public bool   LocalTwxProxy   { get; set; } = true;
     public string TwxProxyDbPath  { get; set; } = string.Empty;
+    public string RemoteProxyServerId { get; set; } = string.Empty;
+    public string RemoteProxyGameId { get; set; } = string.Empty;
     public bool   EmbeddedProxy   { get; set; } = true;
     public int    Sectors         { get; set; } = ConnectionProfile.DefaultSectors;
     public bool   AutoReconnect   { get; set; } = false;

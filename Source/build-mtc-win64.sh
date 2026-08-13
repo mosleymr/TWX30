@@ -9,6 +9,8 @@ BIN_ROOT="${REPO_ROOT}/bin"
 
 cd "${SCRIPT_DIR}"
 
+"${SCRIPT_DIR}/stamp-mtc-build.sh"
+
 echo "==> Cleaning..."
 rm -rf bin obj MTC/bin MTC/obj
 

@@ -27,10 +27,97 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace TWXProxy.Core
 {
+    public interface IConditionalLogGate
+    {
+        static abstract bool IsEnabled { get; }
+    }
+
+    [InterpolatedStringHandler]
+    public ref struct ConditionalLogInterpolatedStringHandler<TGate>
+        where TGate : IConditionalLogGate
+    {
+        private DefaultInterpolatedStringHandler _builder;
+
+        public ConditionalLogInterpolatedStringHandler(
+            int literalLength,
+            int formattedCount,
+            out bool shouldAppend)
+        {
+            IsEnabled = shouldAppend = TGate.IsEnabled;
+            _builder = shouldAppend
+                ? new DefaultInterpolatedStringHandler(literalLength, formattedCount)
+                : default;
+        }
+
+        public bool IsEnabled { get; }
+
+        public void AppendLiteral(string value) => _builder.AppendLiteral(value);
+        public void AppendFormatted<T>(T value) => _builder.AppendFormatted(value);
+        public void AppendFormatted<T>(T value, string? format) =>
+            _builder.AppendFormatted(value, format);
+        public void AppendFormatted<T>(T value, int alignment) =>
+            _builder.AppendFormatted(value, alignment);
+        public void AppendFormatted<T>(T value, int alignment, string? format) =>
+            _builder.AppendFormatted(value, alignment, format);
+        public void AppendFormatted(string? value) => _builder.AppendFormatted(value);
+        public void AppendFormatted(string? value, int alignment = 0, string? format = null) =>
+            _builder.AppendFormatted(value, alignment, format);
+
+        public string GetFormattedText() => _builder.ToStringAndClear();
+    }
+
+    public readonly struct DebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.DebugMode;
+    }
+
+    public readonly struct TriggerDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.DebugMode && GlobalModules.TriggerDebugMode;
+    }
+
+    public readonly struct ScriptTraceDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.DebugMode && GlobalModules.ScriptTraceDebugMode;
+    }
+
+    public readonly struct VariablePersistenceDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled =>
+            GlobalModules.DebugMode && GlobalModules.VariablePersistenceDebugMode;
+    }
+
+    public readonly struct AutoRecorderDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled =>
+            GlobalModules.DebugMode && GlobalModules.AutoRecorderDebugMode;
+    }
+
+    public readonly struct PortHaggleDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.PortHaggleDebugMode;
+    }
+
+    public readonly struct PlanetHaggleDebugLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.PlanetHaggleDebugMode;
+    }
+
+    public readonly struct DatabaseCorrectionLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.DatabaseCorrectionLoggingEnabled;
+    }
+
+    public readonly struct VmMetricLogGate : IConditionalLogGate
+    {
+        public static bool IsEnabled => GlobalModules.EnableVmMetrics;
+    }
+
     public class TimerItem
     {
         private string _name;
@@ -655,7 +742,7 @@ namespace TWXProxy.Core
             if (writeHeader)
                 writer.WriteLine(header);
             else
-                writer.WriteLine($"=== {header.Trim('=',' ')} {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+                writer.WriteLine($"=== {header.Trim('=', ' ')} {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
 
             writer.Flush();
             return writer;
@@ -843,6 +930,13 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void DebugLog(
+            ref ConditionalLogInterpolatedStringHandler<DebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                DebugLog(message.GetFormattedText());
+        }
+
         private static bool IsNativeHaggleDebugMessage(string message)
         {
             if (string.IsNullOrEmpty(message))
@@ -895,6 +989,13 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void TriggerDebugLog(
+            ref ConditionalLogInterpolatedStringHandler<TriggerDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                TriggerDebugLog(message.GetFormattedText());
+        }
+
         public static void ScriptTraceDebugLog(string message)
         {
             if (!DebugMode || !ScriptTraceDebugMode) return;
@@ -907,6 +1008,13 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[SCRIPT TRACE LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        public static void ScriptTraceDebugLog(
+            ref ConditionalLogInterpolatedStringHandler<ScriptTraceDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                ScriptTraceDebugLog(message.GetFormattedText());
         }
 
         public static void VariablePersistenceDebugLog(string message)
@@ -923,6 +1031,13 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void VariablePersistenceDebugLog(
+            ref ConditionalLogInterpolatedStringHandler<VariablePersistenceDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                VariablePersistenceDebugLog(message.GetFormattedText());
+        }
+
         public static void AutoRecorderDebugLog(string message)
         {
             if (!DebugMode || !AutoRecorderDebugMode) return;
@@ -935,6 +1050,13 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[AUTORECORDER LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        public static void AutoRecorderDebugLog(
+            ref ConditionalLogInterpolatedStringHandler<AutoRecorderDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                AutoRecorderDebugLog(message.GetFormattedText());
         }
 
         public static void DatabaseCorrectionLog(string source, string message)
@@ -966,6 +1088,14 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void DatabaseCorrectionLog(
+            string source,
+            ref ConditionalLogInterpolatedStringHandler<DatabaseCorrectionLogGate> message)
+        {
+            if (message.IsEnabled)
+                DatabaseCorrectionLog(source, message.GetFormattedText());
+        }
+
         /// <summary>
         /// Write VM-specific metric output to the shared log path when VM metrics are enabled,
         /// without requiring full debug logging.
@@ -982,6 +1112,13 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[VM METRIC LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        public static void VmMetricLog(
+            ref ConditionalLogInterpolatedStringHandler<VmMetricLogGate> message)
+        {
+            if (message.IsEnabled)
+                VmMetricLog(message.GetFormattedText());
         }
 
         public static void PortHaggleDebug(string message)
@@ -1002,6 +1139,13 @@ namespace TWXProxy.Core
             }
         }
 
+        public static void PortHaggleDebug(
+            ref ConditionalLogInterpolatedStringHandler<PortHaggleDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                PortHaggleDebug(message.GetFormattedText());
+        }
+
         public static void PlanetHaggleDebug(string message)
         {
             if (!PlanetHaggleDebugMode) return;
@@ -1018,6 +1162,13 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[PLANET HAGGLE LOG ERROR] {ex.Message}: {message}");
             }
+        }
+
+        public static void PlanetHaggleDebug(
+            ref ConditionalLogInterpolatedStringHandler<PlanetHaggleDebugLogGate> message)
+        {
+            if (message.IsEnabled)
+                PlanetHaggleDebug(message.GetFormattedText());
         }
     }
 }

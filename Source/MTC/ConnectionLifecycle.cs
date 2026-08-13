@@ -29,31 +29,52 @@ public partial class MainWindow
 {
     /// <summary>Connects using the current Host/Port already set in state.</summary>
     private void DoConnect()
+        => _ = ConnectDirectTelnetAsync(reconnectIfConnected: true);
+
+    private async Task<bool> ConnectDirectTelnetAsync(bool reconnectIfConnected)
     {
         var tab = CurrentMtcTabContext();
-        if (_telnet.IsConnected) _telnet.Disconnect();
+        if (_telnet.IsConnected)
+        {
+            if (!reconnectIfConnected)
+                return true;
+            _telnet.Disconnect();
+        }
+
         _telnet.SetWindowSize(_buffer.Columns, _buffer.Rows);
-        _ = _telnet.ConnectAsync(_state.Host, _state.Port)
-                   .ContinueWith(t =>
-                   {
-                       if (t.IsFaulted)
-                           Dispatcher.UIThread.Post(() =>
-                           {
-                               if (tab is not null)
-                               {
-                                   ExecuteInMtcTabSession(tab, () =>
-                                   {
-                                       _parser.Feed($"\x1b[1;31m[Connect failed: {t.Exception?.InnerException?.Message}]\x1b[0m\r\n");
-                                       _buffer.Dirty = true;
-                                   });
-                               }
-                               else
-                               {
-                                   _parser.Feed($"\x1b[1;31m[Connect failed: {t.Exception?.InnerException?.Message}]\x1b[0m\r\n");
-                                   _buffer.Dirty = true;
-                               }
-                           });
-                   });
+        try
+        {
+            await _telnet.ConnectAsync(_state.Host, _state.Port);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            void Report()
+            {
+                _parser.Feed($"\x1b[1;31m[Connect failed: {ex.Message}]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+            }
+
+            if (Dispatcher.UIThread.CheckAccess())
+            {
+                if (tab is not null)
+                    ExecuteInMtcTabSession(tab, Report);
+                else
+                    Report();
+            }
+            else
+            {
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (tab is not null)
+                        ExecuteInMtcTabSession(tab, Report);
+                    else
+                        Report();
+                });
+            }
+
+            return false;
+        }
     }
 
     /// <summary>
@@ -157,7 +178,7 @@ public partial class MainWindow
                 string.Equals(varName, "$doRelog",   StringComparison.OrdinalIgnoreCase))
                 return;
             gameConfig.Variables[varName] = value;
-            PostToMtcTabSessionAsync(owningTab, () => SaveEmbeddedGameConfigAsync(gameName, gameConfig));
+            GameConfigService.RequestVariablesSave(gameName, gameConfig.Variables);
         });
 
         SyncMombotSpecialSectorVarsFromDatabase(persist: true);
@@ -281,10 +302,17 @@ public partial class MainWindow
                 await _runtimeStopGate.WaitAsync();
                 try
                 {
+                    bool shipDestroyed = HasNativeMombotShipDestroyedFlag();
+                    bool doNotResuscitate = HasNativeMombotDoNotResuscitateFlag();
+                    bool disconnectServerAfterStop = !shipDestroyed && !doNotResuscitate;
+                    Core.GlobalModules.DebugLog(
+                        $"[MTC.NativeBotStopper] stop requested disconnectAfterStop={disconnectServerAfterStop} shipDestroyed={shipDestroyed} dnr={doNotResuscitate}\n");
+                    Core.GlobalModules.FlushDebugLog();
+
                     await StopInternalMombotCoreAsync(
                         publishStopMessage: false,
                         suppressMissingGameMessage: true,
-                        disconnectServerAfterStop: true);
+                        disconnectServerAfterStop: disconnectServerAfterStop);
                 }
                 finally
                 {
@@ -560,7 +588,7 @@ public partial class MainWindow
             ObserveComputerShipTypeLine(strippedLine);
             ObserveOnlinePlayersLine(strippedLine);
             SyncMombotPromptVarsFromLine(runtimeContext, strippedLine);
-            ObserveEmbeddedKeepaliveWatchLine(strippedLine, gi, owningTab);
+            ObserveEmbeddedKeepaliveWatchLine(strippedLine, gi);
         }
 
         void ObserveNativeMombotServerLine(string strippedLine)
@@ -665,15 +693,10 @@ public partial class MainWindow
                                 Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 // Server prompts and partial lines must keep flowing to the interpreter
                                 // even while a proxy menu is open, otherwise waitfor/text triggers stall.
-                                // Match Pascal TWX here: partial prompts go through AutoTextEvent and
-                                // then TextEvent only. They do not fire TextLineEvent and do not
-                                // re-activate triggers until a full CR-terminated line is processed.
-                                Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                                Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                                interpreter.AutoTextEvent(scriptRemainder, false);
-                                Core.ScriptRef.SetCurrentAnsiLine(remainderAnsi);
-                                Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                                interpreter.TextEvent(scriptRemainder, false);
+                                // Match Pascal TWX here: partial prompts go through AutoTextEvent
+                                // and then TextEvent only. They do not fire TextLineEvent and do
+                                // not re-activate triggers until a full CR-terminated line is processed.
+                                interpreter.DispatchPartialLine(scriptRemainder, remainderAnsi, false);
                                 if (!string.IsNullOrWhiteSpace(strippedRemainder))
                                 {
                                     if (allowUiObservers)
@@ -687,7 +710,7 @@ public partial class MainWindow
                                     else
                                     {
                                         SyncMombotPromptVarsFromLine(runtimeContext, strippedRemainder);
-                                        ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi, owningTab);
+                                        ObserveEmbeddedKeepaliveWatchLine(strippedRemainder, gi);
                                     }
                                 }
                                 if (nativeHaggleResponded)
@@ -754,7 +777,7 @@ public partial class MainWindow
                         else
                         {
                             SyncMombotPromptVarsFromLine(runtimeContext, lineStripped);
-                            ObserveEmbeddedKeepaliveWatchLine(lineStripped, gi, owningTab);
+                            ObserveEmbeddedKeepaliveWatchLine(lineStripped, gi);
                         }
 
                         ObserveNativeMombotServerLine(lineStripped);
@@ -1134,6 +1157,8 @@ public partial class MainWindow
         Core.TwxRuntimeContext? runtimeContext = owningTab?.RuntimeContext ?? gi?.RuntimeContext ?? ActiveMtcRuntimeContext;
         Core.ScriptRef.SetActiveGameInstance(runtimeContext, null);
         Core.ScriptRef.SetOnVariableSaved(runtimeContext, null);  // detach savevar persistence for this game
+        if (!string.IsNullOrWhiteSpace(_embeddedGameName))
+            await GameConfigService.FlushVariablesAsync(_embeddedGameName);
         _embeddedGameConfig = null;
         _embeddedGameName = null;
         ApplyDebugLoggingPreferences();

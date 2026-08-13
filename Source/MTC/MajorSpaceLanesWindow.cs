@@ -78,9 +78,10 @@ internal sealed class MajorSpaceLanesWindow : Window
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 10),
-            Child = new DockPanel
+            Child = new Grid
             {
-                LastChildFill = true,
+                ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+                ColumnSpacing = 14,
                 Children =
                 {
                     new StackPanel
@@ -89,8 +90,8 @@ internal sealed class MajorSpaceLanesWindow : Window
                         Spacing = 8,
                         VerticalAlignment = VerticalAlignment.Center,
                         Children = { refreshButton, copyButton, markButton },
-                    }.WithDock(Dock.Left),
-                    _summaryText,
+                    }.WithGridPosition(0, 0),
+                    _summaryText.WithGridPosition(0, 1),
                 },
             },
         };

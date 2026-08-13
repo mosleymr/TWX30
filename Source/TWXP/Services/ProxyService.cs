@@ -15,6 +15,7 @@ public interface IProxyService
     Task<IReadOnlyList<RunningScriptInfo>> GetRunningScriptsAsync(string gameId);
     Task LoadScriptAsync(string gameId, string scriptPath);
     Task SwitchBotAsync(string gameId, string botName);
+    Task ReloadBotConfigsAsync(string gameId);
     Task StopScriptAsync(string gameId, int scriptId);
     Task StopAllScriptsAsync(string gameId, bool includeSystemScripts);
     Task<HistorySnapshot> GetHistoryAsync(string gameId);
@@ -39,22 +40,52 @@ public class ProxyService : IProxyService
 {
     private readonly Dictionary<string, ProxyGameInstance> _runningGames = new();
     private readonly IGameConfigService _configService;
+    private readonly bool _suppressConsoleOutput;
+    private readonly bool _basicDebugLogging;
 
-    public ProxyService(IGameConfigService configService)
+    public ProxyService(
+        IGameConfigService configService,
+        bool suppressConsoleOutput = false,
+        bool basicDebugLogging = false)
     {
         _configService = configService;
+        _suppressConsoleOutput = suppressConsoleOutput;
+        _basicDebugLogging = basicDebugLogging;
     }
 
     public event EventHandler<GameStatusChangedEventArgs>? StatusChanged;
 
     public async Task<bool> StartGameAsync(GameConfig config)
     {
-        if (_runningGames.ContainsKey(config.Id))
+        if (_runningGames.TryGetValue(config.Id, out ProxyGameInstance? runningInstance))
+        {
+            ApplyLiveGameConfig(runningInstance, config);
             return false;
+        }
 
+        var runtimeContext = new TwxRuntimeContext($"twxp-{config.Id}");
+        if (_basicDebugLogging)
+        {
+            runtimeContext.DebugMode = true;
+            runtimeContext.VerboseDebugMode = false;
+            runtimeContext.TriggerDebugMode = false;
+            runtimeContext.ScriptTraceDebugMode = false;
+            runtimeContext.AutoRecorderDebugMode = false;
+            runtimeContext.VariablePersistenceDebugMode = false;
+        }
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("OPENTW_TWX_TRIGGER_DEBUG"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            runtimeContext.DebugMode = true;
+            runtimeContext.VerboseDebugMode = true;
+            runtimeContext.TriggerDebugMode = true;
+        }
         GameFileLock? gameFileLock = null;
         try
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(runtimeContext);
             NotifyStatusChanged(config.Id, GameStatus.Starting);
             string configPath = ResolveGameDataFilePath(config);
             string dbPath = ResolveDatabasePath(config);
@@ -86,8 +117,8 @@ public class ProxyService : IProxyService
             interpreter.ScriptDirectory = scriptDirectory;
             
             // Initialize the menu manager for this game
-            GlobalModules.TWXMenu = new MenuManager();
-            Console.WriteLine("[ProxyService] Initialized MenuManager");
+            GlobalModules.TWXMenu = new MenuManager(runtimeContext);
+            WriteConsole("[ProxyService] Initialized MenuManager");
             
             // Create the actual network game instance
             var gameInstance = new TWXProxy.Core.GameInstance(
@@ -97,13 +128,15 @@ public class ProxyService : IProxyService
                 config.ListenPort,
                 config.CommandChar,
                 interpreter,
-                scriptDirectory
+                scriptDirectory,
+                runtimeContext
             );
             gameInstance.Logger.LogDirectory = AppPaths.LogsDir;
             gameInstance.Logger.SetLogIdentity(config.Name);
             gameInstance.AutoReconnect = config.AutoReconnect;
             gameInstance.ReconnectDelayMs = Math.Max(1, config.ReconnectDelaySeconds) * 1000;
             gameInstance.LocalEcho = config.LocalEcho;
+            gameInstance.Verbose = !_suppressConsoleOutput;
             gameInstance.AcceptExternal = config.AcceptExternal;
             gameInstance.AllowLerkers = config.AllowLerkers;
             gameInstance.ExternalAddress = config.ExternalAddress ?? string.Empty;
@@ -202,7 +235,7 @@ public class ProxyService : IProxyService
             {
                 TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] DATABASE ERROR: {dbEx}\n");
             }
-            TWXProxy.Core.ScriptRef.SetActiveDatabase(sessionDb);
+            TWXProxy.Core.ScriptRef.SetActiveDatabase(runtimeContext, sessionDb);
             TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Database ready for {config.Name}\n");
             TWXProxy.Core.GlobalModules.FlushDebugLog();
 
@@ -216,18 +249,18 @@ public class ProxyService : IProxyService
             var varsToLoad = new Dictionary<string, string>(config.Variables, StringComparer.OrdinalIgnoreCase);
             varsToLoad.Remove("$gfile_chk");
             varsToLoad.Remove("$doRelog");
-            TWXProxy.Core.ScriptRef.LoadVarsForGame(varsToLoad);
+            TWXProxy.Core.ScriptRef.LoadVarsForGame(runtimeContext, varsToLoad);
 
             // When savevar is called, persist the value into the game's data file,
             // but skip the session-startup flags so they never survive across launches.
-            TWXProxy.Core.ScriptRef.OnVariableSaved = (varName, value) =>
+            TWXProxy.Core.ScriptRef.SetOnVariableSaved(runtimeContext, (varName, value) =>
             {
                 if (string.Equals(varName, "$gfile_chk", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(varName, "$doRelog",   StringComparison.OrdinalIgnoreCase))
                     return;
                 config.Variables[varName] = value;
-                _ = _configService.SaveConfigAsync(config);
-            };
+                _configService.RequestVariablesSave(config);
+            });
 
             // Create proxy instance early so we can reference it in event handlers
             var proxyInstance = new ProxyGameInstance
@@ -236,6 +269,7 @@ public class ProxyService : IProxyService
                 GameInstance = gameInstance,
                 Interpreter = interpreter,
                 Database = sessionDb,
+                RuntimeContext = runtimeContext,
                 FileLock = gameFileLock,
                 Status = GameStatus.Running,
                 ServerLineBuffer = new System.Text.StringBuilder(),
@@ -246,12 +280,26 @@ public class ProxyService : IProxyService
             // Hook up server data handler to set CURRENTLINE/CURRENTANSILINE
             gameInstance.ServerDataReceived += (sender, e) =>
             {
+                using var eventScope = GlobalModules.UseRuntimeContext(proxyInstance.RuntimeContext);
+                lock (proxyInstance.ServerDataSync)
+                {
+                    proxyInstance.PendingServerData.Enqueue((e.Text, e.Data.ToArray()));
+                    if (proxyInstance.ProcessingServerData)
+                        return;
+
+                    proxyInstance.ProcessingServerData = true;
+                    try
+                    {
+                        while (proxyInstance.PendingServerData.Count > 0)
+                        {
+                (string text, byte[] data) = proxyInstance.PendingServerData.Dequeue();
                 // Process server data for line detection
-                string text = e.Text;
-                
-                // Raw-byte hex dump — helps diagnose ANSI/encoding issues
-                var hexDump = string.Join(" ", e.Data.Select(b => b.ToString("X2")));
-                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] RAW {e.Data.Length}B: {hexDump}\n");
+
+                if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                {
+                    var hexDump = string.Join(" ", data.Select(b => b.ToString("X2")));
+                    TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] RAW {data.Length}B: {hexDump}\n");
+                }
                 
                 string ansiChunk = TWXProxy.Core.AnsiCodes.PrepareScriptAnsiText(text);
                 bool scriptInAnsi = proxyInstance.ScriptInAnsi;
@@ -307,22 +355,18 @@ public class ProxyService : IProxyService
                             // Fire triggers for partial lines (prompts) too
                             if (TWXProxy.Core.GlobalModules.TWXInterpreter is TWXProxy.Core.ModInterpreter interpreter)
                             {
-                                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing partial line (prompt): '{strippedRemainder}'\n");
+                                if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                                    TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing partial line (prompt): '{strippedRemainder}'\n");
                                 // Restore CURRENTLINE to the actual prompt before firing
                                 TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
                                 bool nativeHaggleResponded = gameInstance.ProcessNativeHaggleLine(strippedRemainder);
-                                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");
+                                if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                                    TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling Text Event on prompt...\n");
                                 // Pascal partial prompt flow is AutoTextEvent(CurrentLine), then
-                                // ProcessPrompt(CurrentLine) which calls TextEvent(CurrentLine).
+                                // ProcessPrompt(CurrentLine), which calls TextEvent(CurrentLine).
                                 // Pascal does NOT call TextLineEvent or ActivateTriggers here —
                                 // those only happen after a full \r-terminated line in ProcessLine.
-                                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Calling AutoTextEvent on prompt...\n");
-                                TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
-                                TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                                interpreter.AutoTextEvent(scriptRemainder, false);
-                                TWXProxy.Core.ScriptRef.SetCurrentAnsiLine(remainderForAnsi);
-                                TWXProxy.Core.ScriptRef.SetCurrentLine(scriptRemainder);
-                                interpreter.TextEvent(scriptRemainder, false);
+                                interpreter.DispatchPartialLine(scriptRemainder, remainderForAnsi, false);
                                 if (nativeHaggleResponded)
                                 {
                                     proxyInstance.ServerLineBuffer.Clear();
@@ -365,7 +409,8 @@ public class ProxyService : IProxyService
                             TWXProxy.Core.AnsiCodes.StripANSI(line).TrimEnd('\r'));
                         TWXProxy.Core.ScriptRef.SetCurrentLine(strippedLine);
                         
-                        TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing line: '{strippedLine}'\n");
+                        if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Processing line: '{strippedLine}'\n");
                         gameInstance.FeedShipStatusLine(strippedLine);
                         
                         // Update sector database from game text before firing script triggers (non-blank only)
@@ -384,7 +429,8 @@ public class ProxyService : IProxyService
                         {
                             // Pascal dispatch order for complete lines: TextLineEvent first, then TextEvent.
                             // (Pascal ProcessLine calls TextLineEvent, then ProcessPrompt calls TextEvent with the same line.)
-                            TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Dispatching complete script line...\n");
+                            if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                                TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] Dispatching complete script line...\n");
                             interpreter.DispatchCompleteLine(scriptLine, line, false);
                         }
                     }
@@ -408,16 +454,25 @@ public class ProxyService : IProxyService
                         if (ansiRemainder.Length > 0)
                             proxyInstance.ServerAnsiLineBuffer.Append(ansiRemainder);
                     }
+                        }
+                    }
+                    finally
+                    {
+                        proxyInstance.ProcessingServerData = false;
+                    }
+                }
             };
             
             // Hook up event handlers
             gameInstance.Connected += (sender, e) =>
             {
+                using var eventScope = GlobalModules.UseRuntimeContext(proxyInstance.RuntimeContext);
                 NotifyStatusChanged(config.Id, GameStatus.Running, "Connected to server");
             };
             
             gameInstance.Disconnected += (sender, e) =>
             {
+                using var eventScope = GlobalModules.UseRuntimeContext(proxyInstance.RuntimeContext);
                 // Don't change status - still running and accepting connections
                 System.Diagnostics.Debug.WriteLine($"[{config.Name}] Server disconnected: {e.Reason}");
                 // Fire 'Connection Lost' program event so scripts can react (re-register their triggers, etc.)
@@ -431,16 +486,19 @@ public class ProxyService : IProxyService
             // Hook up clear input buffer handler
             gameInstance.ClearInputBufferRequested += (sender, e) =>
             {
+                using var eventScope = GlobalModules.UseRuntimeContext(proxyInstance.RuntimeContext);
                 proxyInstance.InputBuffer = string.Empty;
-                Console.WriteLine($"[ProxyService] InputBuffer cleared for GETINPUT");
+                WriteConsole("[ProxyService] InputBuffer cleared for GETINPUT");
             };
             
             // Hook up local data handler to process GETINPUT responses
             // The event fires byte-by-byte, so we accumulate into lines
             gameInstance.LocalDataReceived += (sender, e) =>
             {
+                using var eventScope = GlobalModules.UseRuntimeContext(proxyInstance.RuntimeContext);
                 string text = e.Text;
-                Console.WriteLine($"[ProxyService] LocalDataReceived: {e.Data.Length} bytes, byte={e.Data[0]}, text='{text}'");
+                if (TWXProxy.Core.GlobalModules.VerboseDebugMode)
+                    TWXProxy.Core.GlobalModules.DebugLog($"[ProxyService] LocalDataReceived: {e.Data.Length} bytes\n");
                 
                 // Handle backspace (8) or DEL (127)
                 if (e.Data.Length == 1 && (e.Data[0] == 8 || e.Data[0] == 127))
@@ -448,7 +506,7 @@ public class ProxyService : IProxyService
                     if (proxyInstance.InputBuffer.Length > 0)
                     {
                         proxyInstance.InputBuffer = proxyInstance.InputBuffer.Substring(0, proxyInstance.InputBuffer.Length - 1);
-                        Console.WriteLine($"[ProxyService] Backspace - buffer now: '{proxyInstance.InputBuffer}'");
+                        WriteConsole($"[ProxyService] Backspace - buffer now: '{proxyInstance.InputBuffer}'");
                     }
                     return;
                 }
@@ -464,7 +522,7 @@ public class ProxyService : IProxyService
                 {
                     string key = proxyInstance.InputBuffer;
                     proxyInstance.InputBuffer = string.Empty;
-                    Console.WriteLine($"[ProxyService] Keypress mode - firing LocalInputEvent immediately: '{key}'");
+                    WriteConsole($"[ProxyService] Keypress mode - firing LocalInputEvent immediately: '{key}'");
                     interpKP.LocalInputEvent(key);
                     return;
                 }
@@ -488,7 +546,7 @@ public class ProxyService : IProxyService
                     string line = proxyInstance.InputBuffer.TrimEnd('\r', '\n');
                     proxyInstance.InputBuffer = string.Empty; // Clear buffer
 
-                    Console.WriteLine($"[ProxyService] Complete line received: '{line}', passing to interpreter");
+                    WriteConsole($"[ProxyService] Complete line received: '{line}', passing to interpreter");
                     interpreter.LocalInputEvent(line);
                 }
             };
@@ -497,8 +555,8 @@ public class ProxyService : IProxyService
             await gameInstance.StartAsync();
             
             // Set this as the active game instance for script commands
-            TWXProxy.Core.ScriptRef.SetActiveGameInstance(gameInstance);
-            Console.WriteLine($"[ProxyService] Set active game instance for {config.Name}");
+            TWXProxy.Core.ScriptRef.SetActiveGameInstance(runtimeContext, gameInstance);
+            WriteConsole($"[ProxyService] Set active game instance for {config.Name}");
 
             proxyInstance.ModuleHost = await ExpansionModuleHost.CreateAsync(new ExpansionModuleHostOptions
             {
@@ -536,16 +594,19 @@ public class ProxyService : IProxyService
     {
         if (_runningGames.TryGetValue(gameId, out var instance))
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
             NotifyStatusChanged(gameId, GameStatus.Stopped);
             
             // Clear the active game instance for script commands
-            TWXProxy.Core.ScriptRef.SetActiveGameInstance(null);
+            TWXProxy.Core.ScriptRef.SetActiveGameInstance(instance.RuntimeContext, null);
 
             // Close the database — this stops the autosave timer and does a
             // final synchronous write to disk before we clear the reference.
             instance.Database.CloseDatabase();
-            TWXProxy.Core.ScriptRef.SetActiveDatabase(null);
-            Console.WriteLine($"[ProxyService] Saved and closed database for {instance.Config.Name}");
+            TWXProxy.Core.ScriptRef.SetActiveDatabase(instance.RuntimeContext, null);
+            TWXProxy.Core.ScriptRef.SetOnVariableSaved(instance.RuntimeContext, null);
+            await _configService.FlushVariablesAsync(instance.Config);
+            WriteConsole($"[ProxyService] Saved and closed database for {instance.Config.Name}");
             
             // Clear the menu manager
             GlobalModules.TWXMenu = null;
@@ -590,7 +651,10 @@ public class ProxyService : IProxyService
     public Task<IReadOnlyList<RunningScriptInfo>> GetRunningScriptsAsync(string gameId)
     {
         if (_runningGames.TryGetValue(gameId, out var instance))
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
             return Task.FromResult(ProxyGameOperations.GetRunningScripts(instance.Interpreter));
+        }
 
         return Task.FromResult<IReadOnlyList<RunningScriptInfo>>(Array.Empty<RunningScriptInfo>());
     }
@@ -600,6 +664,7 @@ public class ProxyService : IProxyService
         if (!_runningGames.TryGetValue(gameId, out var instance))
             throw new InvalidOperationException("Game is not running.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         ProxyGameOperations.LoadScript(instance.Interpreter, scriptPath);
         return Task.CompletedTask;
     }
@@ -612,8 +677,22 @@ public class ProxyService : IProxyService
         if (string.IsNullOrWhiteSpace(botName))
             throw new InvalidOperationException("Bot name is required.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         instance.Interpreter.SwitchBot(string.Empty, botName, stopBotScripts: true);
         return Task.CompletedTask;
+    }
+
+    public async Task ReloadBotConfigsAsync(string gameId)
+    {
+        if (!_runningGames.TryGetValue(gameId, out var instance))
+            return;
+
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
+        string scriptDirectory = instance.Config.ScriptDirectory ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(scriptDirectory))
+            scriptDirectory = await _configService.GetScriptsDirectoryAsync();
+        string programDir = AppPaths.ProgramDir;
+        instance.GameInstance.ReloadBotConfigs(programDir, scriptDirectory, includeNative: false);
     }
 
     public Task StopScriptAsync(string gameId, int scriptId)
@@ -621,6 +700,7 @@ public class ProxyService : IProxyService
         if (!_runningGames.TryGetValue(gameId, out var instance))
             throw new InvalidOperationException("Game is not running.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         if (!ProxyGameOperations.StopScriptById(instance.Interpreter, scriptId))
             throw new InvalidOperationException($"Script {scriptId} was not found.");
 
@@ -632,6 +712,7 @@ public class ProxyService : IProxyService
         if (!_runningGames.TryGetValue(gameId, out var instance))
             throw new InvalidOperationException("Game is not running.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         ProxyGameOperations.StopAllScripts(instance.Interpreter, includeSystemScripts);
         return Task.CompletedTask;
     }
@@ -639,7 +720,10 @@ public class ProxyService : IProxyService
     public Task<HistorySnapshot> GetHistoryAsync(string gameId)
     {
         if (_runningGames.TryGetValue(gameId, out var instance))
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
             return Task.FromResult(instance.GameInstance.History.GetSnapshot());
+        }
 
         return Task.FromResult(new HistorySnapshot(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()));
     }
@@ -649,6 +733,7 @@ public class ProxyService : IProxyService
         if (!_runningGames.TryGetValue(gameId, out var instance))
             throw new InvalidOperationException("Game is not running.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         instance.GameInstance.History.Clear(type);
         return Task.CompletedTask;
     }
@@ -717,6 +802,7 @@ public class ProxyService : IProxyService
         if (!_runningGames.TryGetValue(gameId, out var instance))
             throw new InvalidOperationException("Game is not running.");
 
+        using var runtimeScope = GlobalModules.UseRuntimeContext(instance.RuntimeContext);
         return Task.FromResult(instance.GameInstance.Logger.BeginPlayLog(capturePath));
     }
 
@@ -733,6 +819,45 @@ public class ProxyService : IProxyService
             Status = status,
             Message = message
         });
+    }
+
+    private void WriteConsole(string message)
+    {
+        if (!_suppressConsoleOutput)
+            Console.WriteLine(message);
+    }
+
+    private static void ApplyLiveGameConfig(ProxyGameInstance instance, GameConfig config)
+    {
+        instance.Config.AutoReconnect = config.AutoReconnect;
+        instance.Config.ReconnectDelaySeconds = config.ReconnectDelaySeconds;
+        instance.Config.LocalEcho = config.LocalEcho;
+        instance.Config.AcceptExternal = config.AcceptExternal;
+        instance.Config.AllowLerkers = config.AllowLerkers;
+        instance.Config.ExternalAddress = config.ExternalAddress ?? string.Empty;
+        instance.Config.LerkerAddress = config.LerkerAddress ?? string.Empty;
+        instance.Config.BroadcastMessages = config.BroadcastMessages;
+        instance.Config.LogEnabled = config.LogEnabled;
+        instance.Config.LogAnsi = config.LogAnsi;
+        instance.Config.LogAnsiCompanion = config.LogAnsiCompanion;
+        instance.Config.LogBinary = config.LogBinary;
+        instance.Config.NotifyPlayCuts = config.NotifyPlayCuts;
+        instance.Config.MaxPlayDelay = config.MaxPlayDelay;
+
+        instance.GameInstance.AutoReconnect = config.AutoReconnect;
+        instance.GameInstance.ReconnectDelayMs = Math.Max(1, config.ReconnectDelaySeconds) * 1000;
+        instance.GameInstance.LocalEcho = config.LocalEcho;
+        instance.GameInstance.AcceptExternal = config.AcceptExternal;
+        instance.GameInstance.AllowLerkers = config.AllowLerkers;
+        instance.GameInstance.ExternalAddress = config.ExternalAddress ?? string.Empty;
+        instance.GameInstance.BroadCastMsgs = config.BroadcastMessages;
+        instance.GameInstance.Logger.LogEnabled = config.LogEnabled;
+        instance.GameInstance.Logger.LogData = config.LogEnabled;
+        instance.GameInstance.Logger.LogANSI = config.LogAnsi;
+        instance.GameInstance.Logger.LogAnsiCompanion = config.LogAnsiCompanion;
+        instance.GameInstance.Logger.BinaryLogs = config.LogBinary;
+        instance.GameInstance.Logger.NotifyPlayCuts = config.NotifyPlayCuts;
+        instance.GameInstance.Logger.MaxPlayDelay = config.MaxPlayDelay;
     }
 
     private static TWXProxy.Core.DataHeader BuildHeader(GameConfig config) => new()
@@ -769,6 +894,7 @@ public class ProxyService : IProxyService
     {
         if (_runningGames.TryGetValue(gameId, out var running))
         {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(running.RuntimeContext);
             await action(running.Database);
             return;
         }
@@ -836,7 +962,10 @@ public class ProxyService : IProxyService
     private async Task<int> GetBubbleSizeAsync(string gameId)
     {
         if (_runningGames.TryGetValue(gameId, out var running))
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(running.RuntimeContext);
             return Math.Max(1, running.Config.BubbleSize);
+        }
 
         return Math.Max(1, (await GetRequiredConfigAsync(gameId)).BubbleSize);
     }
@@ -871,12 +1000,16 @@ public class ProxyService : IProxyService
         public required TWXProxy.Core.GameInstance GameInstance { get; init; }
         public required TWXProxy.Core.ModInterpreter Interpreter { get; init; }
         public required TWXProxy.Core.ModDatabase Database { get; init; }
+        public required TwxRuntimeContext RuntimeContext { get; init; }
         public required GameFileLock FileLock { get; init; }
         public ExpansionModuleHost? ModuleHost { get; set; }
         public GameStatus Status { get; set; }
         public string InputBuffer { get; set; } = string.Empty;
         public required System.Text.StringBuilder ServerLineBuffer { get; init; }
         public required System.Text.StringBuilder ServerAnsiLineBuffer { get; init; }
+        public object ServerDataSync { get; } = new();
+        public Queue<(string Text, byte[] Data)> PendingServerData { get; } = new();
+        public bool ProcessingServerData { get; set; }
         public bool ScriptInAnsi { get; set; }
     }
 }

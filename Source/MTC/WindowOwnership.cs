@@ -72,6 +72,22 @@ public partial class MainWindow
         }
     }
 
+    private void ApplyScriptWindowStayInFrontPreference()
+    {
+        if (!_appPrefs.DisableScriptWindowStayInFront)
+            return;
+
+        Window[] windows;
+        lock (_ownedWindowSync)
+            windows = _ownedChildWindows.ToArray();
+
+        foreach (Window window in windows)
+        {
+            if (window is ScriptPopupWindow scriptWindow)
+                scriptWindow.Topmost = false;
+        }
+    }
+
     private void RegisterOwnedChildProcess(Process? process)
     {
         if (process == null)

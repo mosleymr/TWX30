@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -12,38 +15,27 @@ namespace MTC.mombot;
 internal sealed class mombotNativeConfigDialog : Window
 {
     private static readonly IBrush BgWindow = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-    private static readonly IBrush BgHeader = Brushes.Black;
     private static readonly IBrush BgPanel = new SolidColorBrush(Color.FromRgb(30, 30, 30));
     private static readonly IBrush BgInput = new SolidColorBrush(Color.FromRgb(20, 20, 20));
     private static readonly IBrush BgButton = new SolidColorBrush(Color.FromRgb(55, 55, 55));
     private static readonly IBrush Border = new SolidColorBrush(Color.FromRgb(0xC8, 0xC8, 0xC8));
     private static readonly IBrush InputBorder = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-    private static readonly IBrush FgHeaderBody = Brushes.White;
     private static readonly IBrush FgNormal = new SolidColorBrush(Color.FromRgb(170, 170, 170));
     private static readonly IBrush FgLabel = new SolidColorBrush(Color.FromRgb(200, 200, 200));
     private static readonly FontFamily MonoFont = new("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
-    private const string CreditsText = @"
-Created by: The Bounty Hunter, Mind Dagger, Lonestar, and Hammer
-Testing by: Misbehavin and DaCreeper
-
-Credits: Oz, Zentock, SupG, Dynarri, Cherokee, Alexio, Xide,
-Phx, Rincrast, Voltron, Traitor, Parrothead,
-PSI, Elder Prophet, Caretaker, Deign
-
-Native twx3 integration by Shadow
-
-Version: 5.0.0";
-
     public global::MTC.BotConfigDialogResult? Result { get; private set; }
 
-    public mombotNativeConfigDialog(string title, global::MTC.BotConfigDialogResult defaults)
+    public mombotNativeConfigDialog(
+        string title,
+        global::MTC.BotConfigDialogResult defaults,
+        IReadOnlyList<string>? postLoginScripts = null)
     {
         Title = title;
         Width = 980;
-        Height = 820;
+        Height = 760;
         MinWidth = 920;
-        MinHeight = 720;
+        MinHeight = 640;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = BgWindow;
 
@@ -55,6 +47,8 @@ Version: 5.0.0";
         var txtCommsName = BuildTextBox(defaults.CommsVar, "MomBot");
         var txtServerName = BuildTextBox(defaults.ServerName, "server name");
         var txtLoginName = BuildTextBox(defaults.LoginName, "login name");
+        var txtPassword = BuildTextBox(defaults.Password, "password");
+        txtPassword.PasswordChar = '*';
         var txtGameLetter = BuildTextBox(defaults.GameLetter, "B");
         txtGameLetter.MaxLength = 1;
         txtGameLetter.Width = 96;
@@ -62,6 +56,50 @@ Version: 5.0.0";
         var txtLoginScript = BuildTextBox(defaults.LoginScript, "disabled");
         var txtTheme = BuildTextBox(defaults.Theme, "7|[MOMBOT]|~D|~G|~B|~C");
         txtTheme.MinWidth = 0;
+        var txtSubspace = BuildTextBox(defaults.Subspace, "0");
+        txtSubspace.MaxLength = 5;
+        txtSubspace.Width = 120;
+        txtSubspace.HorizontalAlignment = HorizontalAlignment.Left;
+
+        string[] scriptOptions = BuildPostLoginScriptOptions(postLoginScripts);
+        var chkRunPostLoginScript = new CheckBox
+        {
+            Content = "Run Postlogin Script",
+            IsChecked = defaults.RunPostLoginScript,
+            Foreground = FgNormal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var cboPostLoginScript = BuildComboBox(scriptOptions);
+        cboPostLoginScript.SelectedItem = ResolvePostLoginScriptSelection(defaults, scriptOptions);
+        var txtCustomPostLoginScript = BuildTextBox(defaults.PostLoginScript, "custom script path");
+
+        var startupMoveOptions = new[]
+        {
+            new StartupMoveOption("none", "No startup mow"),
+            new StartupMoveOption("dock", "Mow to Dock"),
+            new StartupMoveOption("backdoor", "Mow to Backdoor"),
+        };
+        var cboStartupMove = BuildComboBox(startupMoveOptions);
+        cboStartupMove.SelectedItem = startupMoveOptions.FirstOrDefault(option =>
+            string.Equals(option.Value, NormalizeStartupMove(defaults.StartupMove), StringComparison.OrdinalIgnoreCase)) ?? startupMoveOptions[0];
+
+        var chkCreateOrJoinCorp = new CheckBox
+        {
+            Content = "Create or Join Corp",
+            IsChecked = defaults.CreateOrJoinCorp,
+            Foreground = FgNormal,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var corpModeOptions = new[]
+        {
+            new CorpModeOption(true, "Create Corp"),
+            new CorpModeOption(false, "Join Corp"),
+        };
+        var cboCorpMode = BuildComboBox(corpModeOptions);
+        cboCorpMode.SelectedItem = corpModeOptions.First(option => option.Create == defaults.CreateCorp);
+        var txtCorpName = BuildTextBox(defaults.CorpName, "corp name");
+        var txtCorpPassword = BuildTextBox(defaults.CorpPassword, "corp password");
+        txtCorpPassword.PasswordChar = '*';
 
         var chkAutoStart = new CheckBox
         {
@@ -104,7 +142,17 @@ Version: 5.0.0";
                 txtLoginName.Text?.Trim() ?? string.Empty,
                 NormalizeGameLetter(txtGameLetter.Text),
                 txtLoginScript.Text?.Trim() ?? string.Empty,
-                txtTheme.Text?.Trim() ?? string.Empty);
+                txtTheme.Text?.Trim() ?? string.Empty,
+                Password: txtPassword.Text ?? string.Empty,
+                RunPostLoginScript: chkRunPostLoginScript.IsChecked == true,
+                PostLoginScript: GetSelectedPostLoginScript(cboPostLoginScript, txtCustomPostLoginScript),
+                CustomPostLoginScript: string.Equals(cboPostLoginScript.SelectedItem as string, "Custom", StringComparison.OrdinalIgnoreCase),
+                StartupMove: (cboStartupMove.SelectedItem as StartupMoveOption)?.Value ?? "none",
+                CreateOrJoinCorp: chkCreateOrJoinCorp.IsChecked == true,
+                CreateCorp: (cboCorpMode.SelectedItem as CorpModeOption)?.Create ?? false,
+                CorpName: chkCreateOrJoinCorp.IsChecked == true ? txtCorpName.Text?.Trim() ?? string.Empty : string.Empty,
+                CorpPassword: chkCreateOrJoinCorp.IsChecked == true ? txtCorpPassword.Text ?? string.Empty : string.Empty,
+                Subspace: NormalizeSubspace(txtSubspace.Text));
             Close(true);
         };
 
@@ -114,24 +162,31 @@ Version: 5.0.0";
         nameCell.IsEnabled = false;
         Control descriptionCell = BuildFieldCell("Description", txtDescription);
         descriptionCell.IsEnabled = false;
+        Control postLoginScriptPicker = BuildPairRow(
+            BuildFieldCell("Script", cboPostLoginScript),
+            BuildFieldCell("Custom", txtCustomPostLoginScript));
+        Control corpDetails = BuildPairRow(
+            BuildFieldCell("Corp Name", txtCorpName),
+            BuildFieldCell("Corp Password", txtCorpPassword));
 
-        var titleImage = BuildHeaderImage();
-        titleImage.VerticalAlignment = VerticalAlignment.Top;
-
-        var creditsBlock = BuildViewer(CreditsText.Trim('\r', '\n'), FgHeaderBody, 10.5);
-        creditsBlock.TextWrapping = TextWrapping.NoWrap;
-        creditsBlock.VerticalAlignment = VerticalAlignment.Top;
-        creditsBlock.Margin = new Thickness(10, 2, 0, 0);
-
-        var titleHeader = new StackPanel
+        void RefreshNativeOptionVisibility()
         {
-            Spacing = 6,
-            Children =
-            {
-                titleImage,
-                creditsBlock,
-            },
-        };
+            bool runPostLogin = chkRunPostLoginScript.IsChecked == true;
+            cboPostLoginScript.IsEnabled = runPostLogin;
+            bool customPostLogin = runPostLogin && string.Equals(cboPostLoginScript.SelectedItem as string, "Custom", StringComparison.OrdinalIgnoreCase);
+            txtCustomPostLoginScript.IsVisible = customPostLogin;
+            txtCustomPostLoginScript.IsEnabled = customPostLogin;
+            bool corpEnabled = chkCreateOrJoinCorp.IsChecked == true;
+            cboCorpMode.IsEnabled = corpEnabled;
+            corpDetails.IsVisible = corpEnabled;
+            txtCorpName.IsEnabled = corpEnabled;
+            txtCorpPassword.IsEnabled = corpEnabled;
+        }
+
+        chkRunPostLoginScript.IsCheckedChanged += (_, _) => RefreshNativeOptionVisibility();
+        cboPostLoginScript.SelectionChanged += (_, _) => RefreshNativeOptionVisibility();
+        chkCreateOrJoinCorp.IsCheckedChanged += (_, _) => RefreshNativeOptionVisibility();
+        RefreshNativeOptionVisibility();
 
         Content = new ScrollViewer
         {
@@ -146,14 +201,6 @@ Version: 5.0.0";
                 {
                     new Border
                     {
-                        Background = BgHeader,
-                        BorderBrush = Border,
-                        BorderThickness = new Thickness(1),
-                        Padding = new Thickness(12, 10, 12, 10),
-                        Child = titleHeader,
-                    },
-                    new Border
-                    {
                         Background = BgPanel,
                         BorderBrush = InputBorder,
                         BorderThickness = new Thickness(1),
@@ -163,23 +210,39 @@ Version: 5.0.0";
                             Spacing = 10,
                             Children =
                             {
+                                BuildHeaderImage(),
                                 new TextBlock
                                 {
-                                    Text = "Alias and script path are managed by the native runtime and are shown here for reference only.",
+                                    Text = "Native MomBot login defaults and after-login actions. Scheduled login time is selected from Bot -> Start Bot.",
                                     Foreground = FgNormal,
                                     TextWrapping = TextWrapping.Wrap,
                                 },
+                                BuildSectionHeader("New Game Defaults"),
+                                BuildPairRow(
+                                    BuildFieldCell("BBS Login", txtServerName),
+                                    BuildFieldCell("Trader Alias", txtLoginName)),
+                                BuildPairRow(
+                                    BuildFieldCell("Password", txtPassword),
+                                    BuildFieldCell("Game Letter", txtGameLetter)),
+                                BuildSectionHeader("After Login Options"),
+                                BuildPairRow(
+                                    BuildFieldCell("Movement", cboStartupMove),
+                                    BuildFieldCell("Subspace", txtSubspace)),
+                                BuildPairRow(
+                                    BuildFieldCell("Postlogin", chkRunPostLoginScript),
+                                    BuildFieldCell("Corporation", chkCreateOrJoinCorp)),
+                                postLoginScriptPicker,
+                                BuildPairRow(
+                                    BuildFieldCell("Corp Action", cboCorpMode),
+                                    corpDetails),
+                                BuildSectionHeader("Native MomBot"),
                                 BuildPairRow(nameCell, descriptionCell),
                                 BuildPairRow(
                                     BuildFieldCell("Bot Name", txtBotName),
                                     BuildFieldCell("Comms Name", txtCommsName)),
                                 BuildPairRow(
-                                    BuildFieldCell("Server Login", txtServerName),
-                                    BuildFieldCell("Login Name", txtLoginName)),
-                                BuildPairRow(
-                                    BuildFieldCell("Game Letter", txtGameLetter),
+                                    BuildFieldCell("Auto Start", chkAutoStart),
                                     BuildFieldCell("Login Script", txtLoginScript)),
-                                BuildFullWidthCell("Startup", chkAutoStart),
                                 BuildFullWidthCell("Theme", txtTheme),
                                 new StackPanel
                                 {
@@ -220,22 +283,96 @@ Version: 5.0.0";
         };
     }
 
+    private static ComboBox BuildComboBox(System.Collections.IEnumerable items)
+    {
+        return new ComboBox
+        {
+            ItemsSource = items,
+            MinWidth = 0,
+            Background = BgInput,
+            Foreground = FgNormal,
+            BorderBrush = InputBorder,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+    }
+
+    private sealed class StartupMoveOption
+    {
+        public StartupMoveOption(string value, string label)
+        {
+            Value = value;
+            Label = label;
+        }
+
+        public string Value { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
+    }
+
+    private sealed class CorpModeOption
+    {
+        public CorpModeOption(bool create, string label)
+        {
+            Create = create;
+            Label = label;
+        }
+
+        public bool Create { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
+    }
+
     private static string NormalizeGameLetter(string? value)
     {
         string normalized = (value ?? string.Empty).Trim();
         return string.IsNullOrEmpty(normalized) ? string.Empty : normalized[..1].ToUpperInvariant();
     }
 
-    private static TextBlock BuildViewer(string text, IBrush foreground, double fontSize)
+    private static string NormalizeStartupMove(string? value)
     {
-        return new TextBlock
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "dock" or "backdoor" ? normalized : "none";
+    }
+
+    private static string NormalizeSubspace(string? value)
+    {
+        string digits = new((value ?? string.Empty).Where(char.IsDigit).Take(5).ToArray());
+        return digits;
+    }
+
+    private static string[] BuildPostLoginScriptOptions(IReadOnlyList<string>? scripts)
+    {
+        var options = new List<string> { "Custom" };
+        if (scripts != null)
         {
-            Text = text,
-            TextWrapping = TextWrapping.NoWrap,
-            FontFamily = MonoFont,
-            FontSize = fontSize,
-            Foreground = foreground,
-        };
+            options.AddRange(scripts
+                .Where(script => !string.IsNullOrWhiteSpace(script))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(script => script, StringComparer.OrdinalIgnoreCase));
+        }
+
+        return options.ToArray();
+    }
+
+    private static string ResolvePostLoginScriptSelection(global::MTC.BotConfigDialogResult defaults, string[] options)
+    {
+        if (!defaults.CustomPostLoginScript && !string.IsNullOrWhiteSpace(defaults.PostLoginScript))
+        {
+            string? match = options.FirstOrDefault(option =>
+                string.Equals(option, defaults.PostLoginScript, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                return match;
+        }
+
+        return "Custom";
+    }
+
+    private static string GetSelectedPostLoginScript(ComboBox combo, TextBox customTextBox)
+    {
+        string selected = combo.SelectedItem as string ?? string.Empty;
+        return string.Equals(selected, "Custom", StringComparison.OrdinalIgnoreCase)
+            ? customTextBox.Text?.Trim() ?? string.Empty
+            : selected.Trim();
     }
 
     private static Image BuildHeaderImage()
@@ -248,8 +385,10 @@ Version: 5.0.0";
             Source = bitmap,
             Stretch = Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Left,
-            Width = 900,
-            MaxWidth = 900,
+            Width = 760,
+            MaxWidth = 760,
+            MaxHeight = 135,
+            Margin = new Thickness(0, 0, 0, 6),
         };
     }
 
@@ -301,6 +440,17 @@ Version: 5.0.0";
                 },
                 editor,
             },
+        };
+    }
+
+    private static Control BuildSectionHeader(string label)
+    {
+        return new TextBlock
+        {
+            Text = label,
+            Foreground = FgLabel,
+            FontWeight = FontWeight.Bold,
+            Margin = new Thickness(0, 10, 0, 0),
         };
     }
 }

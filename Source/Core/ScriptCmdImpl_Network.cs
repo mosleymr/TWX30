@@ -96,7 +96,7 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog($"[CONNECT] OUTER ERROR: {ex.Message}\n");
                 Console.WriteLine($"[Script] CONNECT error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -105,7 +105,7 @@ namespace TWXProxy.Core
             // CMD: disconnect [disable]
             // Close connection to the game server
             // Optional parameter to disable auto-reconnect
-            
+
             GameInstance? gameInstance = ActiveGameInstance;
             if (gameInstance == null)
             {
@@ -148,7 +148,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[Script] DISCONNECT error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -225,7 +225,7 @@ namespace TWXProxy.Core
         {
             // CMD: processout <text>
             // Inject data into the outgoing client data stream
-            
+
             GameInstance? gameInstance = ActiveGameInstance;
             if (gameInstance == null)
             {
@@ -252,7 +252,7 @@ namespace TWXProxy.Core
                 // Send to server as if local client typed it
                 var data = Encoding.ASCII.GetBytes(text);
                 TwxRuntimeContext context = GlobalModules.CurrentContext;
-                
+
                 Task.Run(async () =>
                 {
                     try
@@ -270,7 +270,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[Script] PROCESSOUT error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 

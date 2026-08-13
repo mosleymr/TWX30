@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace TWXProxy.Core
@@ -37,6 +38,7 @@ namespace TWXProxy.Core
         Script,
         Setup,
         Database,
+        DataTransfer,
         Extensions
     }
 
@@ -65,6 +67,13 @@ namespace TWXProxy.Core
         DataShowBubbleGate,
         DataShowBubbleInterior,
         DataShowBackdoors,
+        DataExportWarpsPath,
+        DataImportWarpsPath,
+        DataExportBubblesPath,
+        DataExportDeadendsPath,
+        DataExportTwxPath,
+        DataImportTwxPath,
+        DataImportTwxKeepRecent,
         PortShowPort,
         SetupListenPort,
         SetupBubbleSize,
@@ -100,6 +109,7 @@ namespace TWXProxy.Core
         private string _lastScript = string.Empty;
         private bool _skipNextLineFeed;
         private int _pendingNumber;
+        private int _dataTransferOperationRunning;
         private readonly List<string> _workflowArgs = new();
         private string _extensionMenuPath = string.Empty;
 
@@ -174,6 +184,8 @@ namespace TWXProxy.Core
                     return await HandleSetupMenuAsync(command);
                 case MenuState.Database:
                     return await HandleDatabaseMenuAsync(command);
+                case MenuState.DataTransfer:
+                    return await HandleDataTransferMenuAsync(command);
                 case MenuState.Extensions:
                     return await HandleExtensionMenuAsync(command);
                 default:
@@ -198,24 +210,24 @@ namespace TWXProxy.Core
                     await ShowAllClientsAsync();
                     return true;
                 case '/':
-                {
-                    int clientIndex = CurrentClientIndex;
-                    _gameInstance.SetClientType(clientIndex, ClientType.Stream);
-                    await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is now in Streaming Mode.\r\n");
-                    await ShowMenuPromptAsync();
-                    return true;
-                }
+                    {
+                        int clientIndex = CurrentClientIndex;
+                        _gameInstance.SetClientType(clientIndex, ClientType.Stream);
+                        await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is now in Streaming Mode.\r\n");
+                        await ShowMenuPromptAsync();
+                        return true;
+                    }
                 case '=':
-                {
-                    int clientIndex = CurrentClientIndex;
-                    ClientType nextType = _gameInstance.GetClientType(clientIndex) == ClientType.Standard
-                        ? ClientType.Deaf
-                        : ClientType.Standard;
-                    _gameInstance.SetClientType(clientIndex, nextType);
-                    await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is {(nextType == ClientType.Deaf ? "now deaf" : "no longer deaf")}.\r\n");
-                    await ShowMenuPromptAsync();
-                    return true;
-                }
+                    {
+                        int clientIndex = CurrentClientIndex;
+                        ClientType nextType = _gameInstance.GetClientType(clientIndex) == ClientType.Standard
+                            ? ClientType.Deaf
+                            : ClientType.Standard;
+                        _gameInstance.SetClientType(clientIndex, nextType);
+                        await _gameInstance.SendMessageAsync($"\r\nClient {clientIndex} is {(nextType == ClientType.Deaf ? "now deaf" : "no longer deaf")}.\r\n");
+                        await ShowMenuPromptAsync();
+                        return true;
+                    }
                 case 'B':
                     await EnterInputModeAsync("\r\nEnter text to burst: ", InputMode.BurstInput);
                     return true;
@@ -363,9 +375,64 @@ namespace TWXProxy.Core
                 case '-':
                     await EnterInputModeAsync("\r\nEnter sector number: ", InputMode.DataShowBackdoors);
                     return true;
+                case 'X':
+                    _currentMenu = MenuState.DataTransfer;
+                    await ShowDataTransferMenuAsync();
+                    return true;
                 default:
                     await _gameInstance.SendMessageAsync($"\r\nUnknown command '{command}'. Press ? for help.\r\n");
                     await ShowDataMenuPromptAsync();
+                    return true;
+            }
+        }
+
+        private async Task<bool> HandleDataTransferMenuAsync(char command)
+        {
+            switch (char.ToUpperInvariant(command))
+            {
+                case '?':
+                    await ShowDataTransferMenuHelpAsync();
+                    return true;
+                case '+':
+                    await PromptForCommandHelpAsync();
+                    return true;
+                case 'Q':
+                    _currentMenu = MenuState.Data;
+                    await ShowDataMenuPromptAsync();
+                    return true;
+                case 'E':
+                    await EnterInputModeAsync(
+                        $"\r\nExport warp data to [{DefaultWarpDataFileName()}]: ",
+                        InputMode.DataExportWarpsPath);
+                    return true;
+                case 'I':
+                    await EnterInputModeAsync(
+                        $"\r\nImport warp data from [{DefaultWarpDataFileName()}]: ",
+                        InputMode.DataImportWarpsPath);
+                    return true;
+                case 'B':
+                    await EnterInputModeAsync(
+                        $"\r\nExport bubble list to [{DefaultBubbleFileName()}]: ",
+                        InputMode.DataExportBubblesPath);
+                    return true;
+                case 'D':
+                    await EnterInputModeAsync(
+                        $"\r\nExport deadend list to [{DefaultDeadendFileName()}]: ",
+                        InputMode.DataExportDeadendsPath);
+                    return true;
+                case 'T':
+                    await EnterInputModeAsync(
+                        $"\r\nExport TWX file to [{DefaultTwxFileName()}]: ",
+                        InputMode.DataExportTwxPath);
+                    return true;
+                case 'W':
+                    await EnterInputModeAsync(
+                        $"\r\nImport TWX file from [{DefaultTwxFileName()}]: ",
+                        InputMode.DataImportTwxPath);
+                    return true;
+                default:
+                    await _gameInstance.SendMessageAsync($"\r\nUnknown command '{command}'. Press ? for help.\r\n");
+                    await ShowDataTransferMenuPromptAsync();
                     return true;
             }
         }
@@ -511,39 +578,39 @@ namespace TWXProxy.Core
                     await ShowSetupMenuPromptAsync();
                     return true;
                 case 'C':
-                {
-                    ModDatabase? db = GetCurrentDatabase();
-                    if (db == null)
                     {
-                        await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
-                    }
-                    else
-                    {
-                        db.UseCache = !db.UseCache;
-                        await _gameInstance.SendMessageAsync(
-                            $"\r\nDatabase cache is now {FormatOnOff(db.UseCache)}.\r\n");
-                    }
+                        ModDatabase? db = GetCurrentDatabase();
+                        if (db == null)
+                        {
+                            await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                        }
+                        else
+                        {
+                            db.UseCache = !db.UseCache;
+                            await _gameInstance.SendMessageAsync(
+                                $"\r\nDatabase cache is now {FormatOnOff(db.UseCache)}.\r\n");
+                        }
 
-                    await ShowSetupMenuPromptAsync();
-                    return true;
-                }
+                        await ShowSetupMenuPromptAsync();
+                        return true;
+                    }
                 case 'E':
-                {
-                    ModDatabase? db = GetCurrentDatabase();
-                    if (db == null)
                     {
-                        await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
-                    }
-                    else
-                    {
-                        db.Recording = !db.Recording;
-                        await _gameInstance.SendMessageAsync(
-                            $"\r\nData recording is now {FormatOnOff(db.Recording)}.\r\n");
-                    }
+                        ModDatabase? db = GetCurrentDatabase();
+                        if (db == null)
+                        {
+                            await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                        }
+                        else
+                        {
+                            db.Recording = !db.Recording;
+                            await _gameInstance.SendMessageAsync(
+                                $"\r\nData recording is now {FormatOnOff(db.Recording)}.\r\n");
+                        }
 
-                    await ShowSetupMenuPromptAsync();
-                    return true;
-                }
+                        await ShowSetupMenuPromptAsync();
+                        return true;
+                    }
                 case 'K':
                     await EnterInputModeAsync("\r\nEnter new terminal menu key: ", InputMode.SetupMenuKey);
                     return true;
@@ -608,6 +675,7 @@ namespace TWXProxy.Core
 
         private async Task ShowMenuPromptAsync() => await _gameInstance.SendMessageAsync("Main> ");
         private async Task ShowDataMenuPromptAsync() => await _gameInstance.SendMessageAsync("Data> ");
+        private async Task ShowDataTransferMenuPromptAsync() => await _gameInstance.SendMessageAsync("Data Transfer> ");
         private async Task ShowPortMenuPromptAsync() => await _gameInstance.SendMessageAsync("Port> ");
         private async Task ShowScriptMenuPromptAsync() => await _gameInstance.SendMessageAsync("Script> ");
         private async Task ShowSetupMenuPromptAsync() => await _gameInstance.SendMessageAsync("Setup> ");
@@ -623,6 +691,9 @@ namespace TWXProxy.Core
                     break;
                 case MenuState.Data:
                     await ShowDataMenuPromptAsync();
+                    break;
+                case MenuState.DataTransfer:
+                    await ShowDataTransferMenuPromptAsync();
                     break;
                 case MenuState.Port:
                     await ShowPortMenuPromptAsync();
@@ -733,9 +804,27 @@ namespace TWXProxy.Core
             help.Append("  T - Show total sectors scanned\r\n");
             help.Append("  B - Show bubbles found\r\n");
             help.Append("  Z - Show bubble details\r\n");
-            help.Append("  - - Show backdoors to a sector\r\n\r\n");
+            help.Append("  - - Show backdoors to a sector\r\n");
+            help.Append("  X - Import/export data\r\n\r\n");
             await _gameInstance.SendMessageAsync(help.ToString());
             await ShowDataMenuPromptAsync();
+        }
+
+        private async Task ShowDataTransferMenuHelpAsync()
+        {
+            var help = new StringBuilder();
+            help.Append("\r\nData transfer menu:\r\n");
+            help.Append("  ? - Command list\r\n");
+            help.Append("  + - Help on command\r\n");
+            help.Append("  Q - Return to data menu\r\n");
+            help.Append("  E - Export warp data\r\n");
+            help.Append("  I - Import warp data\r\n");
+            help.Append("  B - Export bubble list\r\n");
+            help.Append("  D - Export deadend list\r\n");
+            help.Append("  T - Export TWX file\r\n");
+            help.Append("  W - Import TWX file\r\n\r\n");
+            await _gameInstance.SendMessageAsync(help.ToString());
+            await ShowDataTransferMenuPromptAsync();
         }
 
         private async Task ShowPortMenuHelpAsync()
@@ -822,6 +911,12 @@ namespace TWXProxy.Core
         {
             await _gameInstance.SendMessageAsync("\r\nData menu - Press ? for help\r\n");
             await ShowDataMenuPromptAsync();
+        }
+
+        private async Task ShowDataTransferMenuAsync()
+        {
+            await _gameInstance.SendMessageAsync("\r\nData transfer menu - Press ? for help\r\n");
+            await ShowDataTransferMenuPromptAsync();
         }
 
         private async Task ShowPortMenuAsync()
@@ -1093,6 +1188,31 @@ namespace TWXProxy.Core
                     break;
                 case InputMode.DataShowBackdoors:
                     await ShowBackdoorsAsync(ParseInt(input));
+                    break;
+                case InputMode.DataExportWarpsPath:
+                    await ExportWarpDataAsync(input);
+                    break;
+                case InputMode.DataImportWarpsPath:
+                    await ImportWarpDataAsync(input);
+                    break;
+                case InputMode.DataExportBubblesPath:
+                    await ExportBubbleListAsync(input);
+                    break;
+                case InputMode.DataExportDeadendsPath:
+                    await ExportDeadendListAsync(input);
+                    break;
+                case InputMode.DataExportTwxPath:
+                    await ExportTwxFileAsync(input);
+                    break;
+                case InputMode.DataImportTwxPath:
+                    _workflowArgs.Clear();
+                    _workflowArgs.Add(input);
+                    await EnterInputModeAsync(
+                        "\r\nKeep existing newer data when importing over it? (Y/N): ",
+                        InputMode.DataImportTwxKeepRecent);
+                    break;
+                case InputMode.DataImportTwxKeepRecent:
+                    await ImportTwxFileAsync(_workflowArgs.FirstOrDefault() ?? string.Empty, input);
                     break;
                 case InputMode.PortShowPort:
                     await ShowPortAsync(ParseInt(input));
@@ -1919,6 +2039,184 @@ namespace TWXProxy.Core
             await ShowDataMenuPromptAsync();
         }
 
+        private async Task ExportWarpDataAsync(string input)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(input, DefaultWarpDataFileName(), ".txt");
+            await StartDataTransferOperationAsync(
+                $"Exporting warp data to {path}...",
+                "Unable to export warp data",
+                () =>
+                {
+                    ProxyGameOperations.ExportWarps(db!, path);
+                    return $"\r\nWarp data successfully exported to {path}\r\n";
+                });
+        }
+
+        private async Task ImportWarpDataAsync(string input)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(input, DefaultWarpDataFileName(), ".txt");
+            await StartDataTransferOperationAsync(
+                $"Importing warp data from {path}...",
+                "Unable to import warp data",
+                () =>
+                {
+                    int imported = ProxyGameOperations.ImportWarps(db!, path);
+                    return $"\r\nWarp data successfully imported from {path} ({imported} sector records).\r\n";
+                });
+        }
+
+        private async Task ExportBubbleListAsync(string input)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(input, DefaultBubbleFileName(), ".txt");
+            await StartDataTransferOperationAsync(
+                $"Exporting bubble list to {path}...",
+                "Unable to export bubble list",
+                () =>
+                {
+                    ProxyGameOperations.ExportBubbles(db!, path, GetBubbleModule().MaxBubbleSize);
+                    return $"\r\nBubble list successfully exported to {path}\r\n";
+                });
+        }
+
+        private async Task ExportDeadendListAsync(string input)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(input, DefaultDeadendFileName(), ".txt");
+            await StartDataTransferOperationAsync(
+                $"Exporting deadend list to {path}...",
+                "Unable to export deadend list",
+                () =>
+                {
+                    ProxyGameOperations.ExportDeadends(db!, path);
+                    return $"\r\nDeadend list successfully exported to {path}\r\n";
+                });
+        }
+
+        private async Task ExportTwxFileAsync(string input)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(input, DefaultTwxFileName(), ".twx");
+            await StartDataTransferOperationAsync(
+                $"Exporting TWX file to {path}...",
+                "Unable to export TWX file",
+                () =>
+                {
+                    ProxyGameOperations.ExportTwx(db!, path);
+                    return $"\r\nDatabase export successful: {path}\r\n";
+                });
+        }
+
+        private async Task ImportTwxFileAsync(string pathInput, string keepRecentInput)
+        {
+            ModDatabase? db = GetCurrentDatabase();
+            if (!TryGetOpenDatabase(db))
+            {
+                await _gameInstance.SendMessageAsync("\r\nNo active database is open.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            string path = ResolveTransferPath(pathInput, DefaultTwxFileName(), ".twx");
+            bool keepRecent = keepRecentInput.Trim().StartsWith("Y", StringComparison.OrdinalIgnoreCase);
+            _workflowArgs.Clear();
+            await StartDataTransferOperationAsync(
+                $"Importing TWX file from {path}...",
+                "Unable to import TWX file",
+                () =>
+                {
+                    TwxImportResult result = ProxyGameOperations.ImportTwx(db!, path, keepRecent);
+                    var output = new StringBuilder();
+                    output.Append($"\r\nDatabase import successful: {path}\r\n");
+                    output.Append($"Imported {result.ImportedSectorRecords} of {result.ExpectedSectorRecords} sector records.\r\n");
+                    if (result.WasTruncated)
+                        output.Append("Warning: source file was truncated.\r\n");
+                    if (result.SkippedInvalidWarps > 0)
+                        output.Append($"Skipped {result.SkippedInvalidWarps} invalid warp references.\r\n");
+                    return output.ToString();
+                });
+        }
+
+        private async Task StartDataTransferOperationAsync(string statusMessage, string failurePrefix, Func<string> operation)
+        {
+            if (Interlocked.Exchange(ref _dataTransferOperationRunning, 1) != 0)
+            {
+                await _gameInstance.SendMessageAsync("\r\nA data transfer is already running.\r\n");
+                await ShowDataTransferMenuPromptAsync();
+                return;
+            }
+
+            int clientIndex = CurrentClientIndex;
+            await _gameInstance.SendMessageAsync($"\r\n{statusMessage}\r\n");
+
+            _ = Task.Run(async () =>
+            {
+                string output;
+                try
+                {
+                    output = operation();
+                }
+                catch (Exception ex)
+                {
+                    output = $"\r\n{failurePrefix}: {ex.Message}\r\n";
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _dataTransferOperationRunning, 0);
+                }
+
+                try
+                {
+                    using var _ = _gameInstance.PushClientContext(clientIndex);
+                    await _gameInstance.SendMessageAsync(output);
+                    if (_currentMenu == MenuState.DataTransfer && _inputMode == InputMode.None)
+                        await ShowDataTransferMenuPromptAsync();
+                }
+                catch (Exception ex)
+                {
+                    GlobalModules.DebugLog($"[Menu.DataTransfer] Failed to write transfer result: {ex}\n");
+                    GlobalModules.FlushDebugLog();
+                }
+            });
+        }
+
         private async Task ShowPortAsync(int sectorNumber)
         {
             ModDatabase? db = GetCurrentDatabase();
@@ -2503,6 +2801,53 @@ namespace TWXProxy.Core
 
         private ModDatabase? GetCurrentDatabase() => GlobalModules.Database as ModDatabase;
 
+        private static bool TryGetOpenDatabase(ModDatabase? db)
+            => db != null && db.IsOpen && db.DBHeader.Sectors > 0;
+
+        private string DefaultWarpDataFileName() => "warpspec.txt";
+
+        private string DefaultBubbleFileName() => "bubbles.txt";
+
+        private string DefaultDeadendFileName() => "deadends.txt";
+
+        private string DefaultTwxFileName()
+        {
+            string name = GetCurrentDatabase()?.DatabaseName ?? string.Empty;
+            return (string.IsNullOrWhiteSpace(name) ? "database" : name) + ".twx";
+        }
+
+        private string GetTransferDirectory()
+        {
+            if (!string.IsNullOrWhiteSpace(GlobalModules.ProgramDir))
+                return GlobalModules.ProgramDir;
+
+            ModDatabase? db = GetCurrentDatabase();
+            if (db != null && !string.IsNullOrWhiteSpace(db.DatabasePath))
+            {
+                string? directory = Path.GetDirectoryName(db.DatabasePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    return directory;
+            }
+
+            return Environment.CurrentDirectory;
+        }
+
+        private string ResolveTransferPath(string input, string defaultFileName, string extension)
+        {
+            string fileName = string.IsNullOrWhiteSpace(input) ? defaultFileName : input.Trim();
+
+            if (!string.IsNullOrEmpty(extension) &&
+                !fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+            {
+                fileName += extension;
+            }
+
+            if (Path.IsPathRooted(fileName))
+                return Path.GetFullPath(fileName);
+
+            return Path.GetFullPath(Path.Combine(GetTransferDirectory(), fileName));
+        }
+
         private ModBubble GetBubbleModule()
         {
             if (GlobalModules.TWXBubble is ModBubble bubble)
@@ -2652,6 +2997,17 @@ namespace TWXProxy.Core
                     'B' => "Show bubbles found: calculates and lists known bubbles from the current database.",
                     'Z' => "Show bubble details: shows the contents of a specific bubble when given a gate and interior sector.",
                     '-' => "Show backdoors to specific sector: lists sectors that warp into the target without being a direct outbound warp.",
+                    'X' => "Import/export data: opens transfer commands for warp text files, bubble/deadend lists, and TWX binary files.",
+                    _ => null
+                },
+                MenuState.DataTransfer => key switch
+                {
+                    'E' => "Export warp data: writes classic warpspec text data, defaulting to warpspec.txt.",
+                    'I' => "Import warp data: reads classic warpspec text data and merges outbound warps into the active database.",
+                    'B' => "Export bubble list: writes the TWX bubble list format, defaulting to bubbles.txt.",
+                    'D' => "Export deadend list: writes one deadend sector number per line, defaulting to deadends.txt.",
+                    'T' => "Export TWX file: writes the classic TWEX binary interchange format from the active database.",
+                    'W' => "Import TWX file: reads the classic TWEX binary interchange format into the active database.",
                     _ => null
                 },
                 MenuState.Port => key switch

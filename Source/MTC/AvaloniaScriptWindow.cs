@@ -36,6 +36,7 @@ internal class ScriptPopupWindow : Window
         MinHeight  = 60;
         Background = BgWin;
         Topmost    = onTop;
+        ShowActivated = false;
         // Don't show in taskbar — these are script auxiliary windows
         ShowInTaskbar = false;
         CanResize     = true;
@@ -59,6 +60,19 @@ internal class ScriptPopupWindow : Window
         };
 
         Content = _scroll;
+    }
+
+    public void RaiseForTabSelection()
+    {
+        if (!IsVisible)
+            return;
+
+        Topmost = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (IsVisible)
+                Topmost = false;
+        }, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -177,17 +191,21 @@ internal sealed class AvaloniaScriptWindow : IScriptWindow
 public sealed class AvaloniaScriptWindowFactory : IScriptWindowFactory
 {
     private readonly Func<TwxRuntimeContext, Action<Window>?>? _registrationResolver;
+    private readonly Func<bool>? _ignoreStayInFrontResolver;
 
     public AvaloniaScriptWindowFactory(
-        Func<TwxRuntimeContext, Action<Window>?>? registrationResolver = null)
+        Func<TwxRuntimeContext, Action<Window>?>? registrationResolver = null,
+        Func<bool>? ignoreStayInFrontResolver = null)
     {
         _registrationResolver = registrationResolver;
+        _ignoreStayInFrontResolver = ignoreStayInFrontResolver;
     }
 
     public IScriptWindow CreateWindow(string name, string title, int width, int height, bool onTop = false)
     {
         TwxRuntimeContext runtimeContext = GlobalModules.CurrentContext;
         Action<Window>? registerWindow = _registrationResolver?.Invoke(runtimeContext);
-        return new AvaloniaScriptWindow(name, title, width, height, onTop, registerWindow);
+        bool effectiveOnTop = onTop && _ignoreStayInFrontResolver?.Invoke() != true;
+        return new AvaloniaScriptWindow(name, title, width, height, effectiveOnTop, registerWindow);
     }
 }

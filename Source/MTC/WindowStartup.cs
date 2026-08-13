@@ -9,6 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
@@ -42,7 +43,9 @@ public partial class MainWindow
         FontFamily     = new FontFamily("Cascadia Code, Menlo, Consolas, Courier New, monospace");
 
         EnsureInitialMtcTab();
-        Core.GlobalModules.ScriptWindowFactory = new AvaloniaScriptWindowFactory(ResolveScriptWindowRegistration);
+        Core.GlobalModules.ScriptWindowFactory = new AvaloniaScriptWindowFactory(
+            ResolveScriptWindowRegistration,
+            () => _appPrefs.DisableScriptWindowStayInFront);
         RecreateClassicShellControls();
         RecreateDeckShellControls();
 
@@ -91,6 +94,7 @@ public partial class MainWindow
         };
 
         Content = BuildLayout();
+        ApplyUiScaleToMainWindow();
         PositionChanged += (_, _) => OnMainWindowPositionChanged();
         SizeChanged += (_, _) => OnMainWindowSizeChanged();
 
@@ -140,6 +144,7 @@ public partial class MainWindow
         };
         _onlineAutoRefreshTimer.Start();
 
+        Closing += OnMainWindowClosing;
         Opened += (_, _) =>
         {
             Dispatcher.UIThread.Post(
@@ -151,6 +156,7 @@ public partial class MainWindow
             RequestNativeAppMenuRefresh(force: true);
             RequestNativeDockMenuRefresh(force: true);
             _ = EnsureSharedPathsConfiguredAsync();
+            _ = RecoverPreviousOpenTabsOnStartupAsync();
             QueueStartupMtcUpdateCheck();
         };
         Activated += (_, _) => FocusActiveTerminal();
@@ -193,6 +199,84 @@ public partial class MainWindow
                 tab.StatusRefreshTimer?.Stop();
             StopMtcPerfInstrumentation();
         };
+    }
+
+    private bool _mainWindowCloseConfirmed;
+    private bool _mainWindowClosePromptActive;
+
+    private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_mainWindowCloseConfirmed)
+            return;
+
+        IReadOnlyList<MtcTabPrototype> connectedTabs = GetServerConnectedMtcTabs();
+        if (connectedTabs.Count == 0)
+            return;
+
+        e.Cancel = true;
+        if (_mainWindowClosePromptActive)
+            return;
+
+        _mainWindowClosePromptActive = true;
+        _ = ConfirmCloseConnectedWindowAsync(connectedTabs);
+    }
+
+    private async Task ConfirmCloseConnectedWindowAsync(IReadOnlyList<MtcTabPrototype> connectedTabs)
+    {
+        try
+        {
+            bool confirmed = await ShowConfirmAsync(
+                "Close Connected Games",
+                BuildCloseConnectedGamesMessage(connectedTabs),
+                "Yes",
+                "No");
+            if (!confirmed)
+                return;
+
+            _mainWindowCloseConfirmed = true;
+            _mainWindowClosing = true;
+            await StopAllMtcTabSessionsAsync();
+            Close();
+        }
+        finally
+        {
+            _mainWindowClosePromptActive = false;
+        }
+    }
+
+    private IReadOnlyList<MtcTabPrototype> GetServerConnectedMtcTabs()
+    {
+        if (_boundMtcTab is not null)
+            CaptureMtcTabSession(_boundMtcTab);
+
+        return _mtcTabs
+            .Where(tab => tab.IsLiveSession && IsMtcTabConnectedToServer(tab))
+            .ToArray();
+    }
+
+    private static bool IsMtcTabConnectedToServer(MtcTabPrototype tab)
+    {
+        if (tab.GameInstance?.IsConnected == true)
+            return true;
+
+        if (tab.Telnet.IsConnected)
+            return true;
+
+        if (Volatile.Read(ref tab.EmbeddedServerConnectedState) == 1)
+            return true;
+
+        return tab.State.Connected;
+    }
+
+    private static string BuildCloseConnectedGamesMessage(IReadOnlyList<MtcTabPrototype> connectedTabs)
+    {
+        string games = string.Join(
+            Environment.NewLine,
+            connectedTabs.Select(tab => "- " + GetLiveMtcTabTitle(tab, null)));
+        return "the following games are still connected, are you sure?" +
+               Environment.NewLine +
+               Environment.NewLine +
+               games;
     }
 
     private void RestoreInWindowLayoutPreferences()

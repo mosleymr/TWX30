@@ -132,13 +132,13 @@ namespace TWXProxy.Core
             for (int i = 0; i < 6; i++)
             {
                 ushort warp = area.Warp[i];
-                
+
                 if (warp == 0)
                     break;
 
                 if (warp > _areaCovered.Length)
                     return false;
-                
+
                 if (warp != last && _areaCovered[warp - 1] != _analysisVisitStamp)
                 {
                     var s = _analysisDatabase?.LoadSector(warp) as SectorData;
@@ -337,7 +337,7 @@ namespace TWXProxy.Core
             string message = $"\r\n{AnsiCodes.ANSI_15}Completed - {_totalBubbles - _gappedBubbles} solid bubbles, " +
                            $"{_gappedBubbles} gapped bubbles (total of {_totalBubbles} bubbles)\r\n" +
                            "Bubbles shown in red are gapped (broken by at least one backdoor)\r\n";
-            
+
             GlobalModules.Server?.Broadcast(message);
         }
 

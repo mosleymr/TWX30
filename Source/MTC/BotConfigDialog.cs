@@ -19,7 +19,17 @@ internal sealed record BotConfigDialogResult(
     string LoginName,
     string GameLetter,
     string LoginScript,
-    string Theme);
+    string Theme,
+    string Password = "",
+    bool RunPostLoginScript = false,
+    string PostLoginScript = "",
+    bool CustomPostLoginScript = false,
+    string StartupMove = "none",
+    bool CreateOrJoinCorp = false,
+    bool CreateCorp = false,
+    string CorpName = "",
+    string CorpPassword = "",
+    string Subspace = "");
 
 internal sealed class BotConfigDialog : Window
 {

@@ -189,7 +189,11 @@ namespace TWXProxy.Core
                         return 0;
                     }
 
-                    if (double.TryParse(_strValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double result))
+                    if (double.TryParse(
+                            _strValue,
+                            NumberStyles.Float | NumberStyles.AllowThousands,
+                            CultureInfo.InvariantCulture,
+                            out double result))
                     {
                         _decValue = result;
 
@@ -281,14 +285,14 @@ namespace TWXProxy.Core
     {
         private readonly List<ScriptCmd> _cmdList;
         private readonly List<ScriptSysConst> _sysConstList;
-        
+
         private static readonly AsyncLocal<Script?> _executingScript = new();
 
         public ScriptRef()
         {
             _cmdList = new List<ScriptCmd>();
             _sysConstList = new List<ScriptSysConst>();
-            
+
             // Build command and constant lists
             BuildCommandList();
             BuildSysConstList();
@@ -299,7 +303,7 @@ namespace TWXProxy.Core
         public int CmdCount => _cmdList.Count;
         public int SysConstCount => _sysConstList.Count;
 
-        public void AddCommand(string name, int minParams, int maxParams, 
+        public void AddCommand(string name, int minParams, int maxParams,
             ScriptCmdHandler onCmd, ParamKind[] paramKinds, ParamKind defParamKind)
         {
             var cmd = new ScriptCmd
@@ -374,7 +378,7 @@ namespace TWXProxy.Core
         {
             // CRITICAL: This order MUST match Pascal TWX 2.x for bytecode compatibility
             // Commands are indexed by ID in compiled .cts files, changing order breaks existing scripts
-            
+
             AddCommand("ADD", 2, 2, CmdAdd, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 0
             AddCommand("ADDMENU", 7, 7, CmdAddMenu, Array.Empty<ParamKind>(), ParamKind.Value); // 1
             AddCommand("AND", 2, 2, CmdAnd, new[] { ParamKind.Variable, ParamKind.Value }, ParamKind.Value); // 2
@@ -550,14 +554,14 @@ namespace TWXProxy.Core
         {
             // CRITICAL: This order MUST match Pascal TWX 2.x for bytecode compatibility
             // SysConsts are indexed by ID in compiled .cts files, changing order breaks existing scripts
-            
+
             // 0-15: ANSI color codes
             for (int i = 0; i <= 15; i++)
             {
                 int colorIndex = i; // Capture for closure
                 AddSysConstant($"ANSI_{i}", (indexes) => AnsiCodes.GetAnsiCode(colorIndex));
             }
-            
+
             // 16-25: Connection and basic state 
             AddSysConstant("CONNECTED", (indexes) => GetConnected()); // 16
             AddSysConstant("CURRENTANSILINE", (indexes) => GetCurrentAnsiLine()); // 17
@@ -569,74 +573,89 @@ namespace TWXProxy.Core
             AddSysConstant("LICENSENAME", (indexes) => string.Empty); // 23
             AddSysConstant("LOGINNAME", (indexes) => GetLoginName()); // 24
             AddSysConstant("PASSWORD", (indexes) => GetPassword()); // 25
-            
+
             // 26-37: Port information (indexed by sector number: PORT.CLASS[$CurSector])
-            AddSysConstant("PORT.CLASS", (indexes) => {
+            AddSysConstant("PORT.CLASS", (indexes) =>
+            {
                 // Pascal: returns '-1' if SPort.Name is empty (no port), else ClassIndex
                 var s = GetSectorByIndex(indexes);
                 if (s?.SectorPort == null || string.IsNullOrEmpty(s.SectorPort.Name)) return "-1";
                 return s.SectorPort.ClassIndex.ToString();
             }); // 26
-            AddSysConstant("PORT.BUYFUEL", (indexes) => {
+            AddSysConstant("PORT.BUYFUEL", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return (s?.SectorPort != null && s.SectorPort.BuyProduct.GetValueOrDefault(ProductType.FuelOre)) ? "1" : "0";
             }); // 27
-            AddSysConstant("PORT.BUYORG", (indexes) => {
+            AddSysConstant("PORT.BUYORG", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return (s?.SectorPort != null && s.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Organics)) ? "1" : "0";
             }); // 28
-            AddSysConstant("PORT.BUYEQUIP", (indexes) => {
+            AddSysConstant("PORT.BUYEQUIP", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return (s?.SectorPort != null && s.SectorPort.BuyProduct.GetValueOrDefault(ProductType.Equipment)) ? "1" : "0";
             }); // 29
-            AddSysConstant("PORT.EXISTS", (indexes) => {
+            AddSysConstant("PORT.EXISTS", (indexes) =>
+            {
                 // Pascal: checks SPort.Name = '' (empty name means no port)
                 var s = GetSectorByIndex(indexes);
                 return (s?.SectorPort != null && !string.IsNullOrEmpty(s.SectorPort.Name)) ? "1" : "0";
             }); // 30
-            AddSysConstant("PORT.FUEL", (indexes) => {
+            AddSysConstant("PORT.FUEL", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.FuelOre).ToString() ?? "0";
             }); // 31
-            AddSysConstant("PORT.NAME", (indexes) => {
+            AddSysConstant("PORT.NAME", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.Name ?? string.Empty;
             }); // 32
-            AddSysConstant("PORT.ORG", (indexes) => {
+            AddSysConstant("PORT.ORG", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.Organics).ToString() ?? "0";
             }); // 33
-            AddSysConstant("PORT.EQUIP", (indexes) => {
+            AddSysConstant("PORT.EQUIP", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductAmount.GetValueOrDefault(ProductType.Equipment).ToString() ?? "0";
             }); // 34
-            AddSysConstant("PORT.PERCENTFUEL", (indexes) => {
+            AddSysConstant("PORT.PERCENTFUEL", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.FuelOre).ToString() ?? "0";
             }); // 35
-            AddSysConstant("PORT.PERCENTORG", (indexes) => {
+            AddSysConstant("PORT.PERCENTORG", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.Organics).ToString() ?? "0";
             }); // 36
-            AddSysConstant("PORT.PERCENTEQUIP", (indexes) => {
+            AddSysConstant("PORT.PERCENTEQUIP", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 return s?.SectorPort?.ProductPercent.GetValueOrDefault(ProductType.Equipment).ToString() ?? "0";
             }); // 37
-            
+
             // 38-60: Sector information (indexed by sector number: SECTOR.DENSITY[$CurSector])
             // These use two indexes: first is sector number, second (for SECTOR.WARPS) is warp index.
-            AddSysConstant("SECTOR.ANOMOLY", (indexes) => { // 38 (legacy typo)
+            AddSysConstant("SECTOR.ANOMOLY", (indexes) =>
+            { // 38 (legacy typo)
                 // Pascal: IntToStr(Byte(Anomaly)) — returns '0' or '1'
                 var s = GetSectorByIndex(indexes);
                 return s?.Anomaly == true ? "1" : "0";
             });
-            AddSysConstant("SECTOR.BACKDOORCOUNT", (indexes) => { // 39
+            AddSysConstant("SECTOR.BACKDOORCOUNT", (indexes) =>
+            { // 39
                 if (indexes.Length == 0 || !int.TryParse(indexes[0], out int sn39)) return "0";
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return "0";
                 return GetActiveDatabase()?.GetBackDoors(s, sn39).Count.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.BACKDOORS", (indexes) => { // 40
+            AddSysConstant("SECTOR.BACKDOORS", (indexes) =>
+            { // 40
                 if (indexes.Length == 0 || !int.TryParse(indexes[0], out int sn40)) return string.Empty;
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return string.Empty;
@@ -651,55 +670,67 @@ namespace TWXProxy.Core
                 }
                 return string.Join(" ", bd);
             });
-            AddSysConstant("SECTOR.DENSITY", (indexes) => { // 41
+            AddSysConstant("SECTOR.DENSITY", (indexes) =>
+            { // 41
                 var s = GetSectorByIndex(indexes);
                 return s?.Density.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.EXPLORED", (indexes) => { // 42
+            AddSysConstant("SECTOR.EXPLORED", (indexes) =>
+            { // 42
                 // Pascal: etNo→'NO', etCalc→'CALC', etDensity→'DENSITY', etHolo→'YES'
                 var s = GetSectorByIndex(indexes);
-                return s?.Explored switch {
-                    ExploreType.Calc    => "CALC",
+                return s?.Explored switch
+                {
+                    ExploreType.Calc => "CALC",
                     ExploreType.Density => "DENSITY",
-                    ExploreType.Yes     => "YES",
-                    _                   => "NO",
+                    ExploreType.Yes => "YES",
+                    _ => "NO",
                 };
             });
-            AddSysConstant("SECTOR.FIGS.OWNER", (indexes) => { // 43
+            AddSysConstant("SECTOR.FIGS.OWNER", (indexes) =>
+            { // 43
                 var s = GetSectorByIndex(indexes);
                 return s?.Fighters.Owner ?? string.Empty;
             });
-            AddSysConstant("SECTOR.FIGS.QUANTITY", (indexes) => { // 44
+            AddSysConstant("SECTOR.FIGS.QUANTITY", (indexes) =>
+            { // 44
                 var s = GetSectorByIndex(indexes);
                 return s?.Fighters.Quantity.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.LIMPETS.OWNER", (indexes) => { // 45
+            AddSysConstant("SECTOR.LIMPETS.OWNER", (indexes) =>
+            { // 45
                 var s = GetSectorByIndex(indexes);
                 return ScriptOwnerNormalizer.Normalize(s?.MinesLimpet.Owner);
             });
-            AddSysConstant("SECTOR.LIMPETS.QUANTITY", (indexes) => { // 46
+            AddSysConstant("SECTOR.LIMPETS.QUANTITY", (indexes) =>
+            { // 46
                 var s = GetSectorByIndex(indexes);
                 return s?.MinesLimpet.Quantity.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.MINES.OWNER", (indexes) => { // 47
+            AddSysConstant("SECTOR.MINES.OWNER", (indexes) =>
+            { // 47
                 // Armid mines (Type 1) owner
                 var s = GetSectorByIndex(indexes);
                 return ScriptOwnerNormalizer.Normalize(s?.MinesArmid.Owner);
             });
-            AddSysConstant("SECTOR.MINES.QUANTITY", (indexes) => { // 48
+            AddSysConstant("SECTOR.MINES.QUANTITY", (indexes) =>
+            { // 48
                 // Pascal: Mines_Armid.Quantity only (limpets are separate via SECTOR.LIMPETS.QUANTITY)
                 var s = GetSectorByIndex(indexes);
                 return s?.MinesArmid.Quantity.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.NAVHAZ", (indexes) => { // 49
+            AddSysConstant("SECTOR.NAVHAZ", (indexes) =>
+            { // 49
                 var s = GetSectorByIndex(indexes);
                 return s?.NavHaz.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.PLANETCOUNT", (indexes) => { // 50
+            AddSysConstant("SECTOR.PLANETCOUNT", (indexes) =>
+            { // 50
                 var planets = GetPlanetNamesByIndex(indexes);
                 return planets.Count.ToString();
             });
-            AddSysConstant("SECTOR.PLANETS", (indexes) => { // 51
+            AddSysConstant("SECTOR.PLANETS", (indexes) =>
+            { // 51
                 // Pascal: SECTOR.PLANETS[sector][planetIndex] — returns Nth planet name or '0'
                 var planets = GetPlanetNamesByIndex(indexes);
                 if (indexes.Length >= 2 && int.TryParse(indexes[1], out int pi))
@@ -707,11 +738,13 @@ namespace TWXProxy.Core
                 // Fallback (no second index): return joined list for convenience
                 return planets.Count > 0 ? string.Join(", ", planets) : "0";
             });
-            AddSysConstant("SECTOR.SHIPCOUNT", (indexes) => { // 52
+            AddSysConstant("SECTOR.SHIPCOUNT", (indexes) =>
+            { // 52
                 var s = GetSectorByIndex(indexes);
                 return s?.Ships.Count.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.SHIPS", (indexes) => { // 53
+            AddSysConstant("SECTOR.SHIPS", (indexes) =>
+            { // 53
                 // Pascal: SECTOR.SHIPS[sector][shipIndex] — returns Nth ship name or '0'
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return "0";
@@ -719,11 +752,13 @@ namespace TWXProxy.Core
                     return (si >= 1 && si <= s.Ships.Count) ? s.Ships[si - 1].Name : "0";
                 return s.Ships.Count > 0 ? string.Join(", ", s.Ships.Select(sh => sh.Name)) : "0";
             });
-            AddSysConstant("SECTOR.TRADERCOUNT", (indexes) => { // 54
+            AddSysConstant("SECTOR.TRADERCOUNT", (indexes) =>
+            { // 54
                 var s = GetSectorByIndex(indexes);
                 return s?.Traders.Count.ToString() ?? "0";
             });
-            AddSysConstant("SECTOR.TRADERS", (indexes) => { // 55
+            AddSysConstant("SECTOR.TRADERS", (indexes) =>
+            { // 55
                 // Pascal: SECTOR.TRADERS[sector][traderIndex] — returns Nth trader name or '0'
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return "0";
@@ -731,11 +766,13 @@ namespace TWXProxy.Core
                     return (ti >= 1 && ti <= s.Traders.Count) ? s.Traders[ti - 1].Name : "0";
                 return s.Traders.Count > 0 ? string.Join(", ", s.Traders.Select(t => t.Name)) : "0";
             });
-            AddSysConstant("SECTOR.UPDATED", (indexes) => { // 56
+            AddSysConstant("SECTOR.UPDATED", (indexes) =>
+            { // 56
                 var s = GetSectorByIndex(indexes);
                 return s?.Update.ToString() ?? string.Empty;
             });
-            AddSysConstant("SECTOR.WARPCOUNT", (indexes) => { // 57
+            AddSysConstant("SECTOR.WARPCOUNT", (indexes) =>
+            { // 57
                 // Prefer the stored total warp count. For fully seen sectors, we can safely
                 // fall back to the known Warp[] list, but for CALC/DENSITY sectors we should
                 // not let a partial warp list masquerade as a complete count.
@@ -745,10 +782,11 @@ namespace TWXProxy.Core
                 int warpCountResult = s.WarpCount > 0
                     ? Math.Max(s.WarpCount, knownWarps.Count)
                     : (s.Explored == ExploreType.Yes ? knownWarps.Count : 0);
-                GlobalModules.ScriptTraceDebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault()} knownWarps={knownWarps.Count} WarpCount={s.WarpCount} → {warpCountResult} warps=[{string.Join(",",s.Warp)}]\n");
+                GlobalModules.ScriptTraceDebugLog($"[WARPCOUNT] sect={indexes.FirstOrDefault()} knownWarps={knownWarps.Count} WarpCount={s.WarpCount} → {warpCountResult} warps=[{string.Join(",", s.Warp)}]\n");
                 return warpCountResult.ToString();
             });
-            AddSysConstant("SECTOR.WARPS", (indexes) => { // 58
+            AddSysConstant("SECTOR.WARPS", (indexes) =>
+            { // 58
                 // SECTOR.WARPS[sectorNum][warpIndex] — warpIndex is 1-based
                 // indexes[0] = sectorNum, indexes[1] = warpIndex
                 if (indexes.Length < 2) return "0";
@@ -757,10 +795,11 @@ namespace TWXProxy.Core
                 if (!int.TryParse(indexes[1], out int warpIdx) || warpIdx < 1 || warpIdx > 6) return "0";
                 var warpList = s.Warp.Where(w => w != 0).ToList();
                 string warpResult = (warpIdx <= warpList.Count) ? warpList[warpIdx - 1].ToString() : "0";
-                GlobalModules.ScriptTraceDebugLog($"[SECTOR.WARPS] sect={indexes[0]} idx={warpIdx} warpList=[{string.Join(",",warpList)}] → {warpResult}\n");
+                GlobalModules.ScriptTraceDebugLog($"[SECTOR.WARPS] sect={indexes[0]} idx={warpIdx} warpList=[{string.Join(",", warpList)}] → {warpResult}\n");
                 return warpResult;
             });
-            AddSysConstant("SECTOR.WARPSIN", (indexes) => { // 59
+            AddSysConstant("SECTOR.WARPSIN", (indexes) =>
+            { // 59
                 // SECTOR.WARPSIN[$sector] = space-separated list; SECTOR.WARPSIN[$sector][$i] = ith entry (1-based)
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return "0";
@@ -771,51 +810,57 @@ namespace TWXProxy.Core
                 }
                 return (s.WarpsIn.Count > 0) ? string.Join(" ", s.WarpsIn) : "0";
             });
-            AddSysConstant("SECTOR.WARPINCOUNT", (indexes) => { // 60
+            AddSysConstant("SECTOR.WARPINCOUNT", (indexes) =>
+            { // 60
                 var s = GetSectorByIndex(indexes);
                 return s?.WarpsIn.Count.ToString() ?? "0";
             });
-            
+
             // 61-64: Universe info
             AddSysConstant("SECTORS", (indexes) => GetSectors()); // 61
             AddSysConstant("STARDOCK", (indexes) => GetStarDock()); // 62
             AddSysConstant("TIME", (indexes) => ScriptTimeFormatter.Format(DateTime.Now)); // 63
             AddSysConstant("TRUE", (indexes) => "1"); // 64
-            
+
             // 65-67: Added in 2.04
             AddSysConstant("ALPHACENTAURI", (indexes) => GetAlphaCentauri()); // 65
             AddSysConstant("CURRENTSECTOR", (indexes) => GetCurrentSector().ToString()); // 66
             AddSysConstant("RYLOS", (indexes) => GetRylos()); // 67
-            
+
             // 68-74: Added in 2.04a
             AddSysConstant("PORT.BUILDTIME", (indexes) => GetPortBuildTime(indexes)); // 68
             AddSysConstant("PORT.UPDATED", (indexes) => GetPortUpdated(indexes)); // 69
             AddSysConstant("RAWPACKET", (indexes) => GetRawPacket()); // 70
-            AddSysConstant("SECTOR.BEACON", (indexes) => { // 71
+            AddSysConstant("SECTOR.BEACON", (indexes) =>
+            { // 71
                 var s = GetSectorByIndex(indexes);
                 return s?.Beacon ?? string.Empty;
             });
-            AddSysConstant("SECTOR.CONSTELLATION", (indexes) => { // 72
+            AddSysConstant("SECTOR.CONSTELLATION", (indexes) =>
+            { // 72
                 var s = GetSectorByIndex(indexes);
                 return s?.Constellation ?? string.Empty;
             });
-            AddSysConstant("SECTOR.FIGS.TYPE", (indexes) => { // 73
+            AddSysConstant("SECTOR.FIGS.TYPE", (indexes) =>
+            { // 73
                 // Pascal: only returns a value when quantity > 0; returns '' (empty) when 0
                 var s = GetSectorByIndex(indexes);
                 if (s == null || s.Fighters.Quantity == 0) return string.Empty;
-                return s.Fighters.FigType switch {
-                    FighterType.Toll      => "Toll",
+                return s.Fighters.FigType switch
+                {
+                    FighterType.Toll => "Toll",
                     FighterType.Offensive => "Offensive",
                     FighterType.Defensive => "Defensive",
-                    _                     => "None",
+                    _ => "None",
                 };
             });
-            AddSysConstant("SECTOR.ANOMALY", (indexes) => { // 74 (correct spelling)
+            AddSysConstant("SECTOR.ANOMALY", (indexes) =>
+            { // 74 (correct spelling)
                 // Pascal: IntToStr(Byte(Anomaly)) — returns '0' or '1'
                 var s = GetSectorByIndex(indexes);
                 return s?.Anomaly == true ? "1" : "0";
             });
-            
+
             AddSysConstant("TURNS", (indexes) => GetCurrentTurns());
             AddSysConstant("UNLIMITEDGAME", (indexes) => GetCurrentUnlimitedGame());
             AddSysConstant("CREDITS", (indexes) => GetCurrentCredits());
@@ -872,7 +917,8 @@ namespace TWXProxy.Core
             AddSysConstant("TWGSTYPE", (indexes) => string.Empty);
             AddSysConstant("TWGSVER", (indexes) => string.Empty);
             AddSysConstant("TW2002VER", (indexes) => string.Empty);
-            AddSysConstant("SECTOR.DEADEND", (indexes) => {
+            AddSysConstant("SECTOR.DEADEND", (indexes) =>
+            {
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return "0";
                 var warpCount = s.Warp.Count(w => w != 0);
@@ -926,9 +972,9 @@ namespace TWXProxy.Core
             AddSysConstant("CURRENTHOLDS", (indexes) => GetCurrentTotalHolds());
             AddSysConstant("HAGGLE", (indexes) => GetNativeHaggle());
         }
-        
+
         #region Text Processing Helpers
-        
+
         /// <summary>
         /// Set the current line being processed (stripped of ANSI codes)
         /// This should be called when processing incoming server data
@@ -942,7 +988,7 @@ namespace TWXProxy.Core
         {
             (context ?? GlobalModules.CurrentContext).CurrentLine = line;
         }
-        
+
         /// <summary>
         /// Set the current ANSI line (with ANSI codes intact)
         /// This should be called when processing incoming server data
@@ -956,7 +1002,7 @@ namespace TWXProxy.Core
         {
             (context ?? GlobalModules.CurrentContext).CurrentAnsiLine = line;
         }
-        
+
         /// <summary>
         /// Set the raw packet data received from server
         /// This should be called when receiving raw data from the server
@@ -965,7 +1011,7 @@ namespace TWXProxy.Core
         {
             GlobalModules.CurrentContext.RawPacket = data;
         }
-        
+
         /// <summary>
         /// Get the current line (stripped of ANSI codes)
         /// </summary>
@@ -994,7 +1040,7 @@ namespace TWXProxy.Core
         {
             return GlobalModules.CurrentContext.CurrentLine;
         }
-        
+
         /// <summary>
         /// Get the current ANSI line (with ANSI codes)
         /// </summary>
@@ -1033,7 +1079,7 @@ namespace TWXProxy.Core
         {
             _executingScript.Value = script;
         }
-        
+
         /// <summary>
         /// Get the raw packet data
         /// </summary>
@@ -1041,11 +1087,11 @@ namespace TWXProxy.Core
         {
             return GlobalModules.CurrentContext.RawPacket;
         }
-        
+
         #endregion
-        
+
         #region Database/Game State Helpers
-        
+
         /// <summary>
         /// Looks up a sector from the active database using the first element of a sysconst
         /// index array (e.g. PORT.CLASS[$CurSector] passes indexes=["3942"]).
@@ -1264,7 +1310,7 @@ namespace TWXProxy.Core
         {
             return (ActiveGameInstance?.NativeHaggleEnabled ?? false) ? "1" : "0";
         }
-        
+
         /// <summary>
         /// Get game character from database header
         /// </summary>
@@ -1274,7 +1320,7 @@ namespace TWXProxy.Core
             if (db == null) return string.Empty;
             return db.DBHeader.Game.ToString();
         }
-        
+
         /// <summary>
         /// Get game name (database name without extension)
         /// </summary>
@@ -1304,7 +1350,7 @@ namespace TWXProxy.Core
             if (db == null) return string.Empty;
             return db.DBHeader.Password ?? string.Empty;
         }
-        
+
         /// <summary>
         /// Get game data path (database name with backslash)
         /// </summary>
@@ -1314,7 +1360,7 @@ namespace TWXProxy.Core
             if (db == null) return string.Empty;
             return db.DatabaseName + "\\";
         }
-        
+
         /// <summary>
         /// Get total number of sectors in the universe
         /// </summary>
@@ -1327,7 +1373,7 @@ namespace TWXProxy.Core
                 return db.MaxSectorSeen.ToString();
             return db.DBHeader.Sectors.ToString();
         }
-        
+
         /// <summary>
         /// Get StarDock sector number (returns "0" if 65535/not set)
         /// </summary>
@@ -1337,7 +1383,7 @@ namespace TWXProxy.Core
             if (db == null) return "0";
             return db.DBHeader.StarDock == 65535 ? "0" : db.DBHeader.StarDock.ToString();
         }
-        
+
         /// <summary>
         /// Get Alpha Centauri sector number
         /// </summary>
@@ -1347,7 +1393,7 @@ namespace TWXProxy.Core
             if (db == null) return "0";
             return db.DBHeader.AlphaCentauri.ToString();
         }
-        
+
         /// <summary>
         /// Get Rylos sector number
         /// </summary>
@@ -1357,7 +1403,7 @@ namespace TWXProxy.Core
             if (db == null) return "0";
             return db.DBHeader.Rylos.ToString();
         }
-        
+
         #endregion
     }
 }

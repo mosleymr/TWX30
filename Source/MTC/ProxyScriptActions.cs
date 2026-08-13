@@ -108,7 +108,25 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(scriptId))
             return;
 
-        SendProxyMenuCommand($"sk {scriptId.Trim()}");
+        if (IsManagedRemoteProxyGame() &&
+            TryGetCurrentProxyManagementClient(out ProxyManagementClient? client) &&
+            int.TryParse(scriptId.Trim(), out int remoteScriptId))
+        {
+            try
+            {
+                await client!.StopScriptAsync(_state.RemoteProxyGameId, remoteScriptId);
+                _parser.Feed($"\x1b[1;36m[Remote script {remoteScriptId} stopped]\x1b[0m\r\n");
+                _buffer.Dirty = true;
+            }
+            catch (Exception ex)
+            {
+                await ShowMessageAsync("Stop Remote Script Failed", ex.Message);
+            }
+        }
+        else
+        {
+            SendProxyMenuCommand($"sk {scriptId.Trim()}");
+        }
         FocusActiveTerminal();
     }
 

@@ -437,11 +437,14 @@ namespace TWXProxy.Core
             else
                 result = string.Equals(v1, v2, StringComparison.OrdinalIgnoreCase);
             parameters[0].Value = result ? "1" : "0";
-            string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}@{vp1.GetHashCode():X6}" : "const";
-            string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
-            GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' == [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
-            if (!result && v1.Length > 0 && v2.Length > 0 && v1.Length <= 3 && v2.Length <= 3)
-                GlobalModules.ScriptTraceDebugLog($"[CMP_BYTES] v1=[{string.Join(",", v1.Select(c => (int)c))}] v2=[{string.Join(",", v2.Select(c => (int)c))}]\n");
+            if (GlobalModules.ScriptTraceDebugMode)
+            {
+                string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}@{vp1.GetHashCode():X6}" : "const";
+                string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
+                GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' == [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
+                if (!result && v1.Length > 0 && v2.Length > 0 && v1.Length <= 3 && v2.Length <= 3)
+                    GlobalModules.ScriptTraceDebugLog($"[CMP_BYTES] v1=[{string.Join(",", v1.Select(c => (int)c))}] v2=[{string.Join(",", v2.Select(c => (int)c))}]\n");
+            }
             return CmdAction.None;
         }
 
@@ -456,9 +459,12 @@ namespace TWXProxy.Core
             else
                 result = !string.Equals(v1, v2, StringComparison.OrdinalIgnoreCase);
             parameters[0].Value = result ? "1" : "0";
-            string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}" : "const";
-            string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
-            GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' != [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
+            if (GlobalModules.ScriptTraceDebugMode)
+            {
+                string p1n = (parameters[1] is ProgVarParam pv1) ? $"PV:{pv1.Name}" : (parameters[1] is VarParam vp1) ? $"V:{vp1.Name}" : "const";
+                string p2n = (parameters[2] is ProgVarParam pv2) ? $"PV:{pv2.Name}" : (parameters[2] is VarParam vp2) ? $"V:{vp2.Name}" : "const";
+                GlobalModules.ScriptTraceDebugLog($"[CMP] [{p1n}]='{v1}' != [{p2n}]='{v2}' -> {(result ? "1" : "0")}\n");
+            }
             return CmdAction.None;
         }
 
@@ -517,7 +523,7 @@ namespace TWXProxy.Core
         private static CmdAction CmdIsNumber(object script, CmdParam[] parameters)
         {
             // CMD: isnumber var <value>
-            bool isNumber = double.TryParse(parameters[1].Value, NumberStyles.Float, 
+            bool isNumber = double.TryParse(parameters[1].Value, NumberStyles.Float,
                 CultureInfo.InvariantCulture, out _);
             parameters[0].Value = isNumber ? "1" : "0";
             return CmdAction.None;
@@ -534,15 +540,15 @@ namespace TWXProxy.Core
             string result = string.Empty;
             for (int i = 1; i < parameters.Length; i++)
                 result += parameters[i].Value;
-            
-            string varName = (parameters[0] is VarParam vp) ? vp.Name 
+
+            string varName = (parameters[0] is VarParam vp) ? vp.Name
                 : (parameters[0] is ProgVarParam pvp) ? $"PV:{pvp.Name}" : "???";
             string oldValue = parameters[0].Value;
-            
+
             // Skip verbose logging for compiler-generated temporaries ($$__cond*, $$__math*)
             if (!varName.Contains("$$__cond") && !varName.Contains("$$__math"))
             {
-                string svHash = (parameters[0] is VarParam svp) ? $"@{svp.GetHashCode():X8}" 
+                string svHash = (parameters[0] is VarParam svp) ? $"@{svp.GetHashCode():X8}"
                     : (parameters[0] is ProgVarParam pvph) ? $"@{pvph.GetHashCode():X8}" : "";
                 // Log source params with their identity so aliasing is visible
                 var srcInfo = new System.Text.StringBuilder();
@@ -658,7 +664,7 @@ namespace TWXProxy.Core
                 return CmdAction.None;
             }
 
-            string result = parameters[0].Value.Substring(start - 1, 
+            string result = parameters[0].Value.Substring(start - 1,
                 Math.Min(length, parameters[0].Value.Length - start + 1));
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.ScriptTraceDebugLog($"[CUTTEXT] src={srcName}='{parameters[0].Value}' dst={dstName} start={start}[{startParamInfo}] len={length} → '{result}'\n");
@@ -857,14 +863,14 @@ namespace TWXProxy.Core
             // CMD: splittext <value> var [delimiter]
             string delimiters = parameters.Length > 2 ? parameters[2].Value : string.Empty;
             List<string> parts = Utility.Split(parameters[0].Value, delimiters);
-            
+
             // Store in array variable
             if (parameters[1] is VarParam varParam)
             {
                 varParam.SetArrayFromStrings(parts);
                 varParam.Value = parts.Count.ToString();
             }
-            
+
             return CmdAction.None;
         }
 
@@ -874,27 +880,27 @@ namespace TWXProxy.Core
             string[] lengths = parameters[2].Value.Split(',');
             var results = new System.Collections.Generic.List<string>();
             int position = 0;
-            
+
             foreach (string lenStr in lengths)
             {
                 if (position >= parameters[0].Value.Length)
                     break;
-                    
+
                 if (int.TryParse(lenStr, out int len))
                 {
-                    string part = parameters[0].Value.Substring(position, 
+                    string part = parameters[0].Value.Substring(position,
                         Math.Min(len, parameters[0].Value.Length - position));
                     results.Add(part);
                     position += len;
                 }
             }
-            
+
             if (parameters[1] is VarParam varParam)
             {
                 varParam.SetArrayFromStrings(results);
                 varParam.Value = results.Count.ToString();
             }
-            
+
             return CmdAction.None;
         }
 
@@ -965,13 +971,13 @@ namespace TWXProxy.Core
                     matches.Add(value);
                 }
             }
-            
+
             if (parameters[1] is VarParam varParam)
             {
                 varParam.SetArrayFromStrings(matches);
                 varParam.Value = matches.Count.ToString();
             }
-            
+
             return CmdAction.None;
         }
 
@@ -979,7 +985,7 @@ namespace TWXProxy.Core
         {
             // CMD: format inputVar outputVar CONSTANT
             string format = parameters[2].Value.ToUpperInvariant();
-            
+
             if (format == "CURRENCY")
             {
                 parameters[1].Value = parameters[0].DecValue.ToString("C2");
@@ -1016,7 +1022,7 @@ namespace TWXProxy.Core
                     parameters[1].Value = ScriptTimeFormatter.Format(time);
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1097,10 +1103,10 @@ namespace TWXProxy.Core
             string output = string.Empty;
             foreach (var param in parameters)
                 output += param.Value;
-            
+
             // Replace lone CR with CRLF to prevent terminal display issues
             output = output.Replace("\r", "\r\n");
-            
+
             // Match Pascal TWX behavior: ECHO goes to deaf clients too so
             // interactive bot menus can temporarily mute server traffic
             // without hiding their own UI.
@@ -1113,7 +1119,7 @@ namespace TWXProxy.Core
                 // Fallback to console if server not available
                 Console.WriteLine(output);
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1124,10 +1130,10 @@ namespace TWXProxy.Core
             string output = string.Empty;
             foreach (var param in parameters)
                 output += param.Value;
-            
+
             // Replace lone CR with CRLF to prevent terminal display issues
             output = output.Replace("\r", "\r\n");
-            
+
             // Match Pascal TWX behavior: ECHOEX also reaches deaf clients.
             if (GlobalModules.TWXServer != null)
             {
@@ -1138,7 +1144,7 @@ namespace TWXProxy.Core
                 // Fallback to console if server not available
                 Console.WriteLine(output);
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1172,20 +1178,20 @@ namespace TWXProxy.Core
             string output = string.Empty;
             foreach (var param in parameters)
                 output += param.Value;
-            
+
             // Pascal TWX sends the compiled text exactly as serialized in bytecode.
             // Source '*' characters are already converted to carriage returns (#13) by
             // the compiler, so we must not expand them to CRLF here.
 
             if (GlobalModules.VerboseDebugMode)
                 GlobalModules.DebugLog($"[SEND] Output: '{output.Replace("\r", "\\r").Replace("\n", "\\n")}'\n");
-            
+
             // Send to game server via GameInstance (which acts as the client)
             if (_activeGameInstance != null)
             {
                 if (GlobalModules.VerboseDebugMode)
                     Console.WriteLine($"[SEND] GameInstance available, IsConnected: {_activeGameInstance.IsConnected}");
-                
+
                 if (!_activeGameInstance.IsConnected)
                 {
                     if (GlobalModules.VerboseDebugMode)
@@ -1193,9 +1199,9 @@ namespace TWXProxy.Core
                     GlobalModules.DebugLog($"[SEND] Not connected to server - command ignored\n");
                     return CmdAction.None;
                 }
-                
+
                 byte[] data = System.Text.Encoding.Latin1.GetBytes(output);
-                
+
                 if (GlobalModules.VerboseDebugMode)
                 {
                     Console.WriteLine($"[SEND] Sending {data.Length} bytes to server");
@@ -1216,7 +1222,7 @@ namespace TWXProxy.Core
                     Console.WriteLine($"[SEND] Cannot send '{output}' - no active game connection");
                 GlobalModules.DebugLog($"[SEND] Cannot send '{output}' - no active game connection\n");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1226,7 +1232,7 @@ namespace TWXProxy.Core
             // Send a message to the local client only (not broadcast to all)
             string message = parameters[0].Value;
             GlobalModules.DebugLog($"[CLIENTMESSAGE] '{message.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\x1b", "ESC")}'\n");
-            
+
             if (GlobalModules.TWXServer != null)
             {
                 GlobalModules.TWXServer.ClientMessage(message);
@@ -1236,7 +1242,7 @@ namespace TWXProxy.Core
                 // Fallback to console if server not available
                 Console.WriteLine($"[Client Message] {message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1321,7 +1327,7 @@ namespace TWXProxy.Core
                 // high bytes intact so DOS ANSI/CP437 art survives READ.
                 string[] lines = File.ReadAllLines(path, System.Text.Encoding.Latin1);
                 int lineNum = (int)parameters[2].DecValue;
-                
+
                 if (lineNum >= 1 && lineNum <= lines.Length)
                     parameters[1].Value = lines[lineNum - 1];
                 else
@@ -1612,7 +1618,7 @@ namespace TWXProxy.Core
             // CMD: getinput var <prompt>
             // Displays a prompt and waits for user input from the client
             GlobalModules.DebugLog($"[GETINPUT] params={parameters.Length} var='{parameters[0].Value}' prompt='{(parameters.Length > 1 ? parameters[1].Value : "")}'\n");
-            
+
             if (script is Script scriptObj)
             {
                 string prompt = parameters.Length > 1 ? parameters[1].Value : "";
@@ -1627,7 +1633,7 @@ namespace TWXProxy.Core
 
                     // Empty prompt = keypress mode: no Enter needed, fire on the next single character.
                     bool keypressMode = string.IsNullOrEmpty(prompt);
-                    
+
                     // Set script to wait for input from client
                     scriptObj.SetWaitingForInput(parameters[0], keypressMode);
                     scriptObj.PausedReason = PauseReason.Input;
@@ -1647,20 +1653,20 @@ namespace TWXProxy.Core
                     scriptObj.Locked = true;
                     GlobalModules.TWXMenu.BeginScriptInput(scriptObj, parameters[0], false);
                     scriptObj.PausedReason = PauseReason.Input;
-                    
+
                     return CmdAction.Pause;
                 }
                 else
                 {
                     GlobalModules.TWXServer?.ClientMessage($"[GETINPUT] Using Console Mode (fallback)\r\n");
-                    
+
                     // Pure console test mode (TestScriptLoader)
                     Console.WriteLine($"\n[GETINPUT Console Mode] Prompting: {prompt}");
                     Console.Write(prompt);
                     string input = Console.ReadLine() ?? string.Empty;
                     Console.WriteLine($"[GETINPUT Console Mode] Received: '{input}'");
                     parameters[0].Value = input;
-                    
+
                     return CmdAction.None;
                 }
             }
@@ -1793,7 +1799,7 @@ namespace TWXProxy.Core
             // CMD: starttimer <name>
             // Create or reset a timer with the given name
             string timerName = (parameters[0] is VarParam varParam) ? varParam.Name : parameters[0].Value;
-            
+
             // Search for existing timer and remove if found
             for (int i = GlobalModules.TWXTimers.Count - 1; i >= 0; i--)
             {
@@ -1803,10 +1809,10 @@ namespace TWXProxy.Core
                     break;
                 }
             }
-            
+
             // Add new timer with current timestamp
             GlobalModules.TWXTimers.Add(new TimerItem(timerName));
-            
+
             return CmdAction.None;
         }
 
@@ -1815,9 +1821,9 @@ namespace TWXProxy.Core
             // CMD: stoptimer <name>
             // Stop a timer and return elapsed time in milliseconds
             string timerName = (parameters[0] is VarParam varParam) ? varParam.Name : parameters[0].Value;
-            
+
             parameters[0].DecValue = 0;
-            
+
             // Search for the timer
             for (int i = GlobalModules.TWXTimers.Count - 1; i >= 0; i--)
             {
@@ -1827,16 +1833,16 @@ namespace TWXProxy.Core
                     long endTime = Stopwatch.GetTimestamp();
                     long frequency = Stopwatch.Frequency;
                     long startTime = GlobalModules.TWXTimers[i].StartTime;
-                    
+
                     double elapsedMs = ((endTime - startTime) / (double)frequency) * 1000.0;
                     parameters[0].DecValue = elapsedMs;
-                    
+
                     // Remove the timer
                     GlobalModules.TWXTimers.RemoveAt(i);
                     break;
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1886,12 +1892,12 @@ namespace TWXProxy.Core
             // CMD: getscriptversion <script> var
             string filename = Utility.ResolveExistingFilePath(parameters[0].Value, GlobalModules.ProgramDir)
                 ?? Utility.ResolvePlatformPath(parameters[0].Value, GlobalModules.ProgramDir);
-            
+
             if (!File.Exists(filename))
             {
                 throw new ScriptException($"File '{filename}' not found");
             }
-            
+
             try
             {
                 using (var fs = new FileStream(filename, FileMode.Open, FileAccess.Read))
@@ -1900,12 +1906,12 @@ namespace TWXProxy.Core
                     // Read header: 10-byte program name + 2-byte version
                     byte[] nameBytes = reader.ReadBytes(10);
                     string programName = System.Text.Encoding.ASCII.GetString(nameBytes).TrimEnd('\0');
-                    
+
                     if (programName != "TWX SCRIPT")
                     {
                         throw new ScriptException("File is not a compiled TWX script");
                     }
-                    
+
                     ushort version = reader.ReadUInt16();
                     // Version is stored as an integer (e.g., 206 for v2.06)
                     int major = version / 100;
@@ -1921,7 +1927,7 @@ namespace TWXProxy.Core
             {
                 throw new ScriptException($"Error reading script file: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -1953,11 +1959,11 @@ namespace TWXProxy.Core
             // Compare current version with required version
             string currentVersion = Constants.ProgramVersion;
             string requiredVersion = parameters[0].Value;
-            
+
             // Convert versions to integers for comparison (e.g., "2.06" -> 206)
             int currentVer = ParseVersionToInt(currentVersion);
             int requiredVer = ParseVersionToInt(requiredVersion);
-            
+
             if (currentVer >= requiredVer)
             {
                 return CmdAction.None;
@@ -1976,7 +1982,7 @@ namespace TWXProxy.Core
                 return CmdAction.Stop;
             }
         }
-        
+
         private static int ParseVersionToInt(string version)
         {
             // Remove all dots and parse as integer ("2.6.10" -> 2610)
@@ -2084,7 +2090,7 @@ namespace TWXProxy.Core
                 {
                     GlobalModules.DebugLog($"[DEBUG ADDMENU] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\n");
                 }
-                
+
                 if (parameters[3].Value.Length != 1)
                 {
                     return CmdAction.None;
@@ -2108,7 +2114,7 @@ namespace TWXProxy.Core
                     // the root menu context still reaches the include-local handler.
                     cmp.ExtendLabelName(ref reference, menuScript.ExecScript);
                 }
-                
+
                 if (GlobalModules.DebugMode)
                 {
                     GlobalModules.DebugLog($"[DEBUG ADDMENU] parent='{parent}' name='{name}' desc='{description}' hotkey='{hotkey}' ref='{reference}' prompt='{prompt}' close={closeMenu}\n");
@@ -2118,7 +2124,7 @@ namespace TWXProxy.Core
                 {
                     var menuItem = GlobalModules.TWXMenu.AddCustomMenu(
                         parent, name, description, reference, prompt, hotkey, closeMenu, script);
-                    
+
                     if (script is Script s && menuItem != null)
                     {
                         s.AddMenu(menuItem);
@@ -2169,7 +2175,7 @@ namespace TWXProxy.Core
                 }
 
                 GlobalModules.DebugLog("[OpenMenu] TWXMenu is null; OPENMENU ignored\n");
-                
+
                 return CmdAction.None;
             }
             catch (Exception ex)
@@ -2205,7 +2211,7 @@ namespace TWXProxy.Core
             {
                 string menuName = parameters[0].Value.ToUpper();
                 string helpText = parameters[1].Value.Replace("\r", "\r\n");
-                
+
                 if (GlobalModules.TWXMenu != null)
                 {
                     var menu = GlobalModules.TWXMenu.GetMenuByName(menuName);
@@ -2230,9 +2236,9 @@ namespace TWXProxy.Core
             {
                 string menuName = parameters[0].Value.ToUpper();
                 string value = parameters[1].Value;
-                
+
                 GlobalModules.DebugLog($"[SETMENUVALUE] Menu='{menuName}', Value='{value}'\n");
-                
+
                 if (GlobalModules.TWXMenu != null)
                 {
                     var menu = GlobalModules.TWXMenu.GetMenuByName(menuName);
@@ -2256,7 +2262,7 @@ namespace TWXProxy.Core
             try
             {
                 string menuName = parameters[0].Value.ToUpper();
-                
+
                 if (GlobalModules.TWXMenu != null)
                 {
                     var menu = GlobalModules.TWXMenu.GetMenuByName(menuName);
@@ -2292,17 +2298,17 @@ namespace TWXProxy.Core
                 {
                     GlobalModules.DebugLog($"[DEBUG SETMENUOPTIONS] Params: [{string.Join("], [", parameters.Select(p => p.Value))}]\n");
                 }
-                
+
                 string menuName = parameters[0].Value.ToUpper();
                 bool optionQ = parameters[1].Value == "1";
                 bool optionHelp = parameters[2].Value == "1";
                 bool optionPlus = parameters[3].Value == "1";
-                
+
                 if (GlobalModules.DebugMode)
                 {
                     GlobalModules.DebugLog($"[DEBUG SETMENUOPTIONS] menu='{menuName}' Q={optionQ} ?={optionHelp} +={optionPlus}\n");
                 }
-                
+
                 if (GlobalModules.TWXMenu != null)
                 {
                     var menu = GlobalModules.TWXMenu.GetMenuByName(menuName);
@@ -2329,7 +2335,7 @@ namespace TWXProxy.Core
                 if (keyValue.Length > 0)
                 {
                     char menuKey = keyValue[0];
-                    
+
                     // Update the menu value if menu system is available
                     if (GlobalModules.TWXMenu != null)
                     {
@@ -2346,7 +2352,7 @@ namespace TWXProxy.Core
                             // Menu might not exist, that's ok
                         }
                     }
-                    
+
                     // TODO: Also need to set TWXExtractor.MenuKey when extractor interface is available
                     Console.WriteLine($"[SetMenuKey] Menu key set to: '{menuKey}'");
                 }
@@ -2366,7 +2372,7 @@ namespace TWXProxy.Core
             {
                 string windowName = parameters[0].Value;
                 GlobalModules.DebugLog($"[KillWindow] windowName='{windowName}'\n");
-                
+
                 if (script is Script scriptObj)
                 {
                     var window = scriptObj.FindWindow(windowName);
@@ -2402,7 +2408,7 @@ namespace TWXProxy.Core
                 GlobalModules.DebugLog($"[Window] name='{windowName}' size={sizeX}x{sizeY} title='{title}' onTop={onTop}\n");
 
                 var window = GlobalModules.ScriptWindowFactory.CreateWindow(windowName, title, sizeX, sizeY, onTop);
-                
+
                 if (script is Script scriptObj)
                 {
                     scriptObj.AddWindow(window);
@@ -2429,7 +2435,7 @@ namespace TWXProxy.Core
             {
                 string windowName = parameters[0].Value;
                 string content = parameters[1].Value;
-                
+
                 GlobalModules.DebugLog($"[SetWindowContents] name='{windowName}' contentLen={content.Length}\n");
                 if (script is Script scriptObj)
                 {
@@ -2620,11 +2626,11 @@ namespace TWXProxy.Core
             {
                 string source = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dest = Path.GetFileNameWithoutExtension(parameters[1].Value);
-                
+
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string sourceFile = Path.Combine(dataDir, source + ".xdb");
                 string destFile = Path.Combine(dataDir, dest + ".xdb");
-                
+
                 if (File.Exists(sourceFile))
                 {
                     File.Copy(sourceFile, destFile, true);
@@ -2649,43 +2655,43 @@ namespace TWXProxy.Core
             {
                 if (string.IsNullOrEmpty(parameters[0].Value) || string.IsNullOrEmpty(parameters[1].Value))
                     return CmdAction.None;
-                
+
                 string dbName = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string dbPath = Path.Combine(dataDir, dbName + ".xdb");
-                
+
                 // Don't overwrite existing database
                 if (File.Exists(dbPath))
                 {
                     Console.WriteLine($"[CreateDatabase] Database already exists: {dbName}");
                     return CmdAction.None;
                 }
-                
+
                 // Create DataHeader with parameters
                 var header = new DataHeader
                 {
                     Sectors = int.TryParse(parameters[1].Value, out int sectors) ? sectors : 0,
                     StarDock = 65535 // Default unset value
                 };
-                
+
                 // Optional parameters
                 if (parameters.Length > 2 && !parameters[2].Value.Contains("="))
                     header.Address = parameters[2].Value;
-                
+
                 if (parameters.Length > 3 && !parameters[3].Value.Contains("="))
                     header.ServerPort = ushort.TryParse(parameters[3].Value, out ushort sport) ? sport : (ushort)2002;
                 else
                     header.ServerPort = 2002;
-                
+
                 if (parameters.Length > 4 && !parameters[4].Value.Contains("="))
                     header.ListenPort = ushort.TryParse(parameters[4].Value, out ushort lport) ? lport : (ushort)2300;
                 else
                     header.ListenPort = 2300;
-                
+
                 // Create data directory if it doesn't exist
                 if (!Directory.Exists(dataDir))
                     Directory.CreateDirectory(dataDir);
-                
+
                 // Create the database
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
@@ -2710,14 +2716,14 @@ namespace TWXProxy.Core
                 string dbName = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string dbPath = Path.Combine(dataDir, dbName + ".xdb");
-                
+
                 if (!File.Exists(dbPath))
                 {
                     if (GlobalModules.TWXServer != null)
                         GlobalModules.TWXServer.BroadcastLiteral($"Error: Database {dbName} does not exist.");
                     return CmdAction.None;
                 }
-                
+
                 // Close database if it's currently open
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
@@ -2727,20 +2733,20 @@ namespace TWXProxy.Core
                         db.CloseDatabase();
                     }
                 }
-                
+
                 // Delete the database file
                 if (GlobalModules.TWXServer != null)
                     GlobalModules.TWXServer.ClientMessage($"Deleting database: {dbName}");
-                
+
                 File.Delete(dbPath);
-                
+
                 // Delete .cfg file if exists
                 string cfgPath = Path.Combine(dataDir, dbName + ".cfg");
                 if (File.Exists(cfgPath))
                 {
                     try { File.Delete(cfgPath); } catch { }
                 }
-                
+
                 // Delete script data directory if requested
                 if (parameters.Length > 1)
                 {
@@ -2767,13 +2773,13 @@ namespace TWXProxy.Core
                 string dbName = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string dbPath = Path.Combine(dataDir, dbName + ".xdb");
-                
+
                 if (!File.Exists(dbPath))
                 {
                     Console.WriteLine($"[EditDatabase] Database not found: {dbName}");
                     return CmdAction.None;
                 }
-                
+
                 // Close database if currently open
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
@@ -2783,7 +2789,7 @@ namespace TWXProxy.Core
                         db.CloseDatabase();
                     }
                 }
-                
+
                 // Read existing header
                 DataHeader header = new DataHeader();
                 using (var fs = new FileStream(dbPath, FileMode.Open, FileAccess.Read))
@@ -2811,7 +2817,7 @@ namespace TWXProxy.Core
                     header.StealFactor = br.ReadByte();
                     header.LastPortCIM = DateTime.FromBinary(br.ReadInt64());
                 }
-                
+
                 // Parse field=value pairs and update header (starting at parameter 1)
                 for (int i = 1; i < parameters.Length; i++)
                 {
@@ -2821,7 +2827,7 @@ namespace TWXProxy.Core
                     {
                         string field = param.Substring(0, eqPos);
                         string value = param.Substring(eqPos + 1);
-                        
+
                         switch (field)
                         {
                             case "ServerAddress":
@@ -2861,7 +2867,7 @@ namespace TWXProxy.Core
                         }
                     }
                 }
-                
+
                 // Write updated header back to database
                 using (var fs = new FileStream(dbPath, FileMode.Open, FileAccess.Write))
                 using (var bw = new BinaryWriter(fs))
@@ -2888,7 +2894,7 @@ namespace TWXProxy.Core
                     bw.Write(header.StealFactor);
                     bw.Write(header.LastPortCIM.ToBinary());
                 }
-                
+
                 Console.WriteLine($"[EditDatabase] Updated database: {dbName}");
             }
             catch (Exception ex)
@@ -2906,7 +2912,7 @@ namespace TWXProxy.Core
             {
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 var databases = new List<string>();
-                
+
                 if (Directory.Exists(dataDir))
                 {
                     var files = Directory.GetFiles(dataDir, "*.xdb");
@@ -2915,7 +2921,7 @@ namespace TWXProxy.Core
                         databases.Add(Path.GetFileName(file));
                     }
                 }
-                
+
                 if (parameters[0] is VarParam varParam)
                 {
                     varParam.SetArrayFromStrings(databases);
@@ -2943,7 +2949,7 @@ namespace TWXProxy.Core
                 string dbName = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string dbPath = Path.Combine(dataDir, dbName + ".xdb");
-                
+
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
                     db.CloseDatabase();
@@ -2986,14 +2992,14 @@ namespace TWXProxy.Core
                 string dbName = Path.GetFileNameWithoutExtension(parameters[0].Value);
                 string dataDir = Path.Combine(GlobalModules.ProgramDir, "data");
                 string dbPath = Path.Combine(dataDir, dbName + ".xdb");
-                
+
                 if (!File.Exists(dbPath))
                 {
                     if (GlobalModules.TWXServer != null)
                         GlobalModules.TWXServer.BroadcastLiteral($"Error: Database {dbName} does not exist.");
                     return CmdAction.None;
                 }
-                
+
                 // Close database if currently open
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
@@ -3003,7 +3009,7 @@ namespace TWXProxy.Core
                         db.CloseDatabase();
                     }
                 }
-                
+
                 // Load existing header to preserve settings
                 DataHeader? header = null;
                 try
@@ -3021,10 +3027,10 @@ namespace TWXProxy.Core
                     // If can't read header, use defaults
                     header = new DataHeader { Sectors = 1000, StarDock = 65535 };
                 }
-                
+
                 if (GlobalModules.TWXServer != null)
                     GlobalModules.TWXServer.ClientMessage($"Resetting database: {dbName}");
-                
+
                 // Delete old database and config
                 File.Delete(dbPath);
                 string cfgPath = Path.Combine(dataDir, dbName + ".cfg");
@@ -3032,7 +3038,7 @@ namespace TWXProxy.Core
                 {
                     try { File.Delete(cfgPath); } catch { }
                 }
-                
+
                 // Delete script data if requested
                 if (parameters.Length > 1)
                 {
@@ -3042,7 +3048,7 @@ namespace TWXProxy.Core
                         try { Directory.Delete(scriptDir, true); } catch { }
                     }
                 }
-                
+
                 // Create fresh database with preserved header
                 if (GlobalModules.TWXDatabase is ModDatabase db2 && header != null)
                 {
@@ -3135,7 +3141,7 @@ namespace TWXProxy.Core
             // Checks if any connected clients are set to deaf mode
             // Returns 1 if any deaf clients exist, 0 otherwise
             parameters[0].Value = "0";
-            
+
             if (GlobalModules.TWXServer != null)
             {
                 int clientCount = GlobalModules.TWXServer.ClientCount;
@@ -3148,7 +3154,7 @@ namespace TWXProxy.Core
                     }
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -3160,13 +3166,13 @@ namespace TWXProxy.Core
             if (GlobalModules.TWXServer != null)
             {
                 bool setToDeaf = true;
-                
+
                 // If parameter is "0", set to standard mode
                 if (parameters.Length > 0 && parameters[0].Value == "0")
                 {
                     setToDeaf = false;
                 }
-                
+
                 int clientCount = GlobalModules.TWXServer.ClientCount;
                 for (int i = 0; i < clientCount; i++)
                 {
@@ -3188,7 +3194,7 @@ namespace TWXProxy.Core
                     }
                 }
             }
-            
+
             return CmdAction.None;
         }
 
@@ -3201,18 +3207,18 @@ namespace TWXProxy.Core
             {
                 // Build command line arguments from all parameters
                 string args = string.Join(" ", parameters.Select(p => p.Value));
-                
+
                 // Determine executable name based on platform
                 string exeName = OperatingSystem.IsWindows() ? "twxp.exe" : "twxp";
                 string exePath = Path.Combine(GlobalModules.ProgramDir, exeName);
-                
+
                 // Check if executable exists
                 if (!File.Exists(exePath))
                 {
                     Console.WriteLine($"[OpenInstance] Executable not found: {exePath}");
                     return CmdAction.None;
                 }
-                
+
                 // Start new process
                 var startInfo = new System.Diagnostics.ProcessStartInfo
                 {
@@ -3221,14 +3227,14 @@ namespace TWXProxy.Core
                     UseShellExecute = true,
                     WorkingDirectory = GlobalModules.ProgramDir
                 };
-                
+
                 System.Diagnostics.Process.Start(startInfo);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[OpenInstance] Error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -3240,7 +3246,7 @@ namespace TWXProxy.Core
             try
             {
                 string instanceName = parameters[0].Value;
-                
+
                 if (GlobalModules.TWXDatabase is ModDatabase db)
                 {
                     TwxRuntimeContext context = GlobalModules.CurrentContext;
@@ -3288,7 +3294,7 @@ namespace TWXProxy.Core
             {
                 Console.WriteLine($"[CloseInstance] Error: {ex.Message}");
             }
-            
+
             return CmdAction.None;
         }
 
@@ -3364,19 +3370,19 @@ namespace TWXProxy.Core
             if (!long.TryParse(parameters[2].Value, out long end)) end = 0;
 
             long diff = Math.Abs(end - start);
-            long days  = diff / 86400; diff %= 86400;
-            long hours = diff / 3600;  diff %= 3600;
-            long mins  = diff / 60;
-            long secs  = diff % 60;
+            long days = diff / 86400; diff %= 86400;
+            long hours = diff / 3600; diff %= 3600;
+            long mins = diff / 60;
+            long secs = diff % 60;
 
             if (parameters.Length > 3)
             {
                 parameters[0].Value = parameters[3].Value switch
                 {
-                    "Days"  => days.ToString(),
+                    "Days" => days.ToString(),
                     "Hours" => hours.ToString(),
-                    "Mins"  => mins.ToString(),
-                    "Secs"  => secs.ToString(),
+                    "Mins" => mins.ToString(),
+                    "Secs" => secs.ToString(),
                     _ => $"{days:D2}:{hours:D2}:{mins:D2}:{secs:D2}"
                 };
             }

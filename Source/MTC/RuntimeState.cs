@@ -544,6 +544,9 @@ public partial class MainWindow
         EmbeddedGameConfig config = _embeddedGameConfig ?? await LoadOrCreateEmbeddedGameConfigAsync(gameName);
         config.Name = gameName;
         config.DatabasePath = ResolveResetDatabasePath(gameName, config);
+        string resetScriptDirectory = CurrentInterpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
+        string resetProgramDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(resetScriptDirectory);
+        string resetNativeScriptRoot = GetMombotScriptRootRelative(GetNativeMombotScriptRoot(BuildCurrentGameNativeBotConfig()));
         ResetEmbeddedGameIdentity(config);
 
         Core.DataHeader sourceHeader = ResolveResetSourceHeader(config.DatabasePath);
@@ -569,17 +572,19 @@ public partial class MainWindow
             Core.ScriptRef.SetOnVariableSaved(runtimeContext, null);
             Core.ScriptRef.ClearCurrentGameVars(runtimeContext);
             ClearMombotRelogState();
-            ResetMombotGameStorage(gameName);
+            ResetMombotGameStorage(gameName, resetProgramDir, resetNativeScriptRoot);
 
             Directory.CreateDirectory(Path.GetDirectoryName(config.DatabasePath)!);
-            using var resetLock = Core.GameFileLock.Acquire("MTC reset game", configPath, config.DatabasePath);
-            var db = new Core.ModDatabase();
-            db.CreateDatabase(config.DatabasePath, resetHeader);
-            db.CloseDatabase();
+            using (Core.GameFileLock.Acquire("MTC reset game", configPath, config.DatabasePath))
+            {
+                var db = new Core.ModDatabase();
+                db.CreateDatabase(config.DatabasePath, resetHeader);
+                db.CloseDatabase();
 
-            config.Mtc ??= new EmbeddedMtcConfig();
-            config.Mtc.State = new EmbeddedMtcState();
-            await SaveEmbeddedGameConfigAsync(gameName, config);
+                config.Mtc ??= new EmbeddedMtcConfig();
+                config.Mtc.State = new EmbeddedMtcState();
+                await SaveEmbeddedGameConfigAsync(gameName, config);
+            }
 
             _currentProfilePath = configPath;
             _embeddedGameConfig = config;
@@ -617,25 +622,37 @@ public partial class MainWindow
         }
     }
 
-    private void ResetMombotGameStorage(string gameName)
+    private void ResetMombotGameStorage(string gameName, string? programDir = null, string? nativeScriptRoot = null)
     {
         string normalizedGameName = NormalizeGameName(gameName);
         if (string.IsNullOrWhiteSpace(normalizedGameName))
             return;
 
         string scriptDirectory = CurrentInterpreter?.ScriptDirectory ?? GetEffectiveProxyScriptDirectory();
-        string programDir = CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory);
-        string folderPath = Path.Combine(programDir, "games", normalizedGameName);
+        programDir = string.IsNullOrWhiteSpace(programDir)
+            ? CurrentInterpreter?.ProgramDir ?? GetEffectiveProxyProgramDir(scriptDirectory)
+            : programDir;
+        nativeScriptRoot = string.IsNullOrWhiteSpace(nativeScriptRoot)
+            ? GetMombotScriptRootRelative(GetNativeMombotScriptRoot(BuildCurrentGameNativeBotConfig()))
+            : nativeScriptRoot;
 
-        DeleteDirectoryIfPresent(folderPath);
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            AppPaths.GameDataDirForGame(normalizedGameName),
+            Path.Combine(programDir, "games", normalizedGameName)
+        };
 
-        string nativeScriptRoot = GetMombotScriptRootRelative(GetNativeMombotScriptRoot(BuildCurrentGameNativeBotConfig()));
-        string legacyFolderPath = Path.Combine(
-            programDir,
-            nativeScriptRoot.Replace('/', Path.DirectorySeparatorChar),
-            "games",
-            normalizedGameName);
-        DeleteDirectoryIfPresent(legacyFolderPath);
+        if (!string.IsNullOrWhiteSpace(nativeScriptRoot))
+        {
+            paths.Add(Path.Combine(
+                programDir,
+                nativeScriptRoot.Replace('/', Path.DirectorySeparatorChar),
+                "games",
+                normalizedGameName));
+        }
+
+        foreach (string path in paths)
+            DeleteDirectoryIfPresent(path);
     }
 
     private static void DeleteDirectoryIfPresent(string path)
@@ -647,8 +664,10 @@ public partial class MainWindow
         {
             Directory.Delete(path, recursive: true);
         }
-        catch
+        catch (Exception ex)
         {
+            Core.GlobalModules.DebugLog($"[ResetGame] Failed to delete Mombot game storage '{path}': {ex.Message}\n");
+            throw;
         }
     }
 
@@ -754,7 +773,7 @@ public partial class MainWindow
             Text =
                 $"{MtcVersion.ProductName} ({MtcVersion.ShortProductName})\n" +
                 $"Version {MtcVersion.DisplayVersion}\n" +
-                $"Package {MtcVersion.PackageVersion}\n\n" +
+                $"Build {MtcVersion.BuildNumber}\n\n" +
                 "Cross-platform Trade Wars 2002 client\n" +
                 "built on TWXProxy Core.\n\n" +
                 "Copyright (C) 2026 Matt Mosley\n" +
@@ -847,6 +866,7 @@ public partial class MainWindow
             HideMtcUpdateBanner();
         ApplySessionLogSettings(_embeddedGameConfig);
         ApplyRedAlertPreference();
+        ApplyScriptWindowStayInFrontPreference();
         RebuildScriptsMenu();
         PostToCurrentMtcTabSession(FocusActiveTerminal, DispatcherPriority.Input);
     }
@@ -866,7 +886,7 @@ public partial class MainWindow
         await SaveEmbeddedGameConfigAsync(gameName, _embeddedGameConfig);
     }
 
-    private async Task OnMacrosAsync()
+    private Task OnMacrosAsync()
     {
         var owner = ActiveMtcTab;
         if (owner?.MacroSettingsDialog is { } existing)
@@ -875,7 +895,7 @@ public partial class MainWindow
                 existing.WindowState = WindowState.Normal;
 
             existing.Activate();
-            return;
+            return Task.CompletedTask;
         }
 
         var dialog = new MacroSettingsDialog(
@@ -891,20 +911,22 @@ public partial class MainWindow
 
         if (owner != null)
             owner.MacroSettingsDialog = dialog;
-        RegisterMtcTabOwnedWindow(owner, dialog);
+        dialog.ShowActivated = false;
+        dialog.Closed += (_, _) =>
+        {
+            ExecuteInOptionalMtcTabSession(owner, () =>
+            {
+                if (owner != null && ReferenceEquals(owner.MacroSettingsDialog, dialog))
+                    owner.MacroSettingsDialog = null;
+
+                UpdateTerminalLiveSelector();
+            });
+        };
+
+        ShowMtcTabOwnedWindow(owner, dialog, activate: false);
         UpdateTerminalLiveSelector();
-
-        try
-        {
-            await dialog.ShowDialog<bool>(this);
-        }
-        finally
-        {
-            if (owner != null && ReferenceEquals(owner.MacroSettingsDialog, dialog))
-                owner.MacroSettingsDialog = null;
-
-            UpdateTerminalLiveSelector();
-        }
+        FocusActiveTerminal();
+        return Task.CompletedTask;
     }
 
     private void SaveMacroBindings(IReadOnlyList<AppPreferences.MacroBinding> bindings)

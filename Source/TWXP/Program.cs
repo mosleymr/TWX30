@@ -2,6 +2,12 @@ using Avalonia;
 using TWXProxy.Core;
 using TWXP;
 
+if (args.Any(arg => string.Equals(arg, "-d", StringComparison.OrdinalIgnoreCase)))
+{
+    await TWXP.Headless.HeadlessProxyHost.RunAsync(args);
+    return;
+}
+
 Console.SetOut(TextWriter.Null);
 
 AppPaths.EnsureDirectories();
