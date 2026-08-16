@@ -338,7 +338,7 @@ internal class PreferencesDialog : Window
                 BuildField(
                     "Idle keepalive interval",
                     txtGameIdleKeepaliveInterval,
-                    "Seconds between telnet NOP anti-idle keepalives. Default 45.")),
+                    "Seconds of no client-to-server traffic before sending a telnet NOP anti-idle keepalive. Default 30.")),
             BuildField(
                 "Python interpreter",
                 txtPythonInterpreter,

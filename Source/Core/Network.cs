@@ -277,12 +277,12 @@ namespace TWXProxy.Core
         private int _disconnectHandling = 0;   // Interlocked guard — emit disconnect UI/event once
         private int _serverStaleWatchdogRunning = 0;
         private long _lastServerReceiveUtcTicks = 0;
-        private long _lastServerActivityUtcTicks = 0;
+        private long _lastClientToServerActivityUtcTicks = 0;
         private long _pendingLocalInputProbeUtcTicks = 0;
         private int _pendingLocalInputProbeBytes = 0;
         private string _pendingLocalInputProbeSummary = string.Empty;
         public const int DefaultLocalInputResponseTimeoutSeconds = 60;
-        public const int DefaultGameIdleKeepaliveIntervalSeconds = 45;
+        public const int DefaultGameIdleKeepaliveIntervalSeconds = 30;
         private const int MinimumNetworkWatchdogSeconds = 5;
         private const int MaximumNetworkWatchdogSeconds = 600;
         private static readonly byte[] GameIdleKeepaliveBytes = [0xFF, 0xF1]; // Telnet IAC NOP.
@@ -1084,7 +1084,7 @@ namespace TWXProxy.Core
                 System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
                 long connectedTicks = UtcNowTicks();
                 Interlocked.Exchange(ref _lastServerReceiveUtcTicks, connectedTicks);
-                MarkServerActivity(connectedTicks);
+                MarkClientToServerActivity(connectedTicks);
                 ResetServerOutputBoundaryState();
                 ClearPendingLocalInputProbe();
 
@@ -1681,16 +1681,15 @@ namespace TWXProxy.Core
         {
             long ticks = UtcNowTicks();
             Interlocked.Exchange(ref _lastServerReceiveUtcTicks, ticks);
-            MarkServerActivity(ticks);
             ClearPendingLocalInputProbe();
             return Stopwatch.GetTimestamp();
         }
 
-        private void MarkServerActivity()
-            => MarkServerActivity(UtcNowTicks());
+        private void MarkClientToServerActivity()
+            => MarkClientToServerActivity(UtcNowTicks());
 
-        private void MarkServerActivity(long utcTicks)
-            => Interlocked.Exchange(ref _lastServerActivityUtcTicks, utcTicks);
+        private void MarkClientToServerActivity(long utcTicks)
+            => Interlocked.Exchange(ref _lastClientToServerActivityUtcTicks, utcTicks);
 
         private async Task<bool> TryHandleStaleLocalInputProbeAsync(DateTime nowUtc, CancellationToken token)
         {
@@ -1738,7 +1737,7 @@ namespace TWXProxy.Core
             int intervalSeconds = NormalizeNetworkWatchdogSeconds(
                 GameIdleKeepaliveIntervalSeconds,
                 DefaultGameIdleKeepaliveIntervalSeconds);
-            long lastActivityTicks = Interlocked.Read(ref _lastServerActivityUtcTicks);
+            long lastActivityTicks = Interlocked.Read(ref _lastClientToServerActivityUtcTicks);
             if (lastActivityTicks <= 0)
                 return;
 
@@ -1782,8 +1781,8 @@ namespace TWXProxy.Core
 
                 await stream.WriteAsync(GameIdleKeepaliveBytes, 0, GameIdleKeepaliveBytes.Length, token);
                 await stream.FlushAsync(token);
-                MarkServerActivity();
-                GlobalModules.DebugLog($"[{_gameName}] Sent telnet NOP keepalive {reason}\n");
+                MarkClientToServerActivity();
+                GlobalModules.DebugLog($"[{_gameName}] Sent telnet NOP keepalive {reason}; next keepalive based on client-to-server inactivity\n");
             }
             catch (OperationCanceledException)
             {
@@ -2453,7 +2452,7 @@ namespace TWXProxy.Core
                     {
                         stream.Write(copy, 0, copy.Length);
                         stream.Flush();
-                        MarkServerActivity();
+                        MarkClientToServerActivity();
                     }
 
                     return Task.CompletedTask;
@@ -2494,7 +2493,7 @@ namespace TWXProxy.Core
             {
                 stream.Write(data, 0, data.Length);
                 stream.Flush();
-                MarkServerActivity();
+                MarkClientToServerActivity();
                 DispatchServerDataSent(data);
                 return FastServerSendResult.Succeeded(startTimestamp, Stopwatch.GetTimestamp(), data.Length);
             }
@@ -2678,7 +2677,7 @@ namespace TWXProxy.Core
                                 {
                                     await stream.WriteAsync(data, 0, data.Length, token);
                                     await stream.FlushAsync(token);
-                                    MarkServerActivity();
+                                    MarkClientToServerActivity();
                                 }
                             }
                             finally

@@ -432,7 +432,9 @@ public class AppPreferences
             if (bool.TryParse((string?)root.Element("GameIdleKeepaliveEnabled"), out bool gameIdleKeepaliveEnabled))
                 prefs.GameIdleKeepaliveEnabled = gameIdleKeepaliveEnabled;
             if (int.TryParse((string?)root.Element("GameIdleKeepaliveIntervalSeconds"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int gameIdleKeepaliveIntervalSeconds))
-                prefs.GameIdleKeepaliveIntervalSeconds = NormalizeNetworkWatchdogSeconds(gameIdleKeepaliveIntervalSeconds, DefaultGameIdleKeepaliveIntervalSeconds);
+                prefs.GameIdleKeepaliveIntervalSeconds = NormalizeNetworkWatchdogSeconds(
+                    gameIdleKeepaliveIntervalSeconds == 45 ? DefaultGameIdleKeepaliveIntervalSeconds : gameIdleKeepaliveIntervalSeconds,
+                    DefaultGameIdleKeepaliveIntervalSeconds);
             if (bool.TryParse((string?)root.Element("DisableScriptWindowStayInFront"), out bool disableScriptWindowStayInFront))
                 prefs.DisableScriptWindowStayInFront = disableScriptWindowStayInFront;
             if (bool.TryParse((string?)root.Element("PythonScriptsEnabled"), out bool pythonScriptsEnabled))

@@ -65,6 +65,9 @@ static void DestroyedStarPortNoticeClearsPortExists()
 
 static void GameIdleKeepaliveUsesTelnetNopBytes()
 {
+    if (GameInstance.DefaultGameIdleKeepaliveIntervalSeconds != 30)
+        throw new InvalidOperationException($"Expected default keepalive interval 30 seconds, got {GameInstance.DefaultGameIdleKeepaliveIntervalSeconds}.");
+
     var field = typeof(GameInstance).GetField(
         "GameIdleKeepaliveBytes",
         System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
