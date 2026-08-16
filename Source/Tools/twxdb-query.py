@@ -64,6 +64,9 @@ class XdbReader:
     def read_u16(self) -> int:
         return int(self.read_struct("<H"))
 
+    def read_warp(self, version: int) -> int:
+        return self.read_i32() if version >= 16 else self.read_u16()
+
     def read_i32(self) -> int:
         return int(self.read_struct("<i"))
 
@@ -196,7 +199,7 @@ def read_header(reader: XdbReader) -> dict[str, Any]:
 def read_sector(reader: XdbReader, version: int = 0) -> dict[str, Any]:
     sector = {
         "number": reader.read_i32(),
-        "warps": [reader.read_u16() for _ in range(6)],
+        "warps": [reader.read_warp(version) for _ in range(6)],
         "port": None,
         "navhaz": 0,
         "fighters": {},
@@ -234,7 +237,9 @@ def read_sector(reader: XdbReader, version: int = 0) -> dict[str, Any]:
     sector["vars"] = {
         reader.read_string(): reader.read_string() for _ in range(reader.read_i32())
     }
-    sector["warps_in"] = [reader.read_u16() for _ in range(reader.read_i32())]
+    sector["warps_in"] = [
+        reader.read_warp(version) for _ in range(reader.read_i32())
+    ]
     sector["warps"] = [warp for warp in sector["warps"] if warp > 0]
     return sector
 

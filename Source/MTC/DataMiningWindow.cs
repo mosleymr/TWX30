@@ -2279,7 +2279,7 @@ public sealed class DataMiningWindow : Window
 
     private static bool HasBackdoor(Core.SectorData sector)
     {
-        HashSet<ushort> outbound = sector.Warp.Where(w => w > 0).ToHashSet();
+        HashSet<int> outbound = sector.Warp.Where(w => w > 0).ToHashSet();
         return sector.WarpsIn.Any(warpIn => warpIn > 0 && !outbound.Contains(warpIn));
     }
 
@@ -2354,13 +2354,13 @@ public sealed class DataMiningWindow : Window
             return Array.Empty<int>();
 
         var neighbors = new HashSet<int>();
-        foreach (ushort warp in sector.Warp)
+        foreach (int warp in sector.Warp)
         {
             if (warp > 0 && warp <= totalSectors)
                 neighbors.Add(warp);
         }
 
-        foreach (ushort warpIn in sector.WarpsIn)
+        foreach (int warpIn in sector.WarpsIn)
         {
             if (warpIn > 0 && warpIn <= totalSectors)
                 neighbors.Add(warpIn);

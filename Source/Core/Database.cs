@@ -54,7 +54,7 @@ namespace TWXProxy.Core
 
     public static class DatabaseConstants
     {
-        public const int DatabaseVersion = 15;
+        public const int DatabaseVersion = 16;
         public static readonly string[] DayNames = { "Sun", "Mon", "Tues", "Wed", "Thurs", "Fri", "Sat" };
         public const string BustParameterName = "BUSTED";
         public const string FakeBustParameterName = "FAKEBUST";
@@ -185,7 +185,7 @@ namespace TWXProxy.Core
         /// </summary>
         public List<string> PlanetNames { get; set; } = new();
         public Dictionary<string, string> Variables { get; set; } = new();
-        public List<ushort> WarpsIn { get; set; } = new(); // Sectors that warp to this one
+        public List<int> WarpsIn { get; set; } = new(); // Sectors that warp to this one
     }
 
     /// <summary>
@@ -242,6 +242,8 @@ namespace TWXProxy.Core
         private readonly ReaderWriterLockSlim _headerLock;
         private Timer? _autoSaveTimer;
         private readonly object _saveLock = new();
+        private static readonly ConcurrentDictionary<string, long> _databasePathGenerations = new(StringComparer.OrdinalIgnoreCase);
+        private long _databasePathGeneration;
         private int _nextProvisionalPlanetId = -1;
         private NetworkManager? _networkManager;
         private GameInstance? _gameInstance;
@@ -416,6 +418,7 @@ namespace TWXProxy.Core
 
             _header = header;
             _databasePath = filename;
+            _databasePathGeneration = BumpDatabaseGeneration(filename);
             _databaseName = Path.GetFileNameWithoutExtension(filename);
             _sectors.Clear();
             _planets.Clear();
@@ -443,6 +446,7 @@ namespace TWXProxy.Core
             CloseDatabase();
 
             _databasePath = filename;
+            _databasePathGeneration = CurrentDatabaseGeneration(filename);
             _databaseName = Path.GetFileNameWithoutExtension(filename);
 
             if (File.Exists(filename))
@@ -511,6 +515,12 @@ namespace TWXProxy.Core
             {
                 try
                 {
+                    if (IsStaleDatabaseHandle())
+                    {
+                        GlobalModules.DebugLog($"[Database] Skipped stale save for {_databasePath}\n");
+                        return;
+                    }
+
                     string tempPath = _databasePath + ".tmp";
 
                     using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
@@ -559,6 +569,30 @@ namespace TWXProxy.Core
             }
         }
 
+        private static string NormalizeDatabasePath(string filename)
+        {
+            return Path.GetFullPath(filename);
+        }
+
+        private static long CurrentDatabaseGeneration(string filename)
+        {
+            return _databasePathGenerations.GetOrAdd(NormalizeDatabasePath(filename), 0);
+        }
+
+        private static long BumpDatabaseGeneration(string filename)
+        {
+            return _databasePathGenerations.AddOrUpdate(
+                NormalizeDatabasePath(filename),
+                1,
+                (_, current) => current == long.MaxValue ? 1 : current + 1);
+        }
+
+        private bool IsStaleDatabaseHandle()
+        {
+            return !string.IsNullOrEmpty(_databasePath)
+                && _databasePathGeneration != CurrentDatabaseGeneration(_databasePath);
+        }
+
         /// <summary>
         /// Load database from disk
         /// </summary>
@@ -594,8 +628,8 @@ namespace TWXProxy.Core
 
                     foreach (var s in _sectors.Values)
                     {
-                        ushort origin = (ushort)s.Number;
-                        foreach (var warp in s.Warp.Where(w => w > 0))
+                        int origin = s.Number;
+                        foreach (int warp in s.Warp.Where(w => w > 0))
                         {
                             if (_sectors.TryGetValue(warp, out var target)
                                 && !target.WarpsIn.Contains(origin))
@@ -768,8 +802,8 @@ namespace TWXProxy.Core
 
             foreach (var sector in _sectors.Values)
             {
-                ushort origin = (ushort)sector.Number;
-                foreach (ushort warp in sector.Warp.Where(w => w > 0))
+                int origin = sector.Number;
+                foreach (int warp in sector.Warp.Where(w => w > 0))
                 {
                     if (!_sectors.TryGetValue(warp, out var targetSector))
                     {
@@ -982,14 +1016,14 @@ namespace TWXProxy.Core
         /// <summary>
         /// Get all sectors that warp into the specified sector (backdoors)
         /// </summary>
-        public List<ushort> GetBackDoors(Sector sector, int sectorNumber)
+        public List<int> GetBackDoors(Sector sector, int sectorNumber)
         {
-            var backDoors = new List<ushort>();
+            var backDoors = new List<int>();
 
             if (_sectors.TryGetValue(sectorNumber, out var sectorData))
             {
                 // Find all sectors not in the direct warp list that warp to this sector
-                var directWarps = new HashSet<ushort>(sector.Warp.Where(w => w > 0));
+                var directWarps = new HashSet<int>(sector.Warp.Where(w => w > 0));
 
                 foreach (var warpIn in sectorData.WarpsIn)
                 {
@@ -1651,12 +1685,12 @@ namespace TWXProxy.Core
         /// </summary>
         private void UpdateWarpInCache(SectorData sector)
         {
-            ushort origin = (ushort)sector.Number;
-            var currentTargets = new HashSet<ushort>(sector.Warp.Where(w => w > 0));
+            int origin = sector.Number;
+            var currentTargets = new HashSet<int>(sector.Warp.Where(w => w > 0));
 
             foreach (var targetSector in _sectors.Values)
             {
-                if (!currentTargets.Contains((ushort)targetSector.Number))
+                if (!currentTargets.Contains(targetSector.Number))
                     targetSector.WarpsIn.Remove(origin);
             }
 
@@ -2277,12 +2311,12 @@ namespace TWXProxy.Core
             }
         }
 
-        private static int[] ExtractValidWarps(ushort[] warps, int sectorCount)
+        private static int[] ExtractValidWarps(int[] warps, int sectorCount)
         {
             int validCount = 0;
             for (int i = 0; i < warps.Length; i++)
             {
-                ushort warp = warps[i];
+                int warp = warps[i];
                 if (warp > 0 && warp <= sectorCount)
                     validCount++;
             }
@@ -2294,7 +2328,7 @@ namespace TWXProxy.Core
             int index = 0;
             for (int i = 0; i < warps.Length; i++)
             {
-                ushort warp = warps[i];
+                int warp = warps[i];
                 if (warp > 0 && warp <= sectorCount)
                     result[index++] = warp;
             }
@@ -2302,7 +2336,7 @@ namespace TWXProxy.Core
             return result;
         }
 
-        private static int[] ExtractValidWarpsIn(List<ushort> warpsIn, int sectorCount)
+        private static int[] ExtractValidWarpsIn(List<int> warpsIn, int sectorCount)
         {
             if (warpsIn.Count == 0)
                 return Array.Empty<int>();
@@ -2310,7 +2344,7 @@ namespace TWXProxy.Core
             int validCount = 0;
             for (int i = 0; i < warpsIn.Count; i++)
             {
-                ushort warp = warpsIn[i];
+                int warp = warpsIn[i];
                 if (warp > 0 && warp <= sectorCount)
                     validCount++;
             }
@@ -2322,7 +2356,7 @@ namespace TWXProxy.Core
             int index = 0;
             for (int i = 0; i < warpsIn.Count; i++)
             {
-                ushort warp = warpsIn[i];
+                int warp = warpsIn[i];
                 if (warp > 0 && warp <= sectorCount)
                     result[index++] = warp;
             }
@@ -2569,7 +2603,12 @@ namespace TWXProxy.Core
 
             // Warps
             for (int i = 0; i < 6; i++)
-                writer.Write(sector.Warp[i]);
+            {
+                if (_header.Version >= 16)
+                    writer.Write(sector.Warp[i]);
+                else
+                    writer.Write((ushort)Math.Clamp(sector.Warp[i], ushort.MinValue, ushort.MaxValue));
+            }
 
             // Port
             writer.Write(sector.SectorPort != null);
@@ -2614,7 +2653,12 @@ namespace TWXProxy.Core
 
             writer.Write(sector.WarpsIn.Count);
             foreach (var warpIn in sector.WarpsIn)
-                writer.Write(warpIn);
+            {
+                if (_header.Version >= 16)
+                    writer.Write(warpIn);
+                else
+                    writer.Write((ushort)Math.Clamp(warpIn, ushort.MinValue, ushort.MaxValue));
+            }
         }
 
         private SectorData ReadSector(BinaryReader reader)
@@ -2626,7 +2670,11 @@ namespace TWXProxy.Core
 
             // Warps
             for (int i = 0; i < 6; i++)
-                sector.Warp[i] = reader.ReadUInt16();
+            {
+                sector.Warp[i] = _header.Version >= 16
+                    ? reader.ReadInt32()
+                    : reader.ReadUInt16();
+            }
 
             // Port
             if (reader.ReadBoolean())
@@ -2671,7 +2719,11 @@ namespace TWXProxy.Core
 
             int warpInCount = reader.ReadInt32();
             for (int i = 0; i < warpInCount; i++)
-                sector.WarpsIn.Add(reader.ReadUInt16());
+            {
+                sector.WarpsIn.Add(_header.Version >= 16
+                    ? reader.ReadInt32()
+                    : reader.ReadUInt16());
+            }
 
             return sector;
         }
@@ -2900,7 +2952,7 @@ namespace TWXProxy.Core
             };
 
             // Read warps (6 warps)
-            sector.Warp = new ushort[6];
+            sector.Warp = new int[6];
             for (int i = 0; i < 6; i++)
             {
                 sector.Warp[i] = reader.ReadUInt16();

@@ -659,7 +659,7 @@ namespace TWXProxy.Core
                 if (indexes.Length == 0 || !int.TryParse(indexes[0], out int sn40)) return string.Empty;
                 var s = GetSectorByIndex(indexes);
                 if (s == null) return string.Empty;
-                var bd = GetActiveDatabase()?.GetBackDoors(s, sn40) ?? new System.Collections.Generic.List<ushort>();
+                var bd = GetActiveDatabase()?.GetBackDoors(s, sn40) ?? new System.Collections.Generic.List<int>();
                 // If a second index is supplied (e.g. SECTOR.BACKDOORS[$sec][$n]), return the nth element (1-based).
                 // When the index is out of range (no backdoor at that slot), return "" (= 0 numerically) like Pascal does.
                 if (indexes.Length >= 2)

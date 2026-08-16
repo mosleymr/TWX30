@@ -862,6 +862,7 @@ public partial class MainWindow
             CaptureMtcTabSession(owner);
         ApplyDebugLoggingPreferences();
         ApplyJsonRpcPreferences();
+        ApplyNetworkWatchdogPreferences();
         if (!_appPrefs.UpdateChecksEnabled)
             HideMtcUpdateBanner();
         ApplySessionLogSettings(_embeddedGameConfig);
@@ -955,6 +956,7 @@ public partial class MainWindow
             Core.GlobalModules.ProgramDir = programDir;
             EmbeddedMtcDebugConfig debugPrefs = GetCurrentDebugConfig();
             Core.GlobalModules.PreferPreparedVm = _appPrefs.PreparedVmEnabled;
+            Core.GlobalModules.ScriptInfiniteLoopProtectionEnabled = _appPrefs.ScriptInfiniteLoopProtectionEnabled;
             Core.GlobalModules.EnableVmMetrics = _appPrefs.VmMetricsEnabled;
             Core.GlobalModules.PreparedScriptCacheLimitBytes =
                 Math.Max(1, _appPrefs.PreparedScriptCacheLimitKb) * 1024L;

@@ -1444,7 +1444,11 @@ public partial class MainWindow
         if (HasPendingUserTypedCommand())
             return false;
 
-        TimeSpan onlineAutoRefreshInterval = GetOnlineAutoRefreshInterval();
+        int onlineAutoRefreshIntervalSeconds = GetOnlineAutoRefreshIntervalSeconds();
+        if (onlineAutoRefreshIntervalSeconds <= 0)
+            return false;
+
+        TimeSpan onlineAutoRefreshInterval = TimeSpan.FromSeconds(onlineAutoRefreshIntervalSeconds);
         long lastRefreshTicks = Volatile.Read(ref _lastOnlineRefreshTicks);
         if (lastRefreshTicks != 0 &&
             Stopwatch.GetElapsedTime(lastRefreshTicks) < onlineAutoRefreshInterval)
@@ -1475,18 +1479,19 @@ public partial class MainWindow
             string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase));
     }
 
-    private TimeSpan GetOnlineAutoRefreshInterval()
-        => TimeSpan.FromSeconds(GetOnlineAutoRefreshIntervalSeconds());
-
     private int GetOnlineAutoRefreshIntervalSeconds()
     {
         foreach (AppPreferences.StatusPanelSectionPreference section in _appPrefs.GetOrderedStatusPanelSections())
         {
             if (string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase))
-                return AppPreferences.NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds);
+            {
+                return section.OnlineAutoRefreshEnabled
+                    ? AppPreferences.NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds)
+                    : 0;
+            }
         }
 
-        return AppPreferences.DefaultOnlineRefreshIntervalSeconds;
+        return 0;
     }
 
     private bool HasPendingUserTypedCommand()

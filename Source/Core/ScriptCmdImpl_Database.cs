@@ -16,14 +16,8 @@ namespace TWXProxy.Core
 {
     public partial class ScriptRef
     {
-        private static ModDatabase? _activeDatabase
-        {
-            get => GlobalModules.CurrentContext.ActiveDatabase;
-            set => GlobalModules.CurrentContext.ActiveDatabase = value;
-        }
-
         /// <summary>Exposes the active database for other components such as AutoRecorder.</summary>
-        internal static ModDatabase? ActiveDatabase => GlobalModules.CurrentContext.ActiveDatabase;
+        internal static ModDatabase? ActiveDatabase => ResolveActiveDatabase();
 
         // Sector avoid list
         private static readonly HashSet<int> _avoidedSectors = new();
@@ -32,6 +26,8 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetSector_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: getsector <sectorNum> var
             if (parameters[1] is not VarParam sectorVar)
                 return CmdAction.None;
@@ -102,7 +98,7 @@ namespace TWXProxy.Core
                 return value.ToShortDateString() + " " + value.ToLongTimeString();
             }
 
-            if (_activeDatabase == null || sectorNum <= 0 || sectorNum > _activeDatabase.SectorCount)
+            if (activeDatabase == null || sectorNum <= 0 || sectorNum > activeDatabase.SectorCount)
             {
                 SetField("explored", "NO");
                 SetField("index", "0");
@@ -119,7 +115,7 @@ namespace TWXProxy.Core
                 return CmdAction.None;
             }
 
-            var sector = _activeDatabase.GetSector(sectorNum);
+            var sector = activeDatabase.GetSector(sectorNum);
             if (sector == null)
             {
                 return CmdAction.None;
@@ -213,7 +209,7 @@ namespace TWXProxy.Core
                 SetField("port.percentequip", "0");
             }
 
-            var planetNames = _activeDatabase.GetPlanetNamesInSector(sectorNum);
+            var planetNames = activeDatabase.GetPlanetNamesInSector(sectorNum);
             SetField("planets", planetNames.Count.ToString(CultureInfo.InvariantCulture));
             for (int i = 0; i < planetNames.Count; i++)
                 SetField($"planet.{i + 1}", planetNames[i]);
@@ -238,7 +234,7 @@ namespace TWXProxy.Core
                 SetField($"ship.figs.{i + 1}", ship.Fighters.ToString(CultureInfo.InvariantCulture));
             }
 
-            var backDoors = _activeDatabase.GetBackDoors(sector, sectorNum);
+            var backDoors = activeDatabase.GetBackDoors(sector, sectorNum);
             for (int i = 0; i < backDoors.Count; i++)
             {
                 SetField($"backdoor.{i + 1}", backDoors[i].ToString(CultureInfo.InvariantCulture));
@@ -260,6 +256,7 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetSectorParameter_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
             string paramName = parameters[1].Value;
@@ -271,13 +268,13 @@ namespace TWXProxy.Core
             if (paramName.Length > 10)
                 throw new ScriptException("Sector parameter name exceeds 10 characters");
 
-            if (_activeDatabase == null || sectorNum <= 0 || sectorNum > _activeDatabase.SectorCount)
+            if (activeDatabase == null || sectorNum <= 0 || sectorNum > activeDatabase.SectorCount)
             {
                 outputParam.Value = string.Empty;
                 return CmdAction.None;
             }
 
-            string varValue = _activeDatabase.GetSectorVar(sectorNum, paramName);
+            string varValue = activeDatabase.GetSectorVar(sectorNum, paramName);
             if (varValue.Length > 40)
                 throw new ScriptException("Sector parameter value exceeds 40 characters");
 
@@ -288,6 +285,7 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdSetSectorParameter_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
             string paramName = parameters[1].Value;
@@ -298,9 +296,9 @@ namespace TWXProxy.Core
             if (value.Length > 40)
                 throw new ScriptException("Sector parameter value exceeds 40 characters");
 
-            if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
+            if (activeDatabase != null && sectorNum > 0 && sectorNum <= activeDatabase.SectorCount)
             {
-                _activeDatabase.SetSectorVar(sectorNum, paramName, value);
+                activeDatabase.SetSectorVar(sectorNum, paramName, value);
                 if (script is Script activeScript)
                     activeScript.MarkExecutionWatchdogActivity();
             }
@@ -310,6 +308,8 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdListSectorParameters_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: listsectorparameters <sector> var
             // List all custom parameters set for a sector
 
@@ -318,9 +318,9 @@ namespace TWXProxy.Core
 
             if (parameters[1] is VarParam varParam)
             {
-                if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
+                if (activeDatabase != null && sectorNum > 0 && sectorNum <= activeDatabase.SectorCount)
                 {
-                    var paramNames = _activeDatabase.GetSectorVarNames(sectorNum);
+                    var paramNames = activeDatabase.GetSectorVarNames(sectorNum);
                     var names = paramNames.ToList();
                     varParam.SetArrayFromStrings(names);
                     varParam.Value = names.Count.ToString(CultureInfo.InvariantCulture);
@@ -342,11 +342,13 @@ namespace TWXProxy.Core
             //   - return a path array that includes both start and destination
             //   - choose ties using breadth-first discovery order / warp order
             //   - return the scalar value as hop count (array length - 1)
-            return CmdGetCourseCore(parameters, scalarIsHopCount: true);
+            return CmdGetCourseCore(script, parameters, scalarIsHopCount: true);
         }
 
         private static CmdAction CmdGetCourses_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: getcourses var <from> <to>
             int fromSector, toSector;
             ConvertToNumber(parameters[1].Value, out fromSector);
@@ -354,16 +356,16 @@ namespace TWXProxy.Core
 
             if (parameters[0] is VarParam varParam)
             {
-                if (_activeDatabase == null ||
-                    fromSector <= 0 || fromSector > _activeDatabase.SectorCount ||
-                    toSector <= 0 || toSector > _activeDatabase.SectorCount)
+                if (activeDatabase == null ||
+                    fromSector <= 0 || fromSector > activeDatabase.SectorCount ||
+                    toSector <= 0 || toSector > activeDatabase.SectorCount)
                 {
                     varParam.SetMultiArraysFromStringsLists(new List<List<string>>());
                     varParam.Value = "0";
                     return CmdAction.None;
                 }
 
-                var courses = _activeDatabase.CalculateAllShortestPaths(fromSector, toSector, _avoidedSectors)
+                var courses = activeDatabase.CalculateAllShortestPaths(fromSector, toSector, _avoidedSectors)
                     .Select(path => path.Select(sector => sector.ToString(CultureInfo.InvariantCulture)).ToList())
                     .ToList();
                 varParam.SetMultiArraysFromStringsLists(courses);
@@ -373,19 +375,20 @@ namespace TWXProxy.Core
             return CmdAction.None;
         }
 
-        private static CmdAction CmdGetCourseCore(CmdParam[] parameters, bool scalarIsHopCount)
+        private static CmdAction CmdGetCourseCore(object script, CmdParam[] parameters, bool scalarIsHopCount)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
 
             int fromSector, toSector;
             ConvertToNumber(parameters[1].Value, out fromSector);
             ConvertToNumber(parameters[2].Value, out toSector);
 
             if (parameters[0] is VarParam varParam &&
-                _activeDatabase != null &&
-                fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
-                toSector > 0 && toSector <= _activeDatabase.SectorCount)
+                activeDatabase != null &&
+                fromSector > 0 && fromSector <= activeDatabase.SectorCount &&
+                toSector > 0 && toSector <= activeDatabase.SectorCount)
             {
-                var path = CalculateGetCoursePath(fromSector, toSector);
+                var path = CalculateGetCoursePath(activeDatabase, fromSector, toSector);
                 parameters[0].Value = scalarIsHopCount
                     ? (path.Count - 1).ToString()
                     : path.Count.ToString();
@@ -411,6 +414,8 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetDistance_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: getdistance var <from> <to>
             // Calculate distance (number of warps) between two sectors
 
@@ -418,17 +423,17 @@ namespace TWXProxy.Core
             ConvertToNumber(parameters[1].Value, out fromSector);
             ConvertToNumber(parameters[2].Value, out toSector);
 
-            if (_activeDatabase != null &&
-                fromSector > 0 && fromSector <= _activeDatabase.SectorCount &&
-                toSector > 0 && toSector <= _activeDatabase.SectorCount)
+            if (activeDatabase != null &&
+                fromSector > 0 && fromSector <= activeDatabase.SectorCount &&
+                toSector > 0 && toSector <= activeDatabase.SectorCount)
             {
-                var path = CalculateGetCoursePath(fromSector, toSector);
+                var path = CalculateGetCoursePath(activeDatabase, fromSector, toSector);
                 parameters[0].Value = (path.Count - 1).ToString(); // Distance is path length - 1
 
                 string pathDesc = path.Count > 0
                     ? string.Join(" > ", path.Select(sectorNum =>
                     {
-                        var sector = _activeDatabase.GetSector(sectorNum);
+                        var sector = activeDatabase.GetSector(sectorNum);
                         string explored = sector?.Explored switch
                         {
                             ExploreType.No => "No",
@@ -450,7 +455,7 @@ namespace TWXProxy.Core
             {
                 parameters[0].Value = "0";
                 GlobalModules.DebugLog(
-                    $"[GETDISTANCE] from={fromSector} to={toSector} distance=0 path=<invalid input> sectorCount={_activeDatabase?.SectorCount ?? 0}\n");
+                    $"[GETDISTANCE] from={fromSector} to={toSector} distance=0 path=<invalid input> sectorCount={activeDatabase?.SectorCount ?? 0}\n");
             }
 
             return CmdAction.None;
@@ -458,21 +463,23 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetAllCourses_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: getallcourses <2-DimensionArrayName> <StartingSector>
             int startSector;
             ConvertToNumber(parameters[1].Value, out startSector);
 
             if (parameters[0] is VarParam varParam)
             {
-                if (_activeDatabase == null ||
+                if (activeDatabase == null ||
                     startSector <= 0 ||
-                    startSector > _activeDatabase.SectorCount)
+                    startSector > activeDatabase.SectorCount)
                 {
                     varParam.SetMultiArraysFromStringsLists(new List<List<string>>());
                     return CmdAction.None;
                 }
 
-                var allCourses = _activeDatabase.GetAllCoursesFrom(startSector, _avoidedSectors);
+                var allCourses = activeDatabase.GetAllCoursesFrom(startSector, _avoidedSectors);
                 varParam.SetMultiArraysFromStringsLists(allCourses);
             }
 
@@ -481,6 +488,8 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdGetNearestWarps_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // Pascal TWX semantics:
             //   getnearestwarps <ArrayName> <StartingSector>
             // Returns the breadth-first reachable-sector queue produced by PlotWarpCourse(start, 0).
@@ -490,10 +499,10 @@ namespace TWXProxy.Core
 
             if (parameters[0] is VarParam varParam)
             {
-                if (_activeDatabase != null &&
-                    startSector > 0 && startSector <= _activeDatabase.SectorCount)
+                if (activeDatabase != null &&
+                    startSector > 0 && startSector <= activeDatabase.SectorCount)
                 {
-                    var reachable = _activeDatabase.GetReachableSectorsBreadthFirst(startSector, _avoidedSectors)
+                    var reachable = activeDatabase.GetReachableSectorsBreadthFirst(startSector, _avoidedSectors)
                         .Select(sector => sector.ToString())
                         .ToList();
                     parameters[0].Value = reachable.Count.ToString();
@@ -511,13 +520,15 @@ namespace TWXProxy.Core
 
         private static CmdAction CmdSetAvoid_Impl(object script, CmdParam[] parameters)
         {
+            ModDatabase? activeDatabase = ResolveActiveDatabase(script);
+
             // CMD: setavoid <sector>
             // Mark sector as avoided in pathfinding
 
             int sectorNum;
             ConvertToNumber(parameters[0].Value, out sectorNum);
 
-            if (_activeDatabase != null && sectorNum > 0 && sectorNum <= _activeDatabase.SectorCount)
+            if (activeDatabase != null && sectorNum > 0 && sectorNum <= activeDatabase.SectorCount)
             {
                 _avoidedSectors.Add(sectorNum);
             }
@@ -565,12 +576,8 @@ namespace TWXProxy.Core
 
         #region Pathfinding Helper Methods
 
-        private static List<int> CalculateGetCoursePath(int fromSector, int toSector)
+        private static List<int> CalculateGetCoursePath(ModDatabase activeDatabase, int fromSector, int toSector)
         {
-            ModDatabase? activeDatabase = GlobalModules.CurrentContext.ActiveDatabase;
-            if (activeDatabase == null)
-                return new List<int>();
-
             return activeDatabase.CalculateBidirectionalShortestPath(fromSector, toSector, _avoidedSectors);
         }
 
@@ -643,6 +650,17 @@ namespace TWXProxy.Core
         /// </summary>
         public static ModDatabase? GetActiveDatabase()
         {
+            return ResolveActiveDatabase();
+        }
+
+        private static ModDatabase? ResolveActiveDatabase(object? script = null)
+        {
+            if (script is Script scriptObj)
+                return scriptObj.Controller.RuntimeContext.ActiveDatabase;
+
+            if (GetExecutingScript() is Script executingScript)
+                return executingScript.Controller.RuntimeContext.ActiveDatabase;
+
             return GlobalModules.CurrentContext.ActiveDatabase;
         }
 

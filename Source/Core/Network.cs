@@ -193,6 +193,10 @@ namespace TWXProxy.Core
         public string ExternalAddress { get; set; } = string.Empty;
         public bool BroadCastMsgs { get; set; } = true;
         public bool LocalEcho { get; set; } = true;
+        public bool StaleLocalInputProbeEnabled { get; set; } = true;
+        public int LocalInputResponseTimeoutSeconds { get; set; } = DefaultLocalInputResponseTimeoutSeconds;
+        public bool GameIdleKeepaliveEnabled { get; set; } = true;
+        public int GameIdleKeepaliveIntervalSeconds { get; set; } = DefaultGameIdleKeepaliveIntervalSeconds;
         public int ClientCount
         {
             get
@@ -260,7 +264,6 @@ namespace TWXProxy.Core
         private int _serverOutputAnsiState;
         private int _deferredLocalOutputFlushScheduled;
         private int _suppressScriptPipeToggleMessageCount;
-        private int _suppressScriptPipeTogglePromptCount;
 
         // Telnet negotiation state
         private bool _telnetNegotiationComplete = false;
@@ -274,10 +277,15 @@ namespace TWXProxy.Core
         private int _disconnectHandling = 0;   // Interlocked guard — emit disconnect UI/event once
         private int _serverStaleWatchdogRunning = 0;
         private long _lastServerReceiveUtcTicks = 0;
+        private long _lastServerActivityUtcTicks = 0;
         private long _pendingLocalInputProbeUtcTicks = 0;
         private int _pendingLocalInputProbeBytes = 0;
         private string _pendingLocalInputProbeSummary = string.Empty;
-        private static readonly TimeSpan LocalInputResponseTimeout = TimeSpan.FromSeconds(15);
+        public const int DefaultLocalInputResponseTimeoutSeconds = 60;
+        public const int DefaultGameIdleKeepaliveIntervalSeconds = 45;
+        private const int MinimumNetworkWatchdogSeconds = 5;
+        private const int MaximumNetworkWatchdogSeconds = 600;
+        private static readonly byte[] GameIdleKeepaliveBytes = [0xFF, 0xF1]; // Telnet IAC NOP.
         private static readonly TimeSpan ServerStaleWatchdogInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan DeferredLocalOutputQuietDelay = TimeSpan.FromMilliseconds(100);
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
@@ -1074,7 +1082,9 @@ namespace TWXProxy.Core
                 }
 
                 System.Threading.Interlocked.Exchange(ref _disconnectHandling, 0);
-                Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
+                long connectedTicks = UtcNowTicks();
+                Interlocked.Exchange(ref _lastServerReceiveUtcTicks, connectedTicks);
+                MarkServerActivity(connectedTicks);
                 ResetServerOutputBoundaryState();
                 ClearPendingLocalInputProbe();
 
@@ -1431,6 +1441,8 @@ namespace TWXProxy.Core
                     {
                         DispatchFastServerDataResponders(cleanData, receiveTimestamp, isRawReceive: false);
 
+                        _log.RecordServerData(cleanData);
+
                         foreach (byte[] segment in SplitServerOutputForDispatch(cleanData))
                         {
                             if (segment.Length == 0)
@@ -1444,22 +1456,26 @@ namespace TWXProxy.Core
                                 await SendToLocalAsync(segment, token: token);
                             }
 
-                            // Preserve Pascal TWX ordering: scripts see each completed server
-                            // segment before the next one is dispatched.
-                            BeginServerDataDispatch();
-                            try
-                            {
-                                ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(segment));
-                            }
-                            finally
-                            {
-                                EndServerDataDispatch();
-                            }
-
-                            _log.RecordServerData(segment);
-
                             await FlushDeferredLocalOutputWhenSafeAsync(token);
                         }
+
+                        // Match Pascal TWX's ProcessInBound shape for scripts,
+                        // AutoRecorder, and parser consumers: they receive the
+                        // cleaned inbound buffer once and maintain their own
+                        // CR/current-line state. Keep this after local display
+                        // forwarding so interactive script output/input prompts
+                        // do not get ahead of the game text that caused them.
+                        BeginServerDataDispatch();
+                        try
+                        {
+                            ServerDataReceived?.Invoke(this, new DataReceivedEventArgs(cleanData));
+                        }
+                        finally
+                        {
+                            EndServerDataDispatch();
+                        }
+
+                        await FlushDeferredLocalOutputWhenSafeAsync(token);
                         LogVerbose($"[{_gameName}] -> Forwarded {cleanData.Length} bytes to local clients");
                     }
                     else
@@ -1594,29 +1610,11 @@ namespace TWXProxy.Core
                     if (_serverClient?.Connected != true || _serverStream == null)
                         continue;
 
-                    long probeTicks = Interlocked.Read(ref _pendingLocalInputProbeUtcTicks);
-                    if (probeTicks <= 0)
+                    DateTime nowUtc = DateTime.UtcNow;
+                    if (await TryHandleStaleLocalInputProbeAsync(nowUtc, token))
                         continue;
 
-                    long lastReceiveTicks = Interlocked.Read(ref _lastServerReceiveUtcTicks);
-                    if (lastReceiveTicks >= probeTicks)
-                    {
-                        ClearPendingLocalInputProbe();
-                        continue;
-                    }
-
-                    DateTime probeUtc = new(probeTicks, DateTimeKind.Utc);
-                    TimeSpan elapsed = DateTime.UtcNow - probeUtc;
-                    if (elapsed < LocalInputResponseTimeout)
-                        continue;
-
-                    if (IsServerDataDispatchActive())
-                    {
-                        Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
-                        continue;
-                    }
-
-                    await DisconnectStaleServerAsync(probeUtc, lastReceiveTicks, elapsed, token);
+                    await TrySendGameIdleKeepaliveAsync(nowUtc, token);
                 }
             }
             catch (OperationCanceledException)
@@ -1681,10 +1679,131 @@ namespace TWXProxy.Core
 
         private long MarkServerReceive()
         {
-            Interlocked.Exchange(ref _lastServerReceiveUtcTicks, UtcNowTicks());
+            long ticks = UtcNowTicks();
+            Interlocked.Exchange(ref _lastServerReceiveUtcTicks, ticks);
+            MarkServerActivity(ticks);
             ClearPendingLocalInputProbe();
             return Stopwatch.GetTimestamp();
         }
+
+        private void MarkServerActivity()
+            => MarkServerActivity(UtcNowTicks());
+
+        private void MarkServerActivity(long utcTicks)
+            => Interlocked.Exchange(ref _lastServerActivityUtcTicks, utcTicks);
+
+        private async Task<bool> TryHandleStaleLocalInputProbeAsync(DateTime nowUtc, CancellationToken token)
+        {
+            if (!StaleLocalInputProbeEnabled)
+            {
+                ClearPendingLocalInputProbe();
+                return false;
+            }
+
+            long probeTicks = Interlocked.Read(ref _pendingLocalInputProbeUtcTicks);
+            if (probeTicks <= 0)
+                return false;
+
+            long lastReceiveTicks = Interlocked.Read(ref _lastServerReceiveUtcTicks);
+            if (lastReceiveTicks >= probeTicks)
+            {
+                ClearPendingLocalInputProbe();
+                return false;
+            }
+
+            DateTime probeUtc = new(probeTicks, DateTimeKind.Utc);
+            TimeSpan elapsed = nowUtc - probeUtc;
+            if (elapsed < TimeSpan.FromSeconds(NormalizeNetworkWatchdogSeconds(
+                    LocalInputResponseTimeoutSeconds,
+                    DefaultLocalInputResponseTimeoutSeconds)))
+            {
+                return false;
+            }
+
+            if (IsServerDataDispatchActive())
+            {
+                Log($"[{_gameName}] Stale server connection probe suppressed while server data dispatch is active: elapsed={elapsed.TotalSeconds:F1}s after local input; script execution may be monopolizing the read loop");
+                return true;
+            }
+
+            await DisconnectStaleServerAsync(probeUtc, lastReceiveTicks, elapsed, token);
+            return true;
+        }
+
+        private async Task TrySendGameIdleKeepaliveAsync(DateTime nowUtc, CancellationToken token)
+        {
+            if (!GameIdleKeepaliveEnabled || token.IsCancellationRequested)
+                return;
+
+            int intervalSeconds = NormalizeNetworkWatchdogSeconds(
+                GameIdleKeepaliveIntervalSeconds,
+                DefaultGameIdleKeepaliveIntervalSeconds);
+            long lastActivityTicks = Interlocked.Read(ref _lastServerActivityUtcTicks);
+            if (lastActivityTicks <= 0)
+                return;
+
+            TimeSpan idle = nowUtc - new DateTime(lastActivityTicks, DateTimeKind.Utc);
+            if (idle < TimeSpan.FromSeconds(intervalSeconds))
+                return;
+
+            if (!_serverSendQueue.IsEmpty ||
+                Interlocked.CompareExchange(ref _serverSendPumpScheduled, 0, 0) != 0 ||
+                IsServerDataDispatchActive())
+            {
+                return;
+            }
+
+            if (!_serverSendLock.Wait(0))
+                return;
+
+            await SendGameIdleKeepaliveBytesAsync($"after {idle.TotalSeconds:F1}s idle", token, releaseLock: true);
+        }
+
+        public Task SendGameIdleKeepaliveAsync(string reason)
+        {
+            using var runtimeScope = GlobalModules.UseRuntimeContext(RuntimeContext);
+            CancellationToken token = _cancellationSource?.Token ?? CancellationToken.None;
+            if (token.IsCancellationRequested)
+                return Task.CompletedTask;
+
+            if (!_serverSendLock.Wait(0))
+                return Task.CompletedTask;
+
+            return SendGameIdleKeepaliveBytesAsync(reason, token, releaseLock: true);
+        }
+
+        private async Task SendGameIdleKeepaliveBytesAsync(string reason, CancellationToken token, bool releaseLock)
+        {
+            try
+            {
+                NetworkStream? stream = _serverStream;
+                if (stream == null || _serverClient?.Connected != true)
+                    return;
+
+                await stream.WriteAsync(GameIdleKeepaliveBytes, 0, GameIdleKeepaliveBytes.Length, token);
+                await stream.FlushAsync(token);
+                MarkServerActivity();
+                GlobalModules.DebugLog($"[{_gameName}] Sent telnet NOP keepalive {reason}\n");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Log($"[{_gameName}] Error sending idle keepalive: {ex.Message}");
+            }
+            finally
+            {
+                if (releaseLock)
+                    _serverSendLock.Release();
+            }
+        }
+
+        private static int NormalizeNetworkWatchdogSeconds(int value, int defaultValue)
+            => value is >= MinimumNetworkWatchdogSeconds and <= MaximumNetworkWatchdogSeconds
+                ? value
+                : defaultValue;
 
         private void ClearPendingLocalInputProbe()
         {
@@ -2334,6 +2453,7 @@ namespace TWXProxy.Core
                     {
                         stream.Write(copy, 0, copy.Length);
                         stream.Flush();
+                        MarkServerActivity();
                     }
 
                     return Task.CompletedTask;
@@ -2374,6 +2494,7 @@ namespace TWXProxy.Core
             {
                 stream.Write(data, 0, data.Length);
                 stream.Flush();
+                MarkServerActivity();
                 DispatchServerDataSent(data);
                 return FastServerSendResult.Succeeded(startTimestamp, Stopwatch.GetTimestamp(), data.Length);
             }
@@ -2557,6 +2678,7 @@ namespace TWXProxy.Core
                                 {
                                     await stream.WriteAsync(data, 0, data.Length, token);
                                     await stream.FlushAsync(token);
+                                    MarkServerActivity();
                                 }
                             }
                             finally
@@ -2923,8 +3045,7 @@ namespace TWXProxy.Core
 
         private ScriptPipeToggleOutputAction GetScriptPipeToggleOutputAction(byte[] cleanData)
         {
-            if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0 &&
-                Volatile.Read(ref _suppressScriptPipeTogglePromptCount) <= 0)
+            if (Volatile.Read(ref _suppressScriptPipeToggleMessageCount) <= 0)
             {
                 return ScriptPipeToggleOutputAction.None;
             }
@@ -2941,17 +3062,10 @@ namespace TWXProxy.Core
             if (containsToggleMessage && Volatile.Read(ref _suppressScriptPipeToggleMessageCount) > 0)
             {
                 Interlocked.Decrement(ref _suppressScriptPipeToggleMessageCount);
-                if (!containsPrompt)
-                    Interlocked.Increment(ref _suppressScriptPipeTogglePromptCount);
+                if (containsPrompt)
+                    return ScriptPipeToggleOutputAction.None;
 
                 GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of script-triggered message toggle response\n");
-                return ScriptPipeToggleOutputAction.Suppress;
-            }
-
-            if (containsPrompt && Volatile.Read(ref _suppressScriptPipeTogglePromptCount) > 0)
-            {
-                Interlocked.Decrement(ref _suppressScriptPipeTogglePromptCount);
-                GlobalModules.DebugLog("[MSGTOGGLE] Suppressed local display of follow-up prompt after script-triggered message toggle\n");
                 return ScriptPipeToggleOutputAction.Suppress;
             }
 

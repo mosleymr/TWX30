@@ -131,12 +131,12 @@ namespace TWXProxy.Core
 
             for (int i = 0; i < 6; i++)
             {
-                ushort warp = area.Warp[i];
+                int warp = area.Warp[i];
 
                 if (warp == 0)
                     break;
 
-                if (warp > _areaCovered.Length)
+                if (warp > _areaCovered.Length || warp > ushort.MaxValue)
                     return false;
 
                 if (warp != last && _areaCovered[warp - 1] != _analysisVisitStamp)
@@ -149,7 +149,7 @@ namespace TWXProxy.Core
                     bool warpsBack = false;
                     for (int j = 0; j < 6; j++)
                     {
-                        ushort reverseWarp = s.Warp[j];
+                        int reverseWarp = s.Warp[j];
                         if (reverseWarp == 0)
                             break;
 
@@ -164,7 +164,7 @@ namespace TWXProxy.Core
                     {
                         _bubbleSize++;
 
-                        if (!IsClosedArea(s, warp, (ushort)areaIndex, (ushort)(depth + 1)))
+                        if (!IsClosedArea(s, (ushort)warp, (ushort)areaIndex, (ushort)(depth + 1)))
                         {
                             return false;
                         }
@@ -262,7 +262,7 @@ namespace TWXProxy.Core
                 if (sector == null)
                     continue;
 
-                foreach (ushort backdoor in sector.WarpsIn)
+                foreach (int backdoor in sector.WarpsIn)
                 {
                     if (backdoor == gate)
                         continue;
@@ -270,7 +270,7 @@ namespace TWXProxy.Core
                     if (IsDirectWarp(sector, backdoor))
                         continue;
 
-                    if (!mergedSectorSet.Contains(backdoor))
+                    if (backdoor > ushort.MaxValue || !mergedSectorSet.Contains((ushort)backdoor))
                         return true;
                 }
             }
@@ -280,7 +280,7 @@ namespace TWXProxy.Core
 
         private static bool HasBackDoors(SectorData sector)
         {
-            foreach (ushort warpIn in sector.WarpsIn)
+            foreach (int warpIn in sector.WarpsIn)
             {
                 if (!IsDirectWarp(sector, warpIn))
                     return true;
@@ -289,11 +289,11 @@ namespace TWXProxy.Core
             return false;
         }
 
-        private static bool IsDirectWarp(Sector sector, ushort candidate)
+        private static bool IsDirectWarp(Sector sector, int candidate)
         {
             for (int i = 0; i < 6; i++)
             {
-                ushort warp = sector.Warp[i];
+                int warp = sector.Warp[i];
                 if (warp == 0)
                     break;
 
@@ -393,7 +393,9 @@ namespace TWXProxy.Core
                         if (sector2 != null)
                         {
                             var backDoors = database.GetBackDoors(sector2, i);
-                            gaps.AddRange(backDoors);
+                            gaps.AddRange(backDoors
+                                .Where(backDoor => backDoor <= ushort.MaxValue)
+                                .Select(backDoor => (ushort)backDoor));
                         }
                     }
                 }
@@ -514,17 +516,14 @@ namespace TWXProxy.Core
                     }
                     else
                     {
-                        CheckBubble(i, sector.Warp[0]);
-                        CheckBubble(i, sector.Warp[1]);
-
-                        if (sector.Warp[2] > 0)
-                            CheckBubble(i, sector.Warp[2]);
-                        if (sector.Warp[3] > 0)
-                            CheckBubble(i, sector.Warp[3]);
-                        if (sector.Warp[4] > 0)
-                            CheckBubble(i, sector.Warp[4]);
-                        if (sector.Warp[5] > 0)
-                            CheckBubble(i, sector.Warp[5]);
+                        for (int warpIndex = 0; warpIndex < 6; warpIndex++)
+                        {
+                            int warp = sector.Warp[warpIndex];
+                            if (warp <= 0)
+                                break;
+                            if (warp <= ushort.MaxValue)
+                                CheckBubble(i, (ushort)warp);
+                        }
                     }
                 }
             }
@@ -580,7 +579,7 @@ namespace TWXProxy.Core
             ushort solidDeepest = 0;
             ushort solidMaxDepth = 0;
 
-            foreach (ushort interior in gateSector.Warp.Where(warp => warp > 0).Distinct())
+            foreach (ushort interior in gateSector.Warp.Where(warp => warp > 0 && warp <= ushort.MaxValue).Select(warp => (ushort)warp).Distinct())
             {
                 int size = TestBubble(
                     (ushort)gate,
@@ -1000,18 +999,18 @@ namespace TWXProxy.Core
 
                 for (int i = 0; i < 6; i++)
                 {
-                    ushort warp = sector.Warp[i];
+                    int warp = sector.Warp[i];
                     if (warp == 0)
                         break;
 
                     if (warp <= sectorCount && usable[warp])
-                        AddUndirectedLink(links, sectorNumber, warp);
+                        AddUndirectedLink(links, sectorNumber, (ushort)warp);
                 }
 
-                foreach (ushort warpIn in sector.WarpsIn)
+                foreach (int warpIn in sector.WarpsIn)
                 {
                     if (warpIn > 0 && warpIn <= sectorCount && usable[warpIn])
-                        AddUndirectedLink(links, sectorNumber, warpIn);
+                        AddUndirectedLink(links, sectorNumber, (ushort)warpIn);
                 }
             }
 
@@ -1057,15 +1056,17 @@ namespace TWXProxy.Core
 
                 for (int i = 0; i < 6; i++)
                 {
-                    ushort warp = sector.Warp[i];
+                    int warp = sector.Warp[i];
                     if (warp == 0)
                         break;
 
-                    AddGateIfValid(database, interior, gates, warp);
+                    if (warp <= ushort.MaxValue)
+                        AddGateIfValid(database, interior, gates, (ushort)warp);
                 }
 
-                foreach (ushort warpIn in sector.WarpsIn)
-                    AddGateIfValid(database, interior, gates, warpIn);
+                foreach (int warpIn in sector.WarpsIn)
+                    if (warpIn <= ushort.MaxValue)
+                        AddGateIfValid(database, interior, gates, (ushort)warpIn);
             }
 
             return gates.Count > 0 ? gates.ToArray() : new[] { fallbackGate };

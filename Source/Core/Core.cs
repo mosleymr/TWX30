@@ -30,11 +30,11 @@ namespace TWXProxy.Core
     public static class Constants
     {
         public const string ProductName = "twxproxy";
-        public const string DisplayVersion = "3.0 beta1";
-        public const string ProductDisplayName = "twxproxy 3.0 beta1";
+        public const string DisplayVersion = "3.0 beta5";
+        public const string ProductDisplayName = "twxproxy 3.0 beta5";
         public const string ProgramVersion = "3.0.0";
-        public const int ReleaseNumber = 1;
-        public const string ReleaseVersion = "beta1";
+        public const int ReleaseNumber = 5;
+        public const string ReleaseVersion = "beta5";
         public const string SetupFile = "TWX26.dat";
         public const string EndLine = "\r\n";
     }
@@ -205,7 +205,7 @@ namespace TWXProxy.Core
     /// </summary>
     public class Sector
     {
-        public ushort[] Warp { get; set; } = new ushort[6];
+        public int[] Warp { get; set; } = new int[6];
         public ExploreType Explored { get; set; } = ExploreType.No;
         public string SectorName { get; set; } = string.Empty;
         public int Ports { get; set; }
@@ -229,7 +229,7 @@ namespace TWXProxy.Core
     {
         int SectorCount { get; }
         Sector? LoadSector(int sectorNumber);
-        List<ushort> GetBackDoors(Sector sector, int sectorNumber);
+        List<int> GetBackDoors(Sector sector, int sectorNumber);
         void ResetSectors();
     }
 

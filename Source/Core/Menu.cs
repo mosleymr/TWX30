@@ -1912,7 +1912,7 @@ namespace TWXProxy.Core
             var output = new StringBuilder();
             output.Append("\r\n");
 
-            foreach (ushort warp in sector.Warp.Where(w => w > 0))
+            foreach (int warp in sector.Warp.Where(w => w > 0))
             {
                 SectorData? adjacent = GetSectorData(db!, warp);
                 if (adjacent != null && adjacent.Explored != ExploreType.No)
@@ -2018,7 +2018,7 @@ namespace TWXProxy.Core
                 return;
             }
 
-            List<ushort> backdoors = db!.GetBackDoors(sector!, sectorNumber);
+            List<int> backdoors = db!.GetBackDoors(sector!, sectorNumber);
             if (backdoors.Count == 0)
             {
                 await _gameInstance.SendMessageAsync($"\r\nNo backdoors recorded to sector {sectorNumber}.\r\n");
@@ -2028,7 +2028,7 @@ namespace TWXProxy.Core
 
             var output = new StringBuilder();
             output.Append($"\r\nDisplaying all backdoors to sector {sectorNumber}\r\n");
-            foreach (ushort backdoor in backdoors.OrderBy(value => value))
+            foreach (int backdoor in backdoors.OrderBy(value => value))
             {
                 SectorData? backdoorSector = GetSectorData(db, backdoor);
                 if (backdoorSector != null)

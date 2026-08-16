@@ -45,7 +45,7 @@ namespace TWXProxy.Core
         // TWX Proxy 2.04 is version 4
         // TWX Proxy 2.05 is version 5
         // TWX Proxy 2.06 is version 6
-        // twxproxy 3.0 beta1 native-extension refresh is version 7
+        // twxproxy 3.0 beta5 native-extension refresh is version 7
         public const int CompiledScriptVersion = 7;
 
         public const byte PARAM_CMD = 0;

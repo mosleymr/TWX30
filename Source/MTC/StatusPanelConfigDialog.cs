@@ -59,6 +59,7 @@ internal sealed class StatusPanelConfigDialog : Window
                 Id = section.Id,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineAutoRefreshEnabled = section.OnlineAutoRefreshEnabled,
                 OnlineRefreshIntervalSeconds = AppPreferences.NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             })
             .ToList();
@@ -76,6 +77,7 @@ internal sealed class StatusPanelConfigDialog : Window
                         Id = row.Section.Id,
                         Visible = row.VisibleCheckBox.IsChecked == true,
                         Order = index,
+                        OnlineAutoRefreshEnabled = GetOnlineRefreshEnabled(row),
                         OnlineRefreshIntervalSeconds = GetOnlineRefreshIntervalSeconds(row),
                     })
                     .ToList(),
@@ -177,7 +179,7 @@ internal sealed class StatusPanelConfigDialog : Window
 
             bool isOnline = string.Equals(section.Id, AppPreferences.StatusPanelOnline, StringComparison.OrdinalIgnoreCase);
             ComboBox? onlineRefreshComboBox = isOnline
-                ? BuildOnlineRefreshComboBox(section.OnlineRefreshIntervalSeconds)
+                ? BuildOnlineRefreshComboBox(section.OnlineAutoRefreshEnabled, section.OnlineRefreshIntervalSeconds)
                 : null;
 
             var row = new Grid
@@ -264,14 +266,18 @@ internal sealed class StatusPanelConfigDialog : Window
     }
 
     private static int GetOnlineRefreshIntervalSeconds(SectionRow row)
-        => row.OnlineRefreshComboBox?.SelectedItem is OnlineRefreshIntervalOption option
+        => row.OnlineRefreshComboBox?.SelectedItem is OnlineRefreshIntervalOption { Seconds: > 0 } option
             ? AppPreferences.NormalizeOnlineRefreshIntervalSeconds(option.Seconds)
             : AppPreferences.NormalizeOnlineRefreshIntervalSeconds(row.Section.OnlineRefreshIntervalSeconds);
 
-    private static ComboBox BuildOnlineRefreshComboBox(int selectedSeconds)
+    private static bool GetOnlineRefreshEnabled(SectionRow row)
+        => row.OnlineRefreshComboBox?.SelectedItem is OnlineRefreshIntervalOption { Seconds: > 0 };
+
+    private static ComboBox BuildOnlineRefreshComboBox(bool enabled, int selectedSeconds)
     {
         var options = new List<OnlineRefreshIntervalOption>
         {
+            new() { Label = "Off", Seconds = 0 },
             new() { Label = "30 seconds", Seconds = 30 },
             new() { Label = "1 minute", Seconds = 60 },
             new() { Label = "2 minutes", Seconds = 120 },
@@ -279,10 +285,11 @@ internal sealed class StatusPanelConfigDialog : Window
         };
 
         int normalizedSeconds = AppPreferences.NormalizeOnlineRefreshIntervalSeconds(selectedSeconds);
+        int selectedOptionSeconds = enabled ? normalizedSeconds : 0;
         return new ComboBox
         {
             ItemsSource = options,
-            SelectedItem = options.First(option => option.Seconds == normalizedSeconds),
+            SelectedItem = options.First(option => option.Seconds == selectedOptionSeconds),
             Width = 135,
             MinHeight = 34,
             Padding = new Thickness(10, 5),

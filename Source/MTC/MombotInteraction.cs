@@ -173,9 +173,6 @@ public partial class MainWindow
                 return;
             }
 
-            if (_gameInstance.IsConnected)
-                await SendKeepaliveEscapeAsync();
-
             if (!_mombot.Enabled)
             {
                 _mombotLastKeepaliveLine = string.Empty;
@@ -236,7 +233,7 @@ public partial class MainWindow
             return;
         }
 
-        _ = SendKeepaliveEscapeAsync(gameInstance);
+        _ = SendKeepaliveAsync(gameInstance, "embedded session termination warning");
     }
 
     private void ObserveNativeMombotWatchLine(string line)
@@ -245,7 +242,7 @@ public partial class MainWindow
             return;
 
         if (_gameInstance.IsConnected && IsSessionTerminationWarningLine(line))
-            _ = SendKeepaliveEscapeAsync();
+            _ = SendKeepaliveAsync("native mombot session termination warning");
 
         if (!_mombot.Enabled ||
             (!_mombotStartupDataGatherPending && !_mombotStartupPostInitPending))
@@ -292,17 +289,18 @@ public partial class MainWindow
              line.Contains("Only TEN seconds remain.  Session termination is imminent.", StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task SendKeepaliveEscapeAsync()
+    private async Task SendKeepaliveAsync(string reason)
     {
-        await SendKeepaliveEscapeAsync(_gameInstance);
+        await SendKeepaliveAsync(_gameInstance, reason);
     }
 
-    private async Task SendKeepaliveEscapeAsync(Core.GameInstance? gameInstance)
+    private async Task SendKeepaliveAsync(Core.GameInstance? gameInstance, string reason)
     {
         if (gameInstance == null || !gameInstance.IsConnected)
             return;
 
-        await gameInstance.SendToServerAsync(new byte[] { 0x1B });
+        Core.GlobalModules.DebugLog($"[MTC.Keepalive] Sending telnet NOP keepalive for {reason}\n");
+        await gameInstance.SendGameIdleKeepaliveAsync(reason);
     }
 
     private byte[] FilterTerminalDisplayArtifacts(byte[] chunk)

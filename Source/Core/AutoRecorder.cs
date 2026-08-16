@@ -3288,13 +3288,12 @@ namespace TWXProxy.Core
             var observedWarps = sectors
                 .Take(6)
                 .Where(sn => sn > 0)
-                .Select(sn => (ushort)sn)
                 .ToList();
             LogWarpStaticCorrection(fromSector, sec, observedWarps, "AutoRecorder.DensityScan");
 
             for (int i = 0; i < 6; i++) sec.Warp[i] = 0;
             int idx = 0;
-            foreach (ushort sn in observedWarps)
+            foreach (int sn in observedWarps)
             {
                 sec.Warp[idx++] = sn;
             }
@@ -3311,13 +3310,13 @@ namespace TWXProxy.Core
 
             // Parse "4497 - 5489 - 6477 - 15024 - 19702"
             // Also handles parenthesised unexplored sectors: "(3583) - 4497 - (6198)"
-            var observedWarps = new List<ushort>();
+            var observedWarps = new List<int>();
             foreach (var token in warpsPart.Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 if (observedWarps.Count >= 6) break;
                 // Strip surrounding parentheses from unexplored-sector notation
                 var clean = token.Trim().Trim('(', ')');
-                if (ushort.TryParse(clean, out ushort w))
+                if (int.TryParse(clean, out int w) && w > 0 && (db.SectorCount <= 0 || w <= db.SectorCount))
                     observedWarps.Add(w);
             }
 
@@ -3714,7 +3713,7 @@ namespace TWXProxy.Core
                 // Shift everything from pos+1 onward up by one to make room
                 for (int i = 5; i > pos; i--)
                     sec.Warp[i] = sec.Warp[i - 1];
-                sec.Warp[pos] = (ushort)warp;
+                sec.Warp[pos] = warp;
             }
 
             // Pascal: if S.Explored = etNo then set Constellation/Explored/Update
@@ -3879,22 +3878,22 @@ namespace TWXProxy.Core
                 $"Sector {sectorNum} port static correction: {string.Join("; ", changes)}.");
         }
 
-        private static List<ushort> CaptureWarpSnapshot(SectorData sector)
+        private static List<int> CaptureWarpSnapshot(SectorData sector)
             => sector.Warp
                 .Where(warp => warp > 0)
                 .ToList();
 
-        private static string FormatWarpList(IEnumerable<ushort> warps)
+        private static string FormatWarpList(IEnumerable<int> warps)
             => string.Join(" - ", warps);
 
-        private static bool WarpListsMatch(IReadOnlyList<ushort> left, IReadOnlyList<ushort> right)
+        private static bool WarpListsMatch(IReadOnlyList<int> left, IReadOnlyList<int> right)
             => left.Count == right.Count &&
                left.OrderBy(warp => warp).SequenceEqual(right.OrderBy(warp => warp));
 
         private static void LogWarpStaticCorrection(
             int sectorNum,
             SectorData sector,
-            IReadOnlyList<ushort> observedWarps,
+            IReadOnlyList<int> observedWarps,
             string source)
         {
             if (!GlobalModules.DatabaseCorrectionLoggingEnabled)
@@ -4142,7 +4141,7 @@ namespace TWXProxy.Core
             var sector = GetOrCreate(db, sect);
             if (sector == null) { _inWarpCIM = false; return; }
 
-            var observedWarps = new List<ushort>();
+            var observedWarps = new List<int>();
             for (int i = 0; i < 6; i++)
             {
                 if (i + 1 < tokens.Length && int.TryParse(tokens[i + 1], out int w))
@@ -4154,14 +4153,14 @@ namespace TWXProxy.Core
                         return;
                     }
                     if (w > 0)
-                        observedWarps.Add((ushort)w);
+                        observedWarps.Add(w);
                 }
             }
 
             LogWarpStaticCorrection(sect, sector, observedWarps, "AutoRecorder.WarpCIM");
 
             for (int i = 0; i < 6; i++)
-                sector.Warp[i] = i < observedWarps.Count ? observedWarps[i] : (ushort)0;
+                sector.Warp[i] = i < observedWarps.Count ? observedWarps[i] : 0;
             sector.WarpCount = (byte)Math.Min(observedWarps.Count, 6);
 
             if (sector.Explored == ExploreType.No)

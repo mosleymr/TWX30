@@ -160,6 +160,23 @@ internal class PreferencesDialog : Window
         var chkCreateAnsiGameLogs = BuildCheckBox("Create ANSI game logs", logPrefs.LogAnsiCompanion);
         var chkEnableRedAlertMode = BuildCheckBox("Enable Red Alert Mode", prefs.EnableRedAlertMode);
         var chkPreparedVm = BuildCheckBox("Use prepared VM", prefs.PreparedVmEnabled);
+        var chkScriptInfiniteLoopProtection = BuildCheckBox("Infinite loop protection", prefs.ScriptInfiniteLoopProtectionEnabled);
+        var chkStaleConnectionProbe = BuildCheckBox("Stale connection probe", prefs.StaleConnectionProbeEnabled);
+        var txtStaleConnectionProbeTimeout = BuildPathTextBox(
+            AppPreferences.NormalizeNetworkWatchdogSeconds(
+                prefs.StaleConnectionProbeTimeoutSeconds,
+                AppPreferences.DefaultLocalInputResponseTimeoutSeconds).ToString(CultureInfo.InvariantCulture),
+            AppPreferences.DefaultLocalInputResponseTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+        txtStaleConnectionProbeTimeout.Width = 90;
+        txtStaleConnectionProbeTimeout.HorizontalAlignment = HorizontalAlignment.Left;
+        var chkGameIdleKeepalive = BuildCheckBox("Game idle keepalive", prefs.GameIdleKeepaliveEnabled);
+        var txtGameIdleKeepaliveInterval = BuildPathTextBox(
+            AppPreferences.NormalizeNetworkWatchdogSeconds(
+                prefs.GameIdleKeepaliveIntervalSeconds,
+                AppPreferences.DefaultGameIdleKeepaliveIntervalSeconds).ToString(CultureInfo.InvariantCulture),
+            AppPreferences.DefaultGameIdleKeepaliveIntervalSeconds.ToString(CultureInfo.InvariantCulture));
+        txtGameIdleKeepaliveInterval.Width = 90;
+        txtGameIdleKeepaliveInterval.HorizontalAlignment = HorizontalAlignment.Left;
         var chkDisableScriptWindowStayInFront = BuildCheckBox("Ignore stay-in-front for script popup windows", prefs.DisableScriptWindowStayInFront);
         var chkPythonScripts = BuildCheckBox("Enable Python scripts in the Scripts menu", prefs.PythonScriptsEnabled);
         var chkPythonExposeRpcToken = BuildCheckBox("Expose JSON-RPC bearer token to Python scripts", prefs.PythonExposeJsonRpcToken);
@@ -311,7 +328,17 @@ internal class PreferencesDialog : Window
         var runtimeSection = BuildSection(
             "Runtime",
             "Global terminal and script runtime behavior.",
-            BuildCheckGroup(chkPreparedVm, chkDisableScriptWindowStayInFront, chkVmMetrics, chkPythonScripts, chkPythonExposeRpcToken),
+            BuildCheckGroup(chkPreparedVm, chkScriptInfiniteLoopProtection, chkDisableScriptWindowStayInFront, chkVmMetrics, chkPythonScripts, chkPythonExposeRpcToken),
+            BuildCheckGroup(chkStaleConnectionProbe, chkGameIdleKeepalive),
+            BuildTwoColumnRow(
+                BuildField(
+                    "Stale probe timeout",
+                    txtStaleConnectionProbeTimeout,
+                    "Seconds to wait after local input before treating a silent server as stale. Default 60."),
+                BuildField(
+                    "Idle keepalive interval",
+                    txtGameIdleKeepaliveInterval,
+                    "Seconds between telnet NOP anti-idle keepalives. Default 45.")),
             BuildField(
                 "Python interpreter",
                 txtPythonInterpreter,
@@ -377,6 +404,19 @@ internal class PreferencesDialog : Window
             }
             prefs.EnableRedAlertMode = chkEnableRedAlertMode.IsChecked == true;
             prefs.PreparedVmEnabled = chkPreparedVm.IsChecked == true;
+            prefs.ScriptInfiniteLoopProtectionEnabled = chkScriptInfiniteLoopProtection.IsChecked == true;
+            prefs.StaleConnectionProbeEnabled = chkStaleConnectionProbe.IsChecked == true;
+            prefs.StaleConnectionProbeTimeoutSeconds = AppPreferences.NormalizeNetworkWatchdogSeconds(
+                int.TryParse(txtStaleConnectionProbeTimeout.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int staleProbeTimeoutSeconds)
+                    ? staleProbeTimeoutSeconds
+                    : AppPreferences.DefaultLocalInputResponseTimeoutSeconds,
+                AppPreferences.DefaultLocalInputResponseTimeoutSeconds);
+            prefs.GameIdleKeepaliveEnabled = chkGameIdleKeepalive.IsChecked == true;
+            prefs.GameIdleKeepaliveIntervalSeconds = AppPreferences.NormalizeNetworkWatchdogSeconds(
+                int.TryParse(txtGameIdleKeepaliveInterval.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int gameIdleKeepaliveIntervalSeconds)
+                    ? gameIdleKeepaliveIntervalSeconds
+                    : AppPreferences.DefaultGameIdleKeepaliveIntervalSeconds,
+                AppPreferences.DefaultGameIdleKeepaliveIntervalSeconds);
             prefs.DisableScriptWindowStayInFront = chkDisableScriptWindowStayInFront.IsChecked == true;
             prefs.PythonScriptsEnabled = chkPythonScripts.IsChecked == true;
             prefs.PythonInterpreterPath = AppPreferences.NormalizePythonInterpreterPath(txtPythonInterpreter.Text);

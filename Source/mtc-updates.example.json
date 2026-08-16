@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "releases": {
     "stable": {
-      "version": "1.0.0-beta3",
-      "displayVersion": "MTC 1.0 beta3",
+      "version": "1.0.0-beta5",
+      "displayVersion": "MTC 1.0 beta5",
       "notesUrl": "https://sourceforge.net/projects/twx30/files/",
       "assets": {
         "osx-arm64": {
@@ -34,8 +34,8 @@
       }
     },
     "beta": {
-      "version": "1.0.0-beta3",
-      "displayVersion": "MTC 1.0 beta3",
+      "version": "1.0.0-beta5",
+      "displayVersion": "MTC 1.0 beta5",
       "notesUrl": "https://sourceforge.net/projects/twx30/files/",
       "assets": {
         "osx-arm64": {
@@ -66,8 +66,8 @@
       }
     },
     "dev": {
-      "version": "1.0.0-beta3",
-      "displayVersion": "MTC 1.0 beta3",
+      "version": "1.0.0-beta5",
+      "displayVersion": "MTC 1.0 beta5",
       "notesUrl": "https://sourceforge.net/projects/twx30/files/",
       "assets": {
         "osx-arm64": {

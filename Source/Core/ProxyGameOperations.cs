@@ -259,7 +259,7 @@ public static class ProxyGameOperations
                 if (warp <= 0 || warp > database.DBHeader.Sectors)
                     continue;
 
-                AddWarp(sector, (ushort)warp);
+                AddWarp(sector, warp);
             }
 
             if (sector.Explored == ExploreType.No)
@@ -565,7 +565,7 @@ public static class ProxyGameOperations
                 skippedInvalidWarps++;
                 continue;
             }
-            AddWarpSorted(sector, (ushort)warp);
+            AddWarpSorted(sector, warp);
         }
 
         if (sector.Explored == ExploreType.No)
@@ -699,7 +699,7 @@ public static class ProxyGameOperations
         }
     }
 
-    private static void AddWarp(SectorData sector, ushort warp)
+    private static void AddWarp(SectorData sector, int warp)
     {
         if (sector.Warp.Any(existing => existing == warp))
             return;
@@ -715,7 +715,7 @@ public static class ProxyGameOperations
         }
     }
 
-    private static void AddWarpSorted(SectorData sector, ushort warp)
+    private static void AddWarpSorted(SectorData sector, int warp)
     {
         if (sector.Warp.Any(existing => existing == warp))
             return;
@@ -726,7 +726,7 @@ public static class ProxyGameOperations
 
         Array.Clear(sector.Warp, 0, sector.Warp.Length);
         for (int i = 0; i < warps.Count && i < sector.Warp.Length; i++)
-            sector.Warp[i] = (ushort)warps[i];
+            sector.Warp[i] = warps[i];
 
         sector.WarpCount = (byte)warps.Count;
     }

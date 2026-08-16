@@ -20,10 +20,18 @@ var tests = new (string Name, Action Body)[]
     ("Prompt probe rearms line trigger after partial prompt handler", PromptProbeRearmsLineTriggerAfterPartialPromptHandler),
     ("Prompt probe fires only once across partial and complete views of one line", PromptProbeFiresOnlyOncePerLine),
     ("Distinct prompt probes can fire on one unterminated line", DistinctPromptProbesFireOnOneLine),
+    ("GETSECTOR refreshes flat warp array fields", GetSectorRefreshesFlatWarpArrayFields),
+    ("GETSECTOR refreshes namespaced self target warp fields", GetSectorRefreshesNamespacedSelfTargetWarpFields),
+    ("GETSECTOR namespaced record warp fields stay stable", GetSectorNamespacedRecordWarpFieldsStayStable),
+    ("SECTOR.WARPS uses current dynamic index after GETSECTOR", SectorWarpsUsesCurrentDynamicIndexAfterGetSector),
+    ("AutoRecorder records warps above UInt16 range", AutoRecorderRecordsWarpsAboveUInt16Range),
+    ("Stale database handle cannot overwrite reset database", StaleDatabaseHandleCannotOverwriteResetDatabase),
     ("Sector parameter scans count as watchdog activity", SectorParameterScansCountAsWatchdogActivity),
+    ("High-volume local loops do not trip watchdog", HighVolumeLocalLoopsDoNotTripWatchdog),
     ("Top-level return terminates without a script error", TopLevelReturnTerminatesWithoutScriptError),
     ("Game file lock inspection reports stale PID", GameFileLockInspectionReportsStalePid),
     ("Game file lock stale removal deletes lock", GameFileLockStaleRemovalDeletesLock),
+    ("Game idle keepalive uses telnet NOP bytes", GameIdleKeepaliveUsesTelnetNopBytes),
 };
 
 int failed = 0;
@@ -37,7 +45,7 @@ foreach ((string name, Action body) in tests)
     catch (Exception ex)
     {
         failed++;
-        Console.Error.WriteLine($"FAIL {name}: {ex.Message}");
+        Console.Error.WriteLine($"FAIL {name}: {ex}");
     }
 }
 
@@ -53,6 +61,21 @@ static void DestroyedStarPortNoticeClearsPortExists()
     recorder.RecordLine("You destroyed the Star Port!");
 
     AssertDestroyedPort(fixture.Database, 3554);
+}
+
+static void GameIdleKeepaliveUsesTelnetNopBytes()
+{
+    var field = typeof(GameInstance).GetField(
+        "GameIdleKeepaliveBytes",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+    if (field?.GetValue(null) is not byte[] bytes)
+        throw new InvalidOperationException("Could not inspect GameIdleKeepaliveBytes.");
+
+    if (bytes.Length != 2 || bytes[0] != 0xFF || bytes[1] != 0xF1)
+    {
+        string actual = string.Join(" ", bytes.Select(b => b.ToString("X2")));
+        throw new InvalidOperationException($"Expected telnet IAC NOP bytes FF F1, got {actual}.");
+    }
 }
 
 static void DestroyedPortDisplayClearsPortExists()
@@ -612,6 +635,308 @@ halt
     }
 }
 
+static void AutoRecorderRecordsWarpsAboveUInt16Range()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    var recorder = new AutoRecorder();
+    recorder.RecordLine("Sector  : 54801 in uncharted space.");
+    recorder.RecordLine("Warps to Sector(s) :  3634 - 17405 - 69793");
+
+    SectorData sector = fixture.Database.GetSector(54801)
+        ?? throw new InvalidOperationException("Expected sector 54801 to exist.");
+
+    int[] warps = sector.Warp.Where(warp => warp > 0).ToArray();
+    int[] expected = [3634, 17405, 69793];
+    if (!warps.SequenceEqual(expected))
+        throw new InvalidOperationException($"Expected warps [{string.Join(",", expected)}], got [{string.Join(",", warps)}].");
+}
+
+static void GetSectorRefreshesFlatWarpArrayFields()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedWarps(fixture.Database, 58762, 4973, 32721, 48980, 54878, 69014, 70319);
+    SeedWarps(fixture.Database, 69014, 16736, 17193, 30493, 58762, 62690, 71958);
+
+    string directory = Path.Combine(Path.GetTempPath(), "twx-getsector-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string resultPath = Path.Combine(directory, "getsector.txt");
+    string scriptPath = Path.Combine(directory, "getsector.ts");
+    File.WriteAllText(scriptPath, $$"""
+getsector 58762 $sector
+write "{{resultPath}}" $sector.warps
+write "{{resultPath}}" $sector.warp[1]
+setvar $i 1
+write "{{resultPath}}" $sector.warp[$i]
+getsector 69014 $sector
+write "{{resultPath}}" $sector.warps
+write "{{resultPath}}" $sector.warp[1]
+write "{{resultPath}}" $sector.warp[$i]
+write "{{resultPath}}" sector.warps[69014][1]
+halt
+""");
+
+    try
+    {
+        using var interpreter = new ModInterpreter
+        {
+            ProgramDir = directory,
+            ScriptDirectory = directory,
+        };
+        ScriptRef.SetActiveDatabase(interpreter.RuntimeContext, fixture.Database);
+
+        interpreter.Load(scriptPath, silent: true);
+
+        string[] actual = File.Exists(resultPath)
+            ? File.ReadAllLines(resultPath)
+            : Array.Empty<string>();
+        string[] expected =
+        [
+            "6",
+            "4973",
+            "4973",
+            "6",
+            "16736",
+            "16736",
+            "16736",
+        ];
+
+        if (!actual.SequenceEqual(expected))
+            throw new InvalidOperationException($"Expected [{string.Join(",", expected)}], got [{string.Join(",", actual)}].");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void GetSectorRefreshesNamespacedSelfTargetWarpFields()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedWarps(fixture.Database, 58762, 4973, 32721, 48980, 54878, 69014, 70319);
+    SeedWarps(fixture.Database, 69014, 16736, 17193, 30493, 58762, 62690, 71958);
+
+    string directory = Path.Combine(Path.GetTempPath(), "twx-getsector-self-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string resultPath = Path.Combine(directory, "getsector-self.txt");
+    string scriptPath = Path.Combine(directory, "getsector-self.ts");
+    File.WriteAllText(scriptPath, $$"""
+setvar $move~cursector 58762
+getsector $move~cursector $move~cursector
+setvar $i 1
+write "{{resultPath}}" $move~cursector.warp[$i]
+setvar $move~cursector 69014
+getsector $move~cursector $move~cursector
+write "{{resultPath}}" $move~cursector.warp[$i]
+halt
+""");
+
+    try
+    {
+        using var interpreter = new ModInterpreter
+        {
+            ProgramDir = directory,
+            ScriptDirectory = directory,
+        };
+        ScriptRef.SetActiveDatabase(interpreter.RuntimeContext, fixture.Database);
+
+        interpreter.Load(scriptPath, silent: true);
+
+        string[] actual = File.Exists(resultPath)
+            ? File.ReadAllLines(resultPath)
+            : Array.Empty<string>();
+        string[] expected =
+        [
+            "4973",
+            "16736",
+        ];
+
+        if (!actual.SequenceEqual(expected))
+            throw new InvalidOperationException($"Expected [{string.Join(",", expected)}], got [{string.Join(",", actual)}].");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void GetSectorNamespacedRecordWarpFieldsStayStable()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedWarps(fixture.Database, 16069, 29459, 34358, 49110);
+    SeedWarps(fixture.Database, 29459, 16069, 16173, 18786, 32651, 34792, 41647);
+
+    string directory = Path.Combine(Path.GetTempPath(), "twx-getsector-record-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string resultPath = Path.Combine(directory, "getsector-record.txt");
+    string scriptPath = Path.Combine(directory, "getsector-record.ts");
+    File.WriteAllText(scriptPath, $$"""
+setvar $portcheck~sector 16069
+setvar $portcheck~i 1
+getsector $portcheck~sector $portcheck~sectorinfo
+write "{{resultPath}}" $portcheck~sectorinfo.warps
+write "{{resultPath}}" $portcheck~sectorinfo.warp[$portcheck~i]
+setvar $portcheck~sector 29459
+setvar $portcheck~i 6
+getsector $portcheck~sector $portcheck~sectorinfo
+write "{{resultPath}}" $portcheck~sectorinfo.warps
+write "{{resultPath}}" $portcheck~sectorinfo.warp[$portcheck~i]
+halt
+""");
+
+    try
+    {
+        using var interpreter = new ModInterpreter
+        {
+            ProgramDir = directory,
+            ScriptDirectory = directory,
+        };
+        ScriptRef.SetActiveDatabase(interpreter.RuntimeContext, fixture.Database);
+
+        interpreter.Load(scriptPath, silent: true);
+
+        string[] actual = File.Exists(resultPath)
+            ? File.ReadAllLines(resultPath)
+            : Array.Empty<string>();
+        string[] expected =
+        [
+            "3",
+            "29459",
+            "6",
+            "41647",
+        ];
+
+        if (!actual.SequenceEqual(expected))
+            throw new InvalidOperationException($"Expected [{string.Join(",", expected)}], got [{string.Join(",", actual)}].");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void SectorWarpsUsesCurrentDynamicIndexAfterGetSector()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedWarps(fixture.Database, 58762, 4973, 32721, 48980, 54878, 69014, 70319);
+    SeedWarps(fixture.Database, 4043, 6967, 14343, 17193, 48876, 50947, 72677);
+    SeedWarps(fixture.Database, 70319, 4164, 9028, 12229, 12389, 49884, 58762);
+
+    string directory = Path.Combine(Path.GetTempPath(), "twx-sector-warps-dynamic-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string resultPath = Path.Combine(directory, "sector-warps-dynamic.txt");
+    string scriptPath = Path.Combine(directory, "sector-warps-dynamic.ts");
+    File.WriteAllText(scriptPath, $$"""
+setvar $move~cursector 58762
+setvar $move~i 6
+getsector $move~cursector $move~cursector
+setvar $candidate sector.warps[$move~cursector][$move~i]
+write "{{resultPath}}" $candidate
+setvar $move~cursector 4043
+setvar $move~i 5
+getsector $move~cursector $move~cursector
+setvar $candidate sector.warps[$move~cursector][$move~i]
+write "{{resultPath}}" $candidate
+setvar $move~cursector 70319
+setvar $move~i 1
+getsector $move~cursector $move~cursector
+setvar $candidate sector.warps[$move~cursector][$move~i]
+write "{{resultPath}}" $candidate
+halt
+""");
+
+    try
+    {
+        using var interpreter = new ModInterpreter
+        {
+            ProgramDir = directory,
+            ScriptDirectory = directory,
+        };
+        ScriptRef.SetActiveDatabase(interpreter.RuntimeContext, fixture.Database);
+
+        interpreter.Load(scriptPath, silent: true);
+
+        string[] actual = File.Exists(resultPath)
+            ? File.ReadAllLines(resultPath)
+            : Array.Empty<string>();
+        string[] expected =
+        [
+            "70319",
+            "50947",
+            "4164",
+        ];
+
+        if (!actual.SequenceEqual(expected))
+            throw new InvalidOperationException($"Expected [{string.Join(",", expected)}], got [{string.Join(",", actual)}].");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void SeedWarps(ModDatabase database, int sectorNumber, params int[] warps)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    Array.Clear(sector.Warp);
+    for (int i = 0; i < warps.Length && i < sector.Warp.Length; i++)
+        sector.Warp[i] = warps[i];
+    database.SaveSector(sector);
+}
+
+static void StaleDatabaseHandleCannotOverwriteResetDatabase()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    string directory = Path.Combine(Path.GetTempPath(), "twx-core-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string dbPath = Path.Combine(directory, "game.xdb");
+
+    try
+    {
+        var stale = new ModDatabase();
+        stale.CreateDatabase(dbPath, new DataHeader { Sectors = 100000, CommandChar = '$' });
+
+        SectorData staleSector = stale.GetSector(54801)
+            ?? throw new InvalidOperationException("Expected stale sector to exist.");
+        staleSector.Warp[0] = 3634;
+        staleSector.Warp[1] = 17405;
+        staleSector.Warp[2] = 69793;
+        stale.SaveSector(staleSector);
+        stale.SaveDatabase();
+
+        var reset = new ModDatabase();
+        reset.CreateDatabase(dbPath, new DataHeader { Sectors = 100000, CommandChar = '$' });
+        reset.CloseDatabase();
+
+        stale.CloseDatabase();
+
+        var fresh = new ModDatabase();
+        fresh.OpenDatabase(dbPath);
+        SectorData freshSector = fresh.GetSector(54801)
+            ?? throw new InvalidOperationException("Expected fresh sector to exist.");
+        int[] warps = freshSector.Warp.Where(warp => warp > 0).ToArray();
+        fresh.CloseDatabase();
+
+        if (warps.Length != 0)
+            throw new InvalidOperationException($"Expected reset sector to have no warps, got [{string.Join(",", warps)}].");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
 static void DistinctPromptProbesFireOnOneLine()
 {
     string directory = Path.Combine(Path.GetTempPath(), "twx-prompt-probe-tests", Guid.NewGuid().ToString("N"));
@@ -703,6 +1028,46 @@ halt
     }
     finally
     {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void HighVolumeLocalLoopsDoNotTripWatchdog()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    string directory = Path.Combine(Path.GetTempPath(), "twx-watchdog-local-loop-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    string resultPath = Path.Combine(directory, "complete.txt");
+    string scriptPath = Path.Combine(directory, "local-loop.ts");
+    File.WriteAllText(scriptPath, $$"""
+setvar $i 0
+while ($i < 2000000)
+    add $i 1
+end
+write "{{resultPath}}" "complete"
+halt
+""");
+
+    bool originalProtection = GlobalModules.ScriptInfiniteLoopProtectionEnabled;
+    GlobalModules.ScriptInfiniteLoopProtectionEnabled = true;
+    try
+    {
+        using var interpreter = new ModInterpreter
+        {
+            ProgramDir = directory,
+            ScriptDirectory = directory,
+        };
+
+        interpreter.Load(scriptPath, silent: true);
+
+        if (!File.Exists(resultPath))
+            throw new InvalidOperationException("Expected the high-volume local loop to complete.");
+        if (interpreter.Count != 0)
+            throw new InvalidOperationException($"Expected the local loop script to stop, found {interpreter.Count} running.");
+    }
+    finally
+    {
+        GlobalModules.ScriptInfiniteLoopProtectionEnabled = originalProtection;
         try { Directory.Delete(directory, recursive: true); } catch { }
     }
 }

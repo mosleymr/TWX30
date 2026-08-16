@@ -7,10 +7,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>MTC</RootNamespace>
     <AssemblyName>MTC</AssemblyName>
-    <Version>1.0.0-beta3</Version>
+    <Version>1.0.0-beta5</Version>
     <Authors>Matt Mosley (reaper)</Authors>
     <Company>TWXProxy</Company>
-    <Product>Mayhem Tradewars Client 1.0 beta3</Product>
+    <Product>Mayhem Tradewars Client 1.0 beta5</Product>
     <Description>Cross-platform terminal emulation client for Trade Wars 2002</Description>
     <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
     <!-- Avalonia requires this to suppress WinExe warning on non-Windows -->

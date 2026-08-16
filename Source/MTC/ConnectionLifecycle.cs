@@ -207,6 +207,7 @@ public partial class MainWindow
         gi.AllowLerkers = gameConfig.AllowLerkers;
         gi.ExternalAddress = gameConfig.ExternalAddress ?? string.Empty;
         gi.BroadCastMsgs = gameConfig.BroadcastMessages;
+        ApplyNetworkWatchdogPreferences(gi);
         gi.Logger.LogEnabled = false;
         gi.Logger.LogData = false;
         gi.Logger.LogAnsiCompanion = gameConfig.LogAnsiCompanion;
@@ -1075,6 +1076,22 @@ public partial class MainWindow
         RebindMtcTabSessionAfterAwait(owningTab);
         if (owningTab is null || owningTab.Id == _activeMtcTabId)
             RefreshActiveMtcTabUiStateScoped();
+    }
+
+    private void ApplyNetworkWatchdogPreferences(Core.GameInstance? gameInstance = null)
+    {
+        gameInstance ??= _gameInstance;
+        if (gameInstance == null)
+            return;
+
+        gameInstance.StaleLocalInputProbeEnabled = _appPrefs.StaleConnectionProbeEnabled;
+        gameInstance.LocalInputResponseTimeoutSeconds = AppPreferences.NormalizeNetworkWatchdogSeconds(
+            _appPrefs.StaleConnectionProbeTimeoutSeconds,
+            AppPreferences.DefaultLocalInputResponseTimeoutSeconds);
+        gameInstance.GameIdleKeepaliveEnabled = _appPrefs.GameIdleKeepaliveEnabled;
+        gameInstance.GameIdleKeepaliveIntervalSeconds = AppPreferences.NormalizeNetworkWatchdogSeconds(
+            _appPrefs.GameIdleKeepaliveIntervalSeconds,
+            AppPreferences.DefaultGameIdleKeepaliveIntervalSeconds);
     }
 
     /// <summary>Stops the embedded <see cref="Core.GameInstance"/> and restores normal state.

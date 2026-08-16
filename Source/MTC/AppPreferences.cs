@@ -17,6 +17,8 @@ public class AppPreferences
     public const int DefaultScrollbackLines = TerminalBuffer.DefaultScrollbackLines;
     public const int DefaultPreparedScriptCacheLimitKb = (int)(Core.GlobalModules.DefaultPreparedScriptCacheLimitBytes / 1024);
     public const int DefaultMombotHotkeyPrewarmLimitKb = (int)(Core.GlobalModules.DefaultMombotHotkeyPrewarmLimitBytes / 1024);
+    public const int DefaultLocalInputResponseTimeoutSeconds = Core.GameInstance.DefaultLocalInputResponseTimeoutSeconds;
+    public const int DefaultGameIdleKeepaliveIntervalSeconds = Core.GameInstance.DefaultGameIdleKeepaliveIntervalSeconds;
     public const string UpdateLaneStable = "stable";
     public const string UpdateLaneBeta = "beta";
     public const string UpdateLaneDev = "dev";
@@ -49,6 +51,7 @@ public class AppPreferences
         public string Id { get; set; } = string.Empty;
         public bool Visible { get; set; } = true;
         public int Order { get; set; }
+        public bool OnlineAutoRefreshEnabled { get; set; } = DefaultOnlineAutoRefreshEnabled;
         public int OnlineRefreshIntervalSeconds { get; set; } = DefaultOnlineRefreshIntervalSeconds;
     }
 
@@ -78,6 +81,7 @@ public class AppPreferences
     public const string StatusPanelOnline = "online";
     public const string StatusPanelHolds = "holds"; // legacy-only; folded into Ship Info
     public const string StatusPanelShipInfo = "ship";
+    public const bool DefaultOnlineAutoRefreshEnabled = false;
     public const int DefaultOnlineRefreshIntervalSeconds = 60;
     public static readonly int[] OnlineRefreshIntervalSecondOptions = [30, 60, 120, 300];
 
@@ -116,6 +120,11 @@ public class AppPreferences
     public double TerminalFontSize { get; set; } = TerminalControl.DefaultFontSize;
     public int ScrollbackLines { get; set; } = DefaultScrollbackLines;
     public bool PreparedVmEnabled { get; set; } = true;
+    public bool ScriptInfiniteLoopProtectionEnabled { get; set; } = true;
+    public bool StaleConnectionProbeEnabled { get; set; } = true;
+    public int StaleConnectionProbeTimeoutSeconds { get; set; } = DefaultLocalInputResponseTimeoutSeconds;
+    public bool GameIdleKeepaliveEnabled { get; set; } = true;
+    public int GameIdleKeepaliveIntervalSeconds { get; set; } = DefaultGameIdleKeepaliveIntervalSeconds;
     public bool DisableScriptWindowStayInFront { get; set; }
     public bool PythonScriptsEnabled { get; set; } = true;
     public string PythonInterpreterPath { get; set; } = "auto";
@@ -238,6 +247,11 @@ public class AppPreferences
                 new XElement("TerminalFontSize", TerminalFontSize.ToString(CultureInfo.InvariantCulture)),
                 new XElement("ScrollbackLines", NormalizeScrollbackLines(ScrollbackLines)),
                 new XElement("PreparedVmEnabled", PreparedVmEnabled),
+                new XElement("ScriptInfiniteLoopProtectionEnabled", ScriptInfiniteLoopProtectionEnabled),
+                new XElement("StaleConnectionProbeEnabled", StaleConnectionProbeEnabled),
+                new XElement("StaleConnectionProbeTimeoutSeconds", NormalizeNetworkWatchdogSeconds(StaleConnectionProbeTimeoutSeconds, DefaultLocalInputResponseTimeoutSeconds)),
+                new XElement("GameIdleKeepaliveEnabled", GameIdleKeepaliveEnabled),
+                new XElement("GameIdleKeepaliveIntervalSeconds", NormalizeNetworkWatchdogSeconds(GameIdleKeepaliveIntervalSeconds, DefaultGameIdleKeepaliveIntervalSeconds)),
                 new XElement("DisableScriptWindowStayInFront", DisableScriptWindowStayInFront),
                 new XElement("PythonScriptsEnabled", PythonScriptsEnabled),
                 new XElement("PythonInterpreterPath", NormalizePythonInterpreterPath(PythonInterpreterPath)),
@@ -332,6 +346,9 @@ public class AppPreferences
                             new XAttribute("Visible", section.Visible),
                             new XAttribute("Order", section.Order),
                             string.Equals(NormalizeStatusPanelSectionId(section.Id), StatusPanelOnline, StringComparison.OrdinalIgnoreCase)
+                                ? new XAttribute("OnlineAutoRefreshEnabled", section.OnlineAutoRefreshEnabled)
+                                : null,
+                            string.Equals(NormalizeStatusPanelSectionId(section.Id), StatusPanelOnline, StringComparison.OrdinalIgnoreCase)
                                 ? new XAttribute("OnlineRefreshIntervalSeconds", NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds))
                                 : null)))
             );
@@ -406,6 +423,16 @@ public class AppPreferences
                 prefs.ScrollbackLines = NormalizeScrollbackLines(scrollbackLines);
             if (bool.TryParse((string?)root.Element("PreparedVmEnabled"), out bool preparedVmEnabled))
                 prefs.PreparedVmEnabled = preparedVmEnabled;
+            if (bool.TryParse((string?)root.Element("ScriptInfiniteLoopProtectionEnabled"), out bool scriptInfiniteLoopProtectionEnabled))
+                prefs.ScriptInfiniteLoopProtectionEnabled = scriptInfiniteLoopProtectionEnabled;
+            if (bool.TryParse((string?)root.Element("StaleConnectionProbeEnabled"), out bool staleConnectionProbeEnabled))
+                prefs.StaleConnectionProbeEnabled = staleConnectionProbeEnabled;
+            if (int.TryParse((string?)root.Element("StaleConnectionProbeTimeoutSeconds"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int staleConnectionProbeTimeoutSeconds))
+                prefs.StaleConnectionProbeTimeoutSeconds = NormalizeNetworkWatchdogSeconds(staleConnectionProbeTimeoutSeconds, DefaultLocalInputResponseTimeoutSeconds);
+            if (bool.TryParse((string?)root.Element("GameIdleKeepaliveEnabled"), out bool gameIdleKeepaliveEnabled))
+                prefs.GameIdleKeepaliveEnabled = gameIdleKeepaliveEnabled;
+            if (int.TryParse((string?)root.Element("GameIdleKeepaliveIntervalSeconds"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int gameIdleKeepaliveIntervalSeconds))
+                prefs.GameIdleKeepaliveIntervalSeconds = NormalizeNetworkWatchdogSeconds(gameIdleKeepaliveIntervalSeconds, DefaultGameIdleKeepaliveIntervalSeconds);
             if (bool.TryParse((string?)root.Element("DisableScriptWindowStayInFront"), out bool disableScriptWindowStayInFront))
                 prefs.DisableScriptWindowStayInFront = disableScriptWindowStayInFront;
             if (bool.TryParse((string?)root.Element("PythonScriptsEnabled"), out bool pythonScriptsEnabled))
@@ -560,6 +587,8 @@ public class AppPreferences
                     Id = id,
                     Visible = ParseBool(section.Attribute("Visible"), defaultValue: true),
                     Order = ParseInt(section.Attribute("Order")),
+                    OnlineAutoRefreshEnabled = string.Equals(id, StatusPanelOnline, StringComparison.OrdinalIgnoreCase) &&
+                        ParseBool(section.Attribute("OnlineAutoRefreshEnabled"), DefaultOnlineAutoRefreshEnabled),
                     OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(
                         ParseInt(section.Attribute("OnlineRefreshIntervalSeconds"), DefaultOnlineRefreshIntervalSeconds)),
                 });
@@ -627,6 +656,7 @@ public class AppPreferences
                 Id = section.Id,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineAutoRefreshEnabled = section.OnlineAutoRefreshEnabled,
                 OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             })
             .ToList();
@@ -652,6 +682,8 @@ public class AppPreferences
                 Id = normalizedId,
                 Visible = section.Visible,
                 Order = order++,
+                OnlineAutoRefreshEnabled = string.Equals(normalizedId, StatusPanelOnline, StringComparison.OrdinalIgnoreCase) &&
+                    section.OnlineAutoRefreshEnabled,
                 OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             });
         }
@@ -691,6 +723,9 @@ public class AppPreferences
 
     public static int NormalizeTcpPort(int value, int defaultValue)
         => value is >= 1 and <= 65535 ? value : defaultValue;
+
+    public static int NormalizeNetworkWatchdogSeconds(int value, int defaultValue)
+        => value is >= 5 and <= 600 ? value : defaultValue;
 
     public static int NormalizeOnlineRefreshIntervalSeconds(int value)
         => OnlineRefreshIntervalSecondOptions.Contains(value)
@@ -890,6 +925,8 @@ public class AppPreferences
                 Id = normalizedId,
                 Visible = section.Visible,
                 Order = section.Order,
+                OnlineAutoRefreshEnabled = string.Equals(normalizedId, StatusPanelOnline, StringComparison.OrdinalIgnoreCase) &&
+                    section.OnlineAutoRefreshEnabled,
                 OnlineRefreshIntervalSeconds = NormalizeOnlineRefreshIntervalSeconds(section.OnlineRefreshIntervalSeconds),
             });
         }
@@ -908,6 +945,7 @@ public class AppPreferences
                     Id = defaultId,
                     Visible = true,
                     Order = int.MaxValue,
+                    OnlineAutoRefreshEnabled = DefaultOnlineAutoRefreshEnabled,
                     OnlineRefreshIntervalSeconds = DefaultOnlineRefreshIntervalSeconds,
                 });
             }

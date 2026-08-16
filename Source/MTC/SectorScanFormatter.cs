@@ -69,7 +69,7 @@ internal static class SectorScanFormatter
         if (mineLines.Count > 0)
             AppendBlock(output, MineLabel, mineLines, MineContinuationLabel);
 
-        ushort[] warps = sector.Warp.Where(w => w > 0).ToArray();
+        int[] warps = sector.Warp.Where(w => w > 0).ToArray();
         if (warps.Length > 0)
         {
             output.Append(WarpLabel)

@@ -433,6 +433,11 @@ namespace TWXProxy.Core
         public static bool EnableVmMetrics { get; set; } = false;
 
         /// <summary>
+        /// Enables the script execution watchdog that stops apparent infinite loops.
+        /// </summary>
+        public static bool ScriptInfiniteLoopProtectionEnabled { get; set; } = true;
+
+        /// <summary>
         /// When true, newly created Script instances prefer the prepared VM path.
         /// Defaults to false so existing runtime behavior is unchanged unless explicitly enabled.
         /// </summary>

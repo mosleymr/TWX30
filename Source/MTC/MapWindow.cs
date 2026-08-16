@@ -1053,7 +1053,7 @@ public class MapWindow : Window
 
                 // Check two-way: target also has a warp back to us
                 _sectorCache.TryGetValue(w, out var target);
-                bool twoWay = target != null && target.Warp.Contains((ushort)sn);
+                bool twoWay = target != null && target.Warp.Contains(sn);
 
                 // Only draw each edge once
                 int a = Math.Min(sn, w), b = Math.Max(sn, w);

@@ -6,10 +6,10 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TWXProxy.Core</RootNamespace>
     <AssemblyName>TWXProxy</AssemblyName>
-    <Version>3.0.0-beta1</Version>
+    <Version>3.0.0-beta5</Version>
     <Authors>Remco Mulder, David O. McCartney (MicroBlaster), Matt Mosley (reaper)</Authors>
     <Company>twxproxy</Company>
-    <Product>twxproxy 3.0 beta1</Product>
+    <Product>twxproxy 3.0 beta5</Product>
     <Description>Trade Wars 2002 Proxy</Description>
     <Copyright>Copyright (C) 2026 Matt Mosley - Licensed under GPL v2+</Copyright>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>

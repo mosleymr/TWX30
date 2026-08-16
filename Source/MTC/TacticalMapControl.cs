@@ -1497,14 +1497,14 @@ public class TacticalMapControl : Control
         if (first == null || second == null)
             return false;
 
-        return first.Warp.Contains((ushort)secondSector)
-            || first.WarpsIn.Contains((ushort)secondSector)
-            || second.Warp.Contains((ushort)firstSector)
-            || second.WarpsIn.Contains((ushort)firstSector);
+        return first.Warp.Contains(secondSector)
+            || first.WarpsIn.Contains(secondSector)
+            || second.Warp.Contains(firstSector)
+            || second.WarpsIn.Contains(firstSector);
     }
 
     private static bool HasOutgoingWarp(Core.SectorData? sector, int targetSector)
-        => sector != null && sector.Warp.Contains((ushort)targetSector);
+        => sector != null && sector.Warp.Contains(targetSector);
 
     private static int HexDistance(HexCell a, HexCell b)
     {

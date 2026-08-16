@@ -188,18 +188,18 @@ internal static class TunnelFinder
             var linkedNeighbors = new List<ushort>(sector.WarpsIn.Count + 6);
             for (int i = 0; i < 6; i++)
             {
-                ushort warp = sector.Warp[i];
+                int warp = sector.Warp[i];
                 if (warp == 0)
                     break;
 
-                if (!linkedNeighbors.Contains(warp))
-                    linkedNeighbors.Add(warp);
+                if (warp <= ushort.MaxValue && !linkedNeighbors.Contains((ushort)warp))
+                    linkedNeighbors.Add((ushort)warp);
             }
 
-            foreach (ushort warpIn in sector.WarpsIn)
+            foreach (int warpIn in sector.WarpsIn)
             {
-                if (!linkedNeighbors.Contains(warpIn))
-                    linkedNeighbors.Add(warpIn);
+                if (warpIn <= ushort.MaxValue && !linkedNeighbors.Contains((ushort)warpIn))
+                    linkedNeighbors.Add((ushort)warpIn);
             }
 
             neighbors[sectorNumber] = linkedNeighbors.ToArray();

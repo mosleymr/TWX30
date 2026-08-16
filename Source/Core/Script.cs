@@ -1795,9 +1795,9 @@ namespace TWXProxy.Core
         private int _loopCounter = 0;
         private DateTime _lastLoopCheck = DateTime.MinValue;
         private const int MAX_LOOP_ITERATIONS = 50;  // Max iterations before warning
-        private const int MIN_COMMANDS_PER_NO_IO_WATCHDOG_CHECK = 4_096;
-        private const int EXECUTION_WATCHDOG_CHECK_MASK = 0x0FFF;
-        private static readonly TimeSpan MAX_EXECUTION_SLICE_DURATION = TimeSpan.FromSeconds(2);
+        private const int MIN_COMMANDS_PER_NO_IO_WATCHDOG_CHECK = 10_000_000;
+        private const int EXECUTION_WATCHDOG_CHECK_MASK = 0xFFFF;
+        private static readonly TimeSpan MAX_EXECUTION_SLICE_DURATION = TimeSpan.FromSeconds(60);
         private bool _resetLoopDetectionOnNextExecute;
         private bool _enableVariableDebug = false;  // Toggle for [VAR] output
         private string _waitText = string.Empty;
@@ -3230,6 +3230,9 @@ namespace TWXProxy.Core
             ref long watchdogStartTimestamp,
             ref int watchdogActivityCounter)
         {
+            if (!GlobalModules.ScriptInfiniteLoopProtectionEnabled)
+                return;
+
             int currentActivityCounter = _executionWatchdogActivityCounter;
             if (currentActivityCounter != watchdogActivityCounter)
             {

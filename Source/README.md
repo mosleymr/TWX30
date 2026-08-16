@@ -1,8 +1,8 @@
-# twxproxy 3.0 beta1
+# twxproxy 3.0 beta5
 
 Trade Wars 2002 proxy, scripting, compiler, and decompiler toolchain rewritten in C# on .NET 10.
 
-**Version:** 3.0 beta1
+**Version:** 3.0 beta5
 **Original Author:** Remco Mulder
 **C# Port / Ongoing Development:** Matt Mosley
 **TWX 2.6 / 2.7 Lineage:** David O. McCartney (MicroBlaster)
@@ -10,7 +10,7 @@ Trade Wars 2002 proxy, scripting, compiler, and decompiler toolchain rewritten i
 
 ## Overview
 
-twxproxy 3.0 beta1 is the modern C# rewrite of the classic TWXProxy codebase. The repository includes:
+twxproxy 3.0 beta5 is the modern C# rewrite of the classic TWXProxy codebase. The repository includes:
 
 - a shared Core runtime used by the proxy, compiler, decompiler, and client apps
 - `TWXC`, which compiles TWX source scripts (`.ts`) to compiled bytecode (`.cts`)
