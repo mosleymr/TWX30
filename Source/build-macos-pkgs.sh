@@ -89,14 +89,20 @@ esac
 
 find_signing_identity() {
   local kind="$1"
-  security find-identity -v -p codesigning 2>/dev/null \
+  local policy="${2:-}"
+  local args=(-v)
+  if [[ -n "$policy" ]]; then
+    args+=(-p "$policy")
+  fi
+
+  security find-identity "${args[@]}" 2>/dev/null \
     | sed -n "s/.*\"\(${kind}: [^\"]*\)\".*/\1/p" \
     | head -n 1
 }
 
 if [[ "$MACOS_SIGN_MODE" == "developer-id" ]]; then
   if [[ -z "$MACOS_APP_SIGN_IDENTITY" ]]; then
-    MACOS_APP_SIGN_IDENTITY="$(find_signing_identity "Developer ID Application")"
+    MACOS_APP_SIGN_IDENTITY="$(find_signing_identity "Developer ID Application" "codesigning")"
   fi
   if [[ -z "$MACOS_INSTALLER_SIGN_IDENTITY" ]]; then
     MACOS_INSTALLER_SIGN_IDENTITY="$(find_signing_identity "Developer ID Installer")"
