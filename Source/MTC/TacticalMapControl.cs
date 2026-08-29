@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Threading;
 using Avalonia.Media;
 using Avalonia.Rendering.SceneGraph;
 using Avalonia.Skia;
@@ -27,6 +31,7 @@ public class TacticalMapControl : Control
 {
     private const int ZoomedInDepth = 1;
     private const int ZoomedOutDepth = 6;
+    private const int MaxLiveSnapshotSectors = 500;
     private const float BubbleGridX = 110f;
     private const float BubbleGridY = 84f;
     private const float NodeRadius = 20f;
@@ -76,6 +81,10 @@ public class TacticalMapControl : Control
     private Core.ModDatabase? _majorSpaceLaneDb;
     private long _majorSpaceLaneChangeStamp = long.MinValue;
     private HashSet<int> _majorSpaceLaneSectors = [];
+    private int _snapshotBuildScheduled;
+    private int _snapshotRequestVersion;
+    private bool _snapshotDirty = true;
+    private string? _snapshotBuildError;
 
     private static string GetViewModeLabel(TacticalMapViewMode viewMode)
     {
@@ -99,6 +108,7 @@ public class TacticalMapControl : Control
         PointerMoved += OnPointerMoved;
         PointerExited += OnPointerExited;
         DoubleTapped += OnDoubleTapped;
+        AttachedToVisualTree += (_, _) => MarkSnapshotDirty();
 
         var rng = new Random(1337);
         _stars = new (float, float, float, byte)[140];
@@ -122,21 +132,35 @@ public class TacticalMapControl : Control
     public override void Render(DrawingContext context)
     {
         var bounds = new Rect(0, 0, Bounds.Width, Bounds.Height);
+        DrawFallbackSurface(context, bounds);
         context.Custom(new TacticalDrawOp(bounds, this));
+    }
+
+    private static void DrawFallbackSurface(DrawingContext context, Rect bounds)
+    {
+        context.FillRectangle(new SolidColorBrush(Color.FromRgb(18, 43, 53)), bounds);
+        var text = new FormattedText(
+            "Map renderer unavailable",
+            CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            new Typeface("Consolas, Menlo, monospace"),
+            13,
+            new SolidColorBrush(Color.FromRgb(126, 170, 180)));
+        context.DrawText(text, new Point(16, 16));
     }
 
     internal void Draw(SKCanvas canvas, float width, float height)
     {
         DrawBackdrop(canvas, width, height);
+        RequestSnapshotRefresh();
 
-        MapSnapshot snapshot = BuildSnapshot();
-        _lastSnapshot = snapshot;
+        MapSnapshot snapshot = _lastSnapshot;
         if (snapshot.Positions.Count == 0)
         {
             _hasLiveLayout = false;
             _hoveredSectorNumber = 0;
             _hoveredSectorPopupText = null;
-            DrawEmptyState(canvas, width, height);
+            DrawEmptyState(canvas, width, height, _snapshotBuildError);
             return;
         }
 
@@ -196,7 +220,7 @@ public class TacticalMapControl : Control
             return;
 
         _viewMode = viewMode;
-        InvalidateVisual();
+        MarkSnapshotDirty();
         ViewModeChanged?.Invoke(this);
     }
 
@@ -206,7 +230,7 @@ public class TacticalMapControl : Control
             return;
 
         _centerSectorOverride = sectorNumber;
-        InvalidateVisual();
+        MarkSnapshotDirty();
     }
 
     public void FollowLiveSector()
@@ -215,7 +239,7 @@ public class TacticalMapControl : Control
             return;
 
         _centerSectorOverride = null;
-        InvalidateVisual();
+        MarkSnapshotDirty();
     }
 
     public void SetPreviewSelection(
@@ -235,8 +259,11 @@ public class TacticalMapControl : Control
         _previewLegendText = string.IsNullOrWhiteSpace(legendText) ? null : legendText.Trim();
         _previewLimitHighlightedSectors = limitHighlightedSectors;
         _previewZoomControlsDepth = zoomControlsDepth && _previewHighlightedSectors.Count > 0;
-        InvalidateVisual();
+        MarkSnapshotDirty();
     }
+
+    public void RefreshSnapshot()
+        => MarkSnapshotDirty();
 
     private void SetZoom(float zoomFactor)
     {
@@ -245,8 +272,97 @@ public class TacticalMapControl : Control
             return;
 
         _zoomFactor = clamped;
-        InvalidateVisual();
+        MarkSnapshotDirty();
         ZoomChanged?.Invoke(this);
+    }
+
+    private void MarkSnapshotDirty()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(MarkSnapshotDirty, DispatcherPriority.Background);
+            return;
+        }
+
+        _snapshotDirty = true;
+        RequestSnapshotRefresh();
+        InvalidateVisual();
+    }
+
+    private void RequestSnapshotRefresh()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            Dispatcher.UIThread.Post(RequestSnapshotRefresh, DispatcherPriority.Background);
+            return;
+        }
+
+        if (!_snapshotDirty)
+            return;
+
+        if (Interlocked.CompareExchange(ref _snapshotBuildScheduled, 1, 0) != 0)
+            return;
+
+        _snapshotDirty = false;
+        int version = unchecked(++_snapshotRequestVersion);
+        SnapshotBuildRequest request = CaptureSnapshotBuildRequest();
+
+        _ = Task.Run(() => BuildSnapshot(request)).ContinueWith(task =>
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                try
+                {
+                    if (version == _snapshotRequestVersion)
+                    {
+                        if (task.IsFaulted)
+                        {
+                            _snapshotBuildError = task.Exception?.GetBaseException().Message ?? "Unknown map snapshot error";
+                            _lastSnapshot = new MapSnapshot();
+                            Core.GlobalModules.DebugLog($"[TacticalMapControl] Snapshot build failed: {task.Exception?.GetBaseException()}\n");
+                        }
+                        else if (task.IsCompletedSuccessfully)
+                        {
+                            _snapshotBuildError = null;
+                            _lastSnapshot = task.Result;
+                        }
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _snapshotBuildScheduled, 0);
+                    if (_snapshotDirty)
+                        RequestSnapshotRefresh();
+                    InvalidateVisual();
+                }
+            }, DispatcherPriority.Background);
+        }, TaskScheduler.Default);
+    }
+
+    private SnapshotBuildRequest CaptureSnapshotBuildRequest()
+    {
+        GameState? liveState = _getState?.Invoke();
+        GameState? stateSnapshot = liveState == null
+            ? null
+            : new GameState
+            {
+                TraderName = liveState.TraderName,
+                Corp = liveState.Corp,
+            };
+
+        return new SnapshotBuildRequest(
+            _getDb(),
+            Math.Max(1, _getCurrentSector()),
+            _centerSectorOverride,
+            _viewMode,
+            _previewHighlightedSectors.ToHashSet(),
+            _previewGateSector,
+            _previewSurroundingDepth,
+            _previewLimitHighlightedSectors,
+            _previewZoomControlsDepth,
+            _previewLegendText,
+            _zoomFactor,
+            stateSnapshot);
     }
 
     private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
@@ -431,7 +547,7 @@ public class TacticalMapControl : Control
         }
     }
 
-    private static void DrawEmptyState(SKCanvas canvas, float width, float height)
+    private static void DrawEmptyState(SKCanvas canvas, float width, float height, string? error)
     {
         using var titlePaint = new SKPaint
         {
@@ -450,8 +566,15 @@ public class TacticalMapControl : Control
             Typeface = SKTypeface.Default,
         };
 
-        canvas.DrawText("Awaiting sector telemetry", width / 2f, height / 2f - 10f, titlePaint);
-        canvas.DrawText("Connect to a game to populate the tactical overlay.", width / 2f, height / 2f + 18f, bodyPaint);
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            canvas.DrawText("Awaiting sector telemetry", width / 2f, height / 2f - 10f, titlePaint);
+            canvas.DrawText("Connect to a game to populate the tactical overlay.", width / 2f, height / 2f + 18f, bodyPaint);
+            return;
+        }
+
+        canvas.DrawText("Map snapshot unavailable", width / 2f, height / 2f - 10f, titlePaint);
+        canvas.DrawText(error.Length > 96 ? error[..96] : error, width / 2f, height / 2f + 18f, bodyPaint);
     }
 
     private static void DrawEdges(SKCanvas canvas, MapSnapshot snapshot)
@@ -804,24 +927,24 @@ public class TacticalMapControl : Control
         canvas.DrawText(text, 28, height - 18, textPaint);
     }
 
-    private MapSnapshot BuildSnapshot()
+    private MapSnapshot BuildSnapshot(SnapshotBuildRequest request)
     {
         var snapshot = new MapSnapshot();
-        Core.ModDatabase? db = _getDb();
-        int liveSector = Math.Max(1, _getCurrentSector());
-        int centerSector = _centerSectorOverride.GetValueOrDefault(liveSector);
+        Core.ModDatabase? db = request.Database;
+        int liveSector = request.LiveSector;
+        int centerSector = request.CenterSectorOverride.GetValueOrDefault(liveSector);
         snapshot.CurrentSector = liveSector;
         snapshot.CenterSector = centerSector;
 
         if (db == null || centerSector <= 0)
             return snapshot;
 
-        if (_previewHighlightedSectors.Count > 0)
+        if (request.PreviewHighlightedSectors.Count > 0)
         {
-            return BuildPreviewSnapshot(db, liveSector, centerSector);
+            return BuildPreviewSnapshot(request, db, liveSector, centerSector);
         }
 
-        int visibleDepth = GetVisibleDepth();
+        int visibleDepth = GetVisibleDepth(request.ZoomFactor);
 
         var visited = new Dictionary<int, int> { [centerSector] = 0 };
         var queue = new Queue<int>();
@@ -839,6 +962,9 @@ public class TacticalMapControl : Control
 
             foreach (int linkedSector in EnumerateLinkedSectors(sector))
             {
+                if (visited.Count >= MaxLiveSnapshotSectors)
+                    break;
+
                 if (visited.ContainsKey(linkedSector))
                     continue;
 
@@ -851,13 +977,13 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = visited;
-        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+        foreach (int sectorNumber in db.GetMajorSpaceLaneSectors())
             snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
-        if (_viewMode == TacticalMapViewMode.Hex)
+        if (request.ViewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, visited);
         else
             snapshot.Positions = ComputeBubblePositions(db, centerSector, visited);
-        PopulateOwnershipOverlays(snapshot, db);
+        PopulateOwnershipOverlays(snapshot, db, request.State);
 
         var header = db.DBHeader;
         AddLandmark(snapshot.Landmarks, header.StarDock);
@@ -867,11 +993,15 @@ public class TacticalMapControl : Control
         return snapshot;
     }
 
-    private MapSnapshot BuildPreviewSnapshot(Core.ModDatabase db, int liveSector, int fallbackCenterSector)
+    private MapSnapshot BuildPreviewSnapshot(
+        SnapshotBuildRequest request,
+        Core.ModDatabase db,
+        int liveSector,
+        int fallbackCenterSector)
     {
-        int centerSector = _previewGateSector > 0
-            ? _previewGateSector
-            : _previewHighlightedSectors.FirstOrDefault(fallbackCenterSector);
+        int centerSector = request.PreviewGateSector > 0
+            ? request.PreviewGateSector
+            : request.PreviewHighlightedSectors.FirstOrDefault(fallbackCenterSector);
         if (centerSector <= 0)
             centerSector = fallbackCenterSector;
 
@@ -879,19 +1009,19 @@ public class TacticalMapControl : Control
         {
             CurrentSector = liveSector,
             CenterSector = centerSector,
-            GateSector = _previewGateSector,
+            GateSector = request.PreviewGateSector,
             IsPreview = true,
-            TotalHighlightedSectors = _previewHighlightedSectors.Count,
-            PreviewLegendText = _previewLegendText,
+            TotalHighlightedSectors = request.PreviewHighlightedSectors.Count,
+            PreviewLegendText = request.PreviewLegendText,
         };
 
-        HashSet<int> previewHighlighted = _previewLimitHighlightedSectors
+        HashSet<int> previewHighlighted = request.PreviewLimitHighlightedSectors
             ? LimitPreviewHighlightedSectors(
                 db,
                 centerSector,
-                _previewHighlightedSectors,
+                request.PreviewHighlightedSectors,
                 PreviewMaxHighlightedSectors)
-            : _previewHighlightedSectors
+            : request.PreviewHighlightedSectors
                 .Where(sectorNumber => sectorNumber > 0)
                 .ToHashSet();
 
@@ -899,10 +1029,10 @@ public class TacticalMapControl : Control
             snapshot.HighlightedSectors.Add(sectorNumber);
 
         var includedSectors = new HashSet<int>(snapshot.HighlightedSectors);
-        if (_previewGateSector > 0)
+        if (request.PreviewGateSector > 0)
         {
-            includedSectors.Add(_previewGateSector);
-            Core.SectorData? gateSector = db.GetSector(_previewGateSector);
+            includedSectors.Add(request.PreviewGateSector);
+            Core.SectorData? gateSector = db.GetSector(request.PreviewGateSector);
             if (gateSector != null)
             {
                 foreach (int linkedSector in EnumerateLinkedSectors(gateSector))
@@ -910,13 +1040,13 @@ public class TacticalMapControl : Control
             }
         }
 
-        int previewDepth = GetPreviewSurroundingDepth();
+        int previewDepth = GetPreviewSurroundingDepth(request);
         if (previewDepth > 0)
             ExpandPreviewNeighbors(
                 db,
                 includedSectors,
                 previewDepth,
-                _previewZoomControlsDepth ? GetPreviewContextSectorLimit() : int.MaxValue);
+                request.PreviewZoomControlsDepth ? GetPreviewContextSectorLimit(request.ZoomFactor) : int.MaxValue);
 
         if (includedSectors.Count == 0)
             includedSectors.Add(centerSector);
@@ -925,21 +1055,20 @@ public class TacticalMapControl : Control
             snapshot.Sectors[sectorNumber] = db.GetSector(sectorNumber);
 
         snapshot.Depths = BuildPreviewDepths(snapshot.Sectors, centerSector);
-        foreach (int sectorNumber in GetCachedMajorSpaceLaneSectors(db))
+        foreach (int sectorNumber in db.GetMajorSpaceLaneSectors())
             snapshot.MajorSpaceLaneSectors.Add(sectorNumber);
-        if (_viewMode == TacticalMapViewMode.Hex)
+        if (request.ViewMode == TacticalMapViewMode.Hex)
             ApplyHexLayout(snapshot, db, centerSector, snapshot.Depths);
         else
             snapshot.Positions = ComputeBubblePositions(db, centerSector, snapshot.Depths);
-        PopulateOwnershipOverlays(snapshot, db);
+        PopulateOwnershipOverlays(snapshot, db, request.State);
 
         return snapshot;
     }
 
-    private void PopulateOwnershipOverlays(MapSnapshot snapshot, Core.ModDatabase db)
+    private static void PopulateOwnershipOverlays(MapSnapshot snapshot, Core.ModDatabase db, GameState? state)
     {
         snapshot.OwnershipOverlays.Clear();
-        GameState? state = _getState?.Invoke();
 
         foreach ((int sectorNumber, Core.SectorData? sector) in snapshot.Sectors)
         {
@@ -1514,9 +1643,9 @@ public class TacticalMapControl : Control
         return (Math.Abs(dq) + Math.Abs(dr) + Math.Abs(ds)) / 2;
     }
 
-    private int GetVisibleDepth()
+    private static int GetVisibleDepth(float zoomFactor)
     {
-        return _zoomFactor switch
+        return zoomFactor switch
         {
             >= 1.55f => 1,
             >= 1.30f => 2,
@@ -1527,17 +1656,17 @@ public class TacticalMapControl : Control
         };
     }
 
-    private int GetPreviewSurroundingDepth()
+    private static int GetPreviewSurroundingDepth(SnapshotBuildRequest request)
     {
-        if (!_previewZoomControlsDepth)
-            return _previewSurroundingDepth;
+        if (!request.PreviewZoomControlsDepth)
+            return request.PreviewSurroundingDepth;
 
-        return Math.Max(_previewSurroundingDepth, GetPreviewZoomDepth());
+        return Math.Max(request.PreviewSurroundingDepth, GetPreviewZoomDepth(request.ZoomFactor));
     }
 
-    private int GetPreviewContextSectorLimit()
+    private static int GetPreviewContextSectorLimit(float zoomFactor)
     {
-        return _zoomFactor switch
+        return zoomFactor switch
         {
             >= 1.30f => 8,
             >= 1.05f => 12,
@@ -1549,9 +1678,9 @@ public class TacticalMapControl : Control
         };
     }
 
-    private int GetPreviewZoomDepth()
+    private static int GetPreviewZoomDepth(float zoomFactor)
     {
-        return _zoomFactor switch
+        return zoomFactor switch
         {
             >= 1.05f => 1,
             >= 0.75f => 2,
@@ -1892,6 +2021,20 @@ public class TacticalMapControl : Control
         return _majorSpaceLaneSectors;
     }
 
+    private sealed record SnapshotBuildRequest(
+        Core.ModDatabase? Database,
+        int LiveSector,
+        int? CenterSectorOverride,
+        TacticalMapViewMode ViewMode,
+        HashSet<int> PreviewHighlightedSectors,
+        int PreviewGateSector,
+        int PreviewSurroundingDepth,
+        bool PreviewLimitHighlightedSectors,
+        bool PreviewZoomControlsDepth,
+        string? PreviewLegendText,
+        float ZoomFactor,
+        GameState? State);
+
     private readonly record struct HexCell(int Q, int R);
 
     private sealed class MapSnapshot
@@ -1938,12 +2081,22 @@ public class TacticalMapControl : Control
 
         public void Render(ImmediateDrawingContext context)
         {
-            var feature = context.TryGetFeature(typeof(ISkiaSharpApiLeaseFeature)) as ISkiaSharpApiLeaseFeature;
-            if (feature == null)
-                return;
+            try
+            {
+                var feature = context.TryGetFeature(typeof(ISkiaSharpApiLeaseFeature)) as ISkiaSharpApiLeaseFeature;
+                if (feature == null)
+                {
+                    Core.GlobalModules.DebugLog("[TacticalMapControl] Skia lease feature unavailable; fallback surface rendered.\n");
+                    return;
+                }
 
-            using var lease = feature.Lease();
-            owner.Draw(lease.SkCanvas, (float)bounds.Width, (float)bounds.Height);
+                using var lease = feature.Lease();
+                owner.Draw(lease.SkCanvas, (float)bounds.Width, (float)bounds.Height);
+            }
+            catch (Exception ex)
+            {
+                Core.GlobalModules.DebugLog($"[TacticalMapControl] Render failed: {ex}\n");
+            }
         }
     }
 }

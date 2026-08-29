@@ -112,6 +112,7 @@ public partial class MainWindow : Window
     private bool            _nativeDockMenuSignatureValid;
     private bool            _tabStripRefreshPending;
     private bool            _focusTerminalAfterSharedMenuClose;
+    private int             _activationTerminalFocusTicket;
     private MenuItem        _proxyMenu     = new() { Header = "_Proxy" };
     private MenuItem        _scriptsMenu   = new() { Header = "_Scripts" };
     private MenuItem        _botMenu       = new() { Header = "_Bot" };

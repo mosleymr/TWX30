@@ -1255,7 +1255,7 @@ public class NewConnectionDialog : Window
         }
         else if (string.Equals(afterLoginAction, "terra", StringComparison.OrdinalIgnoreCase))
         {
-            macroAfterLogin = "pt";
+            macroAfterLogin = "L";
         }
 
         if (!TwcrawlDiscoveryClient.TryParseTelnetEndpoint(_selectedAutoGame.ServerTelnet, out string host, out int port))

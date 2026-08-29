@@ -571,6 +571,8 @@ public partial class MainWindow
             Core.ScriptRef.SetActiveDatabase(runtimeContext, null);
             Core.ScriptRef.SetOnVariableSaved(runtimeContext, null);
             Core.ScriptRef.ClearCurrentGameVars(runtimeContext);
+            config.Variables.Clear();
+            await GameConfigService.ResetVariablesAsync(gameName, config.Variables);
             ClearMombotRelogState();
             ResetMombotGameStorage(gameName, resetProgramDir, resetNativeScriptRoot);
 
@@ -612,7 +614,6 @@ public partial class MainWindow
         config.LoginScript = "0_Login.cts";
         config.LoginName = string.Empty;
         config.Password = string.Empty;
-        config.GameLetter = string.Empty;
         config.Variables.Clear();
 
         if (config.Extra != null)

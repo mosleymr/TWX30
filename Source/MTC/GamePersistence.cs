@@ -823,7 +823,7 @@ public partial class MainWindow
         _currentProfilePath ??= GameConfigPathForMode(gameName, _state.EmbeddedProxy);
     }
 
-    private async Task OpenPathAsync(string path, bool addToRecent)
+    private async Task OpenPathAsync(string path, bool addToRecent, bool allowReplaceConnectedTab = false)
     {
         string extension = Path.GetExtension(path);
         if (extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
@@ -838,7 +838,7 @@ public partial class MainWindow
             string modeConfigPath = GameConfigPathForConfig(config);
             if (string.Equals(Path.GetFullPath(path), Path.GetFullPath(modeConfigPath), StringComparison.OrdinalIgnoreCase))
             {
-                await ApplyLoadedGameConfigAsync(config, path, addToRecent);
+                await ApplyLoadedGameConfigAsync(config, path, addToRecent, allowReplaceConnectedTab);
                 return;
             }
 
@@ -862,13 +862,13 @@ public partial class MainWindow
             EmbeddedGameConfig importedConfig = BuildEmbeddedGameConfigFromProfile(importedProfile, importedDatabasePath, config);
             importedConfig.Variables = NormalizeEmbeddedVariables(config.Variables);
             await SaveEmbeddedGameConfigAsync(gameName, importedConfig);
-            await ApplyLoadedGameConfigAsync(importedConfig, GameConfigPathForMode(gameName, importedProfile.EmbeddedProxy), addToRecent);
+            await ApplyLoadedGameConfigAsync(importedConfig, GameConfigPathForMode(gameName, importedProfile.EmbeddedProxy), addToRecent, allowReplaceConnectedTab);
             return;
         }
 
         if (extension.Equals(".xdb", StringComparison.OrdinalIgnoreCase))
         {
-            await ImportDatabaseAsGameAsync(path, addToRecent);
+            await ImportDatabaseAsGameAsync(path, addToRecent, allowReplaceConnectedTab);
             return;
         }
 
@@ -904,16 +904,81 @@ public partial class MainWindow
             EmbeddedGameConfig config = BuildEmbeddedGameConfigFromProfile(legacy, sharedDbPath);
             await SaveEmbeddedGameConfigAsync(gameName, config);
             string configPath = GameConfigPathForMode(gameName, legacy.EmbeddedProxy);
-            await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
+            await ApplyLoadedGameConfigAsync(config, configPath, addToRecent, allowReplaceConnectedTab);
             return;
         }
 
         await ShowMessageAsync("Unsupported File", $"MTC can open .json game configs, .xdb databases, or legacy .mtc files.\n\n{path}");
     }
 
-    private async Task ApplyLoadedGameConfigAsync(EmbeddedGameConfig config, string configPath, bool addToRecent)
+    private async Task<bool> PrepareCurrentTabForGameLoadAsync(string targetGameName, bool allowReplaceConnectedTab)
+    {
+        if (!allowReplaceConnectedTab)
+            return true;
+
+        MtcTabPrototype? tab = PeekCurrentMtcTabContext();
+        if (tab is null && Dispatcher.UIThread.CheckAccess())
+            tab = ActiveMtcTab;
+        if (tab is null)
+            return true;
+
+        if (ReferenceEquals(_boundMtcTab, tab))
+            CaptureMtcTabSession(tab);
+
+        string currentGameName = GetMtcTabGameIdentity(tab);
+        string normalizedTarget = NormalizeGameName(targetGameName);
+        if (string.IsNullOrWhiteSpace(currentGameName) ||
+            string.Equals(currentGameName, normalizedTarget, StringComparison.OrdinalIgnoreCase) ||
+            !IsMtcTabConnectedToServer(tab))
+        {
+            return true;
+        }
+
+        bool confirmed = await ShowConfirmAsync(
+            "Close Current Connection",
+            $"Are you sure you want to close the connection to {currentGameName}?",
+            "Yes",
+            "No");
+        if (!confirmed)
+            return false;
+
+        Core.GlobalModules.DebugLog(
+            $"[MTC.OpenRecent] replacing connected tab game current='{currentGameName}' target='{normalizedTarget}'.\n");
+        await DisconnectCurrentTabForGameReplacementAsync(tab);
+        return true;
+    }
+
+    private async Task DisconnectCurrentTabForGameReplacementAsync(MtcTabPrototype tab)
+    {
+        CloseMtcTabOwnedWindows(tab);
+        await ExecuteInOptionalMtcTabSessionAsync(tab, async () =>
+        {
+            try { _telnet.Disconnect(); } catch { }
+            _proxyCts?.Cancel();
+            _proxyCts = null;
+            try { await _pythonScripts.StopAllAsync(); } catch { }
+
+            if (_gameInstance != null)
+                await StopEmbeddedAsync();
+            else
+            {
+                _gameFileLock?.Dispose();
+                _gameFileLock = null;
+                try { _sessionDb?.CloseDatabase(); } catch { }
+                _sessionDb = null;
+                Core.ScriptRef.SetActiveDatabase(tab.RuntimeContext, null);
+                Core.ScriptRef.SetOnVariableSaved(tab.RuntimeContext, null);
+                OnGameDisconnected();
+            }
+        });
+    }
+
+    private async Task ApplyLoadedGameConfigAsync(EmbeddedGameConfig config, string configPath, bool addToRecent, bool allowReplaceConnectedTab = false)
     {
         string targetGameName = NormalizeGameName(config.Name);
+        if (!await PrepareCurrentTabForGameLoadAsync(targetGameName, allowReplaceConnectedTab))
+            return;
+
         if (!CanCurrentMtcTabAdoptGameIdentity(targetGameName, "load-game"))
             return;
 
@@ -963,7 +1028,7 @@ public partial class MainWindow
     private static bool PathsEqualSafe(string? left, string? right)
         => GameConfigService.PathsEqualSafe(left, right);
 
-    private async Task ImportDatabaseAsGameAsync(string databasePath, bool addToRecent)
+    private async Task ImportDatabaseAsGameAsync(string databasePath, bool addToRecent, bool allowReplaceConnectedTab = false)
     {
         ConnectionProfile draft = BuildProfileFromDatabase(databasePath);
         string defaultGameName = NormalizeGameName(draft.Name);
@@ -981,7 +1046,7 @@ public partial class MainWindow
                 if (string.Equals(Path.GetFullPath(databasePath), Path.GetFullPath(existingDbPath), StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(Path.GetFullPath(databasePath), Path.GetFullPath(defaultSharedDatabasePath), StringComparison.OrdinalIgnoreCase))
                 {
-                    await ApplyLoadedGameConfigAsync(existingConfig, defaultConfigPath, addToRecent);
+                    await ApplyLoadedGameConfigAsync(existingConfig, defaultConfigPath, addToRecent, allowReplaceConnectedTab);
                     return;
                 }
             }
@@ -1005,7 +1070,7 @@ public partial class MainWindow
         await SaveEmbeddedGameConfigAsync(gameName, config);
         TwEditCatalogService.ApplyEditDefaults(gameName, imported.EditId);
         string configPath = GameConfigPathForMode(gameName, imported.EmbeddedProxy);
-        await ApplyLoadedGameConfigAsync(config, configPath, addToRecent);
+        await ApplyLoadedGameConfigAsync(config, configPath, addToRecent, allowReplaceConnectedTab);
     }
 
     private async Task<EmbeddedGameConfig?> TryLoadGameConfigAsync(string path)

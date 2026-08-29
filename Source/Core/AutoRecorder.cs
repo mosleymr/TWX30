@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -100,7 +101,7 @@ namespace TWXProxy.Core
         private bool _inPortCIM;          // Processing port CIM lines
         private bool _inWarpCIM;          // Processing warp CIM lines
         private bool _inFigScan;          // Processing deployed fighter scan lines
-        private readonly HashSet<int> _currentFigScanSectors = new();
+        private readonly Dictionary<int, (int Quantity, string Owner, FighterType FigType)> _currentFigScanSectors = new();
         private enum MineScanKind { None, Armid, Limpet }
         private MineScanKind _inMineScanKind;
         private readonly Dictionary<int, (int Quantity, string Owner)> _currentMineScanSectors = new();
@@ -445,11 +446,11 @@ namespace TWXProxy.Core
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxMineScanSector = new(
-            @"^\s*(\d+)\s+([\d,]+)\s+(Personal|Corp(?:orate)?|Corporate)\s*$",
+            @"^\s*(\d+)\s+([\d,.]+[TMB]?)\s+(Personal|Corp(?:orate)?|Corporate)\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxScanTotal = new(
-            @"^\s*[\d,]+\s+Total\s*$",
+            @"^\s*[\d,.]+[TMB]?\s+Total\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex _rxSectorDefenderPrompt = new(
@@ -2381,9 +2382,13 @@ namespace TWXProxy.Core
         {
             if (line.StartsWith("No fighters deployed", StringComparison.OrdinalIgnoreCase))
             {
-                ResetFigDatabase(db);
-                _currentFigScanSectors.Clear();
-                _inFigScan = false;
+                CompleteFigScan(db, "no fighters deployed");
+                return;
+            }
+
+            if (_rxScanTotal.IsMatch(line))
+            {
+                CompleteFigScan(db, "total");
                 return;
             }
 
@@ -2394,75 +2399,119 @@ namespace TWXProxy.Core
             if (!int.TryParse(m.Groups[1].Value, out int sectorNum) || sectorNum <= 0)
                 return;
 
-            var sector = GetOrCreate(db, sectorNum);
-            if (sector == null) return;
+            var sector = db.GetSector(sectorNum);
+            int existingQuantity = sector?.Fighters.Quantity ?? 0;
 
-            _currentFigScanSectors.Add(sectorNum);
-
-            sector.Fighters.Owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
+            string owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
                 ? "yours"
                 : "belong to your Corp";
 
-            sector.Fighters.Quantity = ParseDisplayedFighterCount(m.Groups[2].Value, sector.Fighters.Quantity);
+            int quantity = ParseDisplayedFighterCount(m.Groups[2].Value, existingQuantity);
             string figType = m.Groups[4].Value;
-            sector.Fighters.FigType = figType.Equals("Defensive", StringComparison.OrdinalIgnoreCase)
+            FighterType type = figType.Equals("Defensive", StringComparison.OrdinalIgnoreCase)
                 ? FighterType.Defensive
                 : figType.Equals("Toll", StringComparison.OrdinalIgnoreCase)
                     ? FighterType.Toll
                     : FighterType.Offensive;
 
-            db.SaveSector(sector);
-            AddFigMarker(db, sectorNum);
-            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={sector.Fighters.Quantity} owner={sector.Fighters.Owner} type={sector.Fighters.FigType}\n");
+            _currentFigScanSectors[sectorNum] = (quantity, owner, type);
+            GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Fig scan sector={sectorNum} qty={quantity} owner={owner} type={type}\n");
         }
 
         private void CompleteFigScan(ModDatabase db, string reason)
         {
             ReconcileFriendlyFightersFromScan(db, _currentFigScanSectors, reason);
+            _inFigScan = false;
+            _currentFigScanSectors.Clear();
         }
 
         private static void ResetFigDatabase(ModDatabase db)
         {
-            ReconcileFriendlyFightersFromScan(db, new HashSet<int>(), "no fighters deployed");
+            ReconcileFriendlyFightersFromScan(
+                db,
+                new Dictionary<int, (int Quantity, string Owner, FighterType FigType)>(),
+                "no fighters deployed");
         }
 
-        private static void ReconcileFriendlyFightersFromScan(ModDatabase db, IReadOnlySet<int> scannedSectors, string reason)
+        private static void ReconcileFriendlyFightersFromScan(
+            ModDatabase db,
+            IReadOnlyDictionary<int, (int Quantity, string Owner, FighterType FigType)> scannedSectors,
+            string reason)
         {
-            int maxSector = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
             int clearedFriendlyFighters = 0;
             int removedFigMarkers = 0;
+            HashSet<int> sectorsToClear = new(db.GetSectorsWithTruthySectorVar("FIGSEC"));
+            List<SectorData> changedSectors = new();
+            List<(int SectorNumber, string VarName, string Value)> markerUpdates = new(scannedSectors.Count + sectorsToClear.Count + 1);
 
-            for (int i = 1; i <= maxSector; i++)
+            foreach (var pair in scannedSectors)
             {
-                if (scannedSectors.Contains(i))
-                    continue;
+                int sectorNum = pair.Key;
+                var entry = pair.Value;
+                sectorsToClear.Remove(sectorNum);
 
-                var sector = db.GetSector(i);
+                var sector = GetOrCreate(db, sectorNum);
                 if (sector == null)
                     continue;
 
-                bool hadFriendlyFighters = sector.Fighters.Quantity > 0 && IsFriendlyFighterOwner(sector.Fighters.Owner);
-                bool hadFigMarker = IsSectorVarTrue(db, i, "FIGSEC");
+                if (ApplyFighterScanToSector(sector, entry.Quantity, entry.Owner, entry.FigType))
+                    changedSectors.Add(sector);
 
-                if (hadFriendlyFighters)
+                markerUpdates.Add((sectorNum, "FIGSEC", "1"));
+            }
+
+            foreach (int sectorNum in sectorsToClear)
+            {
+                var sector = db.GetSector(sectorNum);
+                if (sector == null)
                 {
-                    sector.Fighters.Owner = string.Empty;
-                    sector.Fighters.FigType = FighterType.None;
-                    sector.Fighters.Quantity = 0;
-                    db.SaveSector(sector);
+                    markerUpdates.Add((sectorNum, "FIGSEC", "0"));
+                    continue;
+                }
+
+                if (ClearFighterScanFromSector(sector))
+                {
+                    changedSectors.Add(sector);
                     clearedFriendlyFighters++;
                 }
 
-                if (hadFigMarker)
-                {
-                    RemoveFigMarker(db, i);
-                    removedFigMarkers++;
-                }
+                markerUpdates.Add((sectorNum, "FIGSEC", "0"));
+                removedFigMarkers++;
             }
 
-            db.SetSectorVar(2, "FIG_COUNT", scannedSectors.Count.ToString());
+            markerUpdates.Add((2, "FIG_COUNT", scannedSectors.Count.ToString()));
+            db.SaveSectorsBulk(changedSectors);
+            db.SetSectorVarsBulk(markerUpdates);
             GlobalModules.AutoRecorderDebugLog(
                 $"[AutoRecorder] Fig scan complete: seen={scannedSectors.Count} clearedFriendlyFigSectors={clearedFriendlyFighters} removedFigMarkers={removedFigMarkers} reason={reason}\n");
+        }
+
+        private static bool ApplyFighterScanToSector(SectorData sector, int quantity, string owner, FighterType type)
+        {
+            SpaceObject fighters = sector.Fighters;
+            if (fighters.Quantity == quantity &&
+                fighters.FigType == type &&
+                string.Equals(fighters.Owner, owner, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            fighters.Quantity = quantity;
+            fighters.Owner = owner;
+            fighters.FigType = type;
+            return true;
+        }
+
+        private static bool ClearFighterScanFromSector(SectorData sector)
+        {
+            SpaceObject fighters = sector.Fighters;
+            bool changed = fighters.Quantity != 0 ||
+                           fighters.FigType != FighterType.None ||
+                           fighters.Owner.Length != 0;
+            fighters.Quantity = 0;
+            fighters.Owner = string.Empty;
+            fighters.FigType = FighterType.None;
+            return changed;
         }
 
         private void BeginMineScan(ModDatabase db, MineScanKind kind)
@@ -2497,19 +2546,12 @@ namespace TWXProxy.Core
             if (!int.TryParse(m.Groups[1].Value, out int sectorNum) || sectorNum <= 0)
                 return;
 
-            int quantity = ParseCommaInt(m.Groups[2].Value);
+            int quantity = ParseDisplayedFighterCount(m.Groups[2].Value, 0);
             string owner = m.Groups[3].Value.StartsWith("Personal", StringComparison.OrdinalIgnoreCase)
                 ? "yours"
                 : "belong to your Corp";
 
             _currentMineScanSectors[sectorNum] = (quantity, owner);
-
-            var sector = GetOrCreate(db, sectorNum);
-            if (sector == null) return;
-
-            ApplyMineScanToSector(sector, _inMineScanKind, quantity, owner);
-            db.SaveSector(sector);
-            SetMineMarker(db, sectorNum, _inMineScanKind, quantity > 0 && IsFriendlyDeploymentOwner(owner));
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] Mine scan sector={sectorNum} kind={_inMineScanKind} qty={quantity} owner={owner}\n");
         }
 
@@ -2530,61 +2572,76 @@ namespace TWXProxy.Core
             IReadOnlyDictionary<int, (int Quantity, string Owner)> scannedSectors,
             string reason)
         {
-            int maxSector = db.DBHeader.Sectors > 0 ? db.DBHeader.Sectors : db.MaxSectorSeen;
             int clearedFriendlyMineSectors = 0;
+            string markerName = GetMineMarkerName(kind);
+            HashSet<int> sectorsToClear = new(db.GetSectorsWithTruthySectorVar(markerName));
+            List<SectorData> changedSectors = new();
+            List<(int SectorNumber, string VarName, string Value)> markerUpdates = new(scannedSectors.Count + sectorsToClear.Count);
 
             foreach (var pair in scannedSectors)
             {
                 int sectorNum = pair.Key;
                 var entry = pair.Value;
+                sectorsToClear.Remove(sectorNum);
+
                 var sector = GetOrCreate(db, sectorNum);
                 if (sector == null)
                     continue;
 
-                ApplyMineScanToSector(sector, kind, entry.Quantity, entry.Owner);
-                db.SaveSector(sector);
-                SetMineMarker(db, sectorNum, kind, entry.Quantity > 0 && IsFriendlyDeploymentOwner(entry.Owner));
+                if (ApplyMineScanToSector(sector, kind, entry.Quantity, entry.Owner))
+                    changedSectors.Add(sector);
+
+                markerUpdates.Add((
+                    sectorNum,
+                    markerName,
+                    entry.Quantity > 0 && IsFriendlyDeploymentOwner(entry.Owner) ? "1" : "0"));
             }
 
-            for (int i = 1; i <= maxSector; i++)
+            foreach (int sectorNum in sectorsToClear)
             {
-                if (scannedSectors.ContainsKey(i))
-                    continue;
-
-                var sector = db.GetSector(i);
-                bool hadMarker = IsSectorVarTrue(db, i, GetMineMarkerName(kind));
+                var sector = db.GetSector(sectorNum);
                 if (sector == null)
                 {
-                    if (hadMarker)
-                        SetMineMarker(db, i, kind, false);
+                    markerUpdates.Add((sectorNum, markerName, "0"));
                     continue;
                 }
 
-                SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
-                bool hadFriendlyMines = mines.Quantity > 0 && IsFriendlyDeploymentOwner(mines.Owner);
-                if (!hadFriendlyMines && !hadMarker)
-                    continue;
-
-                if (hadFriendlyMines)
+                if (ClearMineScanFromSector(sector, kind))
                 {
-                    mines.Quantity = 0;
-                    mines.Owner = string.Empty;
-                    db.SaveSector(sector);
+                    changedSectors.Add(sector);
                     clearedFriendlyMineSectors++;
                 }
 
-                SetMineMarker(db, i, kind, false);
+                markerUpdates.Add((sectorNum, markerName, "0"));
             }
 
+            db.SaveSectorsBulk(changedSectors);
+            db.SetSectorVarsBulk(markerUpdates);
             GlobalModules.AutoRecorderDebugLog(
                 $"[AutoRecorder] Mine scan complete: kind={kind} seen={scannedSectors.Count} clearedFriendlyMineSectors={clearedFriendlyMineSectors} reason={reason}\n");
         }
 
-        private static void ApplyMineScanToSector(SectorData sector, MineScanKind kind, int quantity, string owner)
+        private static bool ApplyMineScanToSector(SectorData sector, MineScanKind kind, int quantity, string owner)
         {
             SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
+            if (mines.Quantity == quantity &&
+                string.Equals(mines.Owner, owner, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             mines.Quantity = quantity;
             mines.Owner = owner;
+            return true;
+        }
+
+        private static bool ClearMineScanFromSector(SectorData sector, MineScanKind kind)
+        {
+            SpaceObject mines = kind == MineScanKind.Armid ? sector.MinesArmid : sector.MinesLimpet;
+            bool changed = mines.Quantity != 0 || mines.Owner.Length != 0;
+            mines.Quantity = 0;
+            mines.Owner = string.Empty;
+            return changed;
         }
 
         private static bool IsFriendlyFighterOwner(string owner)
@@ -2612,7 +2669,11 @@ namespace TWXProxy.Core
                 return existingValue;
 
             char suffix = char.ToUpperInvariant(normalized[^1]);
-            if (!double.TryParse(normalized[..^1], out double baseValue))
+            if (!double.TryParse(
+                    normalized[..^1],
+                    NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture,
+                    out double baseValue))
                 return existingValue;
 
             double multiplier = suffix switch
@@ -2626,11 +2687,14 @@ namespace TWXProxy.Core
             if (multiplier <= 0)
                 return existingValue;
 
-            int approx = (int)(baseValue * multiplier);
-            int margin = (int)(multiplier / 2d);
-            if (existingValue < approx - margin || existingValue > approx + margin)
-                return approx;
-            return existingValue;
+            double expanded = baseValue * multiplier;
+            if (expanded < 0 || double.IsNaN(expanded) || double.IsInfinity(expanded))
+                return existingValue;
+
+            if (expanded > int.MaxValue)
+                return int.MaxValue;
+
+            return (int)Math.Round(expanded, MidpointRounding.AwayFromZero);
         }
 
         private void ParseSectorDefenderPrompt(ModDatabase db, Match m)
@@ -3332,12 +3396,11 @@ namespace TWXProxy.Core
 
             // Pascal SectorCompleted() sets etHolo (the maximum explored level) whenever
             // a full sector display finishes — this covers both direct visits and holo scans.
-            // Only upgrade, never downgrade (density-only will already be ExploreType.Density).
             if (sector.Explored != ExploreType.Yes)
             {
                 sector.Explored = ExploreType.Yes;
-                sector.Update = DateTime.Now;
             }
+            sector.Update = DateTime.Now;
 
             db.SaveSector(sector);
             GlobalModules.AutoRecorderDebugLog($"[AutoRecorder] ParseWarpsLine sect={sectorNum} stored=[{string.Join(",", sector.Warp)}]\n");

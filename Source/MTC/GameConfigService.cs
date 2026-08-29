@@ -216,6 +216,15 @@ internal static class GameConfigService
         await VariableSaves.FlushAsync(VariablesPathForGame(NormalizeGameName(gameName)));
     }
 
+    public static async Task ResetVariablesAsync(string gameName, IDictionary<string, string>? variables = null)
+    {
+        string normalizedGameName = NormalizeGameName(gameName);
+        await VariableSaves.ResetAsync(
+            VariablesPathForGame(normalizedGameName),
+            variables,
+            VariablesBackupPathForGame(normalizedGameName));
+    }
+
     private static async Task<Dictionary<string, string>> LoadVariablesAndMigrateInlineAsync(
         string gameName,
         EmbeddedGameConfig config,

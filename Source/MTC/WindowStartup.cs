@@ -159,7 +159,7 @@ public partial class MainWindow
             _ = RecoverPreviousOpenTabsOnStartupAsync();
             QueueStartupMtcUpdateCheck();
         };
-        Activated += (_, _) => FocusActiveTerminal();
+        Activated += (_, _) => RequestActiveTerminalFocusForWindowActivation();
         Closed    += (_, _) =>
         {
             _mainWindowClosing = true;

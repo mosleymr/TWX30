@@ -570,7 +570,7 @@ public partial class MainWindow
                 return;
             }
 
-            await OpenPathAsync(path, addToRecent: true);
+            await OpenPathAsync(path, addToRecent: true, allowReplaceConnectedTab: true);
         }
         catch (Exception ex)
         {

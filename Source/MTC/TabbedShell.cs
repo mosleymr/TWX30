@@ -1752,12 +1752,7 @@ public partial class MainWindow
             return true;
 
         string next = NormalizeGameName(nextGameName);
-        string current = NormalizeGameName(
-            !string.IsNullOrWhiteSpace(owner.EmbeddedGameName)
-                ? owner.EmbeddedGameName!
-                : !string.IsNullOrWhiteSpace(owner.EmbeddedGameConfig?.Name)
-                    ? owner.EmbeddedGameConfig!.Name
-                    : owner.State.GameName);
+        string current = GetMtcTabGameIdentity(owner);
 
         if (string.IsNullOrWhiteSpace(current) ||
             string.Equals(current, next, StringComparison.OrdinalIgnoreCase))
@@ -1784,6 +1779,14 @@ public partial class MainWindow
 
         return false;
     }
+
+    private static string GetMtcTabGameIdentity(MtcTabPrototype owner)
+        => NormalizeGameName(
+            !string.IsNullOrWhiteSpace(owner.EmbeddedGameName)
+                ? owner.EmbeddedGameName!
+                : !string.IsNullOrWhiteSpace(owner.EmbeddedGameConfig?.Name)
+                    ? owner.EmbeddedGameConfig!.Name
+                    : owner.State.GameName);
 
     private void CaptureLiveMtcTabShell()
     {

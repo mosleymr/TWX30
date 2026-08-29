@@ -285,7 +285,7 @@ namespace TWXProxy.Core
         public const int DefaultGameIdleKeepaliveIntervalSeconds = 30;
         private const int MinimumNetworkWatchdogSeconds = 5;
         private const int MaximumNetworkWatchdogSeconds = 600;
-        private static readonly byte[] GameIdleKeepaliveBytes = [0xFF, 0xF1]; // Telnet IAC NOP.
+        private static readonly byte[] GameIdleKeepaliveBytes = [IAC, 0xF1]; // Telnet NOP
         private static readonly TimeSpan ServerStaleWatchdogInterval = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan DeferredLocalOutputQuietDelay = TimeSpan.FromMilliseconds(100);
         public bool AutoReconnect { get => _autoReconnect; set => _autoReconnect = value; }
@@ -755,7 +755,7 @@ namespace TWXProxy.Core
                 return ClientType.Standard;
             }
 
-            return StreamEnabled ? ClientType.Stream : ClientType.Mute;
+            return ClientType.Mute;
         }
 
         private static string DescribeClientType(ClientType type) => type switch
@@ -1746,8 +1746,7 @@ namespace TWXProxy.Core
                 return;
 
             if (!_serverSendQueue.IsEmpty ||
-                Interlocked.CompareExchange(ref _serverSendPumpScheduled, 0, 0) != 0 ||
-                IsServerDataDispatchActive())
+                Interlocked.CompareExchange(ref _serverSendPumpScheduled, 0, 0) != 0)
             {
                 return;
             }

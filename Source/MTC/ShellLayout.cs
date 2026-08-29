@@ -2540,6 +2540,77 @@ public partial class MainWindow
             _termCtrl.Focus();
     }
 
+    private void RequestActiveTerminalFocusForWindowActivation()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            PostToCurrentMtcTabSession(RequestActiveTerminalFocusForWindowActivation, DispatcherPriority.Input);
+            return;
+        }
+
+        int ticket = unchecked(++_activationTerminalFocusTicket);
+        TryFocusActiveTerminalForWindowActivation(ticket);
+        Dispatcher.UIThread.Post(() => TryFocusActiveTerminalForWindowActivation(ticket), DispatcherPriority.Input);
+        Dispatcher.UIThread.Post(() => TryFocusActiveTerminalForWindowActivation(ticket), DispatcherPriority.Loaded);
+        _ = RetryActiveTerminalFocusAfterActivationAsync(ticket);
+    }
+
+    private async Task RetryActiveTerminalFocusAfterActivationAsync(int ticket)
+    {
+        await Task.Delay(75);
+        Dispatcher.UIThread.Post(() => TryFocusActiveTerminalForWindowActivation(ticket), DispatcherPriority.Input);
+    }
+
+    private void TryFocusActiveTerminalForWindowActivation(int ticket)
+    {
+        if (ticket != _activationTerminalFocusTicket)
+            return;
+
+        if (!PrepareMtcTabVisualRefresh())
+            return;
+
+        if (AreSharedMenusOpen)
+        {
+            _focusTerminalAfterSharedMenuClose = true;
+            return;
+        }
+
+        TerminalControl? target = GetActiveTerminalControl();
+        if (target == null || TopLevel.GetTopLevel(target) == null)
+            return;
+
+        IInputElement? focused = TopLevel.GetTopLevel(this)?.FocusManager?.GetFocusedElement();
+        if (ShouldPreserveFocusedElementForActivation(focused, target))
+            return;
+
+        target.Focus();
+    }
+
+    private TerminalControl? GetActiveTerminalControl()
+    {
+        if (_useCommandDeckSkin &&
+            _deckTerminalControls.TryGetValue(_activeMtcTabId, out TerminalControl? activeDeckTerminal))
+            return activeDeckTerminal;
+
+        return _termCtrl;
+    }
+
+    private static bool ShouldPreserveFocusedElementForActivation(
+        IInputElement? focused,
+        TerminalControl target)
+    {
+        if (focused == null)
+            return false;
+
+        if (ReferenceEquals(focused, target))
+            return true;
+
+        if (focused is TextBox or ComboBox or NumericUpDown)
+            return true;
+
+        return false;
+    }
+
     private void RefreshSkinMenuState()
     {
         if (!Dispatcher.UIThread.CheckAccess())

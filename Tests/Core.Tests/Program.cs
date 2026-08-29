@@ -25,6 +25,10 @@ var tests = new (string Name, Action Body)[]
     ("GETSECTOR namespaced record warp fields stay stable", GetSectorNamespacedRecordWarpFieldsStayStable),
     ("SECTOR.WARPS uses current dynamic index after GETSECTOR", SectorWarpsUsesCurrentDynamicIndexAfterGetSector),
     ("AutoRecorder records warps above UInt16 range", AutoRecorderRecordsWarpsAboveUInt16Range),
+    ("AutoRecorder limp scan avoids full-universe sector parameter writes", AutoRecorderLimpScanAvoidsFullUniverseSectorParameterWrites),
+    ("AutoRecorder armid scan avoids full-universe sector parameter writes", AutoRecorderArmidScanAvoidsFullUniverseSectorParameterWrites),
+    ("AutoRecorder fighter scan avoids full-universe sector parameter writes", AutoRecorderFighterScanAvoidsFullUniverseSectorParameterWrites),
+    ("AutoRecorder scan shorthand stores expanded counts", AutoRecorderScanShorthandStoresExpandedCounts),
     ("Stale database handle cannot overwrite reset database", StaleDatabaseHandleCannotOverwriteResetDatabase),
     ("Sector parameter scans count as watchdog activity", SectorParameterScansCountAsWatchdogActivity),
     ("High-volume local loops do not trip watchdog", HighVolumeLocalLoopsDoNotTripWatchdog),
@@ -32,6 +36,10 @@ var tests = new (string Name, Action Body)[]
     ("Game file lock inspection reports stale PID", GameFileLockInspectionReportsStalePid),
     ("Game file lock stale removal deletes lock", GameFileLockStaleRemovalDeletesLock),
     ("Game idle keepalive uses telnet NOP bytes", GameIdleKeepaliveUsesTelnetNopBytes),
+    ("Game idle keepalive reaches server socket", GameIdleKeepaliveReachesServerSocket),
+    ("Proxy accepts external clients by default", ProxyAcceptsExternalClientsByDefault),
+    ("New clients do not enter streaming mode automatically", NewClientsDoNotEnterStreamingModeAutomatically),
+    ("Variable reset clears pending saves and stale backup", VariableResetClearsPendingSavesAndStaleBackup),
 };
 
 int failed = 0;
@@ -74,11 +82,152 @@ static void GameIdleKeepaliveUsesTelnetNopBytes()
     if (field?.GetValue(null) is not byte[] bytes)
         throw new InvalidOperationException("Could not inspect GameIdleKeepaliveBytes.");
 
-    if (bytes.Length != 2 || bytes[0] != 0xFF || bytes[1] != 0xF1)
+    byte[] expected = [0xFF, 0xF1];
+    if (!bytes.SequenceEqual(expected))
     {
         string actual = string.Join(" ", bytes.Select(b => b.ToString("X2")));
-        throw new InvalidOperationException($"Expected telnet IAC NOP bytes FF F1, got {actual}.");
+        throw new InvalidOperationException($"Expected telnet NOP bytes FF F1, got {actual}.");
     }
+}
+
+static void GameIdleKeepaliveReachesServerSocket()
+{
+    RunGameIdleKeepaliveReachesServerSocketAsync().GetAwaiter().GetResult();
+}
+
+static async Task RunGameIdleKeepaliveReachesServerSocketAsync()
+{
+    byte[] expected = [0xFF, 0xF1];
+    using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+
+    using var game = new GameInstance("keepalive-socket-test", "127.0.0.1", port, 0)
+    {
+        GameIdleKeepaliveIntervalSeconds = 5,
+    };
+    using var clientOutput = new MemoryStream();
+    using var clientInput = new BlockingReadStream();
+    game.ConnectDirectClient(clientOutput, clientInput);
+
+    Task<System.Net.Sockets.TcpClient> acceptTask = listener.AcceptTcpClientAsync();
+    await game.ConnectToServerAsync();
+
+    using System.Net.Sockets.TcpClient serverClient = await acceptTask;
+    await using System.Net.Sockets.NetworkStream serverStream = serverClient.GetStream();
+
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+    var received = new List<byte>();
+    byte[] buffer = new byte[64];
+
+    while (!cts.IsCancellationRequested)
+    {
+        int read;
+        try
+        {
+            read = await serverStream.ReadAsync(buffer, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+
+        if (read <= 0)
+            break;
+
+        for (int i = 0; i < read; i++)
+            received.Add(buffer[i]);
+
+        if (ContainsSequence(received, expected))
+            return;
+    }
+
+    string actual = string.Join(" ", received.Select(b => b.ToString("X2")));
+    throw new InvalidOperationException($"Expected keepalive sequence FF F1 to reach server socket, got {actual}.");
+}
+
+static bool ContainsSequence(IReadOnlyList<byte> data, IReadOnlyList<byte> sequence)
+{
+    if (sequence.Count == 0 || data.Count < sequence.Count)
+        return false;
+
+    for (int i = 0; i <= data.Count - sequence.Count; i++)
+    {
+        bool match = true;
+        for (int j = 0; j < sequence.Count; j++)
+        {
+            if (data[i + j] != sequence[j])
+            {
+                match = false;
+                break;
+            }
+        }
+
+        if (match)
+            return true;
+    }
+
+    return false;
+}
+
+static void VariableResetClearsPendingSavesAndStaleBackup()
+{
+    string dir = Path.Combine(Path.GetTempPath(), "twx-var-reset-" + Guid.NewGuid().ToString("N"));
+    string path = Path.Combine(dir, "variables.json");
+    string backupPath = path + ".bak";
+
+    try
+    {
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(path, "{\"$ZTMMAX\":\"100000\"}");
+        File.WriteAllText(backupPath, "{\"$ZTMMAX\":\"100000\"}");
+
+        var store = new DebouncedGameVariableStore(TimeSpan.FromMilliseconds(25));
+        store.RequestSave(path, new Dictionary<string, string> { ["$ZTMMAX"] = "100000" }, backupPath);
+        store.ResetAsync(path, new Dictionary<string, string>(), backupPath).GetAwaiter().GetResult();
+
+        if (File.Exists(backupPath))
+            throw new InvalidOperationException("Expected reset to remove the stale variables backup before the next load.");
+
+        Dictionary<string, string> variables = GameVariableStore.LoadAsync(path, backupPath).GetAwaiter().GetResult();
+        if (variables.ContainsKey("$ZTMMAX"))
+            throw new InvalidOperationException("Expected reset variables to stay empty after a pending stale save.");
+
+        Dictionary<string, string> backupVariables = GameVariableStore.LoadAsync(backupPath).GetAwaiter().GetResult();
+        if (backupVariables.ContainsKey("$ZTMMAX"))
+            throw new InvalidOperationException("Expected any recreated backup to contain reset variables, not stale variables.");
+    }
+    finally
+    {
+        if (Directory.Exists(dir))
+            Directory.Delete(dir, recursive: true);
+    }
+}
+
+static void NewClientsDoNotEnterStreamingModeAutomatically()
+{
+    using var game = new GameInstance("stream-test", "127.0.0.1", 23, 0);
+    game.StreamEnabled = true;
+
+    var method = typeof(GameInstance).GetMethod(
+        "DetermineClientType",
+        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+        ?? throw new InvalidOperationException("Could not inspect DetermineClientType.");
+
+    object? result = method.Invoke(game, new object[] { "203.0.113.25", false });
+    if (result is not ClientType type)
+        throw new InvalidOperationException("DetermineClientType did not return a client type.");
+
+    if (type != ClientType.Mute)
+        throw new InvalidOperationException($"Expected non-standard clients to default to VIEW ONLY, got {type}.");
+}
+
+static void ProxyAcceptsExternalClientsByDefault()
+{
+    using var game = new GameInstance("accept-external-test", "127.0.0.1", 23, 0);
+
+    if (!game.AcceptExternal)
+        throw new InvalidOperationException("Expected AcceptExternal to default to true.");
 }
 
 static void DestroyedPortDisplayClearsPortExists()
@@ -105,6 +254,37 @@ static void SeedLivePort(ModDatabase database, int sectorNumber)
         Dead = false,
         Update = DateTime.Now.AddDays(-1),
     };
+    database.SaveSector(sector);
+}
+
+static void SeedFriendlyLimpet(ModDatabase database, int sectorNumber, int quantity)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    sector.MinesLimpet.Quantity = quantity;
+    sector.MinesLimpet.Owner = "belong to your Corp";
+    database.SaveSector(sector);
+}
+
+static void SeedFriendlyArmid(ModDatabase database, int sectorNumber, int quantity)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    sector.MinesArmid.Quantity = quantity;
+    sector.MinesArmid.Owner = "belong to your Corp";
+    database.SaveSector(sector);
+}
+
+static void SeedFriendlyFighter(ModDatabase database, int sectorNumber, int quantity, FighterType type)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    sector.Fighters.Quantity = quantity;
+    sector.Fighters.Owner = "belong to your Corp";
+    sector.Fighters.FigType = type;
     database.SaveSector(sector);
 }
 
@@ -656,6 +836,167 @@ static void AutoRecorderRecordsWarpsAboveUInt16Range()
         throw new InvalidOperationException($"Expected warps [{string.Join(",", expected)}], got [{string.Join(",", warps)}].");
 }
 
+static void AutoRecorderLimpScanAvoidsFullUniverseSectorParameterWrites()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedFriendlyLimpet(fixture.Database, 1200, 3);
+    SeedFriendlyLimpet(fixture.Database, 1300, 7);
+    fixture.Database.SetSectorVar(1200, "LIMPSEC", "1");
+    fixture.Database.SetSectorVar(1300, "LIMPSEC", "1");
+
+    long before = fixture.Database.ChangeStamp;
+
+    var recorder = new AutoRecorder();
+    recorder.RecordLine("Deployed  Limpet  Scan");
+    recorder.RecordLine("  1200  3  Corp");
+    recorder.RecordLine("3 Total");
+
+    long delta = fixture.Database.ChangeStamp - before;
+    if (delta > 4)
+        throw new InvalidOperationException($"Expected limp scan reconciliation to touch only changed sectors, change stamp moved by {delta}.");
+
+    if (fixture.Database.GetSectorVar(1200, "LIMPSEC") != "1")
+        throw new InvalidOperationException("Expected scanned friendly limpet marker to remain.");
+
+    string clearedMarker = fixture.Database.GetSectorVar(1300, "LIMPSEC");
+    if (!string.IsNullOrEmpty(clearedMarker) && clearedMarker != "0")
+        throw new InvalidOperationException($"Expected missing friendly limpet marker to be false, got '{clearedMarker}'.");
+
+    SectorData cleared = fixture.Database.GetSector(1300)
+        ?? throw new InvalidOperationException("Expected sector 1300 to exist.");
+    if (cleared.MinesLimpet.Quantity != 0 || cleared.MinesLimpet.Owner.Length != 0)
+        throw new InvalidOperationException("Expected missing friendly limpets to be cleared from sector data.");
+}
+
+static void AutoRecorderArmidScanAvoidsFullUniverseSectorParameterWrites()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedFriendlyArmid(fixture.Database, 1200, 3);
+    SeedFriendlyArmid(fixture.Database, 1300, 7);
+    fixture.Database.SetSectorVar(1200, "MINESEC", "1");
+    fixture.Database.SetSectorVar(1300, "MINESEC", "1");
+
+    long before = fixture.Database.ChangeStamp;
+
+    var recorder = new AutoRecorder();
+    recorder.RecordLine("Deployed  Mine  Scan");
+    recorder.RecordLine("  1200  3  Corp");
+    recorder.RecordLine("3 Total");
+
+    long delta = fixture.Database.ChangeStamp - before;
+    if (delta > 4)
+        throw new InvalidOperationException($"Expected armid scan reconciliation to touch only changed sectors, change stamp moved by {delta}.");
+
+    if (fixture.Database.GetSectorVar(1200, "MINESEC") != "1")
+        throw new InvalidOperationException("Expected scanned friendly armid marker to remain.");
+
+    string clearedMarker = fixture.Database.GetSectorVar(1300, "MINESEC");
+    if (!string.IsNullOrEmpty(clearedMarker) && clearedMarker != "0")
+        throw new InvalidOperationException($"Expected missing friendly armid marker to be false, got '{clearedMarker}'.");
+
+    SectorData cleared = fixture.Database.GetSector(1300)
+        ?? throw new InvalidOperationException("Expected sector 1300 to exist.");
+    if (cleared.MinesArmid.Quantity != 0 || cleared.MinesArmid.Owner.Length != 0)
+        throw new InvalidOperationException("Expected missing friendly armids to be cleared from sector data.");
+}
+
+static void AutoRecorderFighterScanAvoidsFullUniverseSectorParameterWrites()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedFriendlyFighter(fixture.Database, 1200, 3, FighterType.Defensive);
+    SeedFriendlyFighter(fixture.Database, 1300, 7, FighterType.Toll);
+    fixture.Database.SetSectorVar(1200, "FIGSEC", "1");
+    fixture.Database.SetSectorVar(1300, "FIGSEC", "1");
+    fixture.Database.SetSectorVar(2, "FIG_COUNT", "2");
+
+    long before = fixture.Database.ChangeStamp;
+
+    var recorder = new AutoRecorder();
+    recorder.RecordLine("Deployed  Fighter  Scan");
+    recorder.RecordLine("  1200  3  Corp  Defensive");
+    recorder.RecordLine("3 Total");
+
+    long delta = fixture.Database.ChangeStamp - before;
+    if (delta > 4)
+        throw new InvalidOperationException($"Expected fighter scan reconciliation to touch only changed sectors, change stamp moved by {delta}.");
+
+    if (fixture.Database.GetSectorVar(1200, "FIGSEC") != "1")
+        throw new InvalidOperationException("Expected scanned friendly fighter marker to remain.");
+
+    string clearedMarker = fixture.Database.GetSectorVar(1300, "FIGSEC");
+    if (!string.IsNullOrEmpty(clearedMarker) && clearedMarker != "0")
+        throw new InvalidOperationException($"Expected missing friendly fighter marker to be false, got '{clearedMarker}'.");
+
+    if (fixture.Database.GetSectorVar(2, "FIG_COUNT") != "1")
+        throw new InvalidOperationException($"Expected FIG_COUNT=1, got '{fixture.Database.GetSectorVar(2, "FIG_COUNT")}'.");
+
+    SectorData cleared = fixture.Database.GetSector(1300)
+        ?? throw new InvalidOperationException("Expected sector 1300 to exist.");
+    if (cleared.Fighters.Quantity != 0 ||
+        cleared.Fighters.Owner.Length != 0 ||
+        cleared.Fighters.FigType != FighterType.None)
+    {
+        throw new InvalidOperationException("Expected missing friendly fighters to be cleared from sector data.");
+    }
+}
+
+static void AutoRecorderScanShorthandStoresExpandedCounts()
+{
+    Directory.SetCurrentDirectory(AppContext.BaseDirectory);
+    using var fixture = DatabaseFixture.Create(sectors: 100000);
+
+    SeedFriendlyFighter(fixture.Database, 1200, 125000, FighterType.Defensive);
+    SeedFriendlyFighter(fixture.Database, 1300, 750000, FighterType.Defensive);
+
+    var recorder = new AutoRecorder();
+    recorder.RecordLine("Deployed  Fighter  Scan");
+    recorder.RecordLine("  1200  250T  Corp  Defensive");
+    recorder.RecordLine("  1300  1M  Corp  Defensive");
+    recorder.RecordLine("1.25M Total");
+
+    AssertFighterCount(fixture.Database, 1200, 250000);
+    AssertFighterCount(fixture.Database, 1300, 1000000);
+
+    recorder.RecordLine("Deployed  Mine  Scan");
+    recorder.RecordLine("  2200  250T  Corp");
+    recorder.RecordLine("  2300  1M  Corp");
+    recorder.RecordLine("1.25M Total");
+
+    AssertMineCount(fixture.Database, 2200, true, 250000);
+    AssertMineCount(fixture.Database, 2300, true, 1000000);
+
+    recorder.RecordLine("Deployed  Limpet  Scan");
+    recorder.RecordLine("  3200  250T  Corp");
+    recorder.RecordLine("250T Total");
+
+    AssertMineCount(fixture.Database, 3200, false, 250000);
+}
+
+static void AssertFighterCount(ModDatabase database, int sectorNumber, int expected)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    if (sector.Fighters.Quantity != expected)
+        throw new InvalidOperationException($"Expected sector {sectorNumber} fighters={expected}, got {sector.Fighters.Quantity}.");
+}
+
+static void AssertMineCount(ModDatabase database, int sectorNumber, bool armid, int expected)
+{
+    SectorData sector = database.GetSector(sectorNumber)
+        ?? throw new InvalidOperationException($"Sector {sectorNumber} was not created.");
+
+    int actual = armid ? sector.MinesArmid.Quantity : sector.MinesLimpet.Quantity;
+    if (actual != expected)
+        throw new InvalidOperationException($"Expected sector {sectorNumber} {(armid ? "armids" : "limpets")}={expected}, got {actual}.");
+}
+
 static void GetSectorRefreshesFlatWarpArrayFields()
 {
     Directory.SetCurrentDirectory(AppContext.BaseDirectory);
@@ -1142,6 +1483,39 @@ sealed class InterpolationProbe
         FormatCount++;
         return "probe";
     }
+}
+
+sealed class BlockingReadStream : Stream
+{
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => 0;
+    public override long Position
+    {
+        get => 0;
+        set => throw new NotSupportedException();
+    }
+
+    public override void Flush()
+    {
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        Thread.Sleep(Timeout.Infinite);
+        return 0;
+    }
+
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        return 0;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
 sealed class DatabaseFixture : IDisposable

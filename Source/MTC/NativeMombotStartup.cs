@@ -1733,10 +1733,13 @@ public partial class MainWindow
     private IReadOnlyDictionary<string, string> BuildNativeMombotConnectivityRelogVars(MTC.mombot.mombotRelogDialogResult relogSettings)
     {
         bool isNewGame = relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.NewGameAccountCreation;
+        bool landOnTerraAfterShipRename = UsesNativeMombotShipRenameTerraLanding(relogSettings);
         string newGame = ToMombotScriptBoolean(isNewGame);
         string establishedGame = ToMombotScriptBoolean(!isNewGame);
         string gameLetter = NormalizeGameLetter(relogSettings.GameLetter);
-        string postLoginMacro = isNewGame ? string.Empty : GetNativeMombotPostLoginMacro(relogSettings);
+        string postLoginMacro = isNewGame || landOnTerraAfterShipRename
+            ? string.Empty
+            : GetNativeMombotPostLoginMacro(relogSettings);
         string scriptRoot = GetNativeMombotScriptRoot(BuildCurrentGameNativeBotConfig()).Trim().Trim('/');
         string scriptRootRelative = GetMombotScriptRootRelative(scriptRoot);
         string mombotConfigRelative = Path.Combine(scriptRoot, "mombot.cfg").Replace('\\', '/');
@@ -1835,7 +1838,7 @@ public partial class MainWindow
             ["$menus~mowtorylos"] = "0",
             ["$menus~mowtoother"] = "0",
             ["$menus~xporttoship"] = "0",
-            ["$menus~landonterra"] = "0",
+            ["$menus~landonterra"] = ToMombotScriptBoolean(landOnTerraAfterShipRename),
             ["$menus~landonstardock"] = "0",
             ["$BOT~NEWGAMEDAY1"] = newGame,
             ["$bot~newgameday1"] = newGame,
@@ -1941,7 +1944,9 @@ public partial class MainWindow
 
     private void ArmNativeMombotPostLoginMacro(MTC.mombot.mombotRelogDialogResult relogSettings)
     {
-        string macro = GetNativeMombotPostLoginMacro(relogSettings);
+        string macro = UsesNativeMombotShipRenameTerraLanding(relogSettings)
+            ? string.Empty
+            : GetNativeMombotPostLoginMacro(relogSettings);
         lock (_nativeMombotPostLoginMacroLock)
         {
             _pendingNativeMombotPostLoginMacro = macro;
@@ -1965,12 +1970,28 @@ public partial class MainWindow
         }
     }
 
+    private const string NativeMombotLandOnTerraMacro = "L";
+
+    private static bool IsNativeMombotLandOnTerraAction(string action)
+        => string.Equals(action, "terra", StringComparison.OrdinalIgnoreCase);
+
+    private static bool UsesNativeMombotShipRenameTerraLanding(MTC.mombot.mombotRelogDialogResult relogSettings)
+        => relogSettings.LoginType == MTC.mombot.mombotRelogLoginType.ReturnAfterDestroyed &&
+           IsNativeMombotLandOnTerraAction(relogSettings.AfterLoginAction);
+
+    private static bool IsNativeMombotLandOnTerraMacro(string macro)
+    {
+        string normalized = NormalizeMombotValue(macro);
+        return string.Equals(normalized, NativeMombotLandOnTerraMacro, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "pt", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string GetNativeMombotAfterLoginAction(string botCommand, string startMacro)
     {
         if (!string.IsNullOrWhiteSpace(botCommand))
             return "command";
 
-        if (string.Equals(NormalizeMombotValue(startMacro), "pt", StringComparison.OrdinalIgnoreCase))
+        if (IsNativeMombotLandOnTerraMacro(startMacro))
             return "terra";
 
         return string.IsNullOrWhiteSpace(startMacro)
@@ -1981,13 +2002,13 @@ public partial class MainWindow
     private static bool IsNativeMombotMacroAfterLoginAction(string action)
     {
         return string.Equals(action, "macro", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(action, "terra", StringComparison.OrdinalIgnoreCase);
+            IsNativeMombotLandOnTerraAction(action);
     }
 
     private static string GetNativeMombotPostLoginMacro(MTC.mombot.mombotRelogDialogResult relogSettings)
     {
-        return string.Equals(relogSettings.AfterLoginAction, "terra", StringComparison.OrdinalIgnoreCase)
-            ? "pt"
+        return IsNativeMombotLandOnTerraAction(relogSettings.AfterLoginAction)
+            ? NativeMombotLandOnTerraMacro
             : string.Equals(relogSettings.AfterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
                 ? relogSettings.MacroAfterLogin
                 : string.Empty;
@@ -2031,8 +2052,8 @@ public partial class MainWindow
         string botCommand = string.Equals(afterLoginAction, "command", StringComparison.OrdinalIgnoreCase)
             ? NormalizeMombotValue(profile.AutoSetupBotCommand)
             : string.Empty;
-        string macroAfterLogin = string.Equals(afterLoginAction, "terra", StringComparison.OrdinalIgnoreCase)
-            ? "pt"
+        string macroAfterLogin = IsNativeMombotLandOnTerraAction(afterLoginAction)
+            ? NativeMombotLandOnTerraMacro
             : string.Equals(afterLoginAction, "macro", StringComparison.OrdinalIgnoreCase)
                 ? NormalizeMombotValue(profile.AutoSetupMacroAfterLogin)
                 : string.Empty;

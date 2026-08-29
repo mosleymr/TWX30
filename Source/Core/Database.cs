@@ -741,7 +741,6 @@ namespace TWXProxy.Core
             // TWX27 recalculates TSector.Warps from Warp[] on every save.
             sector.WarpCount = (byte)sector.Warp.Count(warp => warp != 0);
             _sectors[sector.Number] = sector;
-            sector.Update = DateTime.Now;
 
             // Track highest sector number seen (used by SECTORS sysconst before .twx load)
             if (sector.Number > _maxSectorSeen)
@@ -1728,29 +1727,91 @@ namespace TWXProxy.Core
         /// </summary>
         public void SetSectorVar(int sectorNumber, string varName, string value)
         {
+            SetSectorVarCore(sectorNumber, varName, value, updateChangeStamp: true);
+        }
+
+        public int SetSectorVarsBulk(IEnumerable<(int SectorNumber, string VarName, string Value)> updates)
+        {
+            int changed = 0;
+
+            foreach (var update in updates)
+            {
+                if (SetSectorVarCore(update.SectorNumber, update.VarName, update.Value, updateChangeStamp: false))
+                    changed++;
+            }
+
+            if (changed > 0)
+                Interlocked.Increment(ref _changeStamp);
+
+            return changed;
+        }
+
+        public IReadOnlyList<SectorData> GetKnownSectorsSnapshot()
+        {
+            return _sectors.Values.ToList();
+        }
+
+        public IReadOnlyList<int> GetSectorsWithTruthySectorVar(string varName)
+        {
+            List<int> sectors = new();
+
+            foreach (SectorData sector in _sectors.Values)
+            {
+                if (sector.Variables.TryGetValue(varName, out string? value) &&
+                    IsTruthySectorParameter(value))
+                {
+                    sectors.Add(sector.Number);
+                }
+            }
+
+            return sectors;
+        }
+
+        private bool SetSectorVarCore(int sectorNumber, string varName, string value, bool updateChangeStamp)
+        {
             if (sectorNumber < 1 || sectorNumber > _header.Sectors)
-                return;
+                return false;
 
             var sector = _sectors.GetOrAdd(sectorNumber, number => new SectorData { Number = number });
+            bool changed;
 
             if (string.IsNullOrEmpty(value))
             {
-                sector.Variables.Remove(varName);
+                changed = sector.Variables.Remove(varName);
+            }
+            else if (!sector.Variables.TryGetValue(varName, out string? current) ||
+                     !string.Equals(current, value, StringComparison.Ordinal))
+            {
+                sector.Variables[varName] = value;
+                changed = true;
             }
             else
             {
-                sector.Variables[varName] = value;
+                changed = false;
             }
 
             if (string.Equals(varName, DatabaseConstants.BustParameterName, StringComparison.OrdinalIgnoreCase))
             {
                 if (IsTruthySectorParameter(value))
-                    sector.Variables[DatabaseConstants.BustDateParameterName] = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                else
-                    sector.Variables.Remove(DatabaseConstants.BustDateParameterName);
+                {
+                    string bustDate = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    if (!sector.Variables.TryGetValue(DatabaseConstants.BustDateParameterName, out string? currentBustDate) ||
+                        !string.Equals(currentBustDate, bustDate, StringComparison.Ordinal))
+                    {
+                        sector.Variables[DatabaseConstants.BustDateParameterName] = bustDate;
+                        changed = true;
+                    }
+                }
+                else if (sector.Variables.Remove(DatabaseConstants.BustDateParameterName))
+                {
+                    changed = true;
+                }
             }
 
-            Interlocked.Increment(ref _changeStamp);
+            if (changed && updateChangeStamp)
+                Interlocked.Increment(ref _changeStamp);
+
+            return changed;
         }
 
         public int ClearBustsBefore(DateTime localDay)

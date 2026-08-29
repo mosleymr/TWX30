@@ -568,6 +568,13 @@ public partial class MainWindow
         if (IsNativeMombotRelogScriptLoaded())
             return;
 
+        if (IsNativeMombotXenterReconnectInProgress())
+        {
+            Core.GlobalModules.DebugLog("[MTC.NativeBotRelog] suppressed relog command while xenter owns reconnect\n");
+            Core.GlobalModules.FlushDebugLog();
+            return;
+        }
+
         if (HasNativeMombotRelogFlag())
         {
             string currentLine = NormalizeMombotPromptComparisonValue(
@@ -593,6 +600,46 @@ public partial class MainWindow
     private bool IsNativeMombotRelogScriptLoaded()
     {
         return IsNativeMombotScriptLoaded("relog.cts");
+    }
+
+    private bool IsNativeMombotXenterReconnectInProgress()
+    {
+        Core.ModInterpreter? interpreter = CurrentInterpreter;
+        if (interpreter == null)
+            return false;
+
+        for (int i = 0; i < interpreter.Count; i++)
+        {
+            Core.Script? script = interpreter.GetScript(i);
+            if (script == null)
+                continue;
+
+            string reference = (script.Compiler?.ScriptFile ?? script.LoadEventName ?? script.ScriptName)
+                .Replace('\\', '/');
+            if (reference.EndsWith("/xenter.cts", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Path.GetFileName(reference), "xenter.cts", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(script.ScriptName, "xenter.cts", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            foreach (Core.ScriptTriggerInfo trigger in script.GetTriggerSnapshot())
+            {
+                if (ContainsXenterToken(trigger.Name) ||
+                    ContainsXenterToken(trigger.LabelName))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsXenterToken(string value)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               value.Contains("xenter", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsNativeMombotReconnectPrompt(string line)
@@ -4602,6 +4649,12 @@ public partial class MainWindow
                 return;
 
             case ":internal_commands~twarpswitch":
+                if (IsMombotAtTerra())
+                {
+                    await ExecuteMombotHotkeyCommandAsync("macro_kit");
+                    return;
+                }
+
                 ResetMombotPromptState();
                 _parser.Feed("\r\x1b[K");
                 _buffer.Dirty = true;
@@ -4738,6 +4791,12 @@ public partial class MainWindow
         switch (normalized)
         {
             case ":internal_commands~twarpswitch":
+                if (IsMombotAtTerra())
+                {
+                    await ExecuteMombotUiCommandAsync("macro_kit");
+                    return Core.NativeBotClientInputResult.Handled;
+                }
+
                 return Core.NativeBotClientInputResult.StartPrompt("twarp ");
 
             case ":internal_commands~mowswitch":
@@ -4815,6 +4874,17 @@ public partial class MainWindow
         return string.Equals(mode, "Foton", StringComparison.OrdinalIgnoreCase)
             ? "foton off"
             : "foton on p";
+    }
+
+    private bool IsMombotAtTerra()
+    {
+        if (Core.ScriptRef.GetCurrentSector(CurrentMombotRuntimeContext()) == 1)
+            return true;
+
+        if (ParseGameVarInt(ReadCurrentMombotSectorVar("0", "$PLAYER~CURRENT_SECTOR", "$player~current_sector")) == 1)
+            return true;
+
+        return _state.Sector == 1;
     }
 
     private async Task ExecuteMombotHotkeyCommandAsync(string command)

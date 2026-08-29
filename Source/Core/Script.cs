@@ -2615,15 +2615,15 @@ namespace TWXProxy.Core
                 if (TriggerExists(name))
                     throw new Exception($"Trigger already exists: '{name}'");
 
-                var trigger = new Trigger
-                {
-                    Name = name,
-                    LabelName = labelName,
-                    Response = string.Empty,
-                    Value = string.Empty,
-                    Param = string.Empty,
-                    LifeCycle = 1
-                };
+	                var trigger = new Trigger
+	                {
+	                    Name = name,
+	                    LabelName = labelName,
+	                    Response = string.Empty,
+	                    Value = value.ToString(CultureInfo.InvariantCulture),
+	                    Param = string.Empty,
+	                    LifeCycle = 1
+	                };
 
                 var timer = new DelayTimer
                 {
@@ -5012,8 +5012,9 @@ namespace TWXProxy.Core
         /// </summary>
         public bool SetScriptVar(string varName, string value)
         {
-            if (_cmp == null) return false;
-            foreach (var param in _cmp.ParamList)
+            var cmp = _cmp;
+            if (cmp == null) return false;
+            foreach (var param in cmp.ParamList.ToArray())
             {
                 if (param is VarParam vp && vp.Name == varName && vp.Vars.Count == 0)
                 {
@@ -5028,8 +5029,9 @@ namespace TWXProxy.Core
 
         public bool SetScriptVarIgnoreCase(string varName, string value)
         {
-            if (_cmp == null) return false;
-            foreach (var param in _cmp.ParamList)
+            var cmp = _cmp;
+            if (cmp == null) return false;
+            foreach (var param in cmp.ParamList.ToArray())
             {
                 if (param is VarParam vp &&
                     vp.Vars.Count == 0 &&

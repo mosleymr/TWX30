@@ -15,11 +15,19 @@ var tests = new (string Name, Action Body)[]
     ("Native MomBot mow passes destination to backdoor helper", NativeMombotMowPassesDestinationToBackdoorHelper),
     ("Native MomBot relog recognizes OpenTW server banner", NativeMombotRelogRecognizesOpenTwServerBanner),
     ("Native MomBot connectivity recognizes OpenTW server banner", NativeMombotConnectivityRecognizesOpenTwServerBanner),
+    ("Native MomBot relog recognizes Select a game prompt", NativeMombotRelogRecognizesSelectGamePrompt),
+    ("Native MomBot connectivity recognizes Select a game prompt", NativeMombotConnectivityRecognizesSelectGamePrompt),
+    ("Native MomBot connectivity polls game menu prompt", NativeMombotConnectivityPollsGameMenuPrompt),
+    ("Native MomBot destroyed return lands on Terra without porting", NativeMombotDestroyedReturnLandsOnTerraWithoutPorting),
+    ("MomBot Tab T opens Terra kit on Terra", MombotTabTOpensTerraKitOnTerra),
     ("Bot menu resolves bot config in active tab", BotMenuResolvesBotConfigInActiveTab),
     ("MTC tab capture rejects mismatched bound globals", MtcTabCaptureRejectsMismatchedBoundGlobals),
     ("MTC connected tab blocks identity leakage", MtcConnectedTabBlocksIdentityLeakage),
     ("MTC connected tab close confirms before closing", MtcConnectedTabCloseConfirmsBeforeClosing),
+    ("MTC recent can replace connected tab after confirmation", MtcRecentCanReplaceConnectedTabAfterConfirmation),
+    ("MTC reset wipes variables without clearing game letter", MtcResetWipesVariablesWithoutClearingGameLetter),
     ("MTC tab popup raise does not activate or pin script windows", MtcTabPopupRaiseDoesNotActivateOrPinScriptWindows),
+    ("MTC activation focus restore retries without stealing editor focus", MtcActivationFocusRestoreRetriesWithoutStealingEditorFocus),
     ("Macro settings window is modeless", MacroSettingsWindowIsModeless),
     ("Quick macro overlay keeps count editor usable", QuickMacroOverlayKeepsCountEditorUsable),
     ("Quick macro overlay edits macro text", QuickMacroOverlayEditsMacroText),
@@ -27,7 +35,14 @@ var tests = new (string Name, Action Body)[]
     ("Quick macro overlay play returns focus after send", QuickMacroOverlayPlayReturnsFocusAfterSend),
     ("Quick macro overlay is right aligned", QuickMacroOverlayIsRightAligned),
     ("Dock Shopper ship dropdown sizes to ship list", DockShopperShipDropdownSizesToShipList),
+    ("Map window defaults to modern on macOS and Linux", MapWindowDefaultsToModernOnMacOsAndLinux),
+    ("Map window view selector avoids popup controls", MapWindowViewSelectorAvoidsPopupControls),
+    ("Map window opens with usable client size", MapWindowOpensWithUsableClientSize),
+    ("Map windows cap live graph expansion", MapWindowsCapLiveGraphExpansion),
+    ("Map render operations log Skia failures", MapRenderOperationsLogSkiaFailures),
+    ("Tactical map builds snapshots off render path", TacticalMapBuildsSnapshotsOffRenderPath),
     ("Major Space Lanes toolbar reserves summary column", MajorSpaceLanesToolbarReservesSummaryColumn),
+    ("Dead Ends view includes sortable Figged column", DeadEndsViewIncludesSortableFiggedColumn),
     ("Game size allows 100,000 sectors", GameSizeAllowsOneHundredThousandSectors),
     ("Game size rejects values above 100,000 sectors", GameSizeRejectsValuesAboveOneHundredThousandSectors),
 };
@@ -180,6 +195,184 @@ static void NativeMombotConnectivityRecognizesOpenTwServerBanner()
         throw new InvalidOperationException("Expected connectivity.ts to clear the OpenTW login trigger.");
 }
 
+static void NativeMombotRelogRecognizesSelectGamePrompt()
+{
+    string source = ReadMombotSource("commands", "general", "relog.ts");
+
+    if (!source.Contains("settexttrigger relogselect :continuerelog5 \"Select a game\"", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Expected relog.ts to recognize TWGS Select a game prompt variants.");
+
+    if (!source.Contains("killtrigger relogselect", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Expected relog.ts to clear the Select a game prompt trigger.");
+}
+
+static void NativeMombotConnectivityRecognizesSelectGamePrompt()
+{
+    string source = ReadMombotSource("include", "connectivity.ts");
+
+    if (!source.Contains("settexttrigger relog5 :continuerelog5 \"Select a game\"", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Expected connectivity.ts to recognize TWGS Select a game prompt variants.");
+
+    if (source.Contains("send \"#\"&#8", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Connectivity login must not revive the old # prompt nudge.");
+
+    if (!source.Contains("killtrigger relog5", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Expected connectivity.ts to clear the Select a game prompt trigger.");
+}
+
+static void NativeMombotConnectivityPollsGameMenuPrompt()
+{
+    string source = ReadMombotSource("include", "connectivity.ts");
+
+    if (!source.Contains("settexttrigger enter :enter_game_menu \"Enter your choice\"", StringComparison.OrdinalIgnoreCase) ||
+        !source.Contains("setdelaytrigger relogmenupromptcheck :check_game_menu_prompt 100", StringComparison.OrdinalIgnoreCase) ||
+        !source.Contains("getwordpos $connectivity~line $connectivity~pos \"Enter your choice\"", StringComparison.OrdinalIgnoreCase) ||
+        !source.Contains("goto :enter_game_menu", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("Expected connectivity.ts to recover if the game menu prompt is already current.");
+    }
+
+    int enterMenu = source.IndexOf(":connectivity~enter_game_menu", StringComparison.OrdinalIgnoreCase);
+    int doneRelog = source.IndexOf(":connectivity~done_do_relog", StringComparison.OrdinalIgnoreCase);
+    int gameNotOpen = source.IndexOf(":connectivity~game_not_open", StringComparison.OrdinalIgnoreCase);
+    string enterBody = doneRelog > enterMenu ? source[enterMenu..doneRelog] : string.Empty;
+    string doneBody = gameNotOpen > doneRelog ? source[doneRelog..gameNotOpen] : string.Empty;
+
+    if (enterMenu < 0 || !enterBody.Contains("send \"T***\"", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException("Expected connectivity.ts to send T only from the game-menu branch.");
+
+    if (doneBody.StartsWith(":connectivity~done_do_relog", StringComparison.OrdinalIgnoreCase) &&
+        doneBody.Contains("send \"T***\"", StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("Expected already-in-game relog completion to return without sending T.");
+    }
+}
+
+static void NativeMombotDestroyedReturnLandsOnTerraWithoutPorting()
+{
+    string connectivitySource = ReadMombotSource("include", "connectivity.ts");
+    string packagedConnectivitySource = ReadRepoSource("scripts", "mombot", "include", "connectivity.ts");
+    string nativeStartupSource = ReadRepoSource("Source", "MTC", "NativeMombotStartup.cs");
+    string relogDialogSource = ReadRepoSource("Source", "MTC", "mombot", "mombotRelogDialog.cs");
+    string newConnectionSource = ReadRepoSource("Source", "MTC", "NewConnectionDialog.cs");
+
+    foreach ((string name, string source) in new[]
+    {
+        ("source connectivity.ts", connectivitySource),
+        ("packaged connectivity.ts", packagedConnectivitySource),
+    })
+    {
+        int shipPrompt = source.IndexOf("settexttrigger return_ship_confirm :return_ship_confirm \" is what you want?\"", StringComparison.OrdinalIgnoreCase);
+        int sendShipName = source.IndexOf("send $bot~startshipname&\"*\"", StringComparison.OrdinalIgnoreCase);
+        int shipConfirm = source.IndexOf(":connectivity~return_ship_confirm", StringComparison.OrdinalIgnoreCase);
+        int terraTrigger = source.IndexOf("settexttrigger return_landed_on_terra :return_landed_on_terra \"Do you wish to (L)eave or (T)ake Colonists?\"", StringComparison.OrdinalIgnoreCase);
+        int sendLand = source.IndexOf("send \"YL\"", StringComparison.OrdinalIgnoreCase);
+        if (shipPrompt < 0 || sendShipName < 0 || shipConfirm < 0 || terraTrigger < 0 || sendLand < 0)
+        {
+            throw new InvalidOperationException($"Expected {name} to wait for ship-name confirmation, then queue YL for immediate Terra landing.");
+        }
+
+        if (!(shipPrompt < sendShipName && sendShipName < shipConfirm && shipConfirm < terraTrigger && terraTrigger < sendLand))
+        {
+            throw new InvalidOperationException($"{name} must send YL only after the ship-name confirmation prompt is visible.");
+        }
+
+        if (source.Contains("settexttrigger return_command_prompt", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{name} must not wait for the command prompt before landing on Terra.");
+
+        if (source.Contains("send $bot~startshipname&\"**L\"", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{name} must not rely on Enter accepting the ship-name confirmation prompt.");
+
+        if (source.Contains("send $bot~startshipname&\"*L\"", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{name} must not send L into the ship-name confirmation prompt.");
+
+        if (source.Contains("send $bot~startshipname&\"*Y l \"", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{name} must not confirm ship rename before sending the Terra landing command.");
+    }
+
+    if (!nativeStartupSource.Contains("landOnTerraAfterShipRename", StringComparison.Ordinal) ||
+        !nativeStartupSource.Contains("UsesNativeMombotShipRenameTerraLanding(relogSettings)", StringComparison.Ordinal) ||
+        !nativeStartupSource.Contains("string macro = UsesNativeMombotShipRenameTerraLanding(relogSettings)", StringComparison.Ordinal) ||
+        !nativeStartupSource.Contains("[\"$menus~landonterra\"] = ToMombotScriptBoolean(landOnTerraAfterShipRename)", StringComparison.Ordinal) ||
+        !nativeStartupSource.Contains("private const string NativeMombotLandOnTerraMacro = \"L\";", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected native return-after-destroyed Land on Terra to use the ship-rename landing path without arming a second macro.");
+    }
+
+    if (nativeStartupSource.Contains("? \"pt\"", StringComparison.Ordinal) ||
+        relogDialogSource.Contains("? \"pt\"", StringComparison.Ordinal) ||
+        newConnectionSource.Contains("macroAfterLogin = \"pt\"", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Native Land on Terra must use L, not the port macro pt.");
+    }
+}
+
+static void MombotTabTOpensTerraKitOnTerra()
+{
+    string source = ReadMombotSource("include", "internal_commands.ts");
+    string packagedSource = ReadRepoSource("scripts", "mombot", "include", "internal_commands.ts");
+    string macroKitSource = ReadMombotSource("preload", "_macro_kit.ts");
+    string mtcSource = ReadRepoSource("Source", "MTC", "MombotInteraction.cs");
+
+    foreach ((string name, string text) in new[]
+    {
+        ("source internal_commands.ts", source),
+        ("packaged internal_commands.ts", packagedSource),
+    })
+    {
+        int twarpSwitch = text.IndexOf(":internal_commands~twarpswitch", StringComparison.OrdinalIgnoreCase);
+        int currentPrompt = text.IndexOf("gosub :player~currentprompt", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+        int terraSectorCheck = text.IndexOf("(currentsector = 1) or ($player~current_sector = 1)", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+        int terraPromptCheck = text.IndexOf("($player~current_prompt = \"Do\") or ($player~current_prompt = \"How\")", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+        int macroKit = text.IndexOf("setvar $bot~user_command_line \"macro_kit\"", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+        int twarpInput = text.IndexOf("getinput $bot~parm1 \"Twarp To:\"", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+        int twarpCommand = text.IndexOf("setvar $bot~user_command_line \"twarp \"&$bot~parm1&\" \"", twarpSwitch, StringComparison.OrdinalIgnoreCase);
+
+        if (twarpSwitch < 0 || currentPrompt < 0 || terraSectorCheck < 0 || terraPromptCheck < 0 || macroKit < 0 || twarpInput < 0 || twarpCommand < 0)
+            throw new InvalidOperationException($"Expected {name} to route sector-1/Terra Tab T through macro_kit and non-Terra Tab T through twarp.");
+
+        if (!(twarpSwitch < currentPrompt && currentPrompt < terraSectorCheck && terraSectorCheck < terraPromptCheck && terraPromptCheck < macroKit && macroKit < twarpInput && twarpInput < twarpCommand))
+            throw new InvalidOperationException($"{name} must check Terra prompt before asking for a Twarp destination.");
+    }
+
+    int macroKitTerraSectorCheck = macroKitSource.IndexOf("(currentsector = 1) or ($player~current_sector = 1)", StringComparison.OrdinalIgnoreCase);
+    int macroKitTerraPromptCheck = macroKitSource.IndexOf("($startinglocation = \"Do\") or ($startinglocation = \"How\")", StringComparison.OrdinalIgnoreCase);
+    int macroKitTerraMenu = macroKitSource.IndexOf(":print_the__terra_menu", StringComparison.OrdinalIgnoreCase);
+    int macroKitDockMenu = macroKitSource.IndexOf(":print_the_menu", StringComparison.OrdinalIgnoreCase);
+    if (macroKitTerraSectorCheck < 0 || macroKitTerraPromptCheck < 0 || macroKitTerraMenu < 0 || macroKitDockMenu < 0)
+        throw new InvalidOperationException("Expected _macro_kit.ts to use sector 1 and Terra prompts for Terra kit selection.");
+
+    if (!(macroKitTerraSectorCheck < macroKitTerraMenu && macroKitTerraMenu < macroKitDockMenu))
+        throw new InvalidOperationException("_macro_kit.ts must choose the Terra kit before falling through to the dock kit.");
+
+    int nativeLocalTwarpSwitch = mtcSource.IndexOf("case \":internal_commands~twarpswitch\":", StringComparison.OrdinalIgnoreCase);
+    int nativeLocalTerraCheck = mtcSource.IndexOf("if (IsMombotAtTerra())", nativeLocalTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    int nativeLocalMacroKit = mtcSource.IndexOf("await ExecuteMombotHotkeyCommandAsync(\"macro_kit\")", nativeLocalTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    int nativeLocalTwarpPrompt = mtcSource.IndexOf("BeginMombotPrompt(\"twarp \")", nativeLocalTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    if (nativeLocalTwarpSwitch < 0 || nativeLocalTerraCheck < 0 || nativeLocalMacroKit < 0 || nativeLocalTwarpPrompt < 0 ||
+        !(nativeLocalTwarpSwitch < nativeLocalTerraCheck && nativeLocalTerraCheck < nativeLocalMacroKit && nativeLocalMacroKit < nativeLocalTwarpPrompt))
+    {
+        throw new InvalidOperationException("Native local Tab T hotkey must route Terra/sector-1 through macro_kit before opening the twarp prompt.");
+    }
+
+    int nativeRemoteTwarpSwitch = mtcSource.IndexOf("case \":internal_commands~twarpswitch\":", nativeLocalTwarpPrompt, StringComparison.OrdinalIgnoreCase);
+    int nativeRemoteTerraCheck = mtcSource.IndexOf("if (IsMombotAtTerra())", nativeRemoteTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    int nativeRemoteMacroKit = mtcSource.IndexOf("await ExecuteMombotUiCommandAsync(\"macro_kit\")", nativeRemoteTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    int nativeRemoteTwarpPrompt = mtcSource.IndexOf("NativeBotClientInputResult.StartPrompt(\"twarp \")", nativeRemoteTwarpSwitch, StringComparison.OrdinalIgnoreCase);
+    if (nativeRemoteTwarpSwitch < 0 || nativeRemoteTerraCheck < 0 || nativeRemoteMacroKit < 0 || nativeRemoteTwarpPrompt < 0 ||
+        !(nativeRemoteTwarpSwitch < nativeRemoteTerraCheck && nativeRemoteTerraCheck < nativeRemoteMacroKit && nativeRemoteMacroKit < nativeRemoteTwarpPrompt))
+    {
+        throw new InvalidOperationException("Native remote Tab T hotkey must route Terra/sector-1 through macro_kit before opening the twarp prompt.");
+    }
+
+    if (!mtcSource.Contains("private bool IsMombotAtTerra()", StringComparison.Ordinal) ||
+        !mtcSource.Contains("GetCurrentSector(CurrentMombotRuntimeContext()) == 1", StringComparison.Ordinal) ||
+        !mtcSource.Contains("ReadCurrentMombotSectorVar(\"0\", \"$PLAYER~CURRENT_SECTOR\", \"$player~current_sector\")", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Native Tab T Terra detection must use script runtime sector and Mombot sector variables.");
+    }
+}
+
 static void MtcTabPopupRaiseDoesNotActivateOrPinScriptWindows()
 {
     string tabbedSource = ReadRepoSource("Source", "MTC", "TabbedShell.cs");
@@ -201,9 +394,46 @@ static void MtcTabPopupRaiseDoesNotActivateOrPinScriptWindows()
 
     if (!scriptWindowSource.Contains("ShowActivated = false", StringComparison.Ordinal) ||
         !scriptWindowSource.Contains("public void RaiseForTabSelection()", StringComparison.Ordinal) ||
-        !scriptWindowSource.Contains("Topmost = false", StringComparison.Ordinal))
+        !scriptWindowSource.Contains("Topmost = false", StringComparison.Ordinal) ||
+        !scriptWindowSource.Contains("bool effectiveOnTop = false", StringComparison.Ordinal))
     {
-        throw new InvalidOperationException("Expected script popups to avoid activation and drop tab-selection topmost after being raised.");
+        throw new InvalidOperationException("Expected script popups to avoid activation and ignore script-requested topmost.");
+    }
+
+    if (scriptWindowSource.Contains("Topmost = true", StringComparison.Ordinal) ||
+        scriptWindowSource.Contains("Topmost    = onTop", StringComparison.Ordinal) ||
+        scriptWindowSource.Contains("bool effectiveOnTop = onTop", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Script popups must not use native Topmost to raise or stay in front.");
+    }
+}
+
+static void MtcActivationFocusRestoreRetriesWithoutStealingEditorFocus()
+{
+    string startupSource = ReadRepoSource("Source", "MTC", "WindowStartup.cs");
+    string shellSource = ReadRepoSource("Source", "MTC", "ShellLayout.cs");
+
+    if (!startupSource.Contains("Activated += (_, _) => RequestActiveTerminalFocusForWindowActivation();", StringComparison.Ordinal))
+        throw new InvalidOperationException("Expected window activation to use the guarded terminal focus restore path.");
+
+    int request = shellSource.IndexOf("private void RequestActiveTerminalFocusForWindowActivation()", StringComparison.Ordinal);
+    int preserve = shellSource.IndexOf("private static bool ShouldPreserveFocusedElementForActivation", StringComparison.Ordinal);
+    string requestBody = preserve > request ? shellSource[request..preserve] : shellSource[request..];
+
+    if (request < 0 ||
+        !requestBody.Contains("TryFocusActiveTerminalForWindowActivation(ticket)", StringComparison.Ordinal) ||
+        !requestBody.Contains("DispatcherPriority.Input", StringComparison.Ordinal) ||
+        !requestBody.Contains("DispatcherPriority.Loaded", StringComparison.Ordinal) ||
+        !requestBody.Contains("RetryActiveTerminalFocusAfterActivationAsync(ticket)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected activation focus restore to retry across activation/layout turns.");
+    }
+
+    string preserveBody = preserve >= 0 ? shellSource[preserve..] : string.Empty;
+    if (!preserveBody.Contains("focused is TextBox or ComboBox or NumericUpDown", StringComparison.Ordinal) ||
+        !preserveBody.Contains("ReferenceEquals(focused, target)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected activation focus restore to preserve active terminal and editor controls.");
     }
 }
 
@@ -274,6 +504,60 @@ static void MtcConnectedTabCloseConfirmsBeforeClosing()
         !confirmBody.Contains("_mtcTabClosePromptTabIds.Add(tab.Id)", StringComparison.Ordinal))
     {
         throw new InvalidOperationException("Expected tab X close to reuse connected-game confirmation and suppress duplicate prompts.");
+    }
+}
+
+static void MtcRecentCanReplaceConnectedTabAfterConfirmation()
+{
+    string recentSource = ReadRepoSource("Source", "MTC", "RecentAndNativeMenus.cs");
+    string persistenceSource = ReadRepoSource("Source", "MTC", "GamePersistence.cs");
+
+    if (!recentSource.Contains("OpenPathAsync(path, addToRecent: true, allowReplaceConnectedTab: true)", StringComparison.Ordinal))
+        throw new InvalidOperationException("Expected File > Recent to explicitly allow confirmed connected-tab replacement.");
+
+    if (!persistenceSource.Contains("PrepareCurrentTabForGameLoadAsync(targetGameName, allowReplaceConnectedTab)", StringComparison.Ordinal) ||
+        !persistenceSource.Contains("Are you sure you want to close the connection to {currentGameName}?", StringComparison.Ordinal) ||
+        !persistenceSource.Contains("DisconnectCurrentTabForGameReplacementAsync(tab)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected recent game loading to confirm and cleanly disconnect before replacing a connected tab.");
+    }
+
+    if (!persistenceSource.Contains("await StopEmbeddedAsync()", StringComparison.Ordinal) ||
+        !persistenceSource.Contains("_telnet.Disconnect()", StringComparison.Ordinal) ||
+        !persistenceSource.Contains("CloseMtcTabOwnedWindows(tab)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected replacement to close tab-owned windows and stop embedded or telnet sessions.");
+    }
+}
+
+static void MtcResetWipesVariablesWithoutClearingGameLetter()
+{
+    string runtimeSource = ReadRepoSource("Source", "MTC", "RuntimeState.cs");
+    string configSource = ReadRepoSource("Source", "MTC", "GameConfigService.cs");
+
+    int resetMethod = runtimeSource.IndexOf("private async Task OnResetGameAsync()", StringComparison.Ordinal);
+    int identityMethod = runtimeSource.IndexOf("private void ResetEmbeddedGameIdentity", StringComparison.Ordinal);
+    int storageMethod = runtimeSource.IndexOf("private void ResetMombotGameStorage", StringComparison.Ordinal);
+
+    if (resetMethod < 0 || identityMethod < 0 || storageMethod < 0)
+        throw new InvalidOperationException("Could not locate reset methods in RuntimeState.cs.");
+
+    string resetBody = runtimeSource[resetMethod..identityMethod];
+    if (!resetBody.Contains("Core.ScriptRef.SetOnVariableSaved(runtimeContext, null)", StringComparison.Ordinal) ||
+        !resetBody.Contains("Core.ScriptRef.ClearCurrentGameVars(runtimeContext)", StringComparison.Ordinal) ||
+        !resetBody.Contains("await GameConfigService.ResetVariablesAsync(gameName, config.Variables)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected reset to detach variable saves, clear runtime variables, and reset variables.json.");
+    }
+
+    string identityBody = runtimeSource[identityMethod..storageMethod];
+    if (identityBody.Contains("config.GameLetter = string.Empty", StringComparison.Ordinal))
+        throw new InvalidOperationException("Reset must preserve the configured game letter.");
+
+    if (!configSource.Contains("public static async Task ResetVariablesAsync", StringComparison.Ordinal) ||
+        !configSource.Contains("VariableSaves.ResetAsync", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected MTC GameConfigService to expose debounced variable reset.");
     }
 }
 
@@ -462,6 +746,137 @@ static void DockShopperShipDropdownSizesToShipList()
     }
 }
 
+static void MapWindowDefaultsToModernOnMacOsAndLinux()
+{
+    string source = ReadRepoSource("Source", "MTC", "MapWindow.cs");
+
+    if (!source.Contains("MapViewMode defaultViewMode = GetDefaultMapViewMode()", StringComparison.Ordinal) ||
+        !source.Contains("OperatingSystem.IsMacOS() || OperatingSystem.IsLinux()", StringComparison.Ordinal) ||
+        !source.Contains("? MapViewMode.Bubble", StringComparison.Ordinal) ||
+        !source.Contains("SetMapViewMode(defaultViewMode)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map window to default to Modern on macOS/Linux and Classic on Windows.");
+    }
+}
+
+static void MapWindowViewSelectorAvoidsPopupControls()
+{
+    string source = ReadRepoSource("Source", "MTC", "MapWindow.cs");
+
+    if (source.Contains("ComboBox", StringComparison.Ordinal) ||
+        source.Contains("SelectionChanged", StringComparison.Ordinal) ||
+        source.Contains("MapViewModeToIndex", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map view switching to avoid Avalonia ComboBox popup controls.");
+    }
+
+    if (!source.Contains("BuildViewModeButton(\"Classic\", MapViewMode.Classic)", StringComparison.Ordinal) ||
+        !source.Contains("BuildViewModeButton(\"Modern\", MapViewMode.Bubble)", StringComparison.Ordinal) ||
+        !source.Contains("BuildViewModeButton(\"Hex\", MapViewMode.Hex)", StringComparison.Ordinal) ||
+        !source.Contains("UpdateViewModeButtons()", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map view switching to use direct Classic/Modern/Hex toolbar buttons.");
+    }
+}
+
+static void MapWindowOpensWithUsableClientSize()
+{
+    string source = ReadRepoSource("Source", "MTC", "MapWindow.cs");
+
+    if (!source.Contains("private static readonly Size DefaultClientSize = new(1100, 760)", StringComparison.Ordinal) ||
+        !source.Contains("private static readonly Size MinimumClientSize = new(600, 400)", StringComparison.Ordinal) ||
+        !source.Contains("ClientSize = DefaultClientSize", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map window to set explicit default and minimum client sizes.");
+    }
+
+    if (!source.Contains("SizeToContent = SizeToContent.Manual", StringComparison.Ordinal) ||
+        !source.Contains("SystemDecorations = SystemDecorations.Full", StringComparison.Ordinal) ||
+        !source.Contains("TransparencyLevelHint = new[] { WindowTransparencyLevel.None }", StringComparison.Ordinal) ||
+        !source.Contains("WindowStartupLocation = WindowStartupLocation.CenterScreen", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map window to avoid platform-dependent chrome/transparency sizing.");
+    }
+
+    if (!source.Contains("EnsureUsableClientSize()", StringComparison.Ordinal) ||
+        !source.Contains("ClientSize.Width < MinimumClientSize.Width", StringComparison.Ordinal) ||
+        !source.Contains("MinWidth = MinimumClientSize.Width", StringComparison.Ordinal) ||
+        !source.Contains("MinHeight = MinimumClientSize.Height", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected map window to reassert usable size after opening.");
+    }
+}
+
+static void MapWindowsCapLiveGraphExpansion()
+{
+    string mapWindow = ReadRepoSource("Source", "MTC", "MapWindow.cs");
+    string tacticalMap = ReadRepoSource("Source", "MTC", "TacticalMapControl.cs");
+
+    if (!mapWindow.Contains("private const int   MaxVisibleSectors = 500", StringComparison.Ordinal) ||
+        !mapWindow.Contains("if (visited.Count >= MaxVisibleSectors)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected classic map BFS to cap visible sector expansion.");
+    }
+
+    if (!tacticalMap.Contains("private const int MaxLiveSnapshotSectors = 500", StringComparison.Ordinal) ||
+        !tacticalMap.Contains("if (visited.Count >= MaxLiveSnapshotSectors)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected tactical map BFS to cap live snapshot expansion.");
+    }
+}
+
+static void MapRenderOperationsLogSkiaFailures()
+{
+    string mapWindow = ReadRepoSource("Source", "MTC", "MapWindow.cs");
+    string tacticalMap = ReadRepoSource("Source", "MTC", "TacticalMapControl.cs");
+    string project = ReadRepoSource("Source", "MTC", "MTC.csproj");
+
+    if (!project.Contains("<PackageReference Include=\"Avalonia.Skia\"", StringComparison.Ordinal))
+        throw new InvalidOperationException("Expected MTC to reference Avalonia.Skia explicitly.");
+
+    if (!mapWindow.Contains("DrawFallbackSurface(context, bounds)", StringComparison.Ordinal) ||
+        !mapWindow.Contains("[MapWindow] Render failed:", StringComparison.Ordinal) ||
+        !mapWindow.Contains("Skia lease feature unavailable", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected classic map render failures to leave a fallback surface and log diagnostics.");
+    }
+
+    if (!tacticalMap.Contains("DrawFallbackSurface(context, bounds)", StringComparison.Ordinal) ||
+        !tacticalMap.Contains("[TacticalMapControl] Render failed:", StringComparison.Ordinal) ||
+        !tacticalMap.Contains("Skia lease feature unavailable", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected tactical map render failures to leave a fallback surface and log diagnostics.");
+    }
+}
+
+static void TacticalMapBuildsSnapshotsOffRenderPath()
+{
+    string source = ReadRepoSource("Source", "MTC", "TacticalMapControl.cs");
+
+    int drawStart = source.IndexOf("internal void Draw(SKCanvas canvas, float width, float height)", StringComparison.Ordinal);
+    int adjustZoomStart = source.IndexOf("public void AdjustZoom", StringComparison.Ordinal);
+    string drawBody = drawStart >= 0 && adjustZoomStart > drawStart
+        ? source[drawStart..adjustZoomStart]
+        : string.Empty;
+
+    if (drawStart < 0 || drawBody.Contains("BuildSnapshot(", StringComparison.Ordinal))
+        throw new InvalidOperationException("Tactical map rendering must draw the last snapshot, not rebuild it inside Render.");
+
+    if (!drawBody.Contains("RequestSnapshotRefresh()", StringComparison.Ordinal) ||
+        !source.Contains("Task.Run(() => BuildSnapshot(request))", StringComparison.Ordinal) ||
+        !source.Contains("private sealed record SnapshotBuildRequest", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected tactical map snapshots to be built asynchronously from captured request state.");
+    }
+
+    if (!source.Contains("public void RefreshSnapshot()", StringComparison.Ordinal) ||
+        !source.Contains("MarkSnapshotDirty()", StringComparison.Ordinal) ||
+        !source.Contains("Interlocked.CompareExchange(ref _snapshotBuildScheduled, 1, 0)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected tactical map snapshot refreshes to be coalesced and explicitly requestable.");
+    }
+}
+
 static void MajorSpaceLanesToolbarReservesSummaryColumn()
 {
     string source = ReadRepoSource("Source", "MTC", "MajorSpaceLanesWindow.cs");
@@ -471,6 +886,36 @@ static void MajorSpaceLanesToolbarReservesSummaryColumn()
 
     if (!source.Contains("_summaryText.WithGridPosition(0, 1)", StringComparison.Ordinal))
         throw new InvalidOperationException("Expected Major Space Lanes summary text in the second toolbar column.");
+}
+
+static void DeadEndsViewIncludesSortableFiggedColumn()
+{
+    string source = ReadRepoSource("Source", "MTC", "BubblesWindow.cs");
+
+    if (!source.Contains("SortFiggedButton", StringComparison.Ordinal) ||
+        !source.Contains("FinderSortMode.Figged", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected Dead Ends to expose a Figged sort button and sort mode.");
+    }
+
+    if (!source.Contains("state.SortFiggedButton = AddSortHeaderCell(grid, \"Figged\", 5, state, FinderSortMode.Figged)", StringComparison.Ordinal) ||
+        !source.Contains("AddHeaderCell(grid, \"Sector List\", 6)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected Figged to appear after Dist to Terra and before Sector List.");
+    }
+
+    if (!source.Contains("row.Figged ? \"Yes\" : \"No\"", StringComparison.Ordinal) ||
+        !source.Contains("IsAnySectorFigged(db, deadEnd.Sectors, deadEnd.Door, state)", StringComparison.Ordinal) ||
+        !source.Contains("SectorOwnershipClassifier.IsFriendlyOwner(sector.Fighters.Owner, state)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected Dead Ends rows to render Yes/No from friendly fig or FIGSEC data.");
+    }
+
+    if (!source.Contains("rows.OrderByDescending(row => row.Figged).ThenBy(row => row.Door)", StringComparison.Ordinal) ||
+        !source.Contains("rows.OrderBy(row => row.Figged).ThenBy(row => row.Door)", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected Figged sorting to support yes-first and no-first order.");
+    }
 }
 
 static void GameSizeAllowsOneHundredThousandSectors()

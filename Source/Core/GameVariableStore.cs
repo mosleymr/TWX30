@@ -98,6 +98,35 @@ public sealed class DebouncedGameVariableStore
             await SaveSnapshotAsync(save).ConfigureAwait(false);
     }
 
+    public async Task ResetAsync(string path, IDictionary<string, string>? variables = null, string? backupPath = null)
+    {
+        string key = Path.GetFullPath(path);
+        string? fullBackupPath = string.IsNullOrWhiteSpace(backupPath) ? null : Path.GetFullPath(backupPath);
+        Task? worker = null;
+        lock (_sync)
+        {
+            _pending.Remove(key);
+            _workers.TryGetValue(key, out worker);
+        }
+
+        if (worker != null)
+        {
+            try
+            {
+                await worker.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Reset writes the authoritative replacement below.
+            }
+        }
+
+        await GameVariableStore.SaveAsync(key, variables, backupPath: null).ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(fullBackupPath) && File.Exists(fullBackupPath))
+            File.Delete(fullBackupPath);
+    }
+
     public async Task FlushAllAsync()
     {
         List<PendingVariableSave> saves;
