@@ -7,6 +7,13 @@ export COPY_EXTENDED_ATTRIBUTES_DISABLE=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BIN_ROOT="${REPO_ROOT}/bin"
+
+SIGNING_ENV_FILE="${TWX30_RELEASE_SIGNING_ENV:-${HOME}/.config/twx30/release-signing.env}"
+if [[ -f "$SIGNING_ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$SIGNING_ENV_FILE"
+fi
+
 MOMBOT_RELEASE_SOURCE="${MOMBOT_RELEASE_SOURCE:-/Users/mosleym/tw2002/mombot/mombot5.0/Release/mombot}"
 MTC_ICON_SOURCE="${SCRIPT_DIR}/MTC/mtc2.png"
 TWXP_ICON_SOURCE="${SCRIPT_DIR}/TWXP/TWXProxy_Icon.ico"
@@ -40,6 +47,13 @@ Set RID_LIST to narrow the target list, e.g.:
 
 Set MOMBOT_RELEASE_SOURCE to override the Mombot release tree used for the
 scripts payload.
+
+Local signing configuration:
+  ~/.config/twx30/release-signing.env
+
+Set TWX30_RELEASE_SIGNING_ENV to override that path. The file is sourced before
+environment defaults are evaluated, so it can persist the variables below
+without committing secrets or machine-local profile names to git.
 
 Distribution signing/notarization:
   MACOS_SIGN=developer-id     # default, required for public packages
