@@ -45,6 +45,7 @@ var tests = new (string Name, Action Body)[]
     ("Dead Ends view includes sortable Figged column", DeadEndsViewIncludesSortableFiggedColumn),
     ("Game size allows 100,000 sectors", GameSizeAllowsOneHundredThousandSectors),
     ("Game size rejects values above 100,000 sectors", GameSizeRejectsValuesAboveOneHundredThousandSectors),
+    ("Proxy management removes servers from snapshot list", ProxyManagementRemovesServersFromSnapshotList),
 };
 
 int failed = 0;
@@ -928,6 +929,25 @@ static void GameSizeRejectsValuesAboveOneHundredThousandSectors()
 {
     if (GameSizeLimits.IsValidSectorCount(100_001))
         throw new InvalidOperationException("Expected 100,001 sectors to be rejected.");
+}
+
+static void ProxyManagementRemovesServersFromSnapshotList()
+{
+    string source = ReadRepoSource("Source", "MTC", "ProxyManagementWindow.cs");
+
+    if (source.Contains("_serversList.ItemsSource = _preferences.ProxyServers;", StringComparison.Ordinal))
+        throw new InvalidOperationException("Proxy server ListBox must not bind directly to the mutable preferences list.");
+
+    if (!source.Contains("AppPreferences.ProxyServerPreference[] snapshot = _preferences.ProxyServers.ToArray();", StringComparison.Ordinal) ||
+        !source.Contains("_serversList.ItemsSource = snapshot;", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException("Expected proxy server ListBox to be refreshed from a stable snapshot.");
+    }
+
+    int clearSelection = source.IndexOf("_serversList.SelectedItem = null;", StringComparison.Ordinal);
+    int removeAt = source.IndexOf("_preferences.ProxyServers.RemoveAt(removedIndex);", StringComparison.Ordinal);
+    if (clearSelection < 0 || removeAt < 0 || clearSelection > removeAt)
+        throw new InvalidOperationException("Expected proxy server removal to clear UI selection before mutating preferences.");
 }
 
 static void AssertLine(TerminalBuffer buffer, int row, string expected)

@@ -92,8 +92,7 @@ internal sealed class ProxyManagementWindow : Window
             };
             _preferences.ProxyServers.Add(server);
             _savePreferences();
-            RefreshServers();
-            _serversList.SelectedItem = server;
+            RefreshServers(server.Id);
         };
 
         var removeButton = BuildButton("Remove", false);
@@ -101,9 +100,21 @@ internal sealed class ProxyManagementWindow : Window
         {
             if (_serversList.SelectedItem is not AppPreferences.ProxyServerPreference server)
                 return;
-            _preferences.ProxyServers.Remove(server);
+
+            int removedIndex = _preferences.ProxyServers.FindIndex(candidate =>
+                string.Equals(candidate.Id, server.Id, StringComparison.OrdinalIgnoreCase));
+            if (removedIndex < 0)
+                return;
+
+            _serversList.SelectedItem = null;
+            _gamesList.ItemsSource = null;
+            _games = [];
+            _preferences.ProxyServers.RemoveAt(removedIndex);
             _savePreferences();
-            RefreshServers();
+            string? nextServerId = _preferences.ProxyServers.Count == 0
+                ? null
+                : _preferences.ProxyServers[Math.Min(removedIndex, _preferences.ProxyServers.Count - 1)].Id;
+            RefreshServers(nextServerId);
             SetStatus("Proxy server removed.");
         };
 
@@ -168,16 +179,30 @@ internal sealed class ProxyManagementWindow : Window
                 }));
     }
 
-    private void RefreshServers()
+    private void RefreshServers(string? selectedServerId = null)
     {
+        selectedServerId = string.IsNullOrWhiteSpace(selectedServerId) &&
+                           _serversList.SelectedItem is AppPreferences.ProxyServerPreference selectedServer
+            ? selectedServer.Id
+            : selectedServerId;
+        AppPreferences.ProxyServerPreference[] snapshot = _preferences.ProxyServers.ToArray();
         _serversList.ItemsSource = null;
-        _serversList.ItemsSource = _preferences.ProxyServers;
+        _serversList.ItemsSource = snapshot;
+        _serversList.SelectedItem = string.IsNullOrWhiteSpace(selectedServerId)
+            ? null
+            : snapshot.FirstOrDefault(server =>
+                string.Equals(server.Id, selectedServerId, StringComparison.OrdinalIgnoreCase));
+        if (_serversList.SelectedItem == null)
+            ClearSelectedServer();
     }
 
     private void LoadSelectedServer()
     {
         if (_serversList.SelectedItem is not AppPreferences.ProxyServerPreference server)
+        {
+            ClearSelectedServer();
             return;
+        }
 
         _nameBox.Text = server.Name;
         _hostBox.Text = server.Host;
@@ -202,6 +227,16 @@ internal sealed class ProxyManagementWindow : Window
         RefreshServers();
         _serversList.SelectedItem = server;
         SetStatus("Proxy server saved.");
+    }
+
+    private void ClearSelectedServer()
+    {
+        _nameBox.Text = string.Empty;
+        _hostBox.Text = "127.0.0.1";
+        _portBox.Text = "2099";
+        _tokenBox.Text = string.Empty;
+        _gamesList.ItemsSource = null;
+        _games = [];
     }
 
     private async Task TestSelectedServerAsync()
